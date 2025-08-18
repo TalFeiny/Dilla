@@ -1,0 +1,556 @@
+#!/usr/bin/env python3
+"""
+PWERM Bridge Script for fund.js
+Integrates your existing PWERM analyzer with Node.js queue system
+"""
+
+import sys
+import json
+import os
+from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+import traceback
+import re
+
+# Add current directory to path to import your existing module
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+try:
+    # Import your existing PWERM analyzer classes
+    import requests
+    from bs4 import BeautifulSoup
+    from tavily import TavilyClient
+    from openai import OpenAI
+    import pandas as pd
+    import numpy as np
+except ImportError as e:
+    print(f"ERROR: Missing required packages: {e}", file=sys.stderr)
+    print("Run: pip install requests beautifulsoup4 tavily-python openai pandas numpy", file=sys.stderr)
+    sys.exit(1)
+
+class FundFlowPWERMAnalyzer:
+    """
+    Simplified PWERM analyzer for fund.js integration
+    Based on your existing AdvancedCompanyAnalyzer but optimized for Node.js
+    """
+    
+    def __init__(self, tavily_api_key: str, openai_api_key: str):
+        self.tavily_client = TavilyClient(api_key=tavily_api_key)
+        self.openai_client = OpenAI(api_key=openai_api_key)
+        self.pwerm_scenarios = self._load_pwerm_scenarios()
+        self.benchmark_data = self._load_benchmark_data()
+    
+    def analyze_company_for_fund_flow(self, company_name: str, growth_rate: float, annual_revenue: float) -> Dict:
+        """
+        Streamlined PWERM analysis optimized for fund.js
+        """
+        print(f"Starting PWERM analysis for {company_name}", file=sys.stderr)
+        print(f"Parameters: {growth_rate}% growth, ${annual_revenue}M revenue", file=sys.stderr)
+        
+        try:
+            # Step 1: Research company (with timeout protection)
+            print("1. Researching company details...", file=sys.stderr)
+            company_info = self._research_company_basic(company_name)
+            
+            # Step 2: Get sector M&A data (simplified)
+            print("2. Analyzing sector M&A activity...", file=sys.stderr)
+            ma_deals = self._get_sector_ma_data(company_info.get('sector', 'Technology'))
+            
+            # Step 3: Calculate PWERM probabilities
+            print("3. Calculating 499 scenario probabilities...", file=sys.stderr)
+            probability_matrix = self._calculate_pwerm_probabilities(
+                company_name, growth_rate, annual_revenue, company_info, ma_deals
+            )
+            
+            # Step 4: Normalize probabilities
+            print("4. Normalizing probability distribution...", file=sys.stderr)
+            normalized_probabilities = self._normalize_probabilities(probability_matrix)
+            
+            return {
+                "company_name": company_name,
+                "growth_rate": growth_rate,
+                "annual_revenue": annual_revenue,
+                "company_info": company_info,
+                "ma_deals": ma_deals,
+                "probability_matrix": normalized_probabilities,
+                "analysis_date": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            print(f"Error in PWERM analysis: {e}", file=sys.stderr)
+            # Return basic fallback analysis
+            return self._create_fallback_analysis(company_name, growth_rate, annual_revenue, str(e))
+    
+    def _research_company_basic(self, company_name: str) -> Dict:
+        """Simplified company research with error handling"""
+        try:
+            # Basic search with timeout
+            search_results = self.tavily_client.search(
+                query=f"{company_name} business sector funding",
+                search_depth="basic",
+                max_results=3
+            )
+            
+            if search_results.get('results'):
+                combined_text = ""
+                for result in search_results['results'][:2]:  # Limit to 2 results
+                    combined_text += f"{result.get('title', '')} {result.get('content', '')}"
+                
+                sector = self._extract_sector_simple(combined_text)
+                business_model = self._extract_business_model_simple(combined_text)
+                
+                return {
+                    "sector": sector,
+                    "business_model": business_model,
+                    "competitors": [],
+                    "funding_rounds": [],
+                    "total_funding": 0,
+                    "last_valuation": 0
+                }
+            
+        except Exception as e:
+            print(f"Company research error: {e}", file=sys.stderr)
+        
+        # Fallback
+        return {
+            "sector": "Technology",
+            "business_model": "SaaS Platform",
+            "competitors": [],
+            "funding_rounds": [],
+            "total_funding": 0,
+            "last_valuation": 0
+        }
+    
+    def _extract_sector_simple(self, text: str) -> str:
+        """Simplified sector extraction"""
+        text_lower = text.lower()
+        
+        sector_keywords = {
+            'FinTech': ['fintech', 'financial technology', 'payments', 'banking'],
+            'HealthTech': ['healthtech', 'healthcare', 'medical', 'health'],
+            'AI/ML': ['artificial intelligence', 'machine learning', 'ai'],
+            'SaaS': ['saas', 'software as a service', 'cloud software'],
+            'E-commerce': ['ecommerce', 'e-commerce', 'online retail'],
+            'Cybersecurity': ['cybersecurity', 'security software'],
+            'EdTech': ['edtech', 'education technology', 'learning'],
+        }
+        
+        for sector, keywords in sector_keywords.items():
+            if any(keyword in text_lower for keyword in keywords):
+                return sector
+        
+        return "Technology"
+    
+    def _extract_business_model_simple(self, text: str) -> str:
+        """Simplified business model extraction"""
+        text_lower = text.lower()
+        
+        if 'saas' in text_lower or 'software as a service' in text_lower:
+            return "SaaS Platform"
+        elif 'marketplace' in text_lower:
+            return "Marketplace"
+        elif 'platform' in text_lower:
+            return "Platform"
+        else:
+            return "Software Solution"
+    
+    def _get_sector_ma_data(self, sector: str) -> List[Dict]:
+        """Simplified M&A data collection"""
+        try:
+            # Quick M&A search
+            search_results = self.tavily_client.search(
+                query=f"{sector} startup acquisition 2024 2025",
+                search_depth="basic",
+                max_results=2
+            )
+            
+            # Return sample M&A data for now (in production, you'd parse this)
+            return [
+                {
+                    "target": f"{sector} Startup",
+                    "acquirer": "Tech Giant",
+                    "value_usd_m": 150,
+                    "year": 2024,
+                    "sector": sector
+                }
+            ]
+            
+        except Exception as e:
+            print(f"M&A research error: {e}", file=sys.stderr)
+            return []
+    
+    def _load_pwerm_scenarios(self) -> List[Dict]:
+        """Load the 499 PWERM scenarios (simplified version)"""
+        scenarios = []
+        
+        # Key scenario definitions (subset of your full 499)
+        key_scenarios = [
+            {"id": 1, "name": "Liquidation", "valuation_range": "0", "outcome_type": "liquidation"},
+            {"id": 5, "name": "Acquihire", "valuation_range": "5-10M", "outcome_type": "acquihire"},
+            {"id": 25, "name": "Small Strategic", "valuation_range": "25-50M", "outcome_type": "strategic"},
+            {"id": 75, "name": "Medium Strategic", "valuation_range": "75-100M", "outcome_type": "strategic"},
+            {"id": 150, "name": "Large Strategic", "valuation_range": "150-200M", "outcome_type": "enterprise"},
+            {"id": 300, "name": "IPO Track", "valuation_range": "300-500M", "outcome_type": "ipo_track"},
+            {"id": 450, "name": "Large IPO", "valuation_range": "1B-2B", "outcome_type": "large_ipo"},
+            {"id": 499, "name": "Mega Exit", "valuation_range": "10B+", "outcome_type": "mega_exit"}
+        ]
+        
+        # Generate all 499 scenarios with interpolation
+        for i in range(1, 500):
+            key_scenario = next((s for s in key_scenarios if s["id"] == i), None)
+            
+            if key_scenario:
+                scenarios.append(key_scenario.copy())
+            else:
+                # Interpolate between key scenarios
+                scenario = self._interpolate_scenario(i, key_scenarios)
+                scenarios.append(scenario)
+        
+        return scenarios
+    
+    def _interpolate_scenario(self, scenario_id: int, key_scenarios: List[Dict]) -> Dict:
+        """Generate intermediate scenarios"""
+        # Find surrounding key scenarios
+        lower = max([s for s in key_scenarios if s["id"] < scenario_id], 
+                   key=lambda x: x["id"], default=key_scenarios[0])
+        upper = min([s for s in key_scenarios if s["id"] > scenario_id], 
+                   key=lambda x: x["id"], default=key_scenarios[-1])
+        
+        # Simple linear interpolation for valuation
+        if scenario_id < 50:
+            base_val = scenario_id * 0.5
+            return {
+                "id": scenario_id,
+                "name": f"Early Exit {scenario_id}",
+                "valuation_range": f"{base_val:.1f}M-{base_val + 5:.1f}M",
+                "outcome_type": "early_exit"
+            }
+        elif scenario_id < 200:
+            base_val = 50 + (scenario_id - 50) * 1.0
+            return {
+                "id": scenario_id,
+                "name": f"Mid Exit {scenario_id}",
+                "valuation_range": f"{base_val:.0f}M-{base_val + 25:.0f}M",
+                "outcome_type": "mid_exit"
+            }
+        elif scenario_id < 400:
+            base_val = 200 + (scenario_id - 200) * 2.0
+            return {
+                "id": scenario_id,
+                "name": f"Growth Exit {scenario_id}",
+                "valuation_range": f"{base_val:.0f}M-{base_val + 50:.0f}M",
+                "outcome_type": "growth_exit"
+            }
+        else:
+            base_val = 800 + (scenario_id - 400) * 10.0
+            return {
+                "id": scenario_id,
+                "name": f"Large Exit {scenario_id}",
+                "valuation_range": f"{base_val/1000:.1f}B-{(base_val + 200)/1000:.1f}B",
+                "outcome_type": "large_exit"
+            }
+    
+    def _load_benchmark_data(self) -> Dict:
+        """Simplified benchmark data"""
+        return {
+            "revenue_requirements": {
+                "pre_seed": 1.0,
+                "seed": 1.5,
+                "series_a": 6.0,
+                "series_b": 13.8,
+                "series_c": 100.0
+            },
+            "growth_rates": {
+                "median": {
+                    "pre_seed": 39,
+                    "seed": 69,
+                    "series_a": 59,
+                    "series_b": 67
+                }
+            },
+            "graduation_rates": {
+                "stage_to_stage": {
+                    "pre_seed_to_a": 18,
+                    "seed_to_a": 20,
+                    "a_to_b": 20,
+                    "b_to_c": 35
+                }
+            }
+        }
+    
+    def _calculate_pwerm_probabilities(self, company_name: str, growth_rate: float, 
+                                     annual_revenue: float, company_info: Dict, 
+                                     ma_deals: List[Dict]) -> Dict:
+        """Calculate probabilities for all 499 scenarios"""
+        
+        # Determine company stage
+        stage = self._determine_stage(annual_revenue)
+        
+        # Calculate base factors
+        growth_factor = min(2.0, max(0.5, growth_rate / 50.0))
+        revenue_factor = min(2.0, max(0.5, annual_revenue / 10.0))
+        sector_factor = self._get_sector_factor(company_info.get("sector", "Technology"))
+        
+        probabilities = {}
+        
+        for scenario in self.pwerm_scenarios:
+            # Base probability based on outcome type
+            base_prob = self._get_base_probability(scenario["outcome_type"], stage)
+            
+            # Adjust based on company factors
+            adjusted_prob = base_prob * growth_factor * revenue_factor * sector_factor
+            
+            # Add some randomness to avoid identical probabilities
+            adjusted_prob *= (0.8 + 0.4 * np.random.random())
+            
+            probabilities[scenario["id"]] = {
+                "scenario_name": scenario["name"],
+                "valuation_range": scenario["valuation_range"],
+                "outcome_type": scenario["outcome_type"],
+                "probability": max(0.0001, min(0.1, adjusted_prob))
+            }
+        
+        return probabilities
+    
+    def _determine_stage(self, annual_revenue: float) -> str:
+        """Determine company stage from revenue"""
+        if annual_revenue >= 100:
+            return "series_c"
+        elif annual_revenue >= 13.8:
+            return "series_b"
+        elif annual_revenue >= 6.0:
+            return "series_a"
+        elif annual_revenue >= 1.5:
+            return "seed"
+        else:
+            return "pre_seed"
+    
+    def _get_sector_factor(self, sector: str) -> float:
+        """Get sector multiplier"""
+        sector_factors = {
+            "AI/ML": 1.4,
+            "FinTech": 1.3,
+            "SaaS": 1.2,
+            "HealthTech": 1.15,
+            "Cybersecurity": 1.1,
+            "Technology": 1.0,
+            "E-commerce": 0.9
+        }
+        return sector_factors.get(sector, 1.0)
+    
+    def _get_base_probability(self, outcome_type: str, stage: str) -> float:
+        """Get base probability for outcome type and stage"""
+        base_probs = {
+            "liquidation": 0.15,
+            "acquihire": 0.10,
+            "early_exit": 0.20,
+            "strategic": 0.15,
+            "mid_exit": 0.15,
+            "enterprise": 0.10,
+            "growth_exit": 0.08,
+            "ipo_track": 0.04,
+            "large_ipo": 0.02,
+            "large_exit": 0.005,
+            "mega_exit": 0.0005
+        }
+        
+        # Adjust by stage
+        stage_multipliers = {
+            "pre_seed": {"liquidation": 1.5, "mega_exit": 0.1},
+            "seed": {"liquidation": 1.2, "mega_exit": 0.2},
+            "series_a": {"liquidation": 1.0, "mega_exit": 0.5},
+            "series_b": {"liquidation": 0.8, "mega_exit": 1.0},
+            "series_c": {"liquidation": 0.5, "mega_exit": 1.5}
+        }
+        
+        base_prob = base_probs.get(outcome_type, 0.01)
+        multiplier = stage_multipliers.get(stage, {}).get(outcome_type, 1.0)
+        
+        return base_prob * multiplier
+    
+    def _normalize_probabilities(self, probability_matrix: Dict) -> Dict:
+        """Normalize probabilities to sum to 1.0"""
+        total_prob = sum(scenario["probability"] for scenario in probability_matrix.values())
+        
+        if total_prob > 0:
+            for scenario in probability_matrix.values():
+                scenario["probability"] = scenario["probability"] / total_prob
+        else:
+            # Equal distribution fallback
+            equal_prob = 1.0 / len(probability_matrix)
+            for scenario in probability_matrix.values():
+                scenario["probability"] = equal_prob
+        
+        return probability_matrix
+    
+    def _create_fallback_analysis(self, company_name: str, growth_rate: float, 
+                                annual_revenue: float, error_msg: str) -> Dict:
+        """Create basic fallback analysis if main analysis fails"""
+        print(f"Creating fallback analysis due to error: {error_msg}", file=sys.stderr)
+        
+        # Create simple probability distribution
+        simple_scenarios = {}
+        for i in range(1, 500):
+            simple_scenarios[i] = {
+                "scenario_name": f"Scenario {i}",
+                "valuation_range": f"{i}M-{i+10}M",
+                "outcome_type": "generic",
+                "probability": 1.0 / 499
+            }
+        
+        return {
+            "company_name": company_name,
+            "growth_rate": growth_rate,
+            "annual_revenue": annual_revenue,
+            "company_info": {
+                "sector": "Technology",
+                "business_model": "Unknown",
+                "competitors": [],
+                "funding_rounds": [],
+                "total_funding": 0,
+                "last_valuation": 0
+            },
+            "ma_deals": [],
+            "probability_matrix": simple_scenarios,
+            "analysis_date": datetime.now().isoformat(),
+            "fallback_mode": True,
+            "error_message": error_msg
+        }
+
+def main():
+    """Main function for Node.js integration"""
+    try:
+        # Read JSON input from stdin
+        input_data = sys.stdin.read().strip()
+        
+        if not input_data:
+            raise ValueError("No input data received from Node.js")
+        
+        # Parse parameters
+        params = json.loads(input_data)
+        scenario_id = params.get('scenario_id')
+        company_name = params.get('company_name', 'Unknown Company')
+        growth_rate = float(params.get('growth_rate', 50))
+        annual_revenue = float(params.get('annual_revenue', 1))
+        
+        # Get API keys
+        TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+        
+        if not TAVILY_API_KEY or not OPENAI_API_KEY:
+            raise ValueError("Missing TAVILY_API_KEY or OPENAI_API_KEY environment variables")
+        
+        # Initialize analyzer
+        analyzer = FundFlowPWERMAnalyzer(TAVILY_API_KEY, OPENAI_API_KEY)
+        
+        # Run analysis
+        results = analyzer.analyze_company_for_fund_flow(
+            company_name=company_name,
+            growth_rate=growth_rate,
+            annual_revenue=annual_revenue
+        )
+        
+        # Calculate summary
+        prob_matrix = results["probability_matrix"]
+        summary = calculate_summary_stats(prob_matrix)
+        
+        # Prepare output
+        output = {
+            "scenario_id": scenario_id,
+            "success": True,
+            "company_analysis": results["company_info"],
+            "probability_matrix": prob_matrix,
+            "summary": summary,
+            "total_scenarios": len(prob_matrix),
+            "analysis_completed_at": datetime.now().isoformat(),
+            "fallback_mode": results.get("fallback_mode", False)
+        }
+        
+        # Output JSON to stdout
+        print(json.dumps(output, ensure_ascii=False))
+        
+    except Exception as e:
+        # Error output
+        error_output = {
+            "scenario_id": params.get('scenario_id') if 'params' in locals() else None,
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "traceback": traceback.format_exc()
+        }
+        
+        print(json.dumps(error_output))
+        print(f"PWERM Analysis Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def calculate_summary_stats(probability_matrix: Dict) -> Dict:
+    """Calculate summary statistics"""
+    if not probability_matrix:
+        return {}
+    
+    scenarios = list(probability_matrix.values())
+    probabilities = [s["probability"] for s in scenarios]
+    
+    # Parse valuations
+    valuations = []
+    for scenario in scenarios:
+        val_range = scenario.get("valuation_range", "0")
+        mid_val = parse_valuation_midpoint(val_range)
+        if mid_val:
+            valuations.append(mid_val)
+    
+    if not valuations:
+        return {"error": "No valid valuations found"}
+    
+    # Calculate weighted expected value
+    weighted_avg = sum(val * prob for val, prob in zip(valuations, probabilities))
+    
+    # Percentiles
+    sorted_vals = sorted(valuations)
+    n = len(sorted_vals)
+    
+    return {
+        "expected_value_millions": round(weighted_avg, 2),
+        "p10_millions": sorted_vals[int(n * 0.1)] if n > 0 else 0,
+        "p50_millions": sorted_vals[int(n * 0.5)] if n > 0 else 0,
+        "p90_millions": sorted_vals[int(n * 0.9)] if n > 0 else 0,
+        "total_probability": round(sum(probabilities), 6),
+        "scenario_count": len(scenarios)
+    }
+
+def parse_valuation_midpoint(val_range: str) -> Optional[float]:
+    """Parse valuation range to get midpoint in millions"""
+    if not val_range or val_range == "0":
+        return 0.0
+    
+    # Handle ranges like "100M-200M"
+    if '-' in val_range:
+        parts = val_range.split('-')
+        if len(parts) == 2:
+            min_val = parse_money_value(parts[0])
+            max_val = parse_money_value(parts[1])
+            if min_val is not None and max_val is not None:
+                return (min_val + max_val) / 2
+    
+    # Handle single values or "+" ranges
+    return parse_money_value(val_range.replace('+', ''))
+
+def parse_money_value(money_str: str) -> Optional[float]:
+    """Parse money string to millions"""
+    if not money_str:
+        return None
+    
+    # Extract number
+    match = re.search(r'(\d+(?:\.\d+)?)', money_str)
+    if not match:
+        return None
+    
+    value = float(match.group(1))
+    
+    if 'B' in money_str.upper():
+        return value * 1000  # Convert billions to millions
+    else:
+        return value  # Assume millions
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>JavaScript Test</title>
+</head>
+<body>
+    <h1>JavaScript Test Page</h1>
+    <p>This is a simple test to see if JavaScript works.</p>
+    
+    <button onclick="alert('JavaScript is working!')">Test JavaScript</button>
+    
+    <div id="output"></div>
+    
+    <script>
+        console.log('JavaScript is loading...');
+        document.getElementById('output').innerHTML = 'JavaScript executed successfully!';
+        
+        // Test React-like functionality
+        let count = 0;
+        function increment() {
+            count++;
+            document.getElementById('output').innerHTML = 'Count: ' + count;
+        }
+    </script>
+    
+    <button onclick="increment()">Increment Count</button>
+</body>
+</html> 

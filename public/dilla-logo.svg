@@ -1,0 +1,9 @@
+<svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background speed lines -->
+  <ellipse cx="256" cy="290" rx="220" ry="8" fill="#C0C0C0" opacity="0.6"/>
+  <ellipse cx="256" cy="340" rx="220" ry="6" fill="#C0C0C0" opacity="0.5"/>
+  
+  <!-- Main logo shapes -->
+  <path d="M175 145 L300 145 L245 325 L120 325 Z" fill="#000000"/>
+  <path d="M320 185 L380 185 L315 385 L255 385 Z" fill="#000000"/>
+</svg>

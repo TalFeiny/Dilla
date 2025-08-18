@@ -1,0 +1,116 @@
+
+> vc-platform-new@0.1.0 dev
+> next dev -p 3001
+
+  ▲ Next.js 14.2.30
+  - Local:        http://localhost:3001
+  - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 3.2s
+ ○ Compiling /pwerm-playground ...
+ ✓ Compiled /pwerm-playground in 6.9s (757 modules)
+ GET /pwerm-playground 200 in 7773ms
+ ✓ Compiled in 919ms (366 modules)
+ ○ Compiling /api/companies/pwerm ...
+ ✓ Compiled /api/companies/pwerm in 1155ms (513 modules)
+Supabase Config Debug: {
+  url: 'https://ijkatixkebddtkdvgkog.supabase.co',
+  hasAnonKey: true,
+  hasServiceKey: true,
+  nodeEnv: 'development'
+}
+ GET /api/companies/pwerm?limit=1000 200 in 2113ms
+ GET /api/companies/pwerm?limit=1000 200 in 2262ms
+ ○ Compiling /api/pwerm/playground ...
+ ✓ Compiled /api/pwerm/playground in 745ms (514 modules)
+Supabase Config Debug: {
+  url: 'https://ijkatixkebddtkdvgkog.supabase.co',
+  hasAnonKey: true,
+  hasServiceKey: true,
+  nodeEnv: 'development'
+}
+Environment variables passed to Python: { TAVILY_API_KEY: 'Set', CLAUDE_API_KEY: 'Set' }
+Error [ERR_STREAM_WRITE_AFTER_END]: write after end
+    at _write (node:internal/streams/writable:489:11)
+    at Writable.write (node:internal/streams/writable:510:10)
+    at eval (webpack-internal:///(rsc)/./src/app/api/pwerm/playground/route.ts:110:33)
+    at new Promise (<anonymous>)
+    at POST (webpack-internal:///(rsc)/./src/app/api/pwerm/playground/route.ts:50:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async /Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/compiled/next-server/app-route.runtime.dev.js:6:57228
+    at async eT.execute (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/compiled/next-server/app-route.runtime.dev.js:6:46851)
+    at async eT.handle (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/compiled/next-server/app-route.runtime.dev.js:6:58760)
+    at async doRender (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1366:42)
+    at async cacheEntry.responseCache.get.routeKind (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1588:28)
+    at async DevServer.renderToResponseWithComponentsImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1496:28)
+    at async DevServer.renderPageComponent (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1924:24)
+    at async DevServer.renderToResponseImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1962:32)
+    at async DevServer.pipeImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:922:25)
+    at async NextNodeServer.handleCatchallRenderRequest (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/next-server.js:272:17)
+    at async DevServer.handleRequestImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:818:17)
+    at async /Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/dev/next-dev-server.js:339:20
+    at async Span.traceAsyncFn (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/trace/trace.js:154:20)
+    at async DevServer.handleRequest (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/dev/next-dev-server.js:336:24)
+    at async invokeRender (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/lib/router-server.js:179:21)
+    at async handleRequest (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/lib/router-server.js:359:24)
+    at async requestHandlerImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/lib/router-server.js:383:13)
+    at async Server.requestListener (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/lib/start-server.js:141:13) {
+  code: 'ERR_STREAM_WRITE_AFTER_END'
+}
+ ⨯ uncaughtException: Error [ERR_STREAM_WRITE_AFTER_END]: write after end
+    at _write (node:internal/streams/writable:489:11)
+    at Writable.write (node:internal/streams/writable:510:10)
+    at eval (webpack-internal:///(rsc)/./src/app/api/pwerm/playground/route.ts:110:33)
+    at new Promise (<anonymous>)
+    at POST (webpack-internal:///(rsc)/./src/app/api/pwerm/playground/route.ts:50:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async /Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/compiled/next-server/app-route.runtime.dev.js:6:57228
+    at async eT.execute (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/compiled/next-server/app-route.runtime.dev.js:6:46851)
+    at async eT.handle (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/compiled/next-server/app-route.runtime.dev.js:6:58760)
+    at async doRender (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1366:42)
+    at async cacheEntry.responseCache.get.routeKind (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1588:28)
+    at async DevServer.renderToResponseWithComponentsImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1496:28)
+    at async DevServer.renderPageComponent (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1924:24)
+    at async DevServer.renderToResponseImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1962:32)
+    at async DevServer.pipeImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:922:25)
+    at async NextNodeServer.handleCatchallRenderRequest (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/next-server.js:272:17)
+    at async DevServer.handleRequestImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:818:17)
+    at async /Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/dev/next-dev-server.js:339:20
+    at async Span.traceAsyncFn (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/trace/trace.js:154:20)
+    at async DevServer.handleRequest (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/dev/next-dev-server.js:336:24)
+    at async invokeRender (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/lib/router-server.js:179:21)
+    at async handleRequest (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/lib/router-server.js:359:24)
+    at async requestHandlerImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/lib/router-server.js:383:13)
+    at async Server.requestListener (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/lib/start-server.js:141:13) {
+  code: 'ERR_STREAM_WRITE_AFTER_END'
+}
+ ⨯ uncaughtException: Error [ERR_STREAM_WRITE_AFTER_END]: write after end
+    at _write (node:internal/streams/writable:489:11)
+    at Writable.write (node:internal/streams/writable:510:10)
+    at eval (webpack-internal:///(rsc)/./src/app/api/pwerm/playground/route.ts:110:33)
+    at new Promise (<anonymous>)
+    at POST (webpack-internal:///(rsc)/./src/app/api/pwerm/playground/route.ts:50:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async /Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/compiled/next-server/app-route.runtime.dev.js:6:57228
+    at async eT.execute (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/compiled/next-server/app-route.runtime.dev.js:6:46851)
+    at async eT.handle (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/compiled/next-server/app-route.runtime.dev.js:6:58760)
+    at async doRender (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1366:42)
+    at async cacheEntry.responseCache.get.routeKind (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1588:28)
+    at async DevServer.renderToResponseWithComponentsImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1496:28)
+    at async DevServer.renderPageComponent (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1924:24)
+    at async DevServer.renderToResponseImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:1962:32)
+    at async DevServer.pipeImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:922:25)
+    at async NextNodeServer.handleCatchallRenderRequest (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/next-server.js:272:17)
+    at async DevServer.handleRequestImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/base-server.js:818:17)
+    at async /Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/dev/next-dev-server.js:339:20
+    at async Span.traceAsyncFn (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/trace/trace.js:154:20)
+    at async DevServer.handleRequest (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/dev/next-dev-server.js:336:24)
+    at async invokeRender (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/lib/router-server.js:179:21)
+    at async handleRequest (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/lib/router-server.js:359:24)
+    at async requestHandlerImpl (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/lib/router-server.js:383:13)
+    at async Server.requestListener (/Users/admin/Documents/Document Processor/vc-platform-new/node_modules/next/dist/server/lib/start-server.js:141:13) {
+  code: 'ERR_STREAM_WRITE_AFTER_END'
+}
+Extracted JSON length: 294126
+ POST /api/pwerm/playground 200 in 100506ms

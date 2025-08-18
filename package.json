@@ -3,24 +3,48 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3001",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.60.0",
+    "@mendable/firecrawl-js": "^1.29.3",
+    "@modelcontextprotocol/sdk": "^1.17.3",
+    "@radix-ui/react-label": "^2.1.7",
+    "@radix-ui/react-scroll-area": "^1.2.10",
+    "@supabase/supabase-js": "^2.55.0",
+    "@tensorflow/tfjs": "^4.22.0",
+    "@types/d3": "^7.4.3",
+    "@types/d3-sankey": "^0.12.4",
+    "@xenova/transformers": "^2.17.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "critters": "^0.0.23",
+    "d3": "^7.9.0",
+    "d3-sankey": "^0.12.3",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^0.539.0",
+    "next": "14.2.30",
+    "pyodide": "^0.28.1",
     "react": "^18",
     "react-dom": "^18",
-    "next": "14.2.30"
+    "react-markdown": "^10.1.0",
+    "recharts": "^3.1.2",
+    "swagger-ui-react": "^5.27.1",
+    "tailwind-merge": "^3.3.1",
+    "wolfram-alpha-api": "^0.2.1"
   },
   "devDependencies": {
-    "typescript": "^5",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "eslint": "^8",
+    "eslint-config-next": "14.2.30",
+    "node-fetch": "^3.3.2",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
-    "eslint": "^8",
-    "eslint-config-next": "14.2.30"
+    "typescript": "^5"
   }
 }
