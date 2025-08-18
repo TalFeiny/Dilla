@@ -1,36 +1,205 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
-/node_modules
-/.pnp
+# Dependencies
+node_modules/
+.pnp
 .pnp.js
 .yarn/install-state.gz
 
-# testing
-/coverage
+# Testing
+coverage/
+.nyc_output/
+.pytest_cache/
+htmlcov/
+.tox/
 
-# next.js
-/.next/
-/out/
+# Next.js
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
 
-# production
-/build
+# Production
+dist/
 
-# misc
+# Misc
 .DS_Store
 *.pem
+Thumbs.db
 
-# debug
+# Debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.pnpm-debug.log*
 
-# local env files
+# Environment Variables
+.env
 .env*.local
+.env.development
+.env.production
+.env.test
 
-# vercel
+# Vercel
 .vercel
 
-# typescript
+# TypeScript
 *.tsbuildinfo
-next-env.d.ts
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.coverage
+*.egg-info/
+*.egg
+*.whl
+
+# FastAPI specific
+instance/
+.webassets-cache
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Supabase
+**/supabase/.branches
+**/supabase/.temp
+.supabase/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+alembic/versions/*.pyc
+
+# Cache
+.cache/
+.parcel-cache/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# celery
+celerybeat-schedule
+celerybeat.pid
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Frontend specific paths
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+frontend/.cache/
+frontend/build/
+frontend/dist/
+
+# Backend specific paths
+backend/__pycache__/
+backend/.pytest_cache/
+backend/htmlcov/
+backend/.coverage
+backend/*.egg-info/
+backend/venv/
+backend/.venv/
+backend/instance/
+backend/dist/
+backend/build/
+
+# SSL certificates
+*.key
+*.crt
+*.cer
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# AI/ML model files
+*.h5
+*.pkl
+*.model
+*.ckpt
+
+# Large data files
+*.csv
+*.json
+!package.json
+!tsconfig.json
+!next.config.mjs
+!config.toml
+data/
+datasets/
+
+# Secrets
+secrets/
+credentials/
+*.secret
+
+# Public uploads
+uploads/
+public/uploads/
+
+# Build artifacts
+*.map
+*.tgz
+
+# Redis dump
+dump.rdb
+
+# Documentation build
+docs/_build/
+docs/.doctrees/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Monitoring
+grafana/data/
+prometheus/data/

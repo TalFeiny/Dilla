@@ -1,0 +1,248 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+*.whl
+dist/
+build/
+develop-eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.manifest
+*.spec
+
+# Virtual Environments
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+.env/
+.conda/
+.virtualenv/
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+nosetests.xml
+test.db
+test.sqlite
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# FastAPI specific
+instance/
+.webassets-cache
+
+# Environment Variables
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+*.sublime-project
+*.sublime-workspace
+.spyderproject
+.spyproject
+.ropeproject
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Alembic
+alembic/versions/*.pyc
+alembic.ini.local
+
+# Logs
+logs/
+*.log
+pip-log.txt
+pip-delete-this-directory.txt
+
+# OS Files
+.DS_Store
+Thumbs.db
+*.bak
+*.swp
+*~
+
+# Documentation
+docs/_build/
+docs/.doctrees/
+site/
+
+# Package managers
+pip-wheel-metadata/
+poetry.lock
+Pipfile.lock
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+celerybeat-schedule.db
+
+# Secrets
+secrets/
+credentials/
+*.pem
+*.key
+*.crt
+*.cer
+*.secret
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+.cache/
+
+# Profiling
+*.prof
+*.lprof
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+.hypothesis/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff (if using Django alongside FastAPI)
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+media/
+
+# Flask stuff (if using Flask alongside FastAPI)
+instance/
+.webassets-cache
+
+# Scrapy stuff
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# pyenv
+.python-version
+
+# SageMath parsed files
+*.sage.py
+
+# mkdocs documentation
+/site
+
+# Ruff
+.ruff_cache/
+
+# PDM
+.pdm.toml
+.pdm-python
+
+# PEP 582
+__pypackages__/
+
+# Poetry
+dist/
+
+# Uploaded files
+uploads/
+media/
+static/collected/
+
+# Redis
+dump.rdb
+
+# Backup files
+*.backup
+*.old
+
+# Model files
+*.h5
+*.pkl
+*.model
+*.ckpt
+models/*.bin
+models/*.pth
+
+# Data files (but keep structure)
+data/*.csv
+data/*.json
+data/*.parquet
+!data/.gitkeep
+
+# Docker
+.dockerignore
+
+# UV package manager
+.uv/
+uv.lock
