@@ -131,7 +131,7 @@ export default function CompanyPwermPage() {
     if (companyId) {
       fetchData();
     }
-  }, [companyId]);
+  }, Array.from(panyId));
 
   const runPwermAnalysis = async () => {
     setIsRunning(true);
@@ -161,7 +161,7 @@ export default function CompanyPwermPage() {
         console.log('PWERM API Response:', result);
         
         // Extract the complete PWERM results including AI insights
-        const pwermData = result.results || {};
+        const pwermData: any = result.results || {};
         console.log('PWERM Data Structure:', pwermData);
         console.log('Market Research Available:', !!pwermData.market_research);
         console.log('Summary Available:', !!pwermData.summary);

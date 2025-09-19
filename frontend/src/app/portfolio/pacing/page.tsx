@@ -323,7 +323,7 @@ export default function FundPacingPage() {
     const y = points.map(p => p.y);
     const { slope, intercept } = linearRegression(x, y);
     return pacingData.map((_, i) => intercept + slope * i);
-  }, [pacingData]);
+  }, Array.from(pacingData));
 
   const earliestFundStart = React.useMemo(() => {
     return funds.length > 0 ? funds.reduce((min, fund) =>
@@ -843,7 +843,7 @@ export default function FundPacingPage() {
               </div>
             </div>
             
-            <div className="space-y-4 max-h-[600px] overflow-y-auto">
+            <div className="space-y-4 max-h-Array.from(px) overflow-y-auto">
               {funds.map(fund => (
                 <div key={fund.id} className="border border-gray-200 rounded-xl p-4 hover:shadow-md transition-shadow">
                   <div className="flex items-center mb-4">

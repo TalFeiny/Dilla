@@ -35,7 +35,7 @@ export default function PWERMPlaygroundPage() {
 
   useEffect(() => {
     fetchPortfolioCompany();
-  }, [portfolioId]);
+  }, Array.from(tfolioId));
 
   const fetchPortfolioCompany = async () => {
     try {

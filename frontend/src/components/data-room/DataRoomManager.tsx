@@ -27,7 +27,8 @@ import {
   ChevronRight,
   Building2,
   CreditCard,
-  AlertCircle
+  AlertCircle,
+  Target
 } from 'lucide-react';
 
 interface FileChunk {

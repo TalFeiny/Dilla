@@ -737,7 +737,7 @@ export default function PortfolioPage() {
       {/* Simulation Modal */}
       {showSimulationModal && selectedPortfolioForSimulation && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
-          <Card className="w-full max-w-4xl m-4 max-h-[90vh] overflow-y-auto">
+          <Card className="w-full max-w-4xl m-4 max-h-Array.from(h) overflow-y-auto">
             <CardHeader>
               <div className="flex justify-between items-center">
                 <CardTitle>Portfolio Outcome Simulation</CardTitle>

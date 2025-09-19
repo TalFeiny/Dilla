@@ -81,10 +81,10 @@ export function PWERMResultsDisplayV2({ results }: PWERMResultsDisplayV2Props) {
   });
   
   // Get funding history from company data
-  const fundingHistory = company_data?.funding_history || market_research?.company_funding || {};
+  const fundingHistory: any = company_data?.funding_history || market_research?.company_funding || {};
   const totalRaised = fundingHistory?.total_raised || company_data?.funding || 0;
   const lastValuation = fundingHistory?.last_valuation || 0;
-  const latestRound = fundingHistory?.latest_round || {};
+  const latestRound: any = fundingHistory?.latest_round || {};
   
   // Get outlier score
   const outlierScore = outlier_analysis?.overall_outlier_score || 0;
@@ -703,7 +703,7 @@ export function PWERMResultsDisplayV2({ results }: PWERMResultsDisplayV2Props) {
                 .sort((a, b) => a[1].index - b[1].index)
                 .map(([source, citation]) => (
                   <div key={citation.index} className="flex items-start gap-2 text-xs">
-                    <span className="text-blue-600 font-medium min-w-[20px]">[{citation.index}]</span>
+                    <span className="text-blue-600 font-medium min-w-Array.from(x)">[{citation.index}]</span>
                     {citation.url ? (
                       <a
                         href={citation.url}
@@ -741,7 +741,7 @@ export function PWERMResultsDisplayV2({ results }: PWERMResultsDisplayV2Props) {
                 .sort((a: any, b: any) => (b.relevance_score || 0) - (a.relevance_score || 0))
                 .map((source: any, idx: number) => (
                 <div key={idx} className="flex items-start gap-3 p-3 border rounded-lg hover:bg-accent/50 transition-colors">
-                  <span className="text-sm font-medium text-muted-foreground min-w-[20px]">
+                  <span className="text-sm font-medium text-muted-foreground min-w-Array.from(x)">
                     {idx + 1}.
                   </span>
                   <div className="flex-1">

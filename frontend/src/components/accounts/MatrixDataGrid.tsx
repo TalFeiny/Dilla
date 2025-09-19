@@ -250,7 +250,7 @@ export default function MatrixDataGrid() {
     },
     runWhatIf: (changes: Array<{ rowId: string; columnId: string; value: any }>) => {
       // Simulate changes without applying them
-      const tempRows = [...rows];
+      const tempRows = Array.from(rows);
       changes.forEach(change => {
         const row = tempRows.find(r => r.id === change.rowId);
         if (row?.cells[change.columnId]) {
@@ -344,7 +344,7 @@ export default function MatrixDataGrid() {
 
       {/* Main Grid */}
       <div className="border border-gray-200 rounded-lg overflow-hidden bg-white">
-        <div className="overflow-auto max-h-[600px]" ref={gridRef}>
+        <div className="overflow-auto max-h-96" ref={gridRef}>
           <table className="w-full">
             <thead className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200">
               <tr>

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Spreadsheet Agent</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        button { padding: 10px 20px; background: #3b82f6; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 5px; }
+        button:hover { background: #2563eb; }
+        #output { margin-top: 20px; padding: 10px; background: #f3f4f6; border-radius: 5px; min-height: 200px; }
+        .command { margin: 5px 0; padding: 5px; background: white; border-left: 3px solid #3b82f6; }
+    </style>
+</head>
+<body>
+    <h1>Test Spreadsheet Agent</h1>
+    
+    <button onclick="testGridAPI()">Test Grid API</button>
+    <button onclick="testAgentFlow()">Test Agent Flow</button>
+    <button onclick="clearOutput()">Clear</button>
+    
+    <div id="output"></div>
+    
+    <script>
+        const output = document.getElementById('output');
+        
+        function log(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = 'command';
+            div.style.borderColor = type === 'error' ? '#ef4444' : type === 'success' ? '#10b981' : '#3b82f6';
+            div.textContent = message;
+            output.appendChild(div);
+        }
+        
+        function clearOutput() {
+            output.innerHTML = '';
+        }
+        
+        async function testGridAPI() {
+            log('Testing Grid API...');
+            
+            // Navigate to spreadsheet page
+            window.open('http://localhost:3001/management-accounts', '_blank');
+            
+            log('Open the console in the new tab and run these commands:', 'info');
+            log('window.grid.write("A1", "Company Name", {style: {bold: true}})');
+            log('window.grid.write("B1", "Revenue", {style: {bold: true}})');
+            log('window.grid.write("A2", "Stripe", {href: "https://stripe.com", source: "Company Website"})');
+            log('window.grid.write("B2", 450000000, {href: "https://techcrunch.com", source: "TechCrunch 2024"})');
+            log('window.grid.formula("C2", "=B2*1.45")');
+            log('window.grid.format("B2", "currency")');
+            log('window.grid.createChart("bar", {range: "A1:B5", title: "Revenue Analysis"})');
+        }
+        
+        async function testAgentFlow() {
+            log('Testing Agent Flow...');
+            
+            try {
+                // Test the spreadsheet-stream endpoint
+                const response = await fetch('http://localhost:3001/api/agent/spreadsheet-stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        prompt: 'Analyze @Stripe financial metrics with revenue, growth, and valuation. Create a comprehensive analysis with charts.'
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.slice(6);
+                            if (data === '[DONE]') {
+                                log('✅ Stream complete!', 'success');
+                                break;
+                            }
+                            
+                            try {
+                                const parsed = JSON.parse(data);
+                                if (parsed.type === 'commands') {
+                                    parsed.commands.forEach(cmd => {
+                                        log(`Command: ${cmd}`, 'success');
+                                    });
+                                } else if (parsed.type === 'progress') {
+                                    log(`Progress: ${parsed.message}`, 'info');
+                                } else if (parsed.type === 'error') {
+                                    log(`Error: ${parsed.message}`, 'error');
+                                }
+                            } catch (e) {
+                                // Skip non-JSON lines
+                            }
+                        }
+                    }
+                }
+                
+            } catch (error) {
+                log(`Error: ${error.message}`, 'error');
+            }
+        }
+    </script>
+</body>
+</html>

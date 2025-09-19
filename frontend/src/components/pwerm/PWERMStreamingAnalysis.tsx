@@ -86,7 +86,7 @@ export default function PWERMStreamingAnalysis({
                 
                 // Add to progress steps
                 setProgressSteps(prev => {
-                  const newSteps = [...prev];
+                  const newSteps = Array.from(prev);
                   const existingIndex = newSteps.findIndex(s => s.message === update.message);
                   
                   if (existingIndex === -1) {

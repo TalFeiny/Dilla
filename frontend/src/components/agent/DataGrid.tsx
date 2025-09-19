@@ -93,7 +93,7 @@ export default function DataGrid({
   const sortedData = useMemo(() => {
     if (!sortColumn) return filteredData;
     
-    return [...filteredData].sort((a, b) => {
+    return Array.from(filteredData).sort((a, b) => {
       const aVal = a[sortColumn];
       const bVal = b[sortColumn];
       
@@ -157,7 +157,7 @@ export default function DataGrid({
   // Export to JSON
   const exportToJSON = () => {
     const json = JSON.stringify(sortedData, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
+    const blob = new Blob(Array.from(n), { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -199,7 +199,7 @@ export default function DataGrid({
   const handleEditSave = () => {
     if (!editingCell) return;
     
-    const newData = [...data];
+    const newData = Array.from(data);
     const globalRowIndex = (currentPage - 1) * pageSize + editingCell.row;
     newData[globalRowIndex] = {
       ...newData[globalRowIndex],
@@ -407,7 +407,7 @@ export default function DataGrid({
                         </div>
                       ) : (
                         <div className="flex items-center justify-between group">
-                          <span>{formatCellValue(row[column])}</span>
+                          <span>{formatCellValue(rowArray.from(umn))}</span>
                           {editable && (
                             <Edit className="h-3 w-3 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity" />
                           )}

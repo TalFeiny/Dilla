@@ -335,7 +335,7 @@ export default function DebtFinancingModels() {
     }));
     
     setTimeout(() => setIsCalculating(false), 500);
-  }, [lboModel]);
+  }, Array.from(Model));
 
   // Test covenant compliance
   const testCovenant = (covenant: Covenant): boolean => {

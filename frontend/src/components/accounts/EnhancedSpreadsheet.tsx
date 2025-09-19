@@ -2,11 +2,12 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { cn } from '@/lib/utils';
+import SpreadsheetChart from './SpreadsheetChart';
 import {
   Table2,
   Calculator,
   Copy,
-  Paste,
+  ClipboardPaste as Paste,
   Undo,
   Redo,
   Download,
@@ -21,6 +22,7 @@ import {
   X,
   Check,
   AlertCircle,
+  Trash2,
   Info,
   TrendingUp,
   TrendingDown,
@@ -111,6 +113,8 @@ interface Cell {
   style?: CellStyle;
   locked?: boolean;
   comment?: string;
+  link?: string;  // For hyperlinks
+  sourceUrl?: string;  // For citation URLs
   validation?: {
     type: 'list' | 'range' | 'custom';
     values?: any[];
@@ -150,6 +154,20 @@ interface UndoRedoState {
 }
 
 export default function EnhancedSpreadsheet() {
+  // Helper to detect cell type
+  const detectCellType = (value: any): Cell['type'] => {
+    if (typeof value === 'number') return 'number';
+    if (typeof value === 'boolean') return 'boolean';
+    if (typeof value === 'string') {
+      if (value.startsWith('=')) return 'formula';
+      if (value.startsWith('http')) return 'link';
+      if (value.match(/^\d{4}-\d{2}-\d{2}/)) return 'date';
+      if (value.match(/^\$[\d,]+\.?\d*/)) return 'currency';
+      if (value.match(/^\d+\.?\d*%$/)) return 'percentage';
+    }
+    return 'text';
+  };
+
   const [data, setData] = useState<SpreadsheetData>({
     cells: {},
     columns: 26,
@@ -187,8 +205,17 @@ export default function EnhancedSpreadsheet() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showChartPanel, setShowChartPanel] = useState(false);
   const [selectedChart, setSelectedChart] = useState<'bar' | 'line' | 'pie' | null>(null);
+  const [chartData, setChartData] = useState<any[]>([]);
+  const [chartConfig, setChartConfig] = useState<any>({});
   const gridRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dataRef = useRef(data);
+  
+  // Keep dataRef in sync with data
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
 
   // Formula evaluation engine
   const evaluateFormula = useCallback((formula: string, cellRef: string): any => {
@@ -388,17 +415,6 @@ export default function EnhancedSpreadsheet() {
       return newErrors;
     });
   }, [data, evaluateFormula]);
-
-  // Detect cell type
-  const detectCellType = (value: any): Cell['type'] => {
-    if (typeof value === 'number') return 'number';
-    if (typeof value === 'boolean') return 'boolean';
-    if (value?.toString().startsWith('http')) return 'link';
-    if (value?.toString().match(/^\d{4}-\d{2}-\d{2}/)) return 'date';
-    if (value?.toString().startsWith('$')) return 'currency';
-    if (value?.toString().endsWith('%')) return 'percentage';
-    return 'text';
-  };
 
   // Copy cells
   const copyCells = useCallback(() => {
@@ -634,6 +650,25 @@ export default function EnhancedSpreadsheet() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isEditing, activeCell, selectedCells, copyCells, pasteCells, undo, redo, updateCell, data.cells]);
 
+  // Apply style to selected cells
+  const applyCellStyle = (style: CellStyle) => {
+    selectedCells.forEach(cellRef => {
+      setData(prev => ({
+        ...prev,
+        cells: {
+          ...prev.cells,
+          [cellRef]: {
+            ...prev.cells[cellRef],
+            style: {
+              ...prev.cells[cellRef]?.style,
+              ...style
+            }
+          }
+        }
+      }));
+    });
+  };
+
   // Navigate cells with arrow keys
   const navigateCell = (key: string) => {
     const [col, row] = activeCell.match(/([A-Z]+)(\d+)/)!.slice(1);
@@ -714,61 +749,245 @@ export default function EnhancedSpreadsheet() {
     reader.readAsText(file);
   };
 
-  // Initialize with sample data
+  // Initialize with empty spreadsheet - no dummy data
   useEffect(() => {
-    const sampleData: Record<string, Cell> = {
-      'A1': { value: 'Product', type: 'text', style: { fontWeight: 'bold', backgroundColor: '#f3f4f6' } },
-      'B1': { value: 'Q1 Sales', type: 'text', style: { fontWeight: 'bold', backgroundColor: '#f3f4f6' } },
-      'C1': { value: 'Q2 Sales', type: 'text', style: { fontWeight: 'bold', backgroundColor: '#f3f4f6' } },
-      'D1': { value: 'Q3 Sales', type: 'text', style: { fontWeight: 'bold', backgroundColor: '#f3f4f6' } },
-      'E1': { value: 'Q4 Sales', type: 'text', style: { fontWeight: 'bold', backgroundColor: '#f3f4f6' } },
-      'F1': { value: 'Total', type: 'text', style: { fontWeight: 'bold', backgroundColor: '#f3f4f6' } },
-      'G1': { value: 'Average', type: 'text', style: { fontWeight: 'bold', backgroundColor: '#f3f4f6' } },
-      'H1': { value: 'Growth %', type: 'text', style: { fontWeight: 'bold', backgroundColor: '#f3f4f6' } },
-      
-      'A2': { value: 'Product A', type: 'text' },
-      'B2': { value: 125000, type: 'currency' },
-      'C2': { value: 135000, type: 'currency' },
-      'D2': { value: 142000, type: 'currency' },
-      'E2': { value: 158000, type: 'currency' },
-      'F2': { value: 0, formula: '=SUM(B2:E2)', type: 'formula' },
-      'G2': { value: 0, formula: '=AVERAGE(B2:E2)', type: 'formula' },
-      'H2': { value: 0, formula: '=(E2-B2)/B2', type: 'percentage' },
-      
-      'A3': { value: 'Product B', type: 'text' },
-      'B3': { value: 95000, type: 'currency' },
-      'C3': { value: 102000, type: 'currency' },
-      'D3': { value: 108000, type: 'currency' },
-      'E3': { value: 115000, type: 'currency' },
-      'F3': { value: 0, formula: '=SUM(B3:E3)', type: 'formula' },
-      'G3': { value: 0, formula: '=AVERAGE(B3:E3)', type: 'formula' },
-      'H3': { value: 0, formula: '=(E3-B3)/B3', type: 'percentage' },
-    };
-    
-    // Add conditional formatting
-    const formats: ConditionalFormat[] = [
-      {
-        id: 'cf1',
-        range: 'B2:E3',
-        condition: 'greater',
-        value: 100000,
-        style: { backgroundColor: '#dcfce7', color: '#166534' }
-      },
-      {
-        id: 'cf2',
-        range: 'H2:H3',
-        condition: 'greater',
-        value: 0.2,
-        style: { backgroundColor: '#fef3c7', color: '#92400e', fontWeight: 'bold' }
-      }
-    ];
-    
+    // Start with empty cells
     setData(prev => ({
       ...prev,
-      cells: sampleData,
-      conditionalFormats: formats
+      cells: {},
+      conditionalFormats: []
     }));
   }, []);
+
+  // Set up the grid API for the agent to use
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      console.log('🎯 Setting up grid API for agent');
+      (window as any).grid = {
+        // Write value to a cell with optional citation/source
+        write: (cellRef: string, value: any, options?: { href?: string; source?: string; sourceUrl?: string }) => {
+          console.log(`Grid API: Writing to ${cellRef}:`, value, options);
+          setData(prev => ({
+            ...prev,
+            cells: {
+              ...prev.cells,
+              [cellRef]: {
+                value,
+                type: detectCellType(value),
+                ...(options?.href && { link: options.href }),
+                ...(options?.source && { comment: options.source }),
+                ...(options?.sourceUrl && { sourceUrl: options.sourceUrl })
+              }
+            }
+          }));
+        },
+        
+        // Set formula for a cell
+        formula: (cellRef: string, formula: string) => {
+          console.log(`Grid API: Setting formula for ${cellRef}:`, formula);
+          setData(prev => ({
+            ...prev,
+            cells: {
+              ...prev.cells,
+              [cellRef]: {
+                value: 0,
+                formula,
+                type: 'formula'
+              }
+            }
+          }));
+        },
+        
+        // Apply style to a cell
+        style: (cellRef: string, style: any) => {
+          console.log(`Grid API: Styling ${cellRef}:`, style);
+          setData(prev => ({
+            ...prev,
+            cells: {
+              ...prev.cells,
+              [cellRef]: {
+                ...prev.cells[cellRef],
+                style
+              }
+            }
+          }));
+        },
+        
+        // Clear cells
+        clear: (startCell: string, endCell: string) => {
+          const [startCol, startRow] = startCell.match(/([A-Z]+)(\d+)/)!.slice(1);
+          const [endCol, endRow] = endCell.match(/([A-Z]+)(\d+)/)!.slice(1);
+          const startColNum = letterToColumn(startCol);
+          const endColNum = letterToColumn(endCol);
+          const startRowNum = parseInt(startRow);
+          const endRowNum = parseInt(endRow);
+          
+          setData(prev => {
+            const newCells = { ...prev.cells };
+            for (let row = startRowNum; row <= endRowNum; row++) {
+              for (let col = startColNum; col <= endColNum; col++) {
+                const cellRef = `${columnToLetter(col)}${row}`;
+                delete newCells[cellRef];
+              }
+            }
+            return { ...prev, cells: newCells };
+          });
+        },
+        
+        // Get cell value
+        getValue: (cellRef: string) => {
+          return dataRef.current.cells[cellRef]?.value;
+        },
+        
+        // Get current state
+        getState: () => {
+          return { cells: dataRef.current.cells };
+        },
+        
+        // Set state
+        setState: (state: any) => {
+          if (state?.cells) {
+            setData(prev => ({ ...prev, cells: state.cells }));
+          }
+        },
+        
+        // Set column width
+        setColumnWidth: (col: number, width: number) => {
+          setData(prev => ({
+            ...prev,
+            columnWidths: {
+              ...prev.columnWidths,
+              [col]: width
+            }
+          }));
+        },
+        
+        // Set row height
+        setRowHeight: (row: number, height: number) => {
+          setData(prev => ({
+            ...prev,
+            rowHeights: {
+              ...prev.rowHeights,
+              [row]: height
+            }
+          }));
+        },
+        
+        // Format cell (currency, percentage, number, etc.)
+        format: (cellRef: string, format: string) => {
+          setData(prev => ({
+            ...prev,
+            cells: {
+              ...prev.cells,
+              [cellRef]: {
+                ...prev.cells[cellRef],
+                type: format as any
+              }
+            }
+          }));
+        },
+        
+        // Create a link in a cell
+        link: (cellRef: string, text: string, url: string) => {
+          setData(prev => ({
+            ...prev,
+            cells: {
+              ...prev.cells,
+              [cellRef]: {
+                value: text,
+                type: 'link',
+                link: url
+              }
+            }
+          }));
+        },
+        
+        // Write range of values
+        writeRange: (startCell: string, endCell: string, values: any[][]) => {
+          const [startCol, startRow] = startCell.match(/([A-Z]+)(\d+)/)!.slice(1);
+          const [endCol, endRow] = endCell.match(/([A-Z]+)(\d+)/)!.slice(1);
+          const startColNum = letterToColumn(startCol);
+          const startRowNum = parseInt(startRow);
+          
+          setData(prev => {
+            const newCells = { ...prev.cells };
+            for (let i = 0; i < values.length; i++) {
+              for (let j = 0; j < values[i].length; j++) {
+                const cellRef = `${columnToLetter(startColNum + j)}${startRowNum + i}`;
+                newCells[cellRef] = {
+                  value: values[i][j],
+                  type: detectCellType(values[i][j])
+                };
+              }
+            }
+            return { ...prev, cells: newCells };
+          });
+        },
+        
+        // Create chart
+        createChart: (type: string, options: any) => {
+          console.log('Chart requested:', type, options);
+          // Store chart data for rendering
+          const chartData = {
+            type,
+            ...options,
+            timestamp: Date.now()
+          };
+          
+          // Store in a charts array (you'll need to add this to state)
+          if (typeof window !== 'undefined') {
+            (window as any).lastChart = chartData;
+          }
+          
+          // Trigger chart panel if needed
+          if (type === 'waterfall' || type === 'sankey' || type === 'heatmap') {
+            console.log(`Advanced chart ${type} requested with data:`, options);
+          }
+        },
+        
+        // Create financial chart
+        createFinancialChart: (type: string, data: any) => {
+          console.log('Financial chart requested:', type, data);
+          const chartData = {
+            type: `financial-${type}`,
+            data,
+            timestamp: Date.now()
+          };
+          
+          if (typeof window !== 'undefined') {
+            (window as any).lastFinancialChart = chartData;
+          }
+        },
+        
+        // Create advanced chart
+        createAdvancedChart: (type: string, range: string) => {
+          console.log('Advanced chart requested:', type, range);
+          const chartData = {
+            type: `advanced-${type}`,
+            range,
+            timestamp: Date.now()
+          };
+          
+          if (typeof window !== 'undefined') {
+            (window as any).lastAdvancedChart = chartData;
+          }
+        },
+        
+        // Add chart (legacy)
+        chart: (config: any) => {
+          console.log('Chart requested:', config);
+          // TODO: Implement chart rendering
+        }
+      };
+    }
+    
+    // Cleanup
+    return () => {
+      if (typeof window !== 'undefined') {
+        delete (window as any).grid;
+      }
+    };
+  }, []); // Only create once on mount
 
   return (
     <div className="h-full flex flex-col bg-white">
@@ -814,36 +1033,105 @@ export default function EnhancedSpreadsheet() {
             <button onClick={pasteCells} className="p-1.5 hover:bg-gray-100 rounded" title="Paste">
               <Paste className="w-4 h-4" />
             </button>
+            <div className="w-px h-6 bg-gray-300 mx-1" />
+            <button 
+              onClick={() => {
+                if (confirm('Clear all data?')) {
+                  setData({
+                    cells: {},
+                    columns: 26,
+                    rows: 100,
+                    frozenRows: 1,
+                    frozenColumns: 1,
+                    hiddenRows: new Set(),
+                    hiddenColumns: new Set(),
+                    rowHeights: {},
+                    columnWidths: {},
+                    mergedCells: [],
+                    conditionalFormats: [],
+                    namedRanges: {},
+                    filters: {},
+                    sorting: []
+                  });
+                  setChartData([]);
+                  setChartConfig({});
+                  setSelectedCells(new Set());
+                  setActiveCell('A1');
+                }
+              }}
+              className="p-1.5 hover:bg-red-50 rounded text-red-600" 
+              title="Clear All"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
           </div>
 
           {/* Format operations */}
           <div className="flex items-center gap-1 px-2 border-r border-gray-200">
-            <button className="p-1.5 hover:bg-gray-100 rounded" title="Bold">
+            <button 
+              onClick={() => applyCellStyle({ fontWeight: 'bold' })}
+              className="p-1.5 hover:bg-gray-100 rounded" 
+              title="Bold"
+            >
               <Bold className="w-4 h-4" />
             </button>
-            <button className="p-1.5 hover:bg-gray-100 rounded" title="Italic">
+            <button 
+              onClick={() => applyCellStyle({ fontStyle: 'italic' })}
+              className="p-1.5 hover:bg-gray-100 rounded" 
+              title="Italic"
+            >
               <Italic className="w-4 h-4" />
             </button>
-            <button className="p-1.5 hover:bg-gray-100 rounded" title="Underline">
+            <button 
+              onClick={() => applyCellStyle({ textDecoration: 'underline' })}
+              className="p-1.5 hover:bg-gray-100 rounded" 
+              title="Underline"
+            >
               <Underline className="w-4 h-4" />
             </button>
-            <button className="p-1.5 hover:bg-gray-100 rounded" title="Text Color">
+            <button 
+              onClick={() => {
+                const color = prompt('Enter text color (e.g., #000000 or red):');
+                if (color) applyCellStyle({ color });
+              }}
+              className="p-1.5 hover:bg-gray-100 rounded" 
+              title="Text Color"
+            >
               <Palette className="w-4 h-4" />
             </button>
-            <button className="p-1.5 hover:bg-gray-100 rounded" title="Background Color">
+            <button 
+              onClick={() => {
+                const color = prompt('Enter background color (e.g., #fef3c7 or yellow):');
+                if (color) applyCellStyle({ backgroundColor: color });
+              }}
+              className="p-1.5 hover:bg-gray-100 rounded" 
+              title="Background Color"
+            >
               <div className="w-4 h-4 border border-gray-400 rounded" style={{ backgroundColor: '#fef3c7' }} />
             </button>
           </div>
 
           {/* Alignment */}
           <div className="flex items-center gap-1 px-2 border-r border-gray-200">
-            <button className="p-1.5 hover:bg-gray-100 rounded" title="Align Left">
+            <button 
+              onClick={() => applyCellStyle({ textAlign: 'left' })}
+              className="p-1.5 hover:bg-gray-100 rounded" 
+              title="Align Left"
+            >
               <AlignLeft className="w-4 h-4" />
             </button>
-            <button className="p-1.5 hover:bg-gray-100 rounded" title="Align Center">
+            <button 
+              onClick={() => applyCellStyle({ textAlign: 'center' })}
+              className="p-1.5 hover:bg-gray-100 rounded" 
+              title="Align Center"
+            >
               <AlignCenter className="w-4 h-4" />
             </button>
-            <button className="p-1.5 hover:bg-gray-100 rounded" title="Align Right">
+            <button 
+              onClick={() => applyCellStyle({ textAlign: 'right' })}
+              className="p-1.5 hover:bg-gray-100 rounded" 
+              title="Align Right"
+            >
               <AlignRight className="w-4 h-4" />
             </button>
           </div>
@@ -919,7 +1207,7 @@ export default function EnhancedSpreadsheet() {
       {/* Formula Bar */}
       {showFormulaBar && (
         <div className="border-b border-gray-200 p-2 flex items-center gap-2">
-          <div className="px-3 py-1 bg-gray-100 rounded text-sm font-mono min-w-[60px] text-center">
+          <div className="px-3 py-1 bg-gray-100 rounded text-sm font-mono min-w-20 text-center">
             {activeCell}
           </div>
           <Calculator className="w-4 h-4 text-gray-400" />
@@ -966,11 +1254,11 @@ export default function EnhancedSpreadsheet() {
             {showHeaders && (
               <thead className="sticky top-0 z-20">
                 <tr>
-                  <th className="sticky left-0 z-30 w-12 h-8 bg-gray-100 border border-gray-300 text-xs"></th>
+                  <th className="sticky left-0 z-30 w-12 h-8 bg-gray-100 border border-gray-300 text-xs" style={{ minWidth: '48px', maxWidth: '48px' }}></th>
                   {Array.from({ length: data.columns }).map((_, i) => (
                     <th 
                       key={i} 
-                      className="h-8 bg-gray-100 border border-gray-300 text-xs font-medium min-w-[80px]"
+                      className="h-8 bg-gray-100 border border-gray-300 text-xs font-medium min-w-20"
                       style={{ width: data.columnWidths?.[i] || 80 }}
                     >
                       {columnToLetter(i)}
@@ -987,7 +1275,7 @@ export default function EnhancedSpreadsheet() {
                 return (
                   <tr key={row}>
                     {showHeaders && (
-                      <th className="sticky left-0 z-10 w-12 bg-gray-100 border border-gray-300 text-xs font-medium">
+                      <th className="sticky left-0 z-10 bg-gray-100 border border-gray-300 text-xs font-medium" style={{ minWidth: '48px', maxWidth: '48px', width: '48px' }}>
                         {row}
                       </th>
                     )}
@@ -1070,7 +1358,27 @@ export default function EnhancedSpreadsheet() {
                               cellStyle?.textAlign === 'center' && "justify-center",
                               cellStyle?.textAlign === 'right' && "justify-end"
                             )}>
-                              {cell.type === 'link' ? (
+                              {/* If cell has sourceUrl (citation), make it clickable */}
+                              {cell.sourceUrl || cell.link ? (
+                                <a 
+                                  href={cell.sourceUrl || cell.link} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer" 
+                                  className="text-blue-600 hover:underline cursor-pointer"
+                                  title={cell.sourceUrl ? `Source: ${cell.sourceUrl}` : ''}
+                                >
+                                  {cell.type === 'currency' ? (
+                                    <span>{typeof cell.value === 'number' ? `$${cell.value.toLocaleString()}` : cell.value}</span>
+                                  ) : cell.type === 'percentage' ? (
+                                    <span>{typeof cell.value === 'number' ? `${(cell.value * 100).toFixed(1)}%` : cell.value}</span>
+                                  ) : cell.formula ? (
+                                    <span>{evaluateFormula(cell.formula, cellRef)}</span>
+                                  ) : (
+                                    <span>{cell.value}</span>
+                                  )}
+                                  {cell.sourceUrl && <Link2 className="w-3 h-3 inline ml-1" />}
+                                </a>
+                              ) : cell.type === 'link' ? (
                                 <a href={cell.value} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
                                   <Link2 className="w-3 h-3 inline mr-1" />
                                   {cell.value}
@@ -1101,7 +1409,7 @@ export default function EnhancedSpreadsheet() {
 
         {/* Chart Panel */}
         {showChartPanel && (
-          <div className="w-80 border-l border-gray-200 p-4 bg-gray-50">
+          <div className="w-80 border-l border-gray-200 p-4 bg-gray-50 overflow-y-auto">
             <h3 className="text-sm font-medium mb-3">Insert Chart</h3>
             <div className="grid grid-cols-3 gap-2 mb-4">
               <button
@@ -1136,6 +1444,20 @@ export default function EnhancedSpreadsheet() {
               </button>
             </div>
             
+            {/* Show chart if we have data */}
+            {chartData.length > 0 && chartConfig.type && (
+              <div className="mb-4">
+                <SpreadsheetChart
+                  data={chartData}
+                  type={chartConfig.type}
+                  xKey={chartConfig.xKey}
+                  yKeys={chartConfig.yKeys}
+                  title={chartConfig.title}
+                  height={250}
+                />
+              </div>
+            )}
+            
             {selectedChart && (
               <div>
                 <div className="mb-3">
@@ -1144,9 +1466,25 @@ export default function EnhancedSpreadsheet() {
                     type="text"
                     placeholder="e.g., A1:D10"
                     className="w-full mt-1 px-2 py-1 text-sm border border-gray-200 rounded"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const range = (e.target as HTMLInputElement).value;
+                        if (range && (window as any).grid) {
+                          (window as any).grid.createChart(selectedChart, { range, title: 'Chart' });
+                        }
+                      }
+                    }}
                   />
                 </div>
-                <button className="w-full px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">
+                <button 
+                  className="w-full px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
+                  onClick={() => {
+                    const input = document.querySelector('.chart-range-input') as HTMLInputElement;
+                    if (input?.value && (window as any).grid) {
+                      (window as any).grid.createChart(selectedChart, { range: input.value, title: 'Chart' });
+                    }
+                  }}
+                >
                   Insert Chart
                 </button>
               </div>

@@ -41,12 +41,12 @@ export const LiquidationWaterfall: React.FC<LiquidationWaterfallProps> = ({
       
       // Add each investor's returns
       Object.entries(waterfallData.investor_returns).forEach(([investor, returns]) => {
-        dataPoint[investor] = returns[index] / 1e6;
+        dataPointArray.from(estor) = returnsArray.from(ex) / 1e6;
       });
       
       return dataPoint;
     });
-  }, [waterfallData]);
+  }, Array.from(erfallData));
 
   // Get all investor names for the chart
   const investors = Object.keys(waterfallData.investor_returns);
@@ -98,7 +98,7 @@ export const LiquidationWaterfall: React.FC<LiquidationWaterfallProps> = ({
           </p>
         </CardHeader>
         <CardContent>
-          <div className="h-[400px]">
+          <div className="h-Array.from(px)">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
@@ -160,7 +160,7 @@ export const LiquidationWaterfall: React.FC<LiquidationWaterfallProps> = ({
           </p>
         </CardHeader>
         <CardContent>
-          <div className="h-[400px]">
+          <div className="h-Array.from(px)">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />

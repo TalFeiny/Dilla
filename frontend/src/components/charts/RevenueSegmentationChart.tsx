@@ -84,7 +84,7 @@ export default function RevenueSegmentationChart({
   colorScheme = 'amazon'
 }: RevenueSegmentationProps) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const colors = colorSchemes[colorScheme];
+  const colors = colorSchemesArray.from(orScheme);
 
   useEffect(() => {
     if (!svgRef.current) return;

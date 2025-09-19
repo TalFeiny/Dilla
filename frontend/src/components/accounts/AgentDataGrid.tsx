@@ -10,6 +10,9 @@ import dynamic from 'next/dynamic';
 // Dynamically import visualization components
 const RevenueSegmentationChart = dynamic(() => import('@/components/charts/RevenueSegmentationChart'), { ssr: false });
 const WaterfallChart = dynamic(() => import('@/components/charts/WaterfallChart'), { ssr: false });
+const FinancialChartStudio = dynamic(() => import('@/components/charts/FinancialChartStudio'), { ssr: false });
+const AdvancedChartBuilder = dynamic(() => import('@/components/charts/AdvancedChartBuilder'), { ssr: false });
+const TableauLevelCharts = dynamic(() => import('@/components/charts/TableauLevelCharts'), { ssr: false });
 import { 
   Bot, 
   Zap, 
@@ -30,7 +33,11 @@ import {
   Code2,
   Send,
   MessageSquare,
-  Loader2
+  Loader2,
+  BarChart3,
+  PieChart,
+  TrendingUp,
+  DollarSign
 } from 'lucide-react';
 
 // Grid is 26 columns (A-Z) x 100 rows
@@ -89,6 +96,8 @@ export default function AgentDataGrid() {
     data: any;
     title: string;
   }>({ type: null, data: null, title: '' });
+  const [showFinancialCharts, setShowFinancialCharts] = useState(false);
+  const [showAdvancedCharts, setShowAdvancedCharts] = useState(false);
 
   // Parse cell address (e.g., "A1" -> { col: 0, row: 0 })
   const parseCell = (cell: string) => {
@@ -205,6 +214,116 @@ export default function AgentDataGrid() {
 
   // Agent API
   const agentAPI = {
+    // Set column headers (first row)
+    setColumns: (columns: string[]) => {
+      columns.forEach((col, index) => {
+        const addr = cellAddress(index, 0);
+        setCells(prev => ({
+          ...prev,
+          [addr]: { 
+            value: col, 
+            type: 'text',
+            style: { bold: true, backgroundColor: '#f3f4f6' }
+          }
+        }));
+      });
+      return `Set ${columns.length} columns`;
+    },
+    
+    // Add a row of data
+    addRow: (values: any[]) => {
+      // Find the next empty row
+      const usedRows = Object.keys(cells).map(addr => parseCell(addr)?.row ?? 0);
+      const nextRow = usedRows.length > 0 ? Math.max(...usedRows) + 1 : 1;
+      
+      values.forEach((value, colIndex) => {
+        const addr = cellAddress(colIndex, nextRow);
+        const isFormula = typeof value === 'string' && value.startsWith('=');
+        setCells(prev => ({
+          ...prev,
+          [addr]: {
+            value: isFormula ? evaluateFormula(value) : value,
+            formula: isFormula ? value : undefined,
+            type: isFormula ? 'formula' : typeof value === 'number' ? 'number' : 'text'
+          }
+        }));
+      });
+      return `Added row at position ${nextRow + 1}`;
+    },
+    
+    // Apply style to a range
+    applyStyle: (range: string, style: any) => {
+      const [start, end] = range.includes(':') ? range.split(':') : [range, range];
+      const startCell = parseCell(start);
+      const endCell = parseCell(end || start);
+      
+      if (!startCell || !endCell) return 'Invalid range';
+      
+      for (let r = startCell.row; r <= endCell.row; r++) {
+        for (let c = startCell.col; c <= endCell.col; c++) {
+          const addr = cellAddress(c, r);
+          setCells(prev => ({
+            ...prev,
+            [addr]: {
+              ...prev[addr],
+              style: { ...prev[addr]?.style, ...style },
+              format: style.format || prev[addr]?.format
+            }
+          }));
+        }
+      }
+      return `Applied style to ${range}`;
+    },
+    
+    // Apply formula to a cell
+    applyFormula: (cell: string, formula: string) => {
+      updateCell(cell, formula, true);
+      return `Applied formula to ${cell}`;
+    },
+    
+    // Select a cell (set as active)
+    selectCell: (cell: string) => {
+      setSelectedCell(cell);
+      return `Selected ${cell}`;
+    },
+    
+    // Create a chart with advanced capabilities
+    createChart: (type: string, options: any) => {
+      console.log(`Creating ${type} chart with options:`, options);
+      
+      // Handle different chart types
+      if (type === 'sankey' || type === 'waterfall' || type === 'fund' || type === 'captable') {
+        setShowFinancialCharts(true);
+        return `Opening Financial Chart Studio for ${type} visualization`;
+      } else if (type === 'advanced' || type === 'pie' || type === 'line' || type === 'bar' || type === 'scatter') {
+        setShowAdvancedCharts(true);
+        return `Opening Advanced Chart Builder for ${type} visualization`;
+      }
+      
+      return `Chart type ${type} ready for creation`;
+    },
+    
+    // Create financial charts
+    createFinancialChart: (chartType: 'waterfall' | 'captable' | 'lpgp' | 'scenarios', data?: any) => {
+      setShowFinancialCharts(true);
+      // You could also pre-populate data here if provided
+      return `Opening Financial Chart Studio for ${chartType}`;
+    },
+    
+    // Create advanced visualization
+    createAdvancedChart: (chartType: string, range?: string) => {
+      if (range) {
+        setSelectedRange(range);
+      }
+      setShowAdvancedCharts(true);
+      return `Creating ${chartType} chart from range ${range || selectedRange || 'selected cells'}`;
+    },
+    
+    // Auto-resize columns (no-op for fixed grid)
+    autoResize: () => {
+      return 'Auto-resize complete';
+    },
+    
     // Write value to cell (with optional link support)
     write: async (cell: string, value: any, options?: { href?: string; source?: string; sourceUrl?: string }) => {
       const prevCells = { ...cells };
@@ -336,7 +455,7 @@ export default function AgentDataGrid() {
       } else {
         setCells(prev => {
           const newCells = { ...prev };
-          delete newCells[startCell];
+          delete newCells[chartCell];
           return newCells;
         });
       }
@@ -774,6 +893,24 @@ export default function AgentDataGrid() {
           <div className="w-px h-6 bg-gray-300" />
           
           <button
+            onClick={() => setShowAdvancedCharts(true)}
+            className="px-3 py-1.5 text-sm font-medium bg-gradient-to-r from-blue-500 to-purple-500 text-white rounded hover:from-blue-600 hover:to-purple-600 transition-all shadow-sm"
+          >
+            <BarChart3 className="w-4 h-4 inline mr-1" />
+            Charts
+          </button>
+          
+          <button
+            onClick={() => setShowFinancialCharts(true)}
+            className="px-3 py-1.5 text-sm font-medium bg-gradient-to-r from-green-500 to-blue-500 text-white rounded hover:from-green-600 hover:to-blue-600 transition-all shadow-sm"
+          >
+            <DollarSign className="w-4 h-4 inline mr-1" />
+            Financial
+          </button>
+          
+          <div className="w-px h-6 bg-gray-300" />
+          
+          <button
             onClick={() => agentAPI.clear('A1', 'Z100')}
             className="px-3 py-1.5 text-sm font-medium bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
           >
@@ -792,7 +929,7 @@ export default function AgentDataGrid() {
 
       {/* Formula Bar */}
       <div className="flex items-center gap-2 p-2 border-b border-gray-200 bg-gray-50">
-        <span className="px-2 py-1 bg-white border border-gray-300 rounded text-sm font-mono min-w-[60px] text-center">
+        <span className="px-2 py-1 bg-white border border-gray-300 rounded text-sm font-mono min-w-20 text-center">
           {selectedCell}
         </span>
         <input
@@ -946,6 +1083,11 @@ export default function AgentDataGrid() {
           <div className="pl-4 text-gray-300">grid.read("A1") // Returns: {cells['A1']?.value || 'null'}</div>
           <div className="pl-4 text-gray-300">grid.readRange("A1", "C3") // Returns 2D array</div>
           
+          <div className="text-green-400"># Create charts (NEW!)</div>
+          <div className="pl-4 text-gray-300">grid.createChart("sankey", {`{range: "A1:C10"}`})</div>
+          <div className="pl-4 text-gray-300">grid.createFinancialChart("waterfall", {`{carry: 0.2, hurdle: 0.08}`})</div>
+          <div className="pl-4 text-gray-300">grid.createAdvancedChart("3dpie", "A1:B5")</div>
+          
           {agentHistory.length > 0 && (
             <>
               <div className="text-yellow-400 mt-2"># Recent Actions</div>
@@ -962,7 +1104,7 @@ export default function AgentDataGrid() {
       
       {/* Formula Help Panel */}
       {showFormulaHelp && FORMULA_DOCS && (
-        <div className="fixed right-4 top-20 w-96 max-h-[80vh] bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden z-50">
+        <div className="fixed right-4 top-20 w-96 max-h-96 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden z-50">
           <div className="p-4 border-b border-gray-200 bg-gray-50">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold text-gray-900">Available Formulas</h3>
@@ -1005,7 +1147,7 @@ export default function AgentDataGrid() {
       {/* Visualization Panel */}
       {visualization.type && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-2xl w-[90vw] h-[90vh] flex flex-col">
+          <div className="bg-white rounded-lg shadow-2xl w-full h-full flex flex-col">
             <div className="p-4 border-b border-gray-200 flex items-center justify-between">
               <h2 className="text-xl font-semibold text-gray-900">{visualization.title}</h2>
               <button
@@ -1037,6 +1179,35 @@ export default function AgentDataGrid() {
             </div>
           </div>
         </div>
+      )}
+      
+      {/* Advanced Chart Builder Modal */}
+      {showAdvancedCharts && (
+        <AdvancedChartBuilder
+          cells={cells}
+          selectedRange={selectedRange || selectedCell}
+          onClose={() => setShowAdvancedCharts(false)}
+          onInsert={(chartConfig) => {
+            console.log('Inserting chart:', chartConfig);
+            setShowAdvancedCharts(false);
+            // Here you would handle inserting the chart into the spreadsheet
+            // For now, we'll just log it
+          }}
+        />
+      )}
+      
+      {/* Financial Chart Studio Modal */}
+      {showFinancialCharts && (
+        <FinancialChartStudio
+          cells={cells}
+          onClose={() => setShowFinancialCharts(false)}
+          onInsert={(chartConfig) => {
+            console.log('Inserting financial chart:', chartConfig);
+            setShowFinancialCharts(false);
+            // Here you would handle inserting the chart into the spreadsheet
+            // For now, we'll just log it
+          }}
+        />
       )}
     </div>
   );

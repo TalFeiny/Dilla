@@ -1,14 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import DynamicDataMatrix from '@/components/accounts/DynamicDataMatrix';
-import AgentDataGrid from '@/components/accounts/AgentDataGrid';
+import EnhancedSpreadsheet from '@/components/accounts/EnhancedSpreadsheet';
 import AgentRunner from '@/components/accounts/AgentRunner';
-import { cn } from '@/lib/utils';
 
 export default function ManagementAccountsPage() {
-  const [activeView, setActiveView] = useState<'matrix' | 'spreadsheet'>('spreadsheet');
-
+  const [showAgent, setShowAgent] = useState(true);
+  
   return (
     <div className="h-screen flex flex-col">
       {/* Header */}
@@ -17,59 +15,35 @@ export default function ManagementAccountsPage() {
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Management Accounts</h1>
             <p className="text-gray-600 mt-2">
-              {activeView === 'matrix' 
-                ? 'Real-time data with clickable citations from database and web sources'
-                : 'Agent-powered spreadsheet with full write, edit, and delete capabilities'}
+              Excel-like spreadsheet with full formula support and agent capabilities
             </p>
           </div>
-          
-          {/* View Switcher */}
-          <div className="flex gap-2">
-            <button
-              onClick={() => setActiveView('spreadsheet')}
-              className={cn(
-                "px-4 py-2 rounded-lg font-medium transition-colors",
-                activeView === 'spreadsheet'
-                  ? "bg-gray-900 text-white"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              )}
-            >
-              Spreadsheet View
-            </button>
-            <button
-              onClick={() => setActiveView('matrix')}
-              className={cn(
-                "px-4 py-2 rounded-lg font-medium transition-colors",
-                activeView === 'matrix'
-                  ? "bg-gray-900 text-white"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              )}
-            >
-              Data Matrix View
-            </button>
-          </div>
+          <button
+            onClick={() => setShowAgent(!showAgent)}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            {showAgent ? 'Hide Agent' : 'Show Agent'}
+          </button>
         </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">
-        {activeView === 'matrix' ? (
-          <div className="p-6">
-            <DynamicDataMatrix />
+        <div className="relative flex h-full">
+          {/* Main Spreadsheet */}
+          <div className={showAgent ? "flex-1 min-w-0 overflow-auto" : "w-full overflow-auto"}>
+            <EnhancedSpreadsheet />
           </div>
-        ) : (
-          <div className="flex h-full">
-            {/* Main Grid */}
-            <div className="flex-1">
-              <AgentDataGrid />
+          
+          {/* Agent Runner Panel - Fixed width, no overlap */}
+          {showAgent && (
+            <div className="w-[400px] flex-shrink-0 border-l border-gray-200 bg-gray-50 h-full overflow-hidden">
+              <div className="h-full overflow-y-auto p-3">
+                <AgentRunner />
+              </div>
             </div>
-            
-            {/* Agent Runner Panel */}
-            <div className="w-[500px] border-l border-gray-200 p-4 bg-gray-50">
-              <AgentRunner />
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

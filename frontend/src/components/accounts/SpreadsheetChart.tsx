@@ -103,7 +103,7 @@ export default function SpreadsheetChart({
       // For pie charts, convert to name/value format
       if (yKeys.length > 0) {
         return data.map(item => ({
-          name: item[xKey],
+          name: item[key],
           value: item[yKeys[0]]
         }));
       }

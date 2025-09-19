@@ -1,7 +1,9 @@
-# Architecture Specification: Next.js + FastAPI + Supabase
+# Dilla AI - Realistic Architecture Assessment
+## Version 2.0 - August 2025
 
-## Overview
-This document outlines the architectural restructuring of the Dilla AI repository, transitioning to a clean separation between frontend (Next.js), backend (FastAPI), and database layer (Supabase).
+## Executive Summary
+
+Dilla AI is a VC platform that has undergone partial migration from Next.js API routes to FastAPI backend. While core functionality exists, the system currently operates at **60% integration** due to significant code duplication from non-modular design patterns. Agents were built by copying reference code rather than creating reusable modules, resulting in 40% code duplication across the codebase.
 
 ## Architecture Components
 

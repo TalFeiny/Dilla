@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.test-red {
+  background-color: red;
+  color: white;
+  padding: 1rem;
+}

@@ -33,6 +33,14 @@ import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import AgentFeedback from './AgentFeedback';
+import dynamic from 'next/dynamic';
+import { MCPBackendConnector } from '@/lib/mcp-backend-connector';
+
+// Dynamically import TableauLevelCharts to avoid SSR issues
+const TableauLevelCharts = dynamic(() => import('@/components/charts/TableauLevelCharts'), { 
+  ssr: false,
+  loading: () => <div className="h-64 bg-gray-50 animate-pulse rounded-lg" />
+});
 
 interface Message {
   id: string;
@@ -42,6 +50,12 @@ interface Message {
   toolsUsed?: string[];
   confidence?: number;
   processing?: boolean;
+  charts?: Array<{
+    type: string;
+    title?: string;
+    data: any;
+  }>;
+  analysisData?: any;
 }
 
 interface AgentChatProps {
@@ -158,72 +172,43 @@ export default function AgentChat({ sessionId = 'default', onMessageSent }: Agen
     }]);
 
     try {
-      // First, route the prompt to the appropriate specialized agent
-      const routingResponse = await fetch('/api/agent/route-prompt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: input,
-          context: {
-            sessionId,
-            messageHistory: messages.slice(-5), // Last 5 messages for context
-          }
-        }),
-      });
-
-      let endpoint = '/api/agent/reasoning-agent'; // Default fallback
+      // Use MCP Backend Connector for unified orchestration
+      const mcpConnector = MCPBackendConnector.getInstance();
       
-      if (routingResponse.ok) {
-        const routingData = await routingResponse.json();
-        const handler = routingData.routing?.handler;
-        
-        // Map handler types to actual endpoints
-        const endpointMap: Record<string, string> = {
-          'research': '/api/agent/reasoning-agent',
-          'company_analysis': '/api/agent/company-cim',
-          'market_intelligence': '/api/agent/market-intelligence',
-          'valuation': '/api/agent/ipev-valuation',
-          'data_extraction': '/api/agent/enhanced-data-pipeline',
-          'cross_deal': '/api/agent/cross-deal-analysis',
-          'financial_analysis': '/api/agent/multi-analysis',
-          'web_search': '/api/agent/scrape-and-analyze',
-          'calculations': '/api/agent/python-exec',
-          'default': '/api/agent/reasoning-agent'
-        };
-        
-        endpoint = endpointMap[handler] || '/api/agent/reasoning-agent';
-        console.log(`🎯 Routed to ${handler} → ${endpoint}`);
-      }
-      
-      // Now call the selected endpoint
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: input,
-          company_name: input.match(/@(\w+)/)?.[1], // Extract company if @mentioned
-          history: messages.map(m => ({
-            role: m.role,
-            content: m.content,
-            timestamp: m.timestamp,
-          })),
+      const data = await mcpConnector.processPrompt(
+        input,
+        {
           sessionId,
-        }),
-      });
+          messageHistory: messages.slice(-5), // Last 5 messages for context
+          company: input.match(/@(\w+)/)?.[1], // Extract company if @mentioned
+        },
+        {
+          outputFormat: 'analysis',
+          stream: false,
+          useCache: false
+        }
+      );
 
-      const data = await response.json();
-
-      if (data.error) {
-        throw new Error(data.error);
+      if (!data.success && data.error) {
+        throw new Error(data.error || 'Failed to process request');
       }
+
+      // Extract content from MCP response
+      const content = data.analysis || data.synthesis || '';
+      const toolsUsed = data.tool_calls?.map((tc: any) => tc.tool) || data.metadata?.tools_used || [];
+      
+      // Charts come from the results array if they were generated
+      const charts = data.results?.find((r: any) => r.skill === 'chart-generator')?.data?.charts || [];
 
       // Update the placeholder message with the actual response
       setMessages(prev => prev.map(msg => 
         msg.id === placeholderId 
           ? {
               ...msg,
-              content: data.response,
-              toolsUsed: data.toolsUsed,
+              content,
+              toolsUsed,
+              charts,
+              analysisData: data.results || data,
               processing: false,
             }
           : msg
@@ -339,7 +324,8 @@ export default function AgentChat({ sessionId = 'default', onMessageSent }: Agen
                         <div className="prose prose-sm dark:prose-invert max-w-none">
                           <ReactMarkdown
                             components={{
-                              code({ node, inline, className, children, ...props }) {
+                              code({ node, className, children, ...props }: any) {
+                                const inline = node?.position === undefined;
                                 const match = /language-(\w+)/.exec(className || '');
                                 return !inline && match ? (
                                   <SyntaxHighlighter
@@ -361,6 +347,23 @@ export default function AgentChat({ sessionId = 'default', onMessageSent }: Agen
                             {message.content}
                           </ReactMarkdown>
                         </div>
+                        
+                        {/* Render charts if available */}
+                        {message.charts && message.charts.length > 0 && (
+                          <div className="mt-4 space-y-4">
+                            {message.charts.map((chart, idx) => (
+                              <div key={idx} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                                <TableauLevelCharts
+                                  type={chart.type as any}
+                                  data={chart.data}
+                                  title={chart.title}
+                                  interactive={true}
+                                  height={400}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         
                         {/* Tools Used */}
                         {message.toolsUsed && message.toolsUsed.length > 0 && (
@@ -449,7 +452,7 @@ export default function AgentChat({ sessionId = 'default', onMessageSent }: Agen
           <Button
             onClick={handleSend}
             disabled={!input.trim() || isLoading}
-            className="h-[60px] px-6 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800"
+            className="h-Array.from(x) px-6 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800"
           >
             {isLoading ? (
               <Loader2 className="h-5 w-5 animate-spin" />

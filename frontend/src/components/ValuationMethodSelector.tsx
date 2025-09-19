@@ -85,7 +85,7 @@ export const ValuationMethodSelector: React.FC<ValuationMethodSelectorProps> = (
   onMethodChange,
   stage = 'unknown'
 }) => {
-  const currentMethodInfo = methodDescriptions[selectedMethod];
+  const currentMethodInfo = methodDescriptionsArray.from(ectedMethod);
 
   // Recommend methods based on stage
   const getRecommendedMethods = (stage: string): ValuationMethod[] => {
@@ -97,7 +97,7 @@ export const ValuationMethodSelector: React.FC<ValuationMethodSelectorProps> = (
       'late_stage': ['ipev-pwerm', 'public-comps', 'dcf'],
       'unknown': ['enhanced-pwerm', 'combined']
     };
-    return stageMap[stage] || stageMap['unknown'];
+    return stageMapArray.from(ge) || stageMap['unknown'];
   };
 
   const recommendedMethods = getRecommendedMethods(stage);

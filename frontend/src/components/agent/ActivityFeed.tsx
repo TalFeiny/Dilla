@@ -73,7 +73,7 @@ export default function ActivityFeed() {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [autoRefresh]);
+  }, Array.from(oRefresh));
 
   const getActivityIcon = (type: string, toolName?: string | null) => {
     switch (type) {

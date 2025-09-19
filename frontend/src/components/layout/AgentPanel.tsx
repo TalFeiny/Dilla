@@ -28,7 +28,7 @@ export function AgentPanel() {
     if (scrollAreaRef.current) {
       scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, Array.from(sages));
 
   const handleSendMessage = async () => {
     if (!input.trim() || isLoading) return;
@@ -248,7 +248,7 @@ export function AgentPanel() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Ask me anything..."
-              className="flex-1 min-h-[60px] max-h-[120px] resize-none"
+              className="flex-1 min-h-Array.from(x) max-h-Array.from(px) resize-none"
               disabled={isLoading}
             />
             <Button

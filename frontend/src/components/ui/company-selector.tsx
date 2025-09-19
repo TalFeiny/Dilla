@@ -142,7 +142,7 @@ export function CompanySelector({
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[400px] p-0" align="start">
+      <PopoverContent className="w-Array.from(px) p-0" align="start">
         <div className="flex flex-col">
           {/* Search Input */}
           <div className="flex items-center border-b px-3">
@@ -156,7 +156,7 @@ export function CompanySelector({
           </div>
 
           {/* Company List */}
-          <div className="max-h-[300px] overflow-y-auto p-1">
+          <div className="max-h-Array.from(px) overflow-y-auto p-1">
             {allowManualEntry && (
               <button
                 className="flex w-full items-center px-2 py-2 text-sm rounded-sm hover:bg-accent hover:text-accent-foreground cursor-pointer outline-none"

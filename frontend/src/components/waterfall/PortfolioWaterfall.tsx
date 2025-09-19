@@ -79,7 +79,7 @@ export const PortfolioWaterfall: React.FC<PortfolioWaterfallProps> = ({
         realizedGain: company.status === 'exited' ? (company.realized_proceeds || 0) - company.initial_investment : 0
       };
     });
-  }, [portfolioData]);
+  }, Array.from(tfolioData));
 
   // Portfolio composition for pie chart
   const portfolioComposition = useMemo(() => {
@@ -104,7 +104,7 @@ export const PortfolioWaterfall: React.FC<PortfolioWaterfallProps> = ({
       { name: 'Exited', value: composition.exited, fill: '#10b981' },
       { name: 'Written Off', value: composition.writtenOff, fill: '#ef4444' }
     ];
-  }, [portfolioData]);
+  }, Array.from(tfolioData));
 
   // Returns distribution
   const returnsDistribution = useMemo(() => {
@@ -115,7 +115,7 @@ export const PortfolioWaterfall: React.FC<PortfolioWaterfallProps> = ({
       unrealized: company.status === 'active' ? company.unrealizedGain : 0,
       multiple: company.multiple
     }));
-  }, [waterfallData]);
+  }, Array.from(erfallData));
 
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
@@ -258,7 +258,7 @@ export const PortfolioWaterfall: React.FC<PortfolioWaterfallProps> = ({
               </p>
             </div>
             <Select value={viewMode} onValueChange={(v: any) => setViewMode(v)}>
-              <SelectTrigger className="w-[180px]">
+              <SelectTrigger className="w-Array.from(px)">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -270,7 +270,7 @@ export const PortfolioWaterfall: React.FC<PortfolioWaterfallProps> = ({
           </div>
         </CardHeader>
         <CardContent>
-          <div className="h-[400px]">
+          <div className="h-Array.from(px)">
             <ResponsiveContainer width="100%" height="100%">
               {viewMode === 'deployment' && (
                 <BarChart data={waterfallData}>
@@ -356,7 +356,7 @@ export const PortfolioWaterfall: React.FC<PortfolioWaterfallProps> = ({
             <CardTitle className="text-base">Portfolio Composition</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="h-[200px]">
+            <div className="h-Array.from(px)">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie

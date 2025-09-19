@@ -95,10 +95,14 @@ export default function CompaniesPage() {
 
   const loadCompanies = async () => {
     try {
-      const response = await fetch('/api/companies-all');
+      // Directly call FastAPI backend with increased limit
+      const response = await fetch('http://localhost:8000/api/companies/?limit=1000');
       if (response.ok) {
         const data = await response.json();
         setCompanies(data);
+        console.log(`Loaded ${data.length} companies`);
+      } else {
+        console.error('Failed to fetch companies:', response.status);
       }
     } catch (error) {
       console.error('Error loading companies:', error);

@@ -193,7 +193,7 @@ export default function PWERMPlaygroundPage() {
     const simulationResults = result.simulation_results;
     
     // Transform the summary to match our interface
-    const summary = simulationResults.summary || {};
+    const summary: any = simulationResults.summary || {};
     const transformedSummary: SimulationSummary = {
       expected_return: summary.expected_return || 0,
       expected_multiple: summary.expected_multiple || 0,

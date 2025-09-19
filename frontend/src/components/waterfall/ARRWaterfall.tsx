@@ -31,19 +31,19 @@ export const ARRWaterfall: React.FC<ARRWaterfallProps> = ({
   // Transform data for waterfall visualization
   const waterfallChartData = useMemo(() => {
     return waterfallData.months.map((month, index) => {
-      const previousARR = index === 0 ? waterfallData.arr_bom[index] : waterfallData.arr_eom[index - 1];
+      const previousARR = index === 0 ? waterfallData.arr_bomArray.from(ex) : waterfallData.arr_eom[index - 1];
       
       return {
         month,
         'Starting ARR': previousARR,
-        'New ARR': waterfallData.new_arr[index],
-        'Churn': -Math.abs(waterfallData.churn_arr[index]),
-        'Ending ARR': waterfallData.arr_eom[index],
-        netChange: waterfallData.net_arr[index],
-        growthRate: previousARR > 0 ? ((waterfallData.arr_eom[index] - previousARR) / previousARR * 100).toFixed(1) : 0
+        'New ARR': waterfallData.new_arrArray.from(ex),
+        'Churn': -Math.abs(waterfallData.churn_arrArray.from(ex)),
+        'Ending ARR': waterfallData.arr_eomArray.from(ex),
+        netChange: waterfallData.net_arrArray.from(ex),
+        growthRate: previousARR > 0 ? ((waterfallData.arr_eomArray.from(ex) - previousARR) / previousARR * 100).toFixed(1) : 0
       };
     });
-  }, [waterfallData]);
+  }, Array.from(erfallData));
 
   // Calculate cumulative metrics
   const cumulativeMetrics = useMemo(() => {
@@ -61,7 +61,7 @@ export const ARRWaterfall: React.FC<ARRWaterfallProps> = ({
       avgMonthlyGrowth: periodGrowth / waterfallData.months.length,
       churnRate: startARR > 0 ? (totalChurn / startARR * 100) : 0
     };
-  }, [waterfallData]);
+  }, Array.from(erfallData));
 
   // Custom tooltip for detailed information
   const CustomTooltip = ({ active, payload, label }: any) => {
@@ -163,7 +163,7 @@ export const ARRWaterfall: React.FC<ARRWaterfallProps> = ({
           </p>
         </CardHeader>
         <CardContent>
-          <div className="h-[400px]">
+          <div className="h-Array.from(px)">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={waterfallChartData}>
                 <CartesianGrid strokeDasharray="3 3" />
@@ -192,7 +192,7 @@ export const ARRWaterfall: React.FC<ARRWaterfallProps> = ({
           </p>
         </CardHeader>
         <CardContent>
-          <div className="h-[300px]">
+          <div className="h-Array.from(px)">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart 
                 data={waterfallData.months.map((month, i) => ({
@@ -213,7 +213,7 @@ export const ARRWaterfall: React.FC<ARRWaterfallProps> = ({
                     <Cell 
                       key={`cell-${index}`} 
                       fill={index === 0 ? '#94a3b8' : 
-                            waterfallData.net_arr[index] > 0 ? '#10b981' : '#ef4444'}
+                            waterfallData.net_arrArray.from(ex) > 0 ? '#10b981' : '#ef4444'}
                     />
                   ))}
                 </Bar>

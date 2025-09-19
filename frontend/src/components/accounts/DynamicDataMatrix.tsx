@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatPercentage, formatNumber } from '@/lib/format-utils';
 import { 
@@ -8,27 +8,17 @@ import {
   Zap, 
   Database,
   Download,
-  Upload,
   RefreshCw,
-  ChevronRight,
-  Hash,
-  Type,
-  Calendar,
   DollarSign,
   Percent,
   Link2,
-  Eye,
-  EyeOff,
   Sparkles,
-  GitBranch,
-  Calculator,
   ExternalLink,
   FileText,
   Globe,
   Search,
   Plus,
   X,
-  Settings,
   ChevronDown
 } from 'lucide-react';
 
@@ -45,11 +35,9 @@ interface CellData {
   id: string;
   value: any;
   displayValue?: string;
-  formula?: string;
-  type: 'number' | 'text' | 'formula' | 'currency' | 'percentage' | 'date' | 'link' | 'boolean' | 'json';
+  type: 'number' | 'text' | 'currency' | 'percentage' | 'date' | 'link' | 'boolean' | 'json';
   citations?: Citation[];
   confidence?: number;
-  dependencies?: string[];
   metadata?: Record<string, any>;
   history?: Array<{
     value: any;
@@ -62,9 +50,8 @@ interface CellData {
 interface GridColumn {
   id: string;
   name: string;
-  type: 'number' | 'text' | 'formula' | 'currency' | 'percentage' | 'date' | 'link' | 'boolean' | 'json' | 'dynamic';
+  type: 'number' | 'text' | 'currency' | 'percentage' | 'date' | 'link' | 'boolean' | 'json' | 'dynamic';
   width?: number;
-  formula?: string;
   editable?: boolean;
   sortable?: boolean;
   filterable?: boolean;
@@ -87,7 +74,7 @@ export default function DynamicDataMatrix() {
   const [rows, setRows] = useState<GridRow[]>([]);
   const [selectedCell, setSelectedCell] = useState<string | null>(null);
   const [showCitations, setShowCitations] = useState(true);
-  const [showFormulas, setShowFormulas] = useState(false);
+  // Removed formula support - this is a research tool, not Excel
   const [agentMode, setAgentMode] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
@@ -96,6 +83,7 @@ export default function DynamicDataMatrix() {
 
   // Load dynamic data based on user query
   const loadData = async (query: string) => {
+    console.log('Loading data for query:', query);
     setIsLoading(true);
     try {
       const response = await fetch('/api/agent/dynamic-data-v2', {
@@ -108,26 +96,42 @@ export default function DynamicDataMatrix() {
         })
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        
-        // Dynamically create columns based on data structure
-        if (data.columns) {
-          setColumns(data.columns);
-        }
-        
-        // Set rows with citations
-        if (data.rows) {
-          setRows(data.rows);
-        }
-        
-        // Update data sources
-        if (data.sources) {
-          setDataSources(data.sources);
-        }
+      console.log('Response status:', response.status);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const response_data = await response.json();
+      console.log('Received data:', response_data);
+      
+      // Handle unified-brain response format
+      const data = response_data.success && response_data.result ? response_data.result : response_data;
+      
+      // Dynamically create columns based on data structure
+      if (data.columns && data.columns.length > 0) {
+        console.log('Setting columns:', data.columns.length);
+        setColumns(data.columns);
+      } else {
+        console.error('No columns in response');
+      }
+      
+      // Set rows with citations
+      if (data.rows && data.rows.length > 0) {
+        console.log('Setting rows:', data.rows.length);
+        setRows(data.rows);
+      } else {
+        console.error('No rows in response');
+      }
+      
+      // Update data sources
+      if (data.sources && data.sources.length > 0) {
+        console.log('Setting sources:', data.sources.length);
+        setDataSources(data.sources);
       }
     } catch (error) {
       console.error('Failed to load data:', error);
+      alert(`Error loading data: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setIsLoading(false);
     }
@@ -378,105 +382,12 @@ export default function DynamicDataMatrix() {
     }
   }, [agentAPI]);
 
-  // Sample data for demonstration
+  // Load real data on component mount
   useEffect(() => {
-    // Initialize with sample data showing various data types with citations
-    setColumns([
-      { id: 'company', name: 'Company', type: 'text', width: 150 },
-      { id: 'revenue', name: 'Revenue (2025)', type: 'currency', width: 120 },
-      { id: 'growth', name: 'YoY Growth', type: 'percentage', width: 100 },
-      { id: 'funding', name: 'Total Funding', type: 'currency', width: 120 },
-      { id: 'valuation', name: 'Valuation', type: 'currency', width: 120 },
-      { id: 'website', name: 'Website', type: 'link', width: 150 },
-    ]);
-
-    setRows([
-      {
-        id: 'row1',
-        cells: {
-          company: { 
-            id: 'row1_company', 
-            value: 'OpenAI', 
-            type: 'text',
-            citations: [{
-              id: 'c1',
-              title: 'OpenAI Raises $6.6B in Latest Funding Round',
-              url: 'https://techcrunch.com/2024/10/02/openai-raises-6-6b/',
-              source: 'TechCrunch',
-              date: 'Oct 2, 2024',
-              excerpt: 'OpenAI has raised $6.6 billion in new funding at a $157 billion valuation'
-            }]
-          },
-          revenue: { 
-            id: 'row1_revenue', 
-            value: 3400000000, 
-            type: 'currency',
-            citations: [{
-              id: 'c2',
-              title: 'OpenAI Revenue Hits $3.4 Billion',
-              url: 'https://www.reuters.com/technology/openai-revenue/',
-              source: 'Reuters',
-              date: 'Aug 25, 2025'
-            }]
-          },
-          growth: { id: 'row1_growth', value: 1.85, type: 'percentage' },
-          funding: { id: 'row1_funding', value: 11300000000, type: 'currency' },
-          valuation: { id: 'row1_valuation', value: 157000000000, type: 'currency' },
-          website: { 
-            id: 'row1_website', 
-            value: 'https://openai.com', 
-            type: 'link',
-            metadata: { title: 'openai.com' }
-          }
-        }
-      },
-      {
-        id: 'row2',
-        cells: {
-          company: { 
-            id: 'row2_company', 
-            value: 'Anthropic', 
-            type: 'text',
-            citations: [{
-              id: 'c3',
-              title: 'Anthropic Secures $2B from Google',
-              url: 'https://www.bloomberg.com/anthropic-google-investment',
-              source: 'Bloomberg',
-              date: 'Aug 20, 2025'
-            }]
-          },
-          revenue: { 
-            id: 'row2_revenue', 
-            value: 850000000, 
-            type: 'currency',
-            citations: [{
-              id: 'c4',
-              title: 'Anthropic Projects $850M Revenue for 2025',
-              url: 'https://www.ft.com/anthropic-revenue-2025',
-              source: 'Financial Times',
-              date: 'Aug 22, 2025'
-            }]
-          },
-          growth: { id: 'row2_growth', value: 2.1, type: 'percentage' },
-          funding: { id: 'row2_funding', value: 7300000000, type: 'currency' },
-          valuation: { id: 'row2_valuation', value: 18000000000, type: 'currency' },
-          website: { 
-            id: 'row2_website', 
-            value: 'https://anthropic.com', 
-            type: 'link',
-            metadata: { title: 'anthropic.com' }
-          }
-        }
-      }
-    ]);
-
-    setDataSources([
-      { type: 'web', name: 'TechCrunch', lastUpdated: 'Aug 25, 2025', reliability: 0.95 },
-      { type: 'web', name: 'Reuters', lastUpdated: 'Aug 25, 2025', reliability: 0.98 },
-      { type: 'web', name: 'Bloomberg', lastUpdated: 'Aug 20, 2025', reliability: 0.97 },
-      { type: 'database', name: 'Company Database', lastUpdated: 'Aug 25, 2025', reliability: 1.0 }
-    ]);
-  }, []);
+    // Auto-load research data on mount - adapt columns to query
+    loadData('Compare top AI companies by market position, technology differentiation, and growth metrics');
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  
 
   return (
     <div className="space-y-4">
@@ -486,7 +397,7 @@ export default function DynamicDataMatrix() {
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             type="text"
-            placeholder="Ask for any data (e.g., 'Show me AI companies revenue and funding with sources')"
+            placeholder="Research anything (e.g., 'Compare cloud providers by performance and pricing' or 'Analyze fintech market trends in Europe')"
             className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900"
             onKeyDown={(e) => {
               if (e.key === 'Enter' && e.currentTarget.value) {
@@ -520,18 +431,6 @@ export default function DynamicDataMatrix() {
             Citations
           </button>
           
-          <button
-            onClick={() => setShowFormulas(!showFormulas)}
-            className={cn(
-              "px-3 py-1.5 text-sm font-medium rounded-md transition-colors",
-              showFormulas 
-                ? "bg-gray-900 text-white" 
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            )}
-          >
-            <Calculator className="w-4 h-4 inline mr-1" />
-            Formulas
-          </button>
           
           <button
             onClick={() => setAgentMode(!agentMode)}
@@ -578,7 +477,7 @@ export default function DynamicDataMatrix() {
 
       {/* Main Grid */}
       <div className="border border-gray-200 rounded-lg overflow-hidden bg-white">
-        <div className="overflow-auto max-h-[600px]" ref={gridRef}>
+        <div className="overflow-auto max-h-96" ref={gridRef}>
           <table className="w-full">
             <thead className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200">
               <tr>
@@ -593,7 +492,6 @@ export default function DynamicDataMatrix() {
                         {column.type === 'currency' && <DollarSign className="w-3 h-3" />}
                         {column.type === 'percentage' && <Percent className="w-3 h-3" />}
                         {column.type === 'link' && <Globe className="w-3 h-3" />}
-                        {column.type === 'formula' && <Calculator className="w-3 h-3" />}
                         {column.name}
                       </div>
                       <button
@@ -603,11 +501,6 @@ export default function DynamicDataMatrix() {
                         <X className="w-3 h-3 text-gray-400 hover:text-red-600" />
                       </button>
                     </div>
-                    {showFormulas && column.formula && (
-                      <div className="text-xs font-normal text-gray-500 mt-1">
-                        {column.formula}
-                      </div>
-                    )}
                   </th>
                 ))}
               </tr>
@@ -647,7 +540,7 @@ export default function DynamicDataMatrix() {
                                     key={i}
                                     className={cn(
                                       "w-1 h-3",
-                                      i <= Math.round(cell.confidence * 5)
+                                      i <= Math.round((cell.confidence || 0) * 5)
                                         ? "bg-green-500"
                                         : "bg-gray-200"
                                     )}
@@ -673,55 +566,37 @@ export default function DynamicDataMatrix() {
         </div>
       </div>
 
-      {/* Data Sources Panel */}
-      <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
-        <div className="flex items-center gap-2 mb-3">
-          <Database className="w-4 h-4 text-gray-600" />
-          <h3 className="text-sm font-medium text-gray-900">Data Sources</h3>
+      {/* Minimal Data Source Indicator */}
+      {dataSources.length > 0 && (
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <Globe className="w-3 h-3" />
+          <span>Live data from {dataSources.length} source{dataSources.length > 1 ? 's' : ''}</span>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {dataSources.map((source, idx) => (
-            <div key={idx} className="flex items-center gap-2 p-2 bg-white rounded border border-gray-200">
-              {source.type === 'web' && <Globe className="w-4 h-4 text-blue-500" />}
-              {source.type === 'database' && <Database className="w-4 h-4 text-green-500" />}
-              {source.type === 'api' && <Zap className="w-4 h-4 text-yellow-500" />}
-              {source.type === 'agent' && <Bot className="w-4 h-4 text-purple-500" />}
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium truncate">{source.name}</div>
-                <div className="text-xs text-gray-500">{source.lastUpdated}</div>
-              </div>
-              <div className="text-xs text-gray-600">
-                {Math.round(source.reliability * 100)}%
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      )}
 
       {/* Agent API Console */}
       {agentMode && (
         <div className="p-4 bg-gray-900 text-gray-100 rounded-lg font-mono text-xs">
           <div className="flex items-center gap-2 mb-3">
             <Bot className="w-4 h-4" />
-            <span className="font-bold">Data Matrix API</span>
+            <span className="font-bold">Research Matrix API</span>
             <Sparkles className="w-3 h-3 text-yellow-400 animate-pulse" />
           </div>
           <div className="space-y-2">
-            <div className="text-green-400"># Load any data with citations</div>
-            <div className="pl-4">dataMatrix.loadData("Show me top AI companies with revenue and funding")</div>
+            <div className="text-green-400"># Research any topic - columns adapt to data</div>
+            <div className="pl-4">dataMatrix.loadData("Compare AI infrastructure providers by performance metrics")</div>
+            <div className="pl-4">dataMatrix.loadData("Market analysis of European fintech companies")</div>
+            <div className="pl-4">dataMatrix.loadData("Technical comparison of LLM models with benchmarks")</div>
             
-            <div className="text-green-400"># Get cell value with citations</div>
-            <div className="pl-4">dataMatrix.getValue('row1', 'revenue')</div>
-            <div className="pl-8 text-gray-500">→ {`{ value: 3400000000, citations: [...] }`}</div>
+            <div className="text-green-400"># Get research data with citations</div>
+            <div className="pl-4">dataMatrix.getValue('row1', 'market_share')</div>
+            <div className="pl-8 text-gray-500">→ {`{ value: 0.34, displayValue: "34%", citations: [...], confidence: 85 }`}</div>
             
-            <div className="text-green-400"># Set value with source</div>
-            <div className="pl-4">dataMatrix.setValue('row1', 'revenue', 3500000000, citations)</div>
+            <div className="text-green-400"># Access all sources for verification</div>
+            <div className="pl-4">dataMatrix.getCitations('row1', 'competitive_advantage')</div>
             
-            <div className="text-green-400"># Get citations for a cell</div>
-            <div className="pl-4">dataMatrix.getCitations('row1', 'company')</div>
-            
-            <div className="text-green-400"># Add custom column</div>
-            <div className="pl-4">dataMatrix.addColumn()</div>
+            <div className="text-green-400"># Export research results</div>
+            <div className="pl-4">dataMatrix.exportData()</div>
           </div>
         </div>
       )}

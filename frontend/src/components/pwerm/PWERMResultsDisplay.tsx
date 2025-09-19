@@ -40,9 +40,9 @@ export function PWERMResultsDisplay({ results }: PWERMResultsDisplayProps) {
   });
   const exitComparables = market_research?.exit_comparables || [];
   const competitors = market_research?.direct_competitors || [];
-  const competitiveIntel = market_research?.competitive_intelligence || {};
-  const legalIssues = market_research?.legal_issues || {};
-  const ipoLikelihood = market_research?.ipo_likelihood || {};
+  const competitiveIntel: any = market_research?.competitive_intelligence || {};
+  const legalIssues: any = market_research?.legal_issues || {};
+  const ipoLikelihood: any = market_research?.ipo_likelihood || {};
   const potentialAcquirers = market_research?.potential_acquirers || [];
 
   // Group comparables by sector

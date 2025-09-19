@@ -37,7 +37,7 @@ export const LiquidationPreferenceWaterfall: React.FC<LiquidationPreferenceWater
   // Calculate total preference stack
   const preferenceStack = useMemo(() => 
     preferences.reduce((sum, pref) => sum + pref.amount, 0),
-    [preferences]
+    Array.from(ferences)
   );
 
   // Generate waterfall data points
@@ -74,7 +74,7 @@ export const LiquidationPreferenceWaterfall: React.FC<LiquidationPreferenceWater
     let commonProceeds = 0;
 
     // Sort preferences by seniority (typically reverse chronological)
-    const sortedPrefs = [...prefs].reverse();
+    const sortedPrefs = Array.from(prefs).reverse();
 
     // Phase 1: Pay liquidation preferences
     for (const pref of sortedPrefs) {
@@ -269,7 +269,7 @@ export const LiquidationPreferenceWaterfall: React.FC<LiquidationPreferenceWater
           </p>
         </CardHeader>
         <CardContent>
-          <div className="h-[400px]">
+          <div className="h-Array.from(px)">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={waterfallData}>
                 <CartesianGrid strokeDasharray="3 3" />
@@ -334,7 +334,7 @@ export const LiquidationPreferenceWaterfall: React.FC<LiquidationPreferenceWater
             <div>
               <Label>Select Exit Value: ${selectedExitValue}M</Label>
               <Slider
-                value={[selectedExitValue]}
+                value={Array.from(ectedExitValue)}
                 onValueChange={(v) => setSelectedExitValue(v[0])}
                 min={0}
                 max={maxExitValue}
@@ -403,7 +403,7 @@ export const LiquidationPreferenceWaterfall: React.FC<LiquidationPreferenceWater
                     At ${selectedExitValue}M exit:
                   </p>
                   <p className="font-semibold">
-                    ${(calculateDistribution(selectedExitValue, [pref], 0, totalShares).nonParticipating / 1e6).toFixed(2)}M
+                    ${(calculateDistribution(selectedExitValue, Array.from(f), 0, totalShares).nonParticipating / 1e6).toFixed(2)}M
                   </p>
                 </div>
               </div>

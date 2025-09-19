@@ -5,9 +5,7 @@ const nextConfig = {
   swcMinify: true, // Use SWC for faster minification
   
   // Experimental features for speed
-  experimental: {
-    optimizeCss: true,
-  },
+  // No experimental features
   
   // Module transpilation for faster builds
   transpilePackages: ['@supabase/ssr', '@supabase/supabase-js'],
@@ -15,6 +13,7 @@ const nextConfig = {
   // Disable type checking in build (run separately)
   typescript: {
     ignoreBuildErrors: true,
+    tsconfigPath: './tsconfig.json',
   },
   eslint: {
     ignoreDuringBuilds: true,
@@ -54,14 +53,23 @@ const nextConfig = {
         crypto: false,
       };
       
-      config.externals = [...(config.externals || []), 'onnxruntime-node'];
+      // Safely handle externals configuration
+      if (Array.isArray(config.externals)) {
+        config.externals.push('onnxruntime-node');
+      } else if (config.externals) {
+        config.externals = [config.externals, 'onnxruntime-node'];
+      } else {
+        config.externals = ['onnxruntime-node'];
+      }
     }
     
     // Handle binary files
-    config.module.rules.push({
-      test: /\.node$/,
-      use: 'node-loader',
-    });
+    if (config.module && config.module.rules) {
+      config.module.rules.push({
+        test: /\.node$/,
+        use: 'node-loader',
+      });
+    }
     
     return config;
   },

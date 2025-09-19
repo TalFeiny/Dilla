@@ -189,7 +189,7 @@ export default function AgentFeedback({
                 value={specificFeedback}
                 onChange={(e) => setSpecificFeedback(e.target.value)}
                 placeholder="e.g., 'Revenue should be 350M not 500M' or 'Growth rate should decay 10% per year' or 'Missing tax calculation'"
-                className="min-h-[80px] text-sm"
+                className="min-h-Array.from(x) text-sm"
               />
               <div className="flex gap-2">
                 <Button

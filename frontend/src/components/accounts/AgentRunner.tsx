@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Bot, Play, Loader2, Trash2, Copy, Check, Brain, TrendingUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import RLFeedbackPanel from './RLFeedbackPanel';
+// import RLFeedbackPanel from './RLFeedbackPanel';
 import { SpreadsheetRLSystem } from '@/lib/rl-system';
 
 export default function AgentRunner() {
@@ -21,6 +21,8 @@ export default function AgentRunner() {
   const [waitingForFeedback, setWaitingForFeedback] = useState(false);
   const [learningApplied, setLearningApplied] = useState(false);
   const [learningSummary, setLearningSummary] = useState<string>('');
+  const [progressMessage, setProgressMessage] = useState<string>('');
+  const [executionSteps, setExecutionSteps] = useState<string[]>([]);
   
   // Initialize RL system
   const rlSystemRef = useRef<SpreadsheetRLSystem | null>(null);
@@ -78,11 +80,17 @@ export default function AgentRunner() {
     console.log('UseRL:', useRL);
     
     setIsRunning(true);
+    setProgressMessage('🤔 Understanding your request...');
+    setExecutionSteps([]);
+    
     try {
       // Extract company name if mentioned
       const companyMatch = prompt.match(/(?:for|about)\s+(\w+)/i);
       const company = companyMatch?.[1] || currentCompany;
       setCurrentCompany(company);
+      
+      // Show what we're doing
+      setExecutionSteps(prev => [...prev, '📝 Parsing request...']);
       
       // Initialize RL system for this prompt if enabled
       if (useRL) {
@@ -121,8 +129,8 @@ export default function AgentRunner() {
         }
       }
       
-      // Choose endpoint - using direct endpoint for real data fetching with @mentions
-      const endpoint = '/api/agent/spreadsheet-direct';
+      // Use unified brain endpoint with spreadsheet format
+      const endpoint = '/api/agent/unified-brain';
       
       // Get current grid state to send as context
       let gridState = {};
@@ -130,26 +138,114 @@ export default function AgentRunner() {
         gridState = (window as any).grid.getState ? (window as any).grid.getState() : {};
       }
       
-      // Call the API to get commands from Claude
+      // Update progress
+      setProgressMessage('🔍 Researching data...');
+      setExecutionSteps(prev => [...prev, '🌐 Fetching real-time data...']);
+      
+      // Call the streaming API
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           prompt,
+          outputFormat: 'spreadsheet',  // Specify spreadsheet format
           company,
           previousCompany: currentCompany,
           trackLearning: useRL,
-          gridState  // Send current grid state for context
+          gridState,  // Send current grid state for context
+          stream: true,  // Enable streaming
+          // Request formulas and citations
+          includeFormulas: true,
+          includeCitations: true
         })
       });
 
       if (!response.ok) throw new Error('Failed to get agent response');
       
-      const data = await response.json();
-      console.log('API Response:', data);
+      // Handle streaming response
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let allCommands: string[] = [];
+      
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+              
+              try {
+                const parsed = JSON.parse(data);
+                
+                if (parsed.type === 'skill_chain') {
+                  // Show skill chain decomposition in the stream
+                  setExecutionSteps(prev => [...prev, `📋 Decomposed into ${parsed.total_count} skills:`]);
+                  parsed.skills?.forEach((skill: any, i: number) => {
+                    setExecutionSteps(prev => [...prev, `  ${i+1}. ${skill.name}: ${skill.purpose}`]);
+                  });
+                  // Also log to console
+                  console.log('📋 [Skill Chain] Decomposed into', parsed.total_count, 'skills:');
+                  parsed.skills?.forEach((skill: any, i: number) => {
+                    console.log(`  ${i+1}. ${skill.name}: ${skill.purpose} (Group ${skill.group})`);
+                  });
+                } else if (parsed.type === 'skill_start') {
+                  // Show skill start in the stream
+                  setExecutionSteps(prev => [...prev, `⏳ [${parsed.phase}] Starting: ${parsed.skill}`]);
+                  console.log(`⏳ [${parsed.phase}] Starting: ${parsed.skill} - ${parsed.purpose}`);
+                } else if (parsed.type === 'skill_complete') {
+                  // Show skill completion in the stream
+                  const timing = parsed.timing ? ` (${parsed.timing.toFixed(2)}s)` : '';
+                  setExecutionSteps(prev => [...prev, `✅ ${parsed.skill} complete${timing}`]);
+                  console.log(`✅ [Skill Complete] ${parsed.skill}${timing}`);
+                } else if (parsed.type === 'skill_error') {
+                  // Show skill error in the stream
+                  setExecutionSteps(prev => [...prev, `❌ ${parsed.skill} failed: ${parsed.error}`]);
+                  console.error(`❌ [Skill Error] ${parsed.skill}: ${parsed.error}`);
+                } else if (parsed.type === 'progress') {
+                  setProgressMessage(parsed.message);
+                } else if (parsed.type === 'commands') {
+                  // Accumulate commands
+                  allCommands.push(...parsed.commands);
+                  
+                  // Update progress
+                  if (parsed.progress) {
+                    setExecutionSteps(prev => [
+                      ...prev.slice(0, -1),
+                      `⚡ Processing... ${parsed.progress}%`
+                    ]);
+                  }
+                } else if (parsed.type === 'complete') {
+                  setProgressMessage(parsed.message);
+                  // Also log the skills that were used from metadata
+                  if (parsed.metadata?.skills_used) {
+                    console.log('📊 Skills used:', parsed.metadata.skills_used);
+                  }
+                } else if (parsed.type === 'error') {
+                  throw new Error(parsed.message);
+                }
+              } catch (e) {
+                console.error('Error parsing SSE data:', e);
+              }
+            }
+          }
+        }
+      }
+      
+      // Process the accumulated commands
+      const data = { commands: allCommands };
+      console.log('=== AGENT COMMAND PROCESSING ===');
+      console.log('Streaming complete, total commands:', allCommands.length);
+      console.log('All commands received:', allCommands);
       
       if (data.commands && Array.isArray(data.commands)) {
-        console.log('Received commands:', data.commands.length);
+        console.log('Processing', data.commands.length, 'commands');
+        console.log('window.grid available?', !!(window as any).grid);
         console.log('RL enabled:', useRL);
         console.log('Setting lastCommands to:', data.commands);
         
@@ -177,51 +273,115 @@ export default function AgentRunner() {
         //   }
         // }
         
-        // Execute each command with RL tracking
-        for (const command of data.commands) {
+        // Update progress for execution
+        setProgressMessage('⚡ Executing commands...');
+        let commandCount = 0;
+        
+        // PARALLEL PROCESSING: Group commands by type for batch execution
+        const writeCommands = data.commands.filter(cmd => cmd.includes('write('));
+        const formulaCommands = data.commands.filter(cmd => cmd.includes('formula('));
+        const styleCommands = data.commands.filter(cmd => cmd.includes('style('));
+        const chartCommands = data.commands.filter(cmd => cmd.includes('createChart('));
+        
+        setExecutionSteps(prev => [...prev, `📊 Processing ${data.commands.length} commands in parallel...`]);
+        
+        // Helper function to execute a single command
+        const executeCommand = async (command: string) => {
           try {
-            // Check if grid exists
             if (typeof window !== 'undefined' && (window as any).grid) {
-              if (useRL && rlSystemRef.current) {
-                // Execute with learning
-                const result = await rlSystemRef.current.executeWithLearning(
-                  command,
-                  (window as any).grid,
-                  prompt
-                );
-                
-                if (result.waitingForFeedback) {
-                  setWaitingForFeedback(true);
+              const grid = (window as any).grid;
+              
+              // Use Function constructor for safer execution
+              const executeFunc = new Function('grid', `
+                try {
+                  ${command};
+                  return { success: true };
+                } catch (e) {
+                  console.error('Command error:', e);
+                  return { success: false, error: e.toString() };
                 }
-              } else {
-                // Regular execution - properly execute with grid context
-                const grid = (window as any).grid;
-                if (grid) {
-                  // Create a function that has grid in scope
-                  const executeCommand = new Function('grid', command);
-                  executeCommand(grid);
-                } else {
-                  console.error('Grid object not found');
-                }
+              `);
+              
+              const result = executeFunc(grid);
+              if (!result.success) {
+                console.error(`Failed to execute: ${command}`, result.error);
               }
-            } else {
-              console.error('Grid API not available');
+              return result;
             }
+            return { success: false, error: 'Grid not available' };
           } catch (error) {
-            console.error('Failed to execute:', command, error);
+            console.error('Execution error:', error);
+            return { success: false, error: error };
           }
+        };
+        
+        // PARALLEL EXECUTION BY COMMAND TYPE
+        const executionPromises = [];
+        
+        // Execute write commands in parallel (they don't depend on each other)
+        if (writeCommands.length > 0) {
+          setExecutionSteps(prev => [...prev, `✏️ Writing ${writeCommands.length} data cells in parallel...`]);
+          const writePromises = writeCommands.map(cmd => executeCommand(cmd));
+          executionPromises.push(Promise.all(writePromises));
         }
+        
+        // Execute formulas after writes complete (they may depend on written data)
+        if (formulaCommands.length > 0) {
+          executionPromises.push(
+            Promise.all(writeCommands.map(cmd => executeCommand(cmd))).then(() => {
+              setExecutionSteps(prev => [...prev, `📈 Adding ${formulaCommands.length} formulas...`]);
+              return Promise.all(formulaCommands.map(cmd => executeCommand(cmd)));
+            })
+          );
+        }
+        
+        // Execute styles in parallel (independent)
+        if (styleCommands.length > 0) {
+          setExecutionSteps(prev => [...prev, `🎨 Applying ${styleCommands.length} styles...`]);
+          const stylePromises = styleCommands.map(cmd => executeCommand(cmd));
+          executionPromises.push(Promise.all(stylePromises));
+        }
+        
+        // Execute charts last (they depend on data)
+        if (chartCommands.length > 0) {
+          executionPromises.push(
+            Promise.all([...writeCommands, ...formulaCommands].map(cmd => executeCommand(cmd))).then(() => {
+              setExecutionSteps(prev => [...prev, `📊 Creating ${chartCommands.length} charts...`]);
+              return Promise.all(chartCommands.map(cmd => executeCommand(cmd)));
+            })
+          );
+        }
+        
+        // Wait for all parallel executions to complete
+        const results = await Promise.allSettled(executionPromises);
+        
+        // Count successes
+        const successCount = results.filter(r => r.status === 'fulfilled').length;
+        console.log(`Parallel execution complete: ${successCount}/${executionPromises.length} batches succeeded`);
         
         // Update RL stats after execution
         if (useRL && rlSystemRef.current) {
           const stats = await rlSystemRef.current.getStats();
           setRLStats(stats);
         }
+        
+        // Show completion
+        setProgressMessage('✅ Complete!');
+        setExecutionSteps(prev => [...prev, '🎉 Spreadsheet ready!']);
+      } else {
+        setProgressMessage('⚠️ No commands received');
       }
     } catch (error) {
       console.error('Agent error:', error);
+      setProgressMessage('❌ Error occurred');
+      setExecutionSteps(prev => [...prev, `Error: ${error}`]);
     } finally {
       setIsRunning(false);
+      // Clear progress after 3 seconds
+      setTimeout(() => {
+        setProgressMessage('');
+        setExecutionSteps([]);
+      }, 3000);
     }
   };
 
@@ -327,6 +487,88 @@ export default function AgentRunner() {
         >
           <Trash2 className="w-3 h-3" />
           Clear Grid
+        </button>
+      </div>
+
+      {/* Progress Display */}
+      {(progressMessage || executionSteps.length > 0) && (
+        <div className="bg-gray-800 border border-gray-700 rounded p-3 space-y-2">
+          {progressMessage && (
+            <div className="text-sm font-medium text-green-400 flex items-center gap-2">
+              {isRunning && <Loader2 className="w-4 h-4 animate-spin" />}
+              {progressMessage}
+            </div>
+          )}
+          {executionSteps.length > 0 && (
+            <div className="space-y-1">
+              {executionSteps.slice(-3).map((step, i) => (
+                <div key={i} className="text-xs text-gray-400 pl-6">
+                  {step}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Test Button */}
+      <div className="flex gap-2 mb-2">
+        <button
+          onClick={() => {
+            console.log('=== TESTING GRID API ===');
+            console.log('window.grid exists?', !!(window as any).grid);
+            console.log('window.grid methods:', Object.keys((window as any).grid || {}));
+            
+            if (typeof window !== 'undefined' && (window as any).grid) {
+              try {
+                console.log('Writing to A1...');
+                (window as any).grid.write("A1", "Test Value", { href: "https://example.com", source: "Test Source" });
+                console.log('Writing to B1...');
+                (window as any).grid.write("B1", 123);
+                console.log('Setting formula in C1...');
+                (window as any).grid.formula("C1", "=A1+B1");
+                console.log('✅ Test commands executed successfully!');
+                
+                // Check if data was actually written
+                setTimeout(() => {
+                  const state = (window as any).grid.getState();
+                  console.log('Grid state after test:', state);
+                }, 500);
+              } catch (error) {
+                console.error('❌ Test failed:', error);
+              }
+            } else {
+              console.error('❌ Grid API not found!');
+              console.log('window object:', window);
+            }
+          }}
+          className="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs"
+        >
+          Test Grid API
+        </button>
+        <button
+          onClick={() => {
+            const testCommands = [
+              'window.grid.write("A1", "Company", {style: {fontWeight: "bold"}})',
+              'window.grid.write("B1", "Revenue", {style: {fontWeight: "bold"}})',
+              'window.grid.write("A2", "Stripe")',
+              'window.grid.write("B2", 14000000000)',
+              'window.grid.formula("B3", "=B2*1.5")'
+            ];
+            testCommands.forEach((cmd, i) => {
+              setTimeout(() => {
+                console.log('Executing:', cmd);
+                try {
+                  eval(cmd);
+                } catch (e) {
+                  console.error('Failed:', e);
+                }
+              }, i * 100);
+            });
+          }}
+          className="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs"
+        >
+          Test Commands
         </button>
       </div>
 
@@ -457,8 +699,8 @@ export default function AgentRunner() {
         </div>
       )}
       
-      {/* RL Feedback Panel */}
-      {useRL && lastCommands.length > 0 && (
+      {/* RL Feedback Panel - Commented out as RLFeedbackPanel component is missing */}
+      {/* {useRL && lastCommands.length > 0 && (
         <RLFeedbackPanel
           sessionId={sessionId}
           company={currentCompany}
@@ -484,7 +726,7 @@ export default function AgentRunner() {
             }
           }}
         />
-      )}
+      )} */}
       
       {/* RL Toggle */}
       <div className="flex items-center justify-between p-2 bg-gray-800 rounded">
