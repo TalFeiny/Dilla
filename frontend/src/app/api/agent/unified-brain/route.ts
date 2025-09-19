@@ -31,6 +31,10 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     
+    // Debug logging
+    console.log('[unified-brain route] Received body.outputFormat:', body.outputFormat);
+    console.log('[unified-brain route] Sending output_format:', body.outputFormat || 'analysis');
+    
     // Forward to backend unified-brain endpoint
     const response = await fetch(`${BACKEND_URL}/api/agent/unified-brain`, {
       method: 'POST',

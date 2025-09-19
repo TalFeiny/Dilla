@@ -53,10 +53,18 @@ class CompanyScoringVisualizer:
         Generate comprehensive scoring for a company
         """
         # Get fund fit score and components
-        inferred_data = await self.gap_filler.infer_from_funding_cadence(
-            company_data, 
-            ["valuation", "runway", "burn_rate"]
-        )
+        # Extract funding rounds from company_data
+        funding_rounds = company_data.get('funding_analysis', {}).get('rounds', [])
+        # Determine which fields are missing and need inference
+        missing_fields = []
+        if not company_data.get('valuation') or company_data.get('valuation') == 0:
+            missing_fields.append('valuation')
+        if not company_data.get('burn_rate') or company_data.get('burn_rate') == 0:
+            missing_fields.append('burn_rate')
+        if not company_data.get('runway_months') or company_data.get('runway_months') == 0:
+            missing_fields.append('runway_months')
+        
+        inferred_data = await self.gap_filler.infer_from_funding_cadence(company_data, missing_fields)
         
         fund_fit = self.gap_filler.score_fund_fit(company_data, inferred_data)
         
@@ -89,16 +97,31 @@ class CompanyScoringVisualizer:
         cap_table = self._calculate_cap_table(company_data, investor_map)
         
         # Add founder profile to the score
+        # Ensure fund_fit has all required keys with defaults
+        if not isinstance(fund_fit, dict):
+            fund_fit = {}
+        component_scores = fund_fit.get("component_scores", {
+            "stage_fit": 0,
+            "sector_fit": 0,
+            "unit_economics": 0,
+            "check_size_fit": 0,
+            "timing_fit": 0,
+            "return_potential": 0,
+            "geography_fit": 0,
+            "fund_economics": 0,
+            "portfolio_fit": 0
+        })
+        
         score = CompanyScore(
-            company_name=company_data.get("name", "Unknown"),
-            overall_score=fund_fit["overall_score"],
-            component_scores=fund_fit["component_scores"],
+            company_name=company_data.get("company", company_data.get("name", "Unknown")),
+            overall_score=fund_fit.get("overall_score", 0),
+            component_scores=component_scores,
             base_case=scenarios["base"],
             bull_case=scenarios["bull"],
             bear_case=scenarios["bear"],
             cap_table=cap_table,
-            api_dependency=gross_margin_analysis["api_dependency_level"],
-            gross_margin=gross_margin_analysis["adjusted_gross_margin"],
+            api_dependency=gross_margin_analysis.get("api_dependency_level", "unknown"),
+            gross_margin=gross_margin_analysis.get("adjusted_gross_margin", 0),
             valuation=company_data.get("valuation", 0)
         )
         
@@ -121,9 +144,42 @@ class CompanyScoringVisualizer:
         """
         Generate base, bull, and bear case scenarios with growth deceleration
         """
-        current_revenue = company_data.get("revenue", company_data.get("arr", 1_000_000))
-        current_valuation = company_data.get("valuation", 50_000_000)
-        current_growth_rate = company_data.get("growth_rate", 1.0)
+        # CRITICAL: Ensure we never have None values for calculations
+        current_revenue = company_data.get("revenue") or company_data.get("arr") or 0
+        if current_revenue is None or current_revenue == 0:
+            # Infer from stage if available
+            stage = company_data.get("stage", "Series A")
+            stage_revenues = {
+                "Pre-seed": 100_000,
+                "Seed": 500_000,
+                "Series A": 2_000_000,
+                "Series B": 10_000_000,
+                "Series C": 30_000_000,
+                "Series D": 50_000_000
+            }
+            for stage_key, typical_revenue in stage_revenues.items():
+                if stage_key.lower() in stage.lower():
+                    current_revenue = typical_revenue
+                    break
+            if current_revenue == 0:
+                current_revenue = 1_000_000  # Default $1M
+        
+        current_valuation = company_data.get("valuation") or 50_000_000
+        if current_valuation is None:
+            current_valuation = 50_000_000
+            
+        current_growth_rate = company_data.get("growth_rate")
+        if current_growth_rate is None:
+            current_growth_rate = 1.0  # Default 100% growth
+        
+        # Ensure current_growth_rate is not None and is in the right format
+        if current_growth_rate is None:
+            current_growth_rate = 1.0  # Default 100% growth
+        elif current_growth_rate > 10:
+            # It's a percentage like 150, convert to decimal
+            current_growth_rate = current_growth_rate / 100
+        elif current_growth_rate < 0:
+            current_growth_rate = 1.0  # Default to 100% if negative
         
         # Check for strategic investors (increases exit likelihood)
         strategic_investor_bonus = 1.0
@@ -170,35 +226,35 @@ class CompanyScoringVisualizer:
                 "probability": 0.50,
                 "gross_margin": gross_margin_analysis["adjusted_gross_margin"],
                 "assumptions": [
-                    f"Growth decelerates from {current_growth_rate:.0%} as modeled",
+                    f"Growth decelerates from {(current_growth_rate if current_growth_rate < 10 else current_growth_rate/100)*100:.0f}% as modeled",
                     f"Gross margins at {gross_margin_analysis['adjusted_gross_margin']:.0%}",
                     f"NRR stays at {nrr:.0%}",
                     "Market conditions remain stable"
                 ]
             },
             "bull": {
-                "revenue_5y": current_revenue * (1 + growth_rate * 1.5) ** 5,
+                "revenue_5y": current_revenue * (1 + current_growth_rate * 1.5) ** 5,
                 "valuation_5y": current_valuation * 10 * api_adjustment,  # 10x in 5 years
                 "exit_multiple": 10.0,
                 "irr": 0.58,
                 "probability": 0.20,
                 "gross_margin": min(0.85, gross_margin_analysis["adjusted_gross_margin"] + 0.10),
                 "assumptions": [
-                    f"Accelerate to {growth_rate * 1.5:.0%} growth",
+                    f"Accelerate to {current_growth_rate * 1.5:.0%} growth",
                     "Improve gross margins by 10%",
                     "Achieve market leadership",
                     "Favorable exit environment"
                 ]
             },
             "bear": {
-                "revenue_5y": current_revenue * (1 + growth_rate * 0.3) ** 5,
+                "revenue_5y": current_revenue * (1 + current_growth_rate * 0.3) ** 5,
                 "valuation_5y": current_valuation * 0.8 * api_adjustment,  # Down round
                 "exit_multiple": 0.8,
                 "irr": -0.05,
                 "probability": 0.30,
                 "gross_margin": max(0.40, gross_margin_analysis["adjusted_gross_margin"] - 0.15),
                 "assumptions": [
-                    f"Growth slows to {growth_rate * 0.3:.0%}",
+                    f"Growth slows to {current_growth_rate * 0.3:.0%}",
                     "Gross margins compress by 15%",
                     "Increased competition",
                     "Difficult funding environment"
@@ -341,7 +397,7 @@ class CompanyScoringVisualizer:
             valuation = round_data.get("valuation", company_data.get("valuation", 100_000_000))
             
             # Calculate dilution for this round
-            if valuation > 0:
+            if valuation and valuation > 0:
                 round_dilution = min(0.25, amount / valuation)
             else:
                 round_dilution = self.DILUTION_BY_STAGE.get(round_name, 0.15)
@@ -359,7 +415,7 @@ class CompanyScoringVisualizer:
                     # Other investors share remaining 40%
                     other_investors = [inv for inv in investors if inv != lead_investor]
                     if other_investors:
-                        other_stake = round_ownership * (1 - self.LEAD_INVESTOR_SHARE)
+                        other_stake = round_ownership * (1.0 - self.LEAD_INVESTOR_SHARE)
                         per_investor = other_stake / len(other_investors)
                         for investor in other_investors:
                             cap_table[f"{investor} ({round_name})"] = per_investor
@@ -375,7 +431,7 @@ class CompanyScoringVisualizer:
                 cap_table[f"{round_name} Investors"] = round_ownership
             
             # Update cumulative dilution factor
-            cumulative_dilution *= (1 - round_dilution)
+            cumulative_dilution *= (1.0 - round_dilution)
         
         # Calculate final founder ownership after all dilution
         # Start with 60% initial ownership
@@ -387,7 +443,7 @@ class CompanyScoringVisualizer:
         # Option pool ownership as fraction of company
         option_pool_ownership = self.OPTION_POOL_SIZE
         cap_table["Employees (vested)"] = option_pool_ownership * self.OPTION_EXERCISE_RATE
-        cap_table["Employees (unvested)"] = option_pool_ownership * (1 - self.OPTION_EXERCISE_RATE)
+        cap_table["Employees (unvested)"] = option_pool_ownership * (1.0 - self.OPTION_EXERCISE_RATE)
         
         # Convert fractions to percentages and normalize to 100%
         total = sum(cap_table.values())
@@ -501,7 +557,7 @@ class CompanyScoringVisualizer:
                     ],
                     "total_shares": 100,
                     "assumptions": [
-                        "75% of options remain unexercised",
+                        "70% of options remain unexercised",
                         f"API dependency level: {score.api_dependency}",
                         f"Adjusted gross margin: {score.gross_margin:.0%}"
                     ]

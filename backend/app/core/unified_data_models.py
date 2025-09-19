@@ -236,8 +236,8 @@ class AgentInteraction:
 @dataclass
 class MarketData:
     """Market research and intelligence data"""
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
     industry: IndustryVertical
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
     
     # Market sizing
     tam: Optional[float] = None

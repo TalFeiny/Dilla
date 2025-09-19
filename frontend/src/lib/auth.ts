@@ -1,17 +1,46 @@
 import { NextAuthOptions } from 'next-auth';
 import GoogleProvider from 'next-auth/providers/google';
+import CredentialsProvider from 'next-auth/providers/credentials';
 import { createClient } from '@supabase/supabase-js';
 
+// Create Supabase client with server-side key
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || ''
 );
 
 export const authOptions: NextAuthOptions = {
   providers: [
-    GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    // Google OAuth provider (production)
+    ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET ? [
+      GoogleProvider({
+        clientId: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      })
+    ] : []),
+    
+    // Credentials provider for development/testing
+    CredentialsProvider({
+      name: 'Development',
+      credentials: {
+        email: { label: "Email", type: "email", placeholder: "test@example.com" },
+        password: { label: "Password", type: "password" }
+      },
+      async authorize(credentials) {
+        // Development mode authentication
+        if (process.env.NODE_ENV === 'development') {
+          // Accept any email/password in dev mode
+          if (credentials?.email) {
+            return {
+              id: '1',
+              email: credentials.email,
+              name: 'Dev User',
+              image: null,
+            };
+          }
+        }
+        return null;
+      }
     }),
   ],
   callbacks: {

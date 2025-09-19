@@ -2,6 +2,8 @@
 
 import React, { useState } from 'react';
 import AgentProgressTracker from '@/components/AgentProgressTracker';
+import CitationDisplay from '@/components/CitationDisplay';
+import AgentChartGenerator from '@/components/AgentChartGenerator';
 import { 
   DollarSign, 
   TrendingUp, 
@@ -25,7 +27,8 @@ import {
   Activity,
   Sparkles,
   FileSearch,
-  ClipboardCheck
+  ClipboardCheck,
+  BarChart3
 } from 'lucide-react';
 
 interface AuditLog {
@@ -222,6 +225,9 @@ export default function FundAdminPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | undefined>();
+  const [citations, setCitations] = useState<any[]>([]);
+  const [charts, setCharts] = useState<any[]>([]);
+  const [showCharts, setShowCharts] = useState(false);
 
   const fetchFundOperations = async (query?: string) => {
     setLoading(true);
@@ -344,10 +350,10 @@ export default function FundAdminPage() {
       const auditData = { success: true, result: auditResult };
       
       // Track the task if taskId is returned
-      if (fundData.taskId) {
-        setActiveTaskId(fundData.taskId);
-      } else if (auditData.taskId) {
-        setActiveTaskId(auditData.taskId);
+      if ('taskId' in fundData && fundData.taskId) {
+        setActiveTaskId(fundData.taskId as string);
+      } else if ('taskId' in auditData && auditData.taskId) {
+        setActiveTaskId(auditData.taskId as string);
       }
       
       if (fundData.success && fundData.result) {
@@ -359,6 +365,15 @@ export default function FundAdminPage() {
           audit_summary: auditData.result?.audit_summary || null
         };
         setFundData(combinedData);
+        
+        // Extract citations and charts if available
+        if (fundData.citations) {
+          setCitations(fundData.citations);
+        }
+        if (fundData.charts) {
+          setCharts(fundData.charts);
+        }
+        
         setError(null);
       } else {
         throw new Error('Invalid response from API');
@@ -1614,6 +1629,45 @@ export default function FundAdminPage() {
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Citations Section */}
+        {citations && citations.length > 0 && (
+          <div className="mt-6">
+            <CitationDisplay citations={citations} />
+          </div>
+        )}
+
+        {/* Charts Section */}
+        {charts && charts.length > 0 && (
+          <div className="mt-6 bg-white rounded-lg shadow-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                <BarChart3 className="w-5 h-5 mr-2" />
+                Visual Analytics
+              </h3>
+              <button
+                onClick={() => setShowCharts(!showCharts)}
+                className="text-sm text-blue-600 hover:text-blue-700"
+              >
+                {showCharts ? 'Hide Charts' : 'Show Charts'}
+              </button>
+            </div>
+            
+            {showCharts && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {charts.map((chart, index) => (
+                  <div key={index} className="bg-gray-50 rounded-lg p-4">
+                    <AgentChartGenerator
+                      prompt={`Chart ${index + 1}: ${chart.title || chart.type}`}
+                      chartData={chart}
+                      autoGenerate={true}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

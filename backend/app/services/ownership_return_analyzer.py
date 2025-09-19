@@ -154,7 +154,7 @@ class OwnershipReturnAnalyzer:
             
         elif investment_type == InvestmentType.FOLLOW:
             # Follow investor
-            max_follow = round_size * (1 - benchmarks['lead_allocation']) * 0.3  # Max 30% of non-lead
+            max_follow = round_size * (1.0 - benchmarks['lead_allocation']) * 0.3  # Max 30% of non-lead
             our_allocation = min(investment_amount, max_follow)
             ownership_percent = our_allocation / (current_valuation + round_size)
             benefits = [
@@ -174,10 +174,10 @@ class OwnershipReturnAnalyzer:
             ]
         
         # Account for option pool dilution
-        # Note: Assumes 75% of options don't get exercised (industry benchmark)
-        # This is handled in advanced_cap_table.py with option_exercise_rate=0.25
-        option_pool_expansion = benchmarks['option_pool_expansion']
-        diluted_ownership = ownership_percent * (1 - option_pool_expansion)
+        # Note: Option pool dilution is handled in PrePostCapTable.calculate_full_cap_table_history
+        # We don't apply it here to avoid double dilution
+        # The 70% unexercised assumption (30% exercised) is applied at exit in PrePostCapTable._apply_option_exercise
+        diluted_ownership = ownership_percent
         
         # Future dilution scenarios
         future_rounds = self._estimate_future_rounds(stage, current_valuation)
@@ -356,7 +356,7 @@ class OwnershipReturnAnalyzer:
             total_round_dilution = round_dilution + option_dilution
             
             # Apply to our ownership
-            cumulative_dilution *= (1 - total_round_dilution)
+            cumulative_dilution *= (1.0 - total_round_dilution)
             
             future_rounds.append({
                 'stage': stage,
@@ -406,8 +406,8 @@ class OwnershipReturnAnalyzer:
             # Calculate exit value based on scenario
             if scenario_type == 'IPO':
                 # IPOs at 10x forward revenue
-                years_to_ipo = 5
-                future_revenue = revenue * ((1 + growth_rate) ** years_to_ipo)
+                years_to_exit = 5
+                future_revenue = revenue * ((1 + growth_rate) ** years_to_exit)
                 exit_value = future_revenue * 10
                 
             elif scenario_type == 'Strategic M&A':
@@ -436,6 +436,11 @@ class OwnershipReturnAnalyzer:
             elif scenario_type == 'Liquidation':
                 # Return some capital
                 exit_value = company_data.get('cash', 5_000_000) * 0.5
+                years_to_exit = 2
+                
+            elif scenario_type == 'Secondary':
+                # Secondary sale at current valuation
+                exit_value = company_data.get('valuation', revenue * 3)
                 years_to_exit = 2
                 
             else:  # Write-off

@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional
 from pydantic import BaseModel
 import logging
 
-from app.services.agent_service import self_learning_agent
+# from app.services.agent_service import self_learning_agent  # Temporarily disabled
 
 router = APIRouter(prefix="/api/rl", tags=["RL Training"])
 logger = logging.getLogger(__name__)

@@ -88,7 +88,7 @@ export class SecurityMiddleware {
           continue;
         }
         
-        sanitizedArray.from(itizedKey) = this.sanitizeInput(value, depth + 1);
+        sanitized[sanitizedKey] = this.sanitizeInput(value, depth + 1);
       }
       return sanitized;
     }
@@ -138,7 +138,7 @@ export class SecurityMiddleware {
       '/': '&#x2F;',
     };
     
-    return str.replace(/[&<>"'\/]/g, (match) => htmlEscapesArray.from(ch) || match);
+    return str.replace(/[&<>"'\/]/g, (match) => htmlEscapes[match] || match);
   }
 
   private isPrototypeProperty(key: string): boolean {

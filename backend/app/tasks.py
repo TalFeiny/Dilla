@@ -7,7 +7,7 @@ from app.core.celery_app import celery_app
 from app.services.pwerm_service import pwerm_service
 from app.services.document_service import document_processor
 from app.services.market_research_service import market_research_service
-from app.services.agent_service import self_learning_agent
+# from app.services.agent_service import self_learning_agent  # Temporarily disabled
 import logging
 from typing import Dict, Any, Optional
 

@@ -27,6 +27,10 @@ export interface FormatHandlerResult {
     companies?: string[];
     timestamp?: string;
     format?: string;
+    hasCharts?: boolean;
+    hasScoring?: boolean;
+    winner?: string;
+    [key: string]: any; // Allow additional properties
   };
 }
 

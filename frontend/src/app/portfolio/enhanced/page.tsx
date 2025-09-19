@@ -110,7 +110,7 @@ const getValuationMethodName = (method: string) => {
     pwerm_valuation: 'PWERM',
     mark_to_market_valuation: 'Mark-to-Market'
   };
-  return namesArray.from(hod) || method;
+  return names[method] || method;
 };
 
 export default function EnhancedPortfolioPage() {

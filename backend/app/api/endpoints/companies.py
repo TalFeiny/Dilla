@@ -28,7 +28,7 @@ async def get_companies(
             select_string = fields
         
         # Build query
-        query = client.table("companies").select(select_string).order("name")
+        query = client.from_("companies").select(select_string).order("name")
         
         # Apply pagination
         query = query.range(offset, offset + limit - 1)
@@ -50,7 +50,7 @@ async def get_company(company_id: str):
     try:
         client = supabase_service.get_client()
         
-        response = client.table("companies").select("*").eq("id", company_id).single().execute()
+        response = client.from_("companies").select("*").eq("id", company_id).single().execute()
         
         if not response.data:
             raise HTTPException(status_code=404, detail="Company not found")
@@ -70,7 +70,7 @@ async def create_company(company: Company):
     try:
         client = supabase_service.get_client()
         
-        response = client.table("companies").insert(company.dict()).execute()
+        response = client.from_("companies").insert(company.dict()).execute()
         
         return response.data[0]
     
@@ -87,7 +87,7 @@ async def update_company(company_id: str, company_update: dict):
     try:
         client = supabase_service.get_client()
         
-        response = client.table("companies").update(company_update).eq("id", company_id).execute()
+        response = client.from_("companies").update(company_update).eq("id", company_id).execute()
         
         if not response.data:
             raise HTTPException(status_code=404, detail="Company not found")
@@ -99,6 +99,38 @@ async def update_company(company_id: str, company_update: dict):
         raise HTTPException(status_code=500, detail="Failed to update company")
 
 
+@router.get("/search", response_model=List[Company])
+async def search_companies(
+    q: Optional[str] = Query(None, description="Search query for company name or sector"),
+    limit: Optional[int] = Query(100, le=1000, description="Maximum number of companies to return"),
+    offset: int = Query(0, ge=0, description="Number of companies to skip")
+):
+    """
+    Search companies by name or sector.
+    """
+    try:
+        client = supabase_service.get_client()
+        
+        # Build query
+        query = client.from_("companies").select("*").order("name")
+        
+        # Add search filter if provided
+        if q:
+            # Search in name and sector fields
+            query = query.or_(f"name.ilike.%{q}%,sector.ilike.%{q}%")
+        
+        # Apply pagination
+        query = query.range(offset, offset + limit - 1)
+        
+        response = query.execute()
+        
+        return response.data
+    
+    except Exception as e:
+        logger.error(f"Error searching companies: {e}")
+        raise HTTPException(status_code=500, detail="Failed to search companies")
+
+
 @router.delete("/{company_id}")
 async def delete_company(company_id: str):
     """
@@ -107,7 +139,7 @@ async def delete_company(company_id: str):
     try:
         client = supabase_service.get_client()
         
-        response = client.table("companies").delete().eq("id", company_id).execute()
+        response = client.from_("companies").delete().eq("id", company_id).execute()
         
         return {"message": "Company deleted successfully"}
     

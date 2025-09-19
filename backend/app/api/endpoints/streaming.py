@@ -15,7 +15,7 @@ import uuid
 
 from app.services.pwerm_service import pwerm_service
 # from app.services.orchestrator_service import orchestrator
-from app.services.mcp_orchestrator import MCPOrchestrator
+from app.services.mcp_orchestrator import SingleAgentOrchestrator as MCPOrchestrator
 orchestrator = MCPOrchestrator()
 
 router = APIRouter()

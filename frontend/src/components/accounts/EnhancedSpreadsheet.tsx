@@ -2,7 +2,9 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { cn } from '@/lib/utils';
+import { getGridAPIManager } from '@/lib/grid-api-manager';
 import SpreadsheetChart from './SpreadsheetChart';
+import SpreadsheetCell from './SpreadsheetCell';
 import {
   Table2,
   Calculator,
@@ -115,6 +117,12 @@ interface Cell {
   comment?: string;
   link?: string;  // For hyperlinks
   sourceUrl?: string;  // For citation URLs
+  citation?: {  // Full citation data
+    source: string;
+    url: string;
+    date?: string;
+    excerpt?: string;
+  };
   validation?: {
     type: 'list' | 'range' | 'custom';
     values?: any[];
@@ -134,6 +142,7 @@ interface SpreadsheetData {
   cells: Record<string, Cell>;
   columns: number;
   rows: number;
+  charts?: any[];  // Add charts array
   frozenRows?: number;
   frozenColumns?: number;
   hiddenRows?: Set<number>;
@@ -153,9 +162,14 @@ interface UndoRedoState {
   future: SpreadsheetData[];
 }
 
-export default function EnhancedSpreadsheet() {
-  // Helper to detect cell type
-  const detectCellType = (value: any): Cell['type'] => {
+interface EnhancedSpreadsheetProps {
+  commands?: string[];
+  onCommandsExecuted?: () => void;
+}
+
+export default function EnhancedSpreadsheet({ commands, onCommandsExecuted }: EnhancedSpreadsheetProps = {}) {
+  // Helper to detect cell type - memoized to prevent re-renders
+  const detectCellType = useCallback((value: any): Cell['type'] => {
     if (typeof value === 'number') return 'number';
     if (typeof value === 'boolean') return 'boolean';
     if (typeof value === 'string') {
@@ -166,7 +180,7 @@ export default function EnhancedSpreadsheet() {
       if (value.match(/^\d+\.?\d*%$/)) return 'percentage';
     }
     return 'text';
-  };
+  }, []);
 
   const [data, setData] = useState<SpreadsheetData>({
     cells: {},
@@ -193,11 +207,26 @@ export default function EnhancedSpreadsheet() {
   const [showGridLines, setShowGridLines] = useState(true);
   const [showHeaders, setShowHeaders] = useState(true);
   const [clipboard, setClipboard] = useState<Record<string, Cell>>({});
-  const [undoRedoState, setUndoRedoState] = useState<UndoRedoState>({
+  const [undoRedoState, setUndoRedoState] = useState<UndoRedoState>(() => ({
     past: [],
-    present: data,
+    present: {
+      cells: {},
+      columns: 26,
+      rows: 100,
+      frozenRows: 1,
+      frozenColumns: 1,
+      hiddenRows: new Set(),
+      hiddenColumns: new Set(),
+      rowHeights: {},
+      columnWidths: {},
+      mergedCells: [],
+      conditionalFormats: [],
+      namedRanges: {},
+      filters: {},
+      sorting: []
+    },
     future: []
-  });
+  }));
   const [searchQuery, setSearchQuery] = useState('');
   const [findResults, setFindResults] = useState<string[]>([]);
   const [currentFindIndex, setCurrentFindIndex] = useState(0);
@@ -210,30 +239,150 @@ export default function EnhancedSpreadsheet() {
   const gridRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dataRef = useRef(data);
+  const gridIdRef = useRef(`grid-${Date.now()}`);
+  const gridApiRef = useRef<any>(null);
   
-  // Keep dataRef in sync with data
+  // Update dataRef whenever data changes to keep it in sync
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
+  
+  // Register grid with manager on mount
+  useEffect(() => {
+    const manager = getGridAPIManager();
+    const gridApi = manager.registerGrid(
+      gridIdRef.current,
+      setData,
+      dataRef,
+      detectCellType,
+      setChartData
+    );
+    
+    gridApiRef.current = gridApi;
+    
+    // Also expose on window for debugging and AgentRunner access
+    if (typeof window !== 'undefined') {
+      (window as any).gridApi = gridApi;
+      (window as any).grid = gridApi;
+      console.log('[EnhancedSpreadsheet] Grid API registered and exposed on window');
+    }
+    
+    return () => {
+      manager.unregisterGrid(gridIdRef.current);
+      if (typeof window !== 'undefined') {
+        delete (window as any).gridApi;
+        delete (window as any).grid;
+      }
+    };
+  }, [detectCellType]);
+  
+  // Execute commands when they change
+  useEffect(() => {
+    if (!commands || commands.length === 0) return;
+    if (!gridApiRef.current) {
+      console.warn('[EnhancedSpreadsheet] Grid API not ready yet');
+      return;
+    }
+    
+    console.log('[EnhancedSpreadsheet] Executing', commands.length, 'commands');
+    
+    const executeCommands = async () => {
+      for (const command of commands) {
+        try {
+          // Parse command: grid.method(args)
+          const match = command.match(/grid\.(\w+)\((.*)\)$/);
+          if (!match) {
+            console.error('Invalid command format:', command);
+            continue;
+          }
+          
+          const [, method, argsStr] = match;
+          const api = gridApiRef.current;
+          
+          if (!api[method]) {
+            console.error('Method not found:', method);
+            continue;
+          }
+          
+          // Parse arguments (simplified for now)
+          let args = [];
+          try {
+            // Use Function constructor safely for parsing
+            const parsed = new Function('return [' + argsStr + ']')();
+            args = parsed;
+          } catch (e) {
+            console.error('Failed to parse arguments:', argsStr, e);
+            continue;
+          }
+          
+          // Execute the method
+          const result = api[method](...args);
+          console.log(`Executed ${method}:`, result);
+        } catch (error) {
+          console.error('Failed to execute command:', command, error);
+        }
+      }
+      
+      if (onCommandsExecuted) {
+        onCommandsExecuted();
+      }
+    };
+    
+    executeCommands();
+  }, [commands, onCommandsExecuted]);
 
 
-  // Formula evaluation engine
+  // Pre-calculate conditional formatting to avoid render-time computation
+  const [cellStyles, setCellStyles] = useState<Record<string, CellStyle>>({});
+  const [evaluatedFormulas, setEvaluatedFormulas] = useState<Record<string, any>>({});
+  
+  // Formula evaluation engine with better error handling
   const evaluateFormula = useCallback((formula: string, cellRef: string): any => {
-    if (!formula.startsWith('=')) return formula;
+    if (!formula || !formula.startsWith('=')) return formula || '';
     
     try {
       const expr = formula.substring(1);
       
-      // Replace cell references with values
+      // Handle empty formula
+      if (!expr.trim()) return '';
+      
+      // Handle HYPERLINK formula specially - return an object with link info
+      const hyperlinkMatch = expr.match(/HYPERLINK\("([^"]+)",\s*"([^"]+)"\)/);
+      if (hyperlinkMatch) {
+        return {
+          type: 'hyperlink',
+          url: hyperlinkMatch[1],
+          text: hyperlinkMatch[2]
+        };
+      }
+      
+      // Replace cell references with values using dataRef to avoid circular dependency
       const cellPattern = /([A-Z]+)(\d+)/g;
       let evaluatedExpr = expr.replace(cellPattern, (match, col, row) => {
         const ref = `${col}${row}`;
-        if (ref === cellRef) throw new Error('Circular reference');
-        const cell = data.cells[ref];
-        if (!cell) return '0';
-        if (cell.formula) {
-          return evaluateFormula(cell.formula, ref);
+        if (ref === cellRef) {
+          console.warn(`Circular reference detected in ${cellRef}`);
+          return '0';
         }
+        
+        // Safely access cells with null checks
+        const cells = dataRef.current?.cells;
+        if (!cells) return '0';
+        
+        const cell = cells[ref];
+        if (!cell || cell.value === undefined || cell.value === null) return '0';
+        
+        // Handle formula cells recursively with depth limit
+        if (cell.formula) {
+          try {
+            const result = evaluateFormula(cell.formula, ref);
+            return String(result || 0);
+          } catch (e) {
+            console.warn(`Error evaluating formula in ${ref}:`, e);
+            return '0';
+          }
+        }
+        
         return String(cell.value || 0);
       });
 
@@ -275,6 +424,16 @@ export default function EnhancedSpreadsheet() {
           return String(Math.round(Number(num) * Math.pow(10, Number(decimals))) / Math.pow(10, Number(decimals)));
         })
         // Financial formulas
+        .replace(/NPV\(([\d.]+),\s*\{([^}]+)\}\)/gi, (match, rate, valuesStr) => {
+          // Handle NPV with explicit array format: NPV(0.15, {100000, 200000, 300000})
+          const r = Number(rate);
+          const values = valuesStr.split(',').map((v: string) => Number(v.trim()));
+          let npv = 0;
+          for (let i = 0; i < values.length; i++) {
+            npv += values[i] / Math.pow(1 + r, i + 1);
+          }
+          return String(npv);
+        })
         .replace(/NPV\((.*?),(.*?)\)/gi, (match, rate, range) => {
           const r = Number(rate);
           const values = getRangeValues(range);
@@ -283,6 +442,24 @@ export default function EnhancedSpreadsheet() {
             npv += Number(values[i]) / Math.pow(1 + r, i + 1);
           }
           return String(npv);
+        })
+        .replace(/IRR\(\{([^}]+)\}\)/gi, (match, valuesStr) => {
+          // Handle IRR with explicit array format: IRR({-1000000, 0, 0, 0, 5000000})
+          const values = valuesStr.split(',').map((v: string) => Number(v.trim()));
+          // Newton-Raphson method for IRR
+          let rate = 0.1; // Initial guess 10%
+          for (let i = 0; i < 100; i++) {
+            let npv = 0, dnpv = 0;
+            for (let j = 0; j < values.length; j++) {
+              npv += values[j] / Math.pow(1 + rate, j);
+              dnpv -= j * values[j] / Math.pow(1 + rate, j + 1);
+            }
+            const newRate = rate - npv / dnpv;
+            if (Math.abs(newRate - rate) < 0.00001) {
+              return String(newRate); // Return as decimal (0.15 = 15%)
+            }
+          }
+          return String(rate);
         })
         .replace(/IRR\((.*?)\)/gi, (match, range) => {
           const values = getRangeValues(range).map(Number);
@@ -338,20 +515,42 @@ export default function EnhancedSpreadsheet() {
           return String(Number(exitVal) / Number(invested));
         });
 
-      // Evaluate the expression
-      const result = Function('"use strict"; return (' + evaluatedExpr + ')')();
-      return result;
+      // Safely evaluate the expression
+      try {
+        // Check if the expression is just a number or simple value
+        const numValue = parseFloat(evaluatedExpr);
+        if (!isNaN(numValue) && evaluatedExpr.trim() === String(numValue)) {
+          return numValue;
+        }
+        
+        // Use Function constructor with error handling
+        const result = Function('"use strict"; try { return (' + evaluatedExpr + '); } catch(e) { return "#ERROR"; }')();
+        
+        // Check for invalid results
+        if (result === undefined || result === null) return '';
+        if (result === Infinity || result === -Infinity) return '#DIV/0!';
+        if (isNaN(result) && typeof result === 'number') return '#NUM!';
+        
+        return result;
+      } catch (evalError) {
+        console.warn(`Error evaluating expression in ${cellRef}:`, evalError);
+        return '#ERROR!';
+      }
     } catch (error) {
-      setErrors(prev => ({ ...prev, [cellRef]: (error as Error).message }));
+      console.warn(`Formula error in ${cellRef}:`, error);
+      // Don't set errors state here as it can cause re-renders
       return '#ERROR!';
     }
-  }, [data.cells]);
+  }, []); // No dependencies to prevent recreation
 
   // Get values from a range (A1:B10)
   const getRangeValues = useCallback((range: string): any[] => {
     const values: any[] = [];
     const rangePattern = /([A-Z]+)(\d+):([A-Z]+)(\d+)/;
     const match = range.match(rangePattern);
+    
+    // Access dataRef directly - it's always current from updateCell
+    const currentCells = dataRef.current?.cells || {};
     
     if (match) {
       const [, startCol, startRow, endCol, endRow] = match;
@@ -363,7 +562,7 @@ export default function EnhancedSpreadsheet() {
       for (let row = startRowNum; row <= endRowNum; row++) {
         for (let col = startColNum; col <= endColNum; col++) {
           const cellRef = `${columnToLetter(col)}${row}`;
-          const cell = data.cells[cellRef];
+          const cell = currentCells[cellRef];
           if (cell) {
             values.push(cell.formula ? evaluateFormula(cell.formula, cellRef) : cell.value);
           }
@@ -371,24 +570,20 @@ export default function EnhancedSpreadsheet() {
       }
     } else {
       // Single cell
-      const cell = data.cells[range];
+      const cell = currentCells[range];
       if (cell) {
         values.push(cell.formula ? evaluateFormula(cell.formula, range) : cell.value);
       }
     }
     
     return values;
-  }, [data.cells, evaluateFormula]);
+  }, [evaluateFormula]); // Only depend on evaluateFormula
 
-  // Update cell value
+  // Update cell value with optimized state updates
   const updateCell = useCallback((cellRef: string, value: any, formula?: string) => {
-    setUndoRedoState(prev => ({
-      past: [...prev.past, prev.present],
-      present: data,
-      future: []
-    }));
-
+    // Update the data and capture previous state for undo
     setData(prev => {
+      // Save previous state for undo - but don't trigger another state update
       const newCells = { ...prev.cells };
       
       if (!value && !formula) {
@@ -400,42 +595,41 @@ export default function EnhancedSpreadsheet() {
           formula: formula,
           type: detectCellType(value),
           history: [
-            ...(newCells[cellRef]?.history || []),
+            ...(newCells[cellRef]?.history || []).slice(-5), // Limit history per cell to 5 items
             { value: newCells[cellRef]?.value, timestamp: new Date().toISOString() }
           ]
         };
       }
       
-      return { ...prev, cells: newCells };
+      // Update dataRef with new data immediately
+      const newData = { ...prev, cells: newCells };
+      dataRef.current = newData;
+      return newData;
     });
     
-    setErrors(prev => {
-      const newErrors = { ...prev };
-      delete newErrors[cellRef];
-      return newErrors;
-    });
-  }, [data, evaluateFormula]);
+    // Update undo state separately to avoid nested setState
+    setUndoRedoState(prev => ({
+      past: [...prev.past.slice(-20), dataRef.current], // Limit history to 20 items
+      present: dataRef.current,
+      future: []
+    }));
+  }, [detectCellType, evaluateFormula]); // Stable dependencies
 
   // Copy cells
   const copyCells = useCallback(() => {
     const cellsToCopy: Record<string, Cell> = {};
     selectedCells.forEach(cellRef => {
-      if (data.cells[cellRef]) {
-        cellsToCopy[cellRef] = data.cells[cellRef];
+      const cell = dataRef.current?.cells?.[cellRef];
+      if (cell) {
+        cellsToCopy[cellRef] = cell;
       }
     });
     setClipboard(cellsToCopy);
-  }, [selectedCells, data.cells]);
+  }, [selectedCells]); // Only depend on selectedCells
 
   // Paste cells
   const pasteCells = useCallback(() => {
     if (Object.keys(clipboard).length === 0) return;
-    
-    setUndoRedoState(prev => ({
-      past: [...prev.past, prev.present],
-      present: data,
-      future: []
-    }));
     
     // Calculate offset from first clipboard cell to active cell
     const clipboardRefs = Object.keys(clipboard).sort();
@@ -447,6 +641,13 @@ export default function EnhancedSpreadsheet() {
     const rowOffset = parseInt(activeRow) - parseInt(clipRow);
     
     setData(prev => {
+      // Save previous state for undo
+      setUndoRedoState(undoState => ({
+        past: [...undoState.past.slice(-20), prev], // Limit history
+        present: prev,
+        future: []
+      }));
+      
       const newCells = { ...prev.cells };
       
       Object.entries(clipboard).forEach(([cellRef, cell]) => {
@@ -458,9 +659,12 @@ export default function EnhancedSpreadsheet() {
         newCells[newRef] = { ...cell };
       });
       
-      return { ...prev, cells: newCells };
+      // Update dataRef with new data
+      const newData = { ...prev, cells: newCells };
+      dataRef.current = newData;
+      return newData;
     });
-  }, [clipboard, activeCell, data]);
+  }, [clipboard, activeCell]); // Stable dependencies
 
   // Undo
   const undo = useCallback(() => {
@@ -491,8 +695,9 @@ export default function EnhancedSpreadsheet() {
   // Find and replace
   const findCells = useCallback((query: string) => {
     const results: string[] = [];
+    const currentCells = dataRef.current?.cells || {};
     
-    Object.entries(data.cells).forEach(([cellRef, cell]) => {
+    Object.entries(currentCells).forEach(([cellRef, cell]) => {
       const value = cell.formula || cell.value;
       if (value?.toString().toLowerCase().includes(query.toLowerCase())) {
         results.push(cellRef);
@@ -504,13 +709,14 @@ export default function EnhancedSpreadsheet() {
     if (results.length > 0) {
       setActiveCell(results[0]);
     }
-  }, [data.cells]);
+  }, []); // No dependencies
 
   // Apply conditional formatting
   const applyConditionalFormatting = useCallback((cellRef: string): CellStyle => {
     let style: CellStyle = {};
+    const currentData = dataRef.current || {};
     
-    data.conditionalFormats?.forEach(format => {
+    currentData.conditionalFormats?.forEach(format => {
       // Check if cell is in range
       const rangePattern = /([A-Z]+)(\d+):([A-Z]+)(\d+)/;
       const match = format.range.match(rangePattern);
@@ -529,7 +735,7 @@ export default function EnhancedSpreadsheet() {
         if (cellColNum >= startColNum && cellColNum <= endColNum &&
             cellRowNum >= startRowNum && cellRowNum <= endRowNum) {
           
-          const cell = data.cells[cellRef];
+          const cell = currentData.cells?.[cellRef];
           if (!cell) return;
           
           const value = cell.formula ? evaluateFormula(cell.formula, cellRef) : cell.value;
@@ -571,7 +777,7 @@ export default function EnhancedSpreadsheet() {
     });
     
     return style;
-  }, [data.conditionalFormats, data.cells, evaluateFormula, getRangeValues]);
+  }, []); // No dependencies to prevent recreation
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -625,7 +831,7 @@ export default function EnhancedSpreadsheet() {
           case 'Enter':
             if (activeCell) {
               setIsEditing(true);
-              const cell = data.cells[activeCell];
+              const cell = dataRef.current?.cells?.[activeCell];
               setEditValue(cell?.formula || cell?.value || '');
             }
             break;
@@ -648,7 +854,7 @@ export default function EnhancedSpreadsheet() {
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isEditing, activeCell, selectedCells, copyCells, pasteCells, undo, redo, updateCell, data.cells]);
+  }, [isEditing, activeCell, selectedCells]); // Only stable dependencies
 
   // Apply style to selected cells
   const applyCellStyle = (style: CellStyle) => {
@@ -749,245 +955,206 @@ export default function EnhancedSpreadsheet() {
     reader.readAsText(file);
   };
 
-  // Initialize with empty spreadsheet - no dummy data
+  // Pre-calculate conditional formatting and formula values
   useEffect(() => {
-    // Start with empty cells
-    setData(prev => ({
-      ...prev,
-      cells: {},
-      conditionalFormats: []
-    }));
-  }, []);
-
-  // Set up the grid API for the agent to use
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      console.log('🎯 Setting up grid API for agent');
-      (window as any).grid = {
-        // Write value to a cell with optional citation/source
-        write: (cellRef: string, value: any, options?: { href?: string; source?: string; sourceUrl?: string }) => {
-          console.log(`Grid API: Writing to ${cellRef}:`, value, options);
-          setData(prev => ({
-            ...prev,
-            cells: {
-              ...prev.cells,
-              [cellRef]: {
-                value,
-                type: detectCellType(value),
-                ...(options?.href && { link: options.href }),
-                ...(options?.source && { comment: options.source }),
-                ...(options?.sourceUrl && { sourceUrl: options.sourceUrl })
-              }
-            }
-          }));
-        },
+    const newStyles: Record<string, CellStyle> = {};
+    const newEvaluatedFormulas: Record<string, any> = {};
+    
+    // Only calculate for visible viewport (optimize for performance)
+    const visibleRows = Math.min(50, data.rows);
+    const visibleCols = Math.min(26, data.columns);
+    
+    for (let row = 1; row <= visibleRows; row++) {
+      for (let col = 0; col < visibleCols; col++) {
+        const cellRef = `${columnToLetter(col)}${row}`;
+        const cell = data.cells[cellRef];
         
-        // Set formula for a cell
-        formula: (cellRef: string, formula: string) => {
-          console.log(`Grid API: Setting formula for ${cellRef}:`, formula);
-          setData(prev => ({
-            ...prev,
-            cells: {
-              ...prev.cells,
-              [cellRef]: {
-                value: 0,
-                formula,
-                type: 'formula'
-              }
-            }
-          }));
-        },
-        
-        // Apply style to a cell
-        style: (cellRef: string, style: any) => {
-          console.log(`Grid API: Styling ${cellRef}:`, style);
-          setData(prev => ({
-            ...prev,
-            cells: {
-              ...prev.cells,
-              [cellRef]: {
-                ...prev.cells[cellRef],
-                style
-              }
-            }
-          }));
-        },
-        
-        // Clear cells
-        clear: (startCell: string, endCell: string) => {
-          const [startCol, startRow] = startCell.match(/([A-Z]+)(\d+)/)!.slice(1);
-          const [endCol, endRow] = endCell.match(/([A-Z]+)(\d+)/)!.slice(1);
-          const startColNum = letterToColumn(startCol);
-          const endColNum = letterToColumn(endCol);
-          const startRowNum = parseInt(startRow);
-          const endRowNum = parseInt(endRow);
-          
-          setData(prev => {
-            const newCells = { ...prev.cells };
-            for (let row = startRowNum; row <= endRowNum; row++) {
-              for (let col = startColNum; col <= endColNum; col++) {
-                const cellRef = `${columnToLetter(col)}${row}`;
-                delete newCells[cellRef];
-              }
-            }
-            return { ...prev, cells: newCells };
-          });
-        },
-        
-        // Get cell value
-        getValue: (cellRef: string) => {
-          return dataRef.current.cells[cellRef]?.value;
-        },
-        
-        // Get current state
-        getState: () => {
-          return { cells: dataRef.current.cells };
-        },
-        
-        // Set state
-        setState: (state: any) => {
-          if (state?.cells) {
-            setData(prev => ({ ...prev, cells: state.cells }));
+        // Pre-evaluate formulas
+        if (cell?.formula) {
+          try {
+            newEvaluatedFormulas[cellRef] = evaluateFormula(cell.formula, cellRef);
+          } catch (error) {
+            newEvaluatedFormulas[cellRef] = '#ERROR!';
           }
-        },
-        
-        // Set column width
-        setColumnWidth: (col: number, width: number) => {
-          setData(prev => ({
-            ...prev,
-            columnWidths: {
-              ...prev.columnWidths,
-              [col]: width
-            }
-          }));
-        },
-        
-        // Set row height
-        setRowHeight: (row: number, height: number) => {
-          setData(prev => ({
-            ...prev,
-            rowHeights: {
-              ...prev.rowHeights,
-              [row]: height
-            }
-          }));
-        },
-        
-        // Format cell (currency, percentage, number, etc.)
-        format: (cellRef: string, format: string) => {
-          setData(prev => ({
-            ...prev,
-            cells: {
-              ...prev.cells,
-              [cellRef]: {
-                ...prev.cells[cellRef],
-                type: format as any
-              }
-            }
-          }));
-        },
-        
-        // Create a link in a cell
-        link: (cellRef: string, text: string, url: string) => {
-          setData(prev => ({
-            ...prev,
-            cells: {
-              ...prev.cells,
-              [cellRef]: {
-                value: text,
-                type: 'link',
-                link: url
-              }
-            }
-          }));
-        },
-        
-        // Write range of values
-        writeRange: (startCell: string, endCell: string, values: any[][]) => {
-          const [startCol, startRow] = startCell.match(/([A-Z]+)(\d+)/)!.slice(1);
-          const [endCol, endRow] = endCell.match(/([A-Z]+)(\d+)/)!.slice(1);
-          const startColNum = letterToColumn(startCol);
-          const startRowNum = parseInt(startRow);
-          
-          setData(prev => {
-            const newCells = { ...prev.cells };
-            for (let i = 0; i < values.length; i++) {
-              for (let j = 0; j < values[i].length; j++) {
-                const cellRef = `${columnToLetter(startColNum + j)}${startRowNum + i}`;
-                newCells[cellRef] = {
-                  value: values[i][j],
-                  type: detectCellType(values[i][j])
-                };
-              }
-            }
-            return { ...prev, cells: newCells };
-          });
-        },
-        
-        // Create chart
-        createChart: (type: string, options: any) => {
-          console.log('Chart requested:', type, options);
-          // Store chart data for rendering
-          const chartData = {
-            type,
-            ...options,
-            timestamp: Date.now()
-          };
-          
-          // Store in a charts array (you'll need to add this to state)
-          if (typeof window !== 'undefined') {
-            (window as any).lastChart = chartData;
-          }
-          
-          // Trigger chart panel if needed
-          if (type === 'waterfall' || type === 'sankey' || type === 'heatmap') {
-            console.log(`Advanced chart ${type} requested with data:`, options);
-          }
-        },
-        
-        // Create financial chart
-        createFinancialChart: (type: string, data: any) => {
-          console.log('Financial chart requested:', type, data);
-          const chartData = {
-            type: `financial-${type}`,
-            data,
-            timestamp: Date.now()
-          };
-          
-          if (typeof window !== 'undefined') {
-            (window as any).lastFinancialChart = chartData;
-          }
-        },
-        
-        // Create advanced chart
-        createAdvancedChart: (type: string, range: string) => {
-          console.log('Advanced chart requested:', type, range);
-          const chartData = {
-            type: `advanced-${type}`,
-            range,
-            timestamp: Date.now()
-          };
-          
-          if (typeof window !== 'undefined') {
-            (window as any).lastAdvancedChart = chartData;
-          }
-        },
-        
-        // Add chart (legacy)
-        chart: (config: any) => {
-          console.log('Chart requested:', config);
-          // TODO: Implement chart rendering
         }
-      };
+        
+        // Pre-calculate conditional formatting if any
+        if (data.conditionalFormats && data.conditionalFormats.length > 0) {
+          newStyles[cellRef] = applyConditionalFormatting(cellRef);
+        }
+      }
     }
     
-    // Cleanup
-    return () => {
-      if (typeof window !== 'undefined') {
-        delete (window as any).grid;
-      }
-    };
-  }, []); // Only create once on mount
+    setCellStyles(newStyles);
+    setEvaluatedFormulas(newEvaluatedFormulas);
+  }, [data.cells, data.conditionalFormats, evaluateFormula, applyConditionalFormatting]);
+  
+  // REMOVED: Empty initialization that was clearing all data
+  // The component now starts with the initial state from useState
+  // and preserves any data that gets loaded
+
+  // Helper functions for grid API
+  const parseCellRef = (cellRef: string): [number, number] => {
+    const match = cellRef.match(/([A-Z]+)(\d+)/);
+    if (!match) throw new Error(`Invalid cell reference: ${cellRef}`);
+    
+    const col = match[1].split('').reduce((acc, char, i, arr) => {
+      return acc + (char.charCodeAt(0) - 64) * Math.pow(26, arr.length - i - 1);
+    }, 0) - 1;
+    const row = parseInt(match[2]);
+    return [col, row];
+  };
+
+  // Initialize grid API once - with proper methods and error handling
+  useEffect(() => {
+    if (!gridApiRef.current && typeof window !== 'undefined') {
+      console.log('[EnhancedSpreadsheet] Initializing grid API');
+      
+      // Create comprehensive grid API that directly manipulates state
+      gridApiRef.current = {
+        write: (cellRef: string, value: any, options?: any) => {
+          console.log(`[Grid API] Writing to ${cellRef}:`, value, options);
+          
+          setData(prev => {
+            const newCells = { ...prev.cells };
+            newCells[cellRef] = {
+              value,
+              type: detectCellType(value),
+              ...(options?.source && { source: options.source }),
+              ...(options?.sourceUrl && { sourceUrl: options.sourceUrl }),
+              ...(options?.href && { link: options.href })
+            };
+            
+            // Update dataRef immediately
+            const newData = { ...prev, cells: newCells };
+            dataRef.current = newData;
+            
+            console.log(`[Grid API] Cell ${cellRef} updated with value:`, value);
+            return newData;
+          });
+          
+          return `Written ${value} to ${cellRef}`;
+        },
+        
+        formula: (cellRef: string, formula: string) => {
+          console.log(`[Grid API] Setting formula for ${cellRef}:`, formula);
+          
+          setData(prev => {
+            const newCells = { ...prev.cells };
+            // Evaluate the formula immediately
+            const evaluatedValue = evaluateFormula(formula, cellRef);
+            
+            newCells[cellRef] = {
+              value: evaluatedValue,
+              type: 'formula',
+              formula
+            };
+            
+            // Update dataRef immediately
+            const newData = { ...prev, cells: newCells };
+            dataRef.current = newData;
+            
+            console.log(`[Grid API] Formula ${formula} evaluated to:`, evaluatedValue);
+            return newData;
+          });
+          
+          return `Formula set in ${cellRef}`;
+        },
+        
+        clear: (startCell: string, endCell?: string) => {
+          console.log(`[Grid API] Clearing ${startCell}${endCell ? ` to ${endCell}` : ''}`);
+          
+          setData(prev => {
+            const newCells = { ...prev.cells };
+            if (endCell) {
+              // Clear range
+              const [startCol, startRow] = parseCellRef(startCell);
+              const [endCol, endRow] = parseCellRef(endCell);
+              for (let r = startRow; r <= endRow; r++) {
+                for (let c = startCol; c <= endCol; c++) {
+                  delete newCells[`${columnToLetter(c)}${r}`];
+                }
+              }
+            } else {
+              // Clear single cell
+              delete newCells[startCell];
+            }
+            
+            // Update dataRef immediately
+            const newData = { ...prev, cells: newCells };
+            dataRef.current = newData;
+            
+            return newData;
+          });
+          
+          return `Cleared ${startCell}${endCell ? `:${endCell}` : ''}`;
+        },
+        
+        createChart: (type: string, config: any) => {
+          console.log(`[Grid API] Creating ${type} chart:`, config);
+          
+          // Add chart to data
+          const newChart = {
+            id: `chart-${Date.now()}`,
+            type,
+            ...config
+          };
+          
+          setData(prev => ({
+            ...prev,
+            charts: [...(prev.charts || []), newChart]
+          }));
+          
+          setChartData(prev => [...prev, newChart]);
+          
+          console.log('[Grid API] Chart created:', newChart);
+          return `Created ${type} chart`;
+        },
+        
+        style: (cellRef: string, styles: any) => {
+          console.log(`[Grid API] Styling ${cellRef}:`, styles);
+          
+          setData(prev => {
+            const newCells = { ...prev.cells };
+            newCells[cellRef] = {
+              ...newCells[cellRef],
+              style: styles
+            };
+            
+            // Update dataRef immediately
+            const newData = { ...prev, cells: newCells };
+            dataRef.current = newData;
+            
+            return newData;
+          });
+          
+          return `Styled ${cellRef}`;
+        },
+        
+        // Add method to get current state
+        getState: () => {
+          console.log('[Grid API] Getting current state');
+          return dataRef.current;
+        },
+        
+        // Add method to check if grid is ready
+        isReady: () => true,
+        
+        // Add selectCell method for compatibility
+        selectCell: (cellRef: string) => {
+          console.log(`[Grid API] Selecting cell ${cellRef}`);
+          setActiveCell(cellRef);
+          return `Selected ${cellRef}`;
+        }
+      };
+      
+      // Expose globally for agent access
+      (window as any).grid = gridApiRef.current;
+      (window as any).gridApi = gridApiRef.current;
+      
+      console.log('[EnhancedSpreadsheet] Grid API initialized and exposed globally');
+    }
+  }, [detectCellType, evaluateFormula]); // Include stable dependencies
 
   return (
     <div className="h-full flex flex-col bg-white">
@@ -1286,29 +1453,24 @@ export default function EnhancedSpreadsheet() {
                       const cell = data.cells[cellRef];
                       const isSelected = selectedCells.has(cellRef);
                       const isActive = activeCell === cellRef;
-                      const conditionalStyle = applyConditionalFormatting(cellRef);
-                      const cellStyle = { ...cell?.style, ...conditionalStyle };
                       
                       return (
-                        <td
+                        <SpreadsheetCell
                           key={cellRef}
-                          className={cn(
-                            "relative border text-sm p-1 cursor-cell",
-                            showGridLines ? "border-gray-300" : "border-transparent",
-                            isActive && "ring-2 ring-blue-500 ring-inset z-10",
-                            isSelected && !isActive && "bg-blue-50",
-                            cell?.type === 'formula' && "bg-gray-50"
-                          )}
-                          style={{
-                            ...cellStyle,
-                            height: data.rowHeights?.[row] || 24,
-                            width: data.columnWidths?.[colIndex] || 80
-                          }}
-                          onClick={() => {
+                          cellRef={cellRef}
+                          cell={cell}
+                          isSelected={isSelected}
+                          isActive={isActive}
+                          conditionalStyle={cellStyles[cellRef]}
+                          showGridLines={showGridLines}
+                          rowHeight={data.rowHeights?.[row] || 24}
+                          columnWidth={data.columnWidths?.[colIndex] || 80}
+                          evaluatedValue={evaluatedFormulas[cellRef]}
+                          onCellClick={() => {
                             setActiveCell(cellRef);
                             setSelectedCells(new Set([cellRef]));
                           }}
-                          onMouseDown={(e) => {
+                          onCellMouseDown={(e) => {
                             // Start selection
                             if (e.shiftKey) {
                               // Range selection
@@ -1346,58 +1508,12 @@ export default function EnhancedSpreadsheet() {
                               setSelectedCells(new Set([cellRef]));
                             }
                           }}
-                          onDoubleClick={() => {
+                          onCellDoubleClick={() => {
                             setIsEditing(true);
                             setEditValue(cell?.formula || cell?.value || '');
                             setTimeout(() => inputRef.current?.focus(), 0);
                           }}
-                        >
-                          {cell && (
-                            <div className={cn(
-                              "w-full h-full flex items-center",
-                              cellStyle?.textAlign === 'center' && "justify-center",
-                              cellStyle?.textAlign === 'right' && "justify-end"
-                            )}>
-                              {/* If cell has sourceUrl (citation), make it clickable */}
-                              {cell.sourceUrl || cell.link ? (
-                                <a 
-                                  href={cell.sourceUrl || cell.link} 
-                                  target="_blank" 
-                                  rel="noopener noreferrer" 
-                                  className="text-blue-600 hover:underline cursor-pointer"
-                                  title={cell.sourceUrl ? `Source: ${cell.sourceUrl}` : ''}
-                                >
-                                  {cell.type === 'currency' ? (
-                                    <span>{typeof cell.value === 'number' ? `$${cell.value.toLocaleString()}` : cell.value}</span>
-                                  ) : cell.type === 'percentage' ? (
-                                    <span>{typeof cell.value === 'number' ? `${(cell.value * 100).toFixed(1)}%` : cell.value}</span>
-                                  ) : cell.formula ? (
-                                    <span>{evaluateFormula(cell.formula, cellRef)}</span>
-                                  ) : (
-                                    <span>{cell.value}</span>
-                                  )}
-                                  {cell.sourceUrl && <Link2 className="w-3 h-3 inline ml-1" />}
-                                </a>
-                              ) : cell.type === 'link' ? (
-                                <a href={cell.value} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                                  <Link2 className="w-3 h-3 inline mr-1" />
-                                  {cell.value}
-                                </a>
-                              ) : cell.type === 'currency' ? (
-                                <span>{typeof cell.value === 'number' ? `$${cell.value.toLocaleString()}` : cell.value}</span>
-                              ) : cell.type === 'percentage' ? (
-                                <span>{typeof cell.value === 'number' ? `${(cell.value * 100).toFixed(1)}%` : cell.value}</span>
-                              ) : cell.formula ? (
-                                <span>{evaluateFormula(cell.formula, cellRef)}</span>
-                              ) : (
-                                <span>{cell.value}</span>
-                              )}
-                            </div>
-                          )}
-                          {cell?.comment && (
-                            <div className="absolute top-0 right-0 w-0 h-0 border-t-8 border-t-yellow-400 border-l-8 border-l-transparent" />
-                          )}
-                        </td>
+                        />
                       );
                     })}
                   </tr>
@@ -1444,8 +1560,48 @@ export default function EnhancedSpreadsheet() {
               </button>
             </div>
             
-            {/* Show chart if we have data */}
-            {chartData.length > 0 && chartConfig.type && (
+            {/* Show all charts created by commands */}
+            {chartData.length > 0 && (
+              <div className="mb-4 space-y-4">
+                <h4 className="text-xs font-medium text-gray-700">Generated Charts ({chartData.length})</h4>
+                {chartData.map((chart, index) => (
+                  <div key={chart.id || index} className="border border-gray-200 rounded p-2">
+                    <h5 className="text-xs font-medium mb-2">{chart.title || `Chart ${index + 1}`}</h5>
+                    {chart.data && (
+                      <SpreadsheetChart
+                        data={Array.isArray(chart.data) ? chart.data : Object.entries(chart.data).map(([key, value]) => ({ name: key, value }))}
+                        type={chart.type || 'bar'}
+                        xKey={chart.xKey || 'name'}
+                        yKeys={chart.yKeys || ['value']}
+                        title={chart.title}
+                        height={200}
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            {/* Show charts created by the agent */}
+            {data.charts && data.charts.length > 0 && (
+              <div className="space-y-4 mb-4">
+                <h3 className="text-sm font-semibold text-gray-700">Charts</h3>
+                {data.charts.map((chart: any, index: number) => (
+                  <div key={chart.id || index} className="border rounded-lg p-3">
+                    <SpreadsheetChart
+                      data={chart.data || []}
+                      type={chart.type || 'bar'}
+                      title={chart.title || `Chart ${index + 1}`}
+                      height={250}
+                      config={chart}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            {/* Show manual chart creation if we have config */}
+            {chartConfig.type && chartData.length === 0 && (
               <div className="mb-4">
                 <SpreadsheetChart
                   data={chartData}
@@ -1469,8 +1625,8 @@ export default function EnhancedSpreadsheet() {
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         const range = (e.target as HTMLInputElement).value;
-                        if (range && (window as any).grid) {
-                          (window as any).grid.createChart(selectedChart, { range, title: 'Chart' });
+                        if (range && gridApiRef.current) {
+                          gridApiRef.current.createChart(selectedChart, { range, title: 'Chart' });
                         }
                       }
                     }}
@@ -1480,8 +1636,8 @@ export default function EnhancedSpreadsheet() {
                   className="w-full px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
                   onClick={() => {
                     const input = document.querySelector('.chart-range-input') as HTMLInputElement;
-                    if (input?.value && (window as any).grid) {
-                      (window as any).grid.createChart(selectedChart, { range: input.value, title: 'Chart' });
+                    if (input?.value && gridApiRef.current) {
+                      gridApiRef.current.createChart(selectedChart, { range: input.value, title: 'Chart' });
                     }
                   }}
                 >

@@ -131,7 +131,7 @@ export default function CompanyPwermPage() {
     if (companyId) {
       fetchData();
     }
-  }, Array.from(panyId));
+  }, [companyId]);
 
   const runPwermAnalysis = async () => {
     setIsRunning(true);

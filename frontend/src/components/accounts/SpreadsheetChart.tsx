@@ -33,8 +33,8 @@ interface ChartData {
 }
 
 interface SpreadsheetChartProps {
-  data: ChartData[];
-  type: 'line' | 'bar' | 'pie' | 'area' | 'scatter' | 'radar' | 'composed';
+  data: ChartData[] | any;
+  type: 'line' | 'bar' | 'pie' | 'area' | 'scatter' | 'radar' | 'composed' | 'bubble' | 'waterfall' | 'heatmap' | 'sankey' | 'table';
   xKey?: string;
   yKeys?: string[];
   title?: string;
@@ -44,6 +44,7 @@ interface SpreadsheetChartProps {
   showLegend?: boolean;
   stacked?: boolean;
   className?: string;
+  config?: any;  // Accept full chart config from backend
 }
 
 const DEFAULT_COLORS = [
@@ -95,22 +96,43 @@ export default function SpreadsheetChart({
   showGrid = true,
   showLegend = true,
   stacked = false,
-  className
+  className,
+  config
 }: SpreadsheetChartProps) {
-  // Process data for charts
+  // Process data for charts - handle both regular data and chart config from backend
   const processedData = useMemo(() => {
+    // If we have a config object with data, use that
+    if (config?.data) {
+      // Handle Chart.js style data format
+      if (config.data.labels && config.data.datasets) {
+        // Convert Chart.js format to Recharts format
+        const labels = config.data.labels;
+        const datasets = config.data.datasets;
+        
+        return labels.map((label: string, index: number) => {
+          const item: any = { name: label };
+          datasets.forEach((dataset: any) => {
+            item[dataset.label || 'value'] = dataset.data[index];
+          });
+          return item;
+        });
+      }
+      return config.data;
+    }
+    
+    // Original processing logic
     if (type === 'pie') {
       // For pie charts, convert to name/value format
       if (yKeys.length > 0) {
-        return data.map(item => ({
-          name: item[key],
+        return data.map((item: any) => ({
+          name: item[xKey],
           value: item[yKeys[0]]
         }));
       }
       return data;
     }
     return data;
-  }, [data, type, xKey, yKeys]);
+  }, [data, type, xKey, yKeys, config]);
 
   // Detect if data contains financial metrics
   const isFinancial = useMemo(() => {

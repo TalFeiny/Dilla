@@ -15,7 +15,7 @@ function SubscriptionSuccessContent() {
       // Verify the session and get subscription details
       fetchSubscriptionDetails();
     }
-  }, Array.from(sionId));
+  }, [sessionId]);
 
   const fetchSubscriptionDetails = async () => {
     try {

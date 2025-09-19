@@ -159,6 +159,33 @@ class UnifiedMCPOrchestrator:
                 "category": SkillCategory.GENERATION,
                 "handler": self._execute_chart_generation,
                 "description": "Data visualization"
+            },
+            
+            # Cap Table & Fund Management Skills
+            "cap-table-generator": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_cap_table_generation,
+                "description": "Generate cap tables with ownership"
+            },
+            "portfolio-analyzer": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_portfolio_analysis,
+                "description": "Analyze fund portfolio performance"
+            },
+            "fund-metrics-calculator": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_fund_metrics,
+                "description": "Calculate DPI, TVPI, IRR"
+            },
+            "stage-analyzer": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_stage_analysis,
+                "description": "Multi-stage investment analysis"
+            },
+            "exit-modeler": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_exit_modeling,
+                "description": "Model exit scenarios and returns"
             }
         }
     
@@ -175,7 +202,12 @@ class UnifiedMCPOrchestrator:
         async for update in self.process_request_stream(prompt, output_format, context):
             if update.get("type") == "final":
                 result = update.get("data", {})
-        return result or {"error": "No result generated"}
+        
+        # Return in the format the endpoint expects
+        if result and not result.get("error"):
+            return {"success": True, "results": result}
+        else:
+            return {"success": False, "error": result.get("error") if result else "No result generated"}
     
     async def process_request_stream(
         self,
@@ -281,6 +313,60 @@ class UnifiedMCPOrchestrator:
                 parallel_group=1
             ))
         
+        # ALWAYS generate cap tables for any company analysis
+        if len(entities.get("companies", [])) > 0:
+            chain.append(SkillChainNode(
+                skill="cap-table-generator",
+                purpose="Generate cap tables with ownership evolution",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+        
+        # ALWAYS do valuations for investment decisions
+        if len(entities.get("companies", [])) > 0:
+            chain.append(SkillChainNode(
+                skill="valuation-engine",
+                purpose="Calculate valuations (bull/bear/base scenarios)",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+        
+        # Fund portfolio analysis - ALWAYS if fund context mentioned
+        if "fund" in prompt.lower() or "portfolio" in prompt.lower() or "deploy" in prompt.lower():
+            chain.append(SkillChainNode(
+                skill="portfolio-analyzer",
+                purpose="Analyze portfolio",
+                inputs={"context": entities},
+                parallel_group=1
+            ))
+            
+            # Fund metrics if DPI or deployment mentioned
+            if "dpi" in prompt.lower() or "deploy" in prompt.lower() or "tvpi" in prompt.lower():
+                chain.append(SkillChainNode(
+                    skill="fund-metrics-calculator",
+                    purpose="Calculate fund metrics",
+                    inputs={"context": entities},
+                    parallel_group=1
+                ))
+        
+        # Multi-stage analysis
+        if ("seed" in prompt.lower() and "series" in prompt.lower()) or "stage" in prompt.lower():
+            chain.append(SkillChainNode(
+                skill="stage-analyzer",
+                purpose="Analyze investment stages",
+                inputs={"stages": ["seed", "series_a", "series_b"]},
+                parallel_group=1
+            ))
+        
+        # ALWAYS model exit scenarios for investment decisions
+        if len(entities.get("companies", [])) > 0:
+            chain.append(SkillChainNode(
+                skill="exit-modeler",
+                purpose="Model exit scenarios (win/lose/base cases)",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+        
         # Phase 2: Generation/Formatting
         if output_format == "spreadsheet":
             chain.append(SkillChainNode(
@@ -349,6 +435,8 @@ class UnifiedMCPOrchestrator:
     
     async def _extract_entities(self, prompt: str) -> Dict[str, Any]:
         """Extract companies, funds, and other entities from prompt"""
+        import re
+        
         entities = {
             "companies": [],
             "funds": [],
@@ -356,17 +444,56 @@ class UnifiedMCPOrchestrator:
         }
         
         # Extract @Company mentions
-        import re
         company_pattern = r'@(\w+)'
         companies = re.findall(company_pattern, prompt)
         entities["companies"] = list(set(companies))
         
-        # Extract fund mentions (simple pattern)
-        if "fund" in prompt.lower():
-            # Extract fund size if mentioned
-            fund_pattern = r'(\d+(?:\.\d+)?)\s*(?:m|million|b|billion)\s+fund'
-            fund_matches = re.findall(fund_pattern, prompt.lower())
-            entities["funds"] = fund_matches
+        # Extract fund parameters
+        prompt_lower = prompt.lower()
+        
+        # Fund size (e.g., "456m fund")
+        fund_pattern = r'(\d+(?:\.\d+)?)\s*(?:m|million|b|billion)\s+fund'
+        fund_match = re.search(fund_pattern, prompt_lower)
+        if fund_match:
+            value = float(fund_match.group(1))
+            multiplier = 1_000_000 if 'm' in fund_match.group(0) else 1_000_000_000
+            entities["fund_size"] = value * multiplier
+        
+        # Remaining capital to deploy (e.g., "276m to deploy")
+        deploy_pattern = r'(\d+(?:\.\d+)?)\s*(?:m|million|b|billion)\s+to\s+deploy'
+        deploy_match = re.search(deploy_pattern, prompt_lower)
+        if deploy_match:
+            value = float(deploy_match.group(1))
+            multiplier = 1_000_000 if 'm' in deploy_match.group(0) else 1_000_000_000
+            entities["remaining_capital"] = value * multiplier
+        
+        # DPI (e.g., "0.5 dpi")
+        dpi_pattern = r'(\d+(?:\.\d+)?)\s*dpi'
+        dpi_match = re.search(dpi_pattern, prompt_lower)
+        if dpi_match:
+            entities["dpi"] = float(dpi_match.group(1))
+        
+        # Portfolio size (e.g., "16 portfolio companies")
+        portfolio_pattern = r'(\d+)\s+portfolio\s+compan'
+        portfolio_match = re.search(portfolio_pattern, prompt_lower)
+        if portfolio_match:
+            entities["portfolio_size"] = int(portfolio_match.group(1))
+        
+        # Exits (e.g., "2 exited")
+        exit_pattern = r'(\d+)\s+exit'
+        exit_match = re.search(exit_pattern, prompt_lower)
+        if exit_match:
+            entities["exits"] = int(exit_match.group(1))
+        
+        # Year and quarter (e.g., "year 3 q1")
+        year_pattern = r'year\s+(\d+)'
+        quarter_pattern = r'q(\d+)'
+        year_match = re.search(year_pattern, prompt_lower)
+        quarter_match = re.search(quarter_pattern, prompt_lower)
+        if year_match:
+            entities["deployment_year"] = int(year_match.group(1))
+        if quarter_match:
+            entities["deployment_quarter"] = int(quarter_match.group(1))
         
         return entities
     
@@ -381,7 +508,7 @@ class UnifiedMCPOrchestrator:
         if company in self._company_cache:
             cache_entry = self._company_cache[company]
             if datetime.now() - cache_entry["timestamp"] < timedelta(minutes=5):
-                return cache_entry["data"]
+                return {"companies": [cache_entry["data"]]}
         
         try:
             # Parallel Tavily searches for comprehensive data
@@ -425,6 +552,30 @@ class UnifiedMCPOrchestrator:
                 for field, inference in inferences.items():
                     if inference and hasattr(inference, 'value'):
                         extracted_data[field] = inference.value
+            
+            # ALWAYS calculate GPU-adjusted gross margin and metrics
+            try:
+                # Calculate GPU metrics
+                gpu_metrics = self.gap_filler.calculate_gpu_adjusted_metrics(extracted_data)
+                extracted_data["gpu_metrics"] = gpu_metrics
+                
+                # Calculate adjusted gross margin with GPU impact (not async)
+                margin_analysis = self.gap_filler.calculate_adjusted_gross_margin(
+                    extracted_data,
+                    base_gross_margin=extracted_data.get("gross_margin")
+                )
+                extracted_data["gross_margin_analysis"] = margin_analysis
+                extracted_data["gross_margin"] = margin_analysis["adjusted_gross_margin"]
+                
+                # Add key GPU cost fields to unit economics
+                if "unit_economics" not in extracted_data:
+                    extracted_data["unit_economics"] = {}
+                extracted_data["unit_economics"]["gpu_cost_estimate"] = f"${gpu_metrics['cost_per_transaction']:.2f}/transaction"
+                extracted_data["unit_economics"]["monthly_gpu_costs"] = gpu_metrics["monthly_gpu_costs"]
+                extracted_data["unit_economics"]["compute_intensity"] = gpu_metrics["compute_intensity"]
+                
+            except Exception as e:
+                logger.warning(f"Failed to calculate GPU metrics for {company}: {e}")
             
             # Cache the result
             self._company_cache[company] = {
@@ -822,38 +973,200 @@ class UnifiedMCPOrchestrator:
                         value = company.get("key_metrics", {}).get(metric, 0)
                     else:
                         value = company.get(metric, 0)
+                    
+                    # Handle dict values (convert to numeric)
+                    if isinstance(value, dict):
+                        # Try to extract a numeric value from dict
+                        if 'value' in value:
+                            value = value['value']
+                        elif 'amount' in value:
+                            value = value['amount']
+                        else:
+                            value = 0
+                    
+                    # Ensure numeric value
+                    try:
+                        value = float(value) if value else 0
+                    except (TypeError, ValueError):
+                        value = 0
+                        
                     values.append(value)
+                
+                # Filter out zeros for calculations
+                non_zero_values = [v for v in values if v > 0]
                 
                 comparison["metrics"][metric] = {
                     "values": values,
-                    "average": sum(values) / len(values) if values else 0,
-                    "best": max(values) if values else 0,
-                    "worst": min(values) if values else 0
+                    "average": sum(non_zero_values) / len(non_zero_values) if non_zero_values else 0,
+                    "best": max(non_zero_values) if non_zero_values else 0,
+                    "worst": min(non_zero_values) if non_zero_values else 0
                 }
             
             # Rank companies by key metrics
             for company in companies:
                 score = 0
-                score += (company.get("valuation", 0) / 1_000_000) * 0.3  # Valuation weight
-                score += (company.get("revenue", 0) / 1_000_000) * 0.3  # Revenue weight
-                score += company.get("revenue_growth", 0) * 100 * 0.2  # Growth weight
-                score += company.get("key_metrics", {}).get("gross_margin", 0) * 100 * 0.2  # Margin weight
                 
+                # Safely get numeric values
+                valuation = company.get("valuation", 0) or 0
+                revenue = company.get("revenue", 0) or 0
+                revenue_growth = company.get("revenue_growth", 0) or 0
+                gross_margin = company.get("key_metrics", {}).get("gross_margin", 0) or 0
+                
+                # Handle dict values
+                if isinstance(valuation, dict):
+                    valuation = valuation.get('value', 0) or valuation.get('amount', 0) or 0
+                if isinstance(revenue, dict):
+                    revenue = revenue.get('value', 0) or revenue.get('amount', 0) or 0
+                
+                # Calculate investment score with proper normalization
+                # Normalize valuation (cap at $1B for scoring)
+                val_score = min(float(valuation) / 1_000_000_000, 1.0) * 100 if valuation else 0
+                
+                # Normalize revenue (assume $100M is excellent)
+                rev_score = min(float(revenue) / 100_000_000, 1.0) * 100 if revenue else 0
+                
+                # Normalize growth (cap at 300% = 3.0)
+                growth_score = min(float(revenue_growth), 3.0) / 3.0 * 100 if revenue_growth else 0
+                
+                # Normalize margin (already 0-1 range)
+                margin_score = float(gross_margin) * 100 if gross_margin else 0
+                
+                # Analyze unit economics and ACV (Annual Contract Value)
+                unit_econ = company.get("unit_economics", {})
+                compute_intensity = unit_econ.get("compute_intensity", "").lower()
+                target_segment = unit_econ.get("target_segment", "").lower()
+                
+                # Estimate ACV based on target segment
+                acv_estimate = 0
+                if "fortune" in target_segment or "largest" in target_segment:
+                    acv_estimate = 500_000  # $500K+ ACV typical
+                elif "enterprise" in target_segment:
+                    acv_estimate = 100_000  # $100K ACV typical
+                elif "mid-market" in target_segment:
+                    acv_estimate = 30_000   # $30K ACV typical
+                elif "sme" in target_segment:
+                    acv_estimate = 5_000    # $5K ACV typical
+                elif "prosumer" in target_segment:
+                    acv_estimate = 500      # $500 ACV typical
+                
+                # Calculate burn based on compute intensity vs revenue (it's a spectrum)
+                # Every company now has AI costs, but impact varies by revenue base
+                base_check = 10_000_000  # $10M base for Series A
+                existing_revenue = float(revenue) if revenue else 0
+                
+                # Calculate AI spend as % of revenue
+                if any(term in compute_intensity for term in ["generates", "50 slides", "video", "image", "code"]):
+                    if existing_revenue > 50_000_000:
+                        # Large SaaS adding AI features (5-10% of revenue)
+                        ai_spend_ratio = 0.08
+                        required_check = base_check * 1.1
+                        burn_estimate = f"Sustainable ({ai_spend_ratio*100:.0f}% of ${existing_revenue/1_000_000:.0f}M revenue on AI)"
+                    elif existing_revenue > 10_000_000:
+                        # Mid-size transitioning to AI (10-20% of revenue)
+                        ai_spend_ratio = 0.15
+                        required_check = base_check * 1.5
+                        burn_estimate = f"Moderate ({ai_spend_ratio*100:.0f}% of ${existing_revenue/1_000_000:.0f}M revenue on AI)"
+                    elif existing_revenue > 1_000_000:
+                        # Small with AI features (20-40% of revenue)
+                        ai_spend_ratio = 0.30
+                        required_check = base_check * 2.0
+                        burn_estimate = f"Heavy ({ai_spend_ratio*100:.0f}% of ${existing_revenue/1_000_000:.1f}M revenue on AI)"
+                    else:
+                        # AI-first startup (could be 50-80% on compute)
+                        ai_spend_ratio = 0.60
+                        required_check = base_check * 3.0
+                        burn_estimate = "Extreme (60%+ on compute, pre-revenue)"
+                else:
+                    # Traditional SaaS still adding some AI (2-5%)
+                    ai_spend_ratio = 0.03
+                    required_check = base_check
+                    burn_estimate = f"Low (3% on AI features)"
+                
+                # Store for later use in recommendations
+                company["required_check_size"] = required_check
+                company["burn_estimate"] = burn_estimate
+                
+                # GPU costs impact scoring based on ACV
+                # Per CLAUDE.md: High GPU + ACV > $100K = still good (10-15x multiple)
+                gpu_penalty = 1.0  # No penalty by default
+                
+                # High compute workloads
+                if any(term in compute_intensity for term in ["generates", "50 slides", "video", "image", "code"]):
+                    if acv_estimate >= 100_000:
+                        gpu_penalty = 0.9  # Only 10% penalty - they can pass through costs
+                    elif acv_estimate >= 30_000:
+                        gpu_penalty = 0.7  # 30% penalty - margins squeezed
+                    else:
+                        gpu_penalty = 0.3  # 70% penalty - unit economics broken
+                
+                # Low compute = always good
+                elif any(term in compute_intensity for term in ["stores", "queries", "crud", "database"]):
+                    gpu_penalty = 1.1  # 10% bonus for low compute costs
+                
+                # Calculate weighted score
+                score = (val_score * 0.25 +     # 25% weight on valuation
+                        rev_score * 0.35 +       # 35% weight on revenue
+                        growth_score * 0.25 +    # 25% weight on growth
+                        margin_score * 0.15      # 15% weight on margins
+                        ) * gpu_penalty
+                
+                # Add detailed scoring breakdown
                 comparison["companies"].append({
                     "name": company.get("company"),
                     "score": round(score, 2),
                     "stage": company.get("stage"),
-                    "sector": company.get("sector")
+                    "sector": company.get("sector"),
+                    "business_model": company.get("business_model"),
+                    "valuation": valuation,
+                    "revenue": revenue,
+                    "growth": revenue_growth,
+                    "margin": gross_margin,
+                    "gpu_intensive": is_ai_company,
+                    "score_breakdown": {
+                        "valuation_score": round(val_score, 1),
+                        "revenue_score": round(rev_score, 1),
+                        "growth_score": round(growth_score, 1),
+                        "margin_score": round(margin_score, 1),
+                        "gpu_penalty_applied": gpu_penalty < 1.0
+                    }
                 })
             
             # Sort by score
             comparison["companies"] = sorted(comparison["companies"], key=lambda x: x["score"], reverse=True)
             
-            # Generate recommendations
-            top_company = comparison["companies"][0] if comparison["companies"] else None
-            if top_company:
-                comparison["recommendations"].append(
-                    f"Top investment opportunity: {top_company['name']} with score {top_company['score']}"
+            # Generate detailed investment recommendations
+            if comparison["companies"]:
+                top_company = comparison["companies"][0]
+                
+                # Analyze entry points
+                for company in comparison["companies"]:
+                    stage = company.get("stage", "Unknown").lower()
+                    
+                    # Entry point analysis with burn considerations
+                    required_check = company.get("required_check_size", 10_000_000)
+                    burn_estimate = company.get("burn_estimate", "Unknown")
+                    
+                    if "seed" in stage:
+                        entry_analysis = f"Early entry with high risk/reward. Typical $2-5M valuation, 20-30% ownership possible."
+                    elif "series a" in stage or "a" in stage:
+                        entry_analysis = f"Growth stage entry. Typical $20-50M valuation, 10-20% ownership possible. Required check: ${required_check/1_000_000:.0f}M"
+                    elif "series b" in stage or "b" in stage:
+                        entry_analysis = f"Later stage, lower risk. Typical $100-200M valuation, 5-10% ownership possible. Required check: ${required_check*2/1_000_000:.0f}M"
+                    else:
+                        entry_analysis = "Stage unclear, requires further analysis."
+                    
+                    # Burn rate impact
+                    gpu_analysis = ""
+                    if company.get("gpu_intensive") or burn_estimate.startswith("High"):
+                        gpu_analysis = f" BURN RATE: {burn_estimate}. Needs larger rounds to reach profitability."
+                    
+                    comparison["recommendations"].append(
+                        f"{company['name']} (Score: {company['score']}): {entry_analysis}{gpu_analysis}"
+                    )
+                
+                # Winner recommendation
+                comparison["recommendations"].insert(0,
+                    f"RECOMMENDED: {top_company['name']} - Better entry point based on score/stage/market combination."
                 )
             
             return {"deal_comparison": comparison}
@@ -1170,6 +1483,480 @@ Mitigation strategies include portfolio diversification and staged investment ap
             logger.error(f"Chart generation error: {e}")
             return {"error": str(e)}
     
+    async def _execute_cap_table_generation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate cap tables with ownership percentages"""
+        try:
+            companies = self.shared_data.get("companies", [])
+            cap_tables = {}
+            
+            for company in companies:
+                company_name = company.get("company", "Unknown")
+                
+                # Get funding rounds from company data
+                funding_rounds = company.get("funding_rounds", [])
+                
+                if not funding_rounds:
+                    # Generate rounds using industry benchmarks for funding amounts
+                    stage = company.get("stage", "")
+                    current_valuation = company.get("valuation", 0)
+                    
+                    # Standard funding amounts by stage (industry benchmarks)
+                    stage_amounts = {
+                        "seed": 1_500_000,      # $1.5M seed round
+                        "series_a": 8_000_000,   # $8M Series A
+                        "series_b": 25_000_000,  # $25M Series B
+                        "series_c": 50_000_000   # $50M Series C
+                    }
+                    
+                    if "seed" in stage.lower():
+                        # Seed stage company
+                        seed_val = 10_000_000  # $10M post-money typical seed
+                        funding_rounds = [
+                            {"round": "Seed", "amount": stage_amounts["seed"], "valuation": seed_val}
+                        ]
+                    elif "series a" in stage.lower() or "a" in stage:
+                        # Series A company
+                        seed_val = 10_000_000
+                        a_val = 50_000_000  # $50M post-money typical Series A
+                        funding_rounds = [
+                            {"round": "Seed", "amount": stage_amounts["seed"], "valuation": seed_val},
+                            {"round": "Series A", "amount": stage_amounts["series_a"], "valuation": a_val}
+                        ]
+                    elif "series b" in stage.lower() or "b" in stage:
+                        # Series B company
+                        seed_val = 10_000_000
+                        a_val = 50_000_000
+                        b_val = 200_000_000  # $200M post-money typical Series B
+                        funding_rounds = [
+                            {"round": "Seed", "amount": stage_amounts["seed"], "valuation": seed_val},
+                            {"round": "Series A", "amount": stage_amounts["series_a"], "valuation": a_val},
+                            {"round": "Series B", "amount": stage_amounts["series_b"], "valuation": b_val}
+                        ]
+                    elif "series c" in stage.lower() or "c" in stage:
+                        # Series C company
+                        seed_val = 10_000_000
+                        a_val = 50_000_000
+                        b_val = 200_000_000
+                        c_val = 500_000_000  # $500M post-money typical Series C
+                        funding_rounds = [
+                            {"round": "Seed", "amount": stage_amounts["seed"], "valuation": seed_val},
+                            {"round": "Series A", "amount": stage_amounts["series_a"], "valuation": a_val},
+                            {"round": "Series B", "amount": stage_amounts["series_b"], "valuation": b_val},
+                            {"round": "Series C", "amount": stage_amounts["series_c"], "valuation": c_val}
+                        ]
+                
+                # Use PrePostCapTable service to calculate
+                # Pass funding rounds directly as the service expects
+                cap_table = self.cap_table_service.calculate_full_cap_table_history(
+                    company_data=funding_rounds
+                )
+                
+                cap_tables[company_name] = cap_table
+            
+            return {
+                "cap_tables": cap_tables,
+                "company_count": len(cap_tables)
+            }
+            
+        except Exception as e:
+            logger.error(f"Cap table generation error: {e}")
+            return {"error": str(e)}
+    
+    async def _execute_portfolio_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze fund portfolio performance"""
+        try:
+            context = inputs.get("context", {})
+            companies = self.shared_data.get("companies", [])
+            
+            # Extract fund parameters from context or defaults
+            fund_size = context.get("fund_size", 456_000_000)  # $456M
+            remaining_capital = context.get("remaining_capital", 276_000_000)  # $276M to deploy
+            portfolio_size = context.get("portfolio_size", 16)
+            exits = context.get("exits", 2)
+            
+            portfolio_analysis = {
+                "fund_overview": {
+                    "total_fund_size": fund_size,
+                    "deployed_capital": fund_size - remaining_capital,
+                    "remaining_capital": remaining_capital,
+                    "deployment_rate": (fund_size - remaining_capital) / fund_size,
+                    "portfolio_companies": portfolio_size,
+                    "exits_completed": exits,
+                    "active_investments": portfolio_size - exits
+                },
+                "investment_strategy": {
+                    "avg_check_size": (fund_size - remaining_capital) / portfolio_size if portfolio_size > 0 else 0,
+                    "remaining_investments": int(remaining_capital / ((fund_size - remaining_capital) / portfolio_size)) if portfolio_size > 0 else 0,
+                    "capital_per_stage": {
+                        "seed": remaining_capital * 0.2,
+                        "series_a": remaining_capital * 0.4,
+                        "series_b": remaining_capital * 0.4
+                    }
+                },
+                "analyzed_companies": []
+            }
+            
+            # Analyze how the new companies fit
+            for company in companies:
+                company_fit = {
+                    "name": company.get("company"),
+                    "stage": company.get("stage"),
+                    "recommended_investment": min(
+                        portfolio_analysis["investment_strategy"]["avg_check_size"],
+                        company.get("valuation", 0) * 0.1  # Target 10% ownership
+                    ),
+                    "expected_ownership": min(0.1, portfolio_analysis["investment_strategy"]["avg_check_size"] / company.get("valuation", 1)),
+                    "fit_score": self._calculate_fit_score(company, portfolio_analysis)
+                }
+                portfolio_analysis["analyzed_companies"].append(company_fit)
+            
+            return {"portfolio_analysis": portfolio_analysis}
+            
+        except Exception as e:
+            logger.error(f"Portfolio analysis error: {e}")
+            return {"error": str(e)}
+    
+    async def _execute_fund_metrics(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculate DPI, TVPI, IRR and other fund metrics"""
+        try:
+            context = inputs.get("context", {})
+            
+            # Extract fund parameters
+            fund_size = context.get("fund_size", 456_000_000)
+            dpi = context.get("dpi", 0.5)  # 0.5 DPI non-recycled
+            remaining_capital = context.get("remaining_capital", 276_000_000)
+            portfolio_size = context.get("portfolio_size", 16)
+            exits = context.get("exits", 2)
+            
+            deployed = fund_size - remaining_capital
+            distributed = fund_size * dpi
+            
+            # Calculate metrics
+            metrics = {
+                "performance_metrics": {
+                    "dpi": dpi,  # Distributed to Paid-In
+                    "rvpi": remaining_capital / fund_size,  # Residual Value to Paid-In
+                    "tvpi": dpi + (remaining_capital / fund_size),  # Total Value to Paid-In
+                    "deployed_percentage": deployed / fund_size,
+                    "distributed_capital": distributed,
+                    "unrealized_value": deployed - distributed + remaining_capital
+                },
+                "portfolio_metrics": {
+                    "total_companies": portfolio_size,
+                    "exited_companies": exits,
+                    "active_companies": portfolio_size - exits,
+                    "avg_exit_multiple": distributed / (deployed * (exits / portfolio_size)) if exits > 0 else 0,
+                    "required_exit_multiple": 3.0  # Target for remaining portfolio
+                },
+                "deployment_metrics": {
+                    "year": 3,
+                    "quarter": 1,
+                    "remaining_to_deploy": remaining_capital,
+                    "deployment_pace": remaining_capital / 8,  # Over 2 years (8 quarters)
+                    "target_investments": 8,  # New investments from remaining capital
+                    "avg_new_check": remaining_capital / 8
+                }
+            }
+            
+            return {"fund_metrics": metrics}
+            
+        except Exception as e:
+            logger.error(f"Fund metrics calculation error: {e}")
+            return {"error": str(e)}
+    
+    async def _execute_stage_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze companies across different funding stages"""
+        try:
+            stages = inputs.get("stages", ["seed", "series_a", "series_b"])
+            companies = self.shared_data.get("companies", [])
+            
+            stage_analysis = {}
+            
+            for stage in stages:
+                stage_key = stage.replace("_", " ").title()
+                
+                # Calculate stage-specific metrics for each company
+                stage_metrics = []
+                for company in companies:
+                    # Use benchmark valuations and funding amounts for each stage
+                    
+                    if stage == "seed":
+                        stage_val = 10_000_000  # $10M post-money seed
+                        stage_funding = 1_500_000  # $1.5M raised
+                        stage_rev = 0  # Pre-revenue typically
+                        stage_ownership = stage_funding / stage_val  # 15% dilution
+                    elif stage == "series_a":
+                        stage_val = 50_000_000  # $50M post-money Series A  
+                        stage_funding = 8_000_000  # $8M raised
+                        stage_rev = 2_000_000  # ~$2M ARR typical at A
+                        stage_ownership = stage_funding / stage_val  # 16% dilution
+                    else:  # series_b
+                        stage_val = 200_000_000  # $200M post-money Series B
+                        stage_funding = 25_000_000  # $25M raised
+                        stage_rev = 10_000_000  # ~$10M ARR typical at B
+                        stage_ownership = stage_funding / stage_val  # 12.5% dilution
+                    
+                    stage_metrics.append({
+                        "company": company.get("company"),
+                        "valuation_at_stage": stage_val,
+                        "funding_amount": stage_funding,
+                        "ownership_given": stage_ownership,
+                        "revenue_at_stage": stage_rev,
+                        "employees_at_stage": self._estimate_employees_at_stage(stage, company.get("team_size", 10)),
+                        "growth_to_next": 3.0 if stage != "series_b" else 2.0  # Growth multiple to next stage
+                    })
+                
+                stage_analysis[stage_key] = {
+                    "companies": stage_metrics,
+                    "avg_valuation": sum(m["valuation_at_stage"] for m in stage_metrics) / len(stage_metrics) if stage_metrics else 0,
+                    "avg_revenue": sum(m["revenue_at_stage"] for m in stage_metrics) / len(stage_metrics) if stage_metrics else 0,
+                    "typical_check_size": self._get_typical_check_size(stage),
+                    "typical_ownership": self._get_typical_ownership(stage)
+                }
+            
+            return {"stage_analysis": stage_analysis}
+            
+        except Exception as e:
+            logger.error(f"Stage analysis error: {e}")
+            return {"error": str(e)}
+    
+    async def _execute_exit_modeling(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Model exit scenarios and returns WITH FUND OWNERSHIP"""
+        try:
+            companies = self.shared_data.get("companies", [])
+            context = inputs.get("context", {})
+            
+            # Fund parameters
+            fund_size = context.get("fund_size", 126_000_000)
+            typical_check = 10_000_000  # $10M typical check for Series A/B
+            
+            exit_scenarios = []
+            
+            for company in companies:
+                company_name = company.get("company")
+                # Use latest_valuation or fallback to other valuation fields
+                current_val = (company.get("latest_valuation") or 
+                             company.get("valuation") or 
+                             company.get("post_money_valuation") or 
+                             100_000_000)  # Default $100M if no valuation
+                
+                # Determine appropriate entry point based on stage
+                stage = company.get("stage", "").lower()
+                if "seed" in stage:
+                    entry_valuation = 50_000_000  # Enter at Series A
+                    our_check_size = 5_000_000
+                elif "series a" in stage or "a" in stage:
+                    entry_valuation = 150_000_000  # Enter at late A/early B
+                    our_check_size = 10_000_000
+                elif "series b" in stage or "b" in stage:
+                    entry_valuation = current_val  # Current valuation
+                    our_check_size = 15_000_000
+                else:  # Later stage
+                    entry_valuation = current_val
+                    our_check_size = 10_000_000
+                
+                # Calculate our ownership
+                our_ownership = (our_check_size / (entry_valuation + our_check_size)) * 100
+                
+                # Analyze moat and momentum
+                moat_score = self._calculate_moat_score(company)
+                momentum_score = self._calculate_momentum_score(company)
+                
+                # Model different exit scenarios with REALISTIC multiples
+                scenarios = {
+                    "bear": {
+                        "exit_valuation": entry_valuation * 2,  # 2x from entry
+                        "probability": 0.3,
+                        "timeline_years": 3,
+                        "irr": ((2 ** (1/3)) - 1) * 100,  # ~26% IRR
+                        "our_proceeds": our_check_size * 2,
+                        "dpi_contribution": (our_check_size * 2) / fund_size
+                    },
+                    "base": {
+                        "exit_valuation": entry_valuation * 5,  # 5x from entry
+                        "probability": 0.5,
+                        "timeline_years": 5,
+                        "irr": ((5 ** (1/5)) - 1) * 100,  # ~38% IRR
+                        "our_proceeds": our_check_size * 5,
+                        "dpi_contribution": (our_check_size * 5) / fund_size
+                    },
+                    "bull": {
+                        "exit_valuation": entry_valuation * 10,  # 10x from entry
+                        "probability": 0.2,
+                        "timeline_years": 7,
+                        "irr": ((10 ** (1/7)) - 1) * 100,  # ~39% IRR
+                        "our_proceeds": our_check_size * 10,
+                        "dpi_contribution": (our_check_size * 10) / fund_size
+                    }
+                }
+                
+                # Calculate expected returns
+                expected_value = sum(
+                    s["exit_valuation"] * s["probability"]
+                    for s in scenarios.values()
+                )
+                
+                # Calculate revenue multiples
+                revenue = company.get("revenue", 10_000_000)
+                revenue_growth = company.get("revenue_growth", 30)
+                
+                exit_scenarios.append({
+                    "company": company_name,
+                    "current_valuation": current_val,
+                    "current_revenue": revenue,
+                    "revenue_growth": revenue_growth,
+                    "entry_valuation": entry_valuation,
+                    "our_check_size": our_check_size,
+                    "our_ownership": our_ownership,
+                    "moat_score": moat_score,
+                    "momentum_score": momentum_score,
+                    "scenarios": scenarios,
+                    "expected_exit_value": expected_value,
+                    "expected_multiple": expected_value / entry_valuation if entry_valuation > 0 else 0,
+                    "revenue_multiple": current_val / revenue if revenue > 0 else 0,
+                    "exit_type": "M&A" if expected_value < 1_000_000_000 else "IPO",
+                    "investment_recommendation": self._get_investment_recommendation(moat_score, momentum_score, our_ownership)
+                })
+            
+            return {
+                "exit_modeling": {
+                    "scenarios": exit_scenarios,
+                    "portfolio_expected_value": sum(s["expected_exit_value"] for s in exit_scenarios),
+                    "avg_expected_multiple": sum(s["expected_multiple"] for s in exit_scenarios) / len(exit_scenarios) if exit_scenarios else 0
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Exit modeling error: {e}")
+            return {"error": str(e)}
+    
+    def _calculate_fit_score(self, company: Dict, portfolio: Dict) -> float:
+        """Calculate how well a company fits the fund's strategy"""
+        score = 0.5  # Base score
+        
+        # Stage alignment
+        if company.get("stage", "").lower() in ["series a", "series b"]:
+            score += 0.2
+        
+        # Valuation fit
+        avg_check = portfolio["investment_strategy"]["avg_check_size"]
+        if company.get("valuation", 0) > 0:
+            ownership = avg_check / company.get("valuation", 1)
+            if 0.05 <= ownership <= 0.15:  # Good ownership range
+                score += 0.2
+        
+        # Sector (AI/ML gets bonus)
+        if "ai" in company.get("sector", "").lower() or "ml" in company.get("sector", "").lower():
+            score += 0.1
+        
+        return min(1.0, score)
+    
+    def _estimate_employees_at_stage(self, stage: str, current_size: int = None) -> int:
+        """Estimate employee count at different stages"""
+        if current_size is None:
+            # Use typical sizes if no current size provided
+            typical_sizes = {"seed": 5, "series_a": 25, "series_b": 100}
+            return typical_sizes.get(stage, 10)
+            
+        if stage == "seed":
+            return min(5, int(current_size * 0.1))
+        elif stage == "series_a":
+            return min(25, int(current_size * 0.3))
+        else:  # series_b
+            return min(100, int(current_size * 0.7))
+    
+    def _get_typical_check_size(self, stage: str) -> float:
+        """Get typical check size for a stage"""
+        sizes = {
+            "seed": 500_000,
+            "series_a": 5_000_000,
+            "series_b": 15_000_000
+        }
+        return sizes.get(stage, 1_000_000)
+    
+    def _get_typical_ownership(self, stage: str) -> float:
+        """Get typical ownership target for a stage"""
+        ownership = {
+            "seed": 0.10,
+            "series_a": 0.15,
+            "series_b": 0.10
+        }
+        return ownership.get(stage, 0.10)
+    
+    def _calculate_moat_score(self, company: Dict[str, Any]) -> float:
+        """Calculate competitive moat score (0-1)"""
+        score = 0.0
+        
+        # Proprietary technology (GPU analysis shows own models)
+        if company.get("gross_margin_analysis", {}).get("api_dependency_level") == "own_models":
+            score += 0.3
+        
+        # Customer stickiness (enterprise customers)
+        customers = company.get("customers", [])
+        if any("fortune 500" in str(c).lower() for c in customers):
+            score += 0.2
+        
+        # Sector defensibility
+        sector = company.get("sector", "").lower()
+        if "defense" in sector or "healthcare" in sector:
+            score += 0.2  # Regulated sectors have moats
+        
+        # Network effects
+        if "platform" in company.get("business_model", "").lower():
+            score += 0.1
+        
+        # Gross margin strength (after GPU costs)
+        if company.get("gross_margin", 0) > 0.7:
+            score += 0.2
+        
+        return min(1.0, score)
+    
+    def _calculate_momentum_score(self, company: Dict[str, Any]) -> float:
+        """Calculate growth momentum score (0-1)"""
+        score = 0.0
+        
+        # Revenue growth
+        growth = company.get("revenue_growth", 0)
+        if growth > 100:
+            score += 0.4
+        elif growth > 50:
+            score += 0.3
+        elif growth > 30:
+            score += 0.2
+        
+        # Funding momentum (recent rounds)
+        funding_rounds = company.get("funding_rounds", [])
+        if funding_rounds:
+            latest_date = funding_rounds[0].get("date", "")
+            if "2024" in latest_date or "2025" in latest_date:
+                score += 0.2  # Recent funding
+        
+        # Team growth
+        team_size = company.get("team_size", 0)
+        if team_size > 100:
+            score += 0.2
+        elif team_size > 50:
+            score += 0.1
+        
+        # Market timing (AI companies get boost in 2024-2025)
+        if "ai" in company.get("sector", "").lower():
+            score += 0.2
+        
+        return min(1.0, score)
+    
+    def _get_investment_recommendation(self, moat: float, momentum: float, ownership: float) -> str:
+        """Generate investment recommendation based on scores"""
+        combined_score = (moat * 0.5) + (momentum * 0.3) + (min(ownership / 15, 1.0) * 0.2)
+        
+        if combined_score > 0.7:
+            return "🚀 STRONG BUY - Lead the round"
+        elif combined_score > 0.5:
+            return "✅ BUY - Participate in round"
+        elif combined_score > 0.3:
+            return "🔶 CONSIDER - Need more diligence"
+        else:
+            return "⚠️ PASS - Better opportunities available"
+    
     async def _format_output(
         self,
         results: Dict[str, Any],
@@ -1184,19 +1971,27 @@ Mitigation strategies include portfolio diversification and staged investment ap
             **results
         }
         
+        # Debug logging to see companies
+        logger.info(f"Companies in shared_data: {len(self.shared_data.get('companies', []))}")
+        if self.shared_data.get('companies'):
+            for company in self.shared_data.get('companies', []):
+                logger.info(f"  - {company.get('company', 'Unknown')}")
+        
         # Ensure we have companies in the right format
         companies_list = []
         
-        # Check different possible locations for companies
-        if "company-data-fetcher" in results:
-            fetcher_data = results["company-data-fetcher"]
-            if isinstance(fetcher_data, dict) and "companies" in fetcher_data:
-                companies_list = fetcher_data["companies"]
+        # First add companies from shared_data
+        if "companies" in final_data:
+            companies_list = final_data["companies"]
+            logger.info(f"Got {len(companies_list)} companies from final_data")
         
-        if not companies_list and "companies" in self.shared_data:
-            companies_list = self.shared_data["companies"]
+        # Companies should already be in final_data from shared_data merge
+        # Just ensure the companies list is present
+        if not companies_list and "companies" in final_data:
+            companies_list = final_data["companies"]
+            logger.info(f"Using {len(companies_list)} companies from final_data")
             
-        # Update final data with companies list
+        # Update final data with companies list (should already be there but ensure it)
         final_data["companies"] = companies_list
         
         # Format based on output type
@@ -1267,11 +2062,39 @@ Mitigation strategies include portfolio diversification and staged investment ap
     
     def _format_analysis(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Format data for analysis output"""
-        return {
+        # Extract skill results from their skill names
+        formatted = {
             "type": "analysis",
-            "data": data,
-            "summary": self._generate_summary(data)
+            "companies": data.get("companies", [])
         }
+        
+        # Extract results from skill outputs
+        if "deal-comparer" in data and isinstance(data["deal-comparer"], dict):
+            formatted["comparison"] = data["deal-comparer"].get("deal_comparison", {})
+        
+        if "cap-table-generator" in data and isinstance(data["cap-table-generator"], dict):
+            formatted["cap_tables"] = data["cap-table-generator"].get("cap_tables", {})
+        
+        if "portfolio-analyzer" in data and isinstance(data["portfolio-analyzer"], dict):
+            formatted["portfolio_analysis"] = data["portfolio-analyzer"].get("portfolio_analysis", {})
+        
+        if "fund-metrics-calculator" in data and isinstance(data["fund-metrics-calculator"], dict):
+            formatted["fund_metrics"] = data["fund-metrics-calculator"].get("fund_metrics", {})
+        
+        if "stage-analyzer" in data and isinstance(data["stage-analyzer"], dict):
+            formatted["stage_analysis"] = data["stage-analyzer"].get("stage_analysis", {})
+        
+        if "exit-modeler" in data and isinstance(data["exit-modeler"], dict):
+            formatted["exit_modeling"] = data["exit-modeler"].get("exit_modeling", {})
+        
+        if "valuation-engine" in data and isinstance(data["valuation-engine"], dict):
+            formatted["valuations"] = data["valuation-engine"].get("valuations", {})
+        
+        # Generate comprehensive summary
+        formatted["summary"] = self._generate_comprehensive_summary(formatted)
+        
+        # Remove empty sections
+        return {k: v for k, v in formatted.items() if v}
     
     def _generate_spreadsheet_columns(self, data: Dict[str, Any]) -> List[str]:
         """Generate column headers for spreadsheet"""
@@ -1371,6 +2194,54 @@ Mitigation strategies include portfolio diversification and staged investment ap
         """Generate summary for analysis"""
         return "Analysis complete"
     
+    def _generate_comprehensive_summary(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate comprehensive summary of all analysis"""
+        summary = {
+            "overview": "",
+            "key_findings": [],
+            "recommendations": []
+        }
+        
+        # Companies overview
+        companies = data.get("companies", [])
+        if companies:
+            summary["overview"] = f"Analyzed {len(companies)} companies: {', '.join(c.get('company', '') for c in companies)}"
+        
+        # Key findings from each skill
+        if "deal_comparison" in data:
+            comp = data["deal_comparison"]
+            if comp and "companies" in comp and comp["companies"]:
+                top = comp["companies"][0]
+                summary["key_findings"].append(f"Top ranked: {top.get('name')} with score {top.get('score')}")
+        
+        if "fund_metrics" in data:
+            metrics = data["fund_metrics"]
+            if metrics and "performance_metrics" in metrics:
+                perf = metrics["performance_metrics"]
+                summary["key_findings"].append(f"Fund Performance: {perf.get('dpi', 0):.1f}x DPI, {perf.get('tvpi', 0):.1f}x TVPI")
+        
+        if "portfolio_analysis" in data:
+            portfolio = data["portfolio_analysis"]
+            if portfolio and "fund_overview" in portfolio:
+                overview = portfolio["fund_overview"]
+                summary["key_findings"].append(
+                    f"Portfolio: {overview.get('portfolio_companies')} companies, "
+                    f"{overview.get('exits_completed')} exits, "
+                    f"${overview.get('remaining_capital', 0)/1_000_000:.0f}M to deploy"
+                )
+        
+        # Recommendations
+        if "portfolio_analysis" in data:
+            analyzed = data["portfolio_analysis"].get("analyzed_companies", [])
+            for company_fit in analyzed:
+                if company_fit.get("fit_score", 0) > 0.7:
+                    summary["recommendations"].append(
+                        f"Invest ${company_fit.get('recommended_investment', 0)/1_000_000:.1f}M in {company_fit.get('name')} "
+                        f"for {company_fit.get('expected_ownership', 0)*100:.1f}% ownership"
+                    )
+        
+        return summary
+    
     async def _extract_comprehensive_profile(
         self, 
         company_name: str, 
@@ -1426,9 +2297,9 @@ Extract and return a JSON object with the following structure. BE SPECIFIC, not 
 {{
     "company": "{company_name}",
     "website_url": "actual company website URL if found, otherwise null",
-    "business_model": "SPECIFIC description like 'AI-powered code generation IDE' or 'PropTech lettings management platform', NOT generic like 'SaaS' or 'Software'",
-    "sector": "SPECIFIC sector like 'Healthcare AI', 'PropTech', 'DevTools', NOT generic like 'Technology'",
-    "category": "SPECIFIC category like 'AI Code Assistant', 'Property Management', NOT generic",
+    "business_model": "ULTRA-SPECIFIC description of what they do. Examples: 'AI-powered medical consultation analysis', 'ML infrastructure and model serving platform', 'Defense contractor drone detection system', 'B2B payments automation for SMBs'. NEVER use generic terms like SaaS, Software, Platform alone",
+    "sector": "SPECIFIC vertical/industry they serve. Examples: 'Healthcare AI', 'Defense Technology', 'ML Infrastructure', 'PropTech', 'FinTech Payments', 'DevTools', 'LegalTech'. NEVER just 'Technology' or 'Software'",
+    "category": "SPECIFIC product category. Examples: 'Clinical AI Assistant', 'MLOps Platform', 'Counter-drone Systems', 'Payment Rails', 'Code Generation IDE'. Be precise about what the product actually does",
     "stage": "Seed/Series A/Series B/etc",
     "founded_year": 2020,
     "headquarters": "City, Country",
@@ -1464,53 +2335,96 @@ Extract and return a JSON object with the following structure. BE SPECIFIC, not 
     "target_market": "Who they sell to",
     "pricing_model": "How they charge (per seat, usage-based, etc)",
     "technology_stack": ["Tech 1", "Tech 2"],
-    "recent_news": ["Recent development 1", "Recent development 2"]
+    "recent_news": ["Recent development 1", "Recent development 2"],
+    "unit_economics": {{
+        "unit_of_work": "What is one unit of value? (e.g., 'one presentation generated', 'one API call', 'one month of access', 'one document processed')",
+        "compute_intensity": "What happens computationally? (e.g., 'generates 50 slides with AI', 'searches 100M documents', 'processes video stream', 'stores and queries data')",
+        "target_segment": "prosumer|SME|mid-market|enterprise|Fortune 500",
+        "pricing_per_unit": "Estimated price they charge per unit if known",
+        "gpu_cost_estimate": "Rough GPU/compute cost for that unit of work"
+    }}
 }}
 
-IMPORTANT RULES:
+CRITICAL EXTRACTION RULES:
 1. For website_url, choose the most likely official company website from the domains found
 2. If {company_name.lower()}.com/io/ai exists in domains, prefer that
 3. For UK companies, check for .co.uk or .group domains
-4. Be SPECIFIC in business_model and sector - describe what they actually do
+
+BUSINESS MODEL EXTRACTION (MOST IMPORTANT):
+- Read the search results carefully to understand WHAT THE COMPANY ACTUALLY DOES
+- Look for phrases like "builds", "develops", "provides", "helps", "enables"
+- Extract the SPECIFIC product/service, not generic categories
+- BAD: "SaaS", "Software", "Platform", "Technology company"
+- GOOD: "AI medical scribe for doctor consultations", "Infrastructure for ML model deployment", "Automated drone detection for airports"
+
+SECTOR EXTRACTION:
+- Identify the INDUSTRY or VERTICAL they serve
+- BAD: "Technology", "Software", "IT"  
+- GOOD: "Healthcare AI", "Defense Tech", "FinTech Infrastructure", "LegalTech", "EdTech", "AgTech"
+
 5. If you find funding data, include specific amounts and dates
 6. Set null for any field you cannot find data for
 7. DO NOT make up data - use null if not found
 
 Return ONLY the JSON object, no other text."""
 
-            if self.claude:
-                response = await self.claude.messages.create(
-                    model="claude-3-5-sonnet-20241022",
-                    max_tokens=4000,
-                    temperature=0.1,
-                    messages=[
-                        {"role": "user", "content": extraction_prompt}
-                    ]
-                )
+            # ALWAYS use Claude for extraction - it's critical for accurate business model detection
+            if not self.claude:
+                logger.error("Claude client not initialized! Cannot extract company data properly.")
+                raise ValueError("Claude API is required for company extraction")
+            
+            response = await self.claude.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=4000,
+                temperature=0.1,
+                messages=[
+                    {"role": "user", "content": extraction_prompt}
+                ]
+            )
+            
+            # Parse Claude's response
+            response_text = response.content[0].text if response.content else "{}"
+            
+            # Clean and parse JSON
+            import json
+            # Remove any markdown formatting if present
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0]
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0]
+            
+            try:
+                extracted_data = json.loads(response_text)
                 
-                # Parse Claude's response
-                response_text = response.content[0].text if response.content else "{}"
+                # IMPORTANT: Never override specific business models with generic ones
+                # Validate that we got specific descriptions, not generic
+                if extracted_data.get("business_model") in ["SaaS", "Software", "Technology", "Tech"]:
+                    logger.warning(f"Got generic business model for {company_name}: {extracted_data.get('business_model')}")
+                    # Try to extract from search content directly
+                    for result in search_results:
+                        if result and 'results' in result:
+                            for r in result['results'][:2]:
+                                content = r.get('content', '').lower()
+                                # Look for specific keywords to improve categorization
+                                if 'ai' in content and 'code' in content:
+                                    extracted_data["business_model"] = "AI-powered development tools"
+                                    break
+                                elif 'healthcare' in content and ('ai' in content or 'ml' in content):
+                                    extracted_data["business_model"] = "Healthcare AI platform"
+                                    break
+                                elif 'proptech' in content or 'property' in content:
+                                    extracted_data["business_model"] = "PropTech platform"
+                                    break
+                                elif 'fintech' in content or 'payments' in content:
+                                    extracted_data["business_model"] = "FinTech platform"
+                                    break
                 
-                # Clean and parse JSON
-                import json
-                # Remove any markdown formatting if present
-                if "```json" in response_text:
-                    response_text = response_text.split("```json")[1].split("```")[0]
-                elif "```" in response_text:
-                    response_text = response_text.split("```")[1].split("```")[0]
-                
-                try:
-                    extracted_data = json.loads(response_text)
-                except json.JSONDecodeError:
-                    logger.error(f"Failed to parse Claude response: {response_text[:500]}")
-                    extracted_data = {"company": company_name}
-            else:
-                # Fallback extraction without Claude
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse Claude response: {response_text[:500]}")
+                # Still try to get basic data
                 extracted_data = {
                     "company": company_name,
-                    "website_url": None,
-                    "business_model": "Technology company",
-                    "sector": "Technology"
+                    "website_url": None
                 }
                 
                 # Try to find website URL from search results

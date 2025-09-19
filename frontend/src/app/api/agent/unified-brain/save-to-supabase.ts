@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
+  process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
 export async function saveToSupabase(
@@ -15,7 +15,7 @@ export async function saveToSupabase(
   try {
     // Save to model_corrections table (existing RL table)
     const { data, error } = await supabase
-      .table('model_corrections')
+      .from('model_corrections')
       .insert([{
         company_name: metadata?.company || format,
         model_type: 'qwen3:latest',

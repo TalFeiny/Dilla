@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Re-render Loop Detection</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        .success { color: green; font-weight: bold; }
+        .error { color: red; font-weight: bold; }
+        .warning { color: orange; }
+        #logs { background: #f0f0f0; padding: 10px; margin-top: 20px; height: 300px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h1>Re-render Loop Detection for /management-accounts</h1>
+    <p>Open this page, then open dev tools console and navigate to <a href="http://localhost:3001/management-accounts" target="_blank">Management Accounts</a></p>
+    
+    <div id="status">
+        <h2>Instructions:</h2>
+        <ol>
+            <li>Open browser DevTools (F12)</li>
+            <li>Go to Console tab</li>
+            <li>Click the link above to open Management Accounts page</li>
+            <li>Watch for these error messages:</li>
+            <ul>
+                <li>"Maximum update depth exceeded"</li>
+                <li>"Too many re-renders"</li>
+                <li>Console spamming with renders</li>
+            </ul>
+        </ol>
+        
+        <h2>Expected if FIXED:</h2>
+        <ul class="success">
+            <li>Page loads normally</li>
+            <li>No console errors about re-renders</li>
+            <li>Can interact with spreadsheet</li>
+            <li>CPU usage stays normal</li>
+        </ul>
+        
+        <h2>Expected if NOT FIXED:</h2>
+        <ul class="error">
+            <li>Console shows "Maximum update depth exceeded"</li>
+            <li>Page may freeze or be unresponsive</li>
+            <li>High CPU usage</li>
+            <li>Browser tab may crash</li>
+        </ul>
+    </div>
+    
+    <h2>Quick Console Test (paste in DevTools):</h2>
+    <pre style="background: #333; color: #0f0; padding: 10px;">
+// Paste this in the console of the management-accounts page:
+let renderCount = 0;
+const checkRenders = () => {
+    const orig = console.log;
+    console.log = (...args) => {
+        renderCount++;
+        orig(...args);
+    };
+    
+    setTimeout(() => {
+        console.log = orig;
+        if (renderCount > 100) {
+            console.error('❌ RE-RENDER LOOP DETECTED! ' + renderCount + ' renders in 1 second');
+        } else {
+            console.log('✅ Normal render count: ' + renderCount);
+        }
+    }, 1000);
+};
+checkRenders();
+    </pre>
+</body>
+</html>

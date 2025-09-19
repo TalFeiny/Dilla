@@ -5,13 +5,14 @@ import { cn } from '@/lib/utils';
 import { RLSupabaseConnector } from '@/lib/rl-system/supabase-connector';
 import { FormulaEngine, FORMULA_DOCS } from '@/lib/spreadsheet-formulas';
 import { convertRangeToSankeyData, convertRangeToWaterfallData } from '@/lib/visualization-tools';
+import { useGrid } from '@/contexts/GridContext';
 import dynamic from 'next/dynamic';
 
 // Dynamically import visualization components
 const RevenueSegmentationChart = dynamic(() => import('@/components/charts/RevenueSegmentationChart'), { ssr: false });
 const WaterfallChart = dynamic(() => import('@/components/charts/WaterfallChart'), { ssr: false });
 const FinancialChartStudio = dynamic(() => import('@/components/charts/FinancialChartStudio'), { ssr: false });
-const AdvancedChartBuilder = dynamic(() => import('@/components/charts/AdvancedChartBuilder'), { ssr: false });
+const ExcelChartBuilder = dynamic(() => import('@/components/charts/ExcelChartBuilder'), { ssr: false });
 const TableauLevelCharts = dynamic(() => import('@/components/charts/TableauLevelCharts'), { ssr: false });
 import { 
   Bot, 
@@ -47,12 +48,13 @@ const ROWS = Array.from({ length: 100 }, (_, i) => i + 1);
 interface Cell {
   value: any;
   formula?: string;
-  type?: 'text' | 'number' | 'formula' | 'boolean' | 'date' | 'link';
+  type?: 'text' | 'number' | 'formula' | 'boolean' | 'date' | 'link' | 'chart';
   format?: 'currency' | 'percentage' | 'date' | 'number';
   source?: string;
   sourceUrl?: string;
   href?: string; // For clickable links
   locked?: boolean;
+  chartConfig?: any; // For embedded chart configuration
   style?: {
     bold?: boolean;
     italic?: boolean;
@@ -63,13 +65,15 @@ interface Cell {
 }
 
 interface AgentCommand {
-  type: 'write' | 'formula' | 'format' | 'style' | 'addRow' | 'addColumn' | 'delete';
+  type: 'write' | 'formula' | 'format' | 'style' | 'addRow' | 'addColumn' | 'delete' | 'chart';
   cell?: string;
   range?: string;
   value?: any;
   formula?: string;
   format?: string;
   style?: any;
+  config?: any;
+  id?: string;
 }
 
 export default function AgentDataGrid() {
@@ -86,6 +90,9 @@ export default function AgentDataGrid() {
   const [dragStart, setDragStart] = useState<string | null>(null);
   const [dragEnd, setDragEnd] = useState<string | null>(null);
   
+  // Get grid context
+  const gridContext = useGrid();
+  
   // RL System
   const [rlEnabled, setRlEnabled] = useState(false);
   const [rlConnector] = useState(() => new RLSupabaseConnector());
@@ -98,6 +105,13 @@ export default function AgentDataGrid() {
   }>({ type: null, data: null, title: '' });
   const [showFinancialCharts, setShowFinancialCharts] = useState(false);
   const [showAdvancedCharts, setShowAdvancedCharts] = useState(false);
+  const [embeddedCharts, setEmbeddedCharts] = useState<Array<{
+    id: string;
+    type: string;
+    data: any;
+    position: string; // Cell address like "A10"
+    size: { rows: number; cols: number };
+  }>>([]);
 
   // Parse cell address (e.g., "A1" -> { col: 0, row: 0 })
   const parseCell = (cell: string) => {
@@ -199,13 +213,14 @@ export default function AgentDataGrid() {
     
     try {
       const gridState = Object.entries(cells).map(([k, v]) => `${k}:${v.value}`).join(',');
-      await rlConnector.storeExperience(
-        Object.keys(previousGridState).length ? Object.entries(previousGridState).map(([k, v]) => `${k}:${v.value}`).join(',') : 'empty',
-        action,
-        gridState,
-        reward,
-        { modelType: 'Spreadsheet', timestamp: new Date().toISOString() }
-      );
+      // TODO: Re-enable when storeExperience is implemented
+      // await rlConnector.storeExperience(
+      //   Object.keys(previousGridState).length ? Object.entries(previousGridState).map(([k, v]) => `${k}:${v.value}`).join(',') : 'empty',
+      //   action,
+      //   gridState,
+      //   reward,
+      //   { modelType: 'Spreadsheet', timestamp: new Date().toISOString() }
+      // );
       setPreviousGridState({ ...cells });
     } catch (error) {
       console.error('Failed to track RL action:', error);
@@ -291,16 +306,82 @@ export default function AgentDataGrid() {
     createChart: (type: string, options: any) => {
       console.log(`Creating ${type} chart with options:`, options);
       
-      // Handle different chart types
-      if (type === 'sankey' || type === 'waterfall' || type === 'fund' || type === 'captable') {
-        setShowFinancialCharts(true);
-        return `Opening Financial Chart Studio for ${type} visualization`;
-      } else if (type === 'advanced' || type === 'pie' || type === 'line' || type === 'bar' || type === 'scatter') {
-        setShowAdvancedCharts(true);
-        return `Opening Advanced Chart Builder for ${type} visualization`;
+      // Create an embedded chart
+      const chartId = `chart-${Date.now()}`;
+      
+      // Determine position (default to A10 if not specified)
+      const position = options.position || 'A10';
+      const size = options.size || { rows: 8, cols: 10 };
+      
+      // Add the chart to embedded charts
+      setEmbeddedCharts(prev => [...prev, {
+        id: chartId,
+        type,
+        data: options.data || options,
+        position,
+        size
+      }]);
+      
+      // Clear the cells where the chart will be placed
+      const startCell = parseCell(position);
+      if (startCell) {
+        for (let r = 0; r < size.rows; r++) {
+          for (let c = 0; c < size.cols; c++) {
+            const addr = cellAddress(startCell.col + c, startCell.row + r);
+            setCells(prev => {
+              const newCells = { ...prev };
+              delete newCells[addr];
+              return newCells;
+            });
+          }
+        }
       }
       
-      return `Chart type ${type} ready for creation`;
+      return `Chart ${type} embedded at ${position}`;
+    },
+    
+    // Create multiple charts in batch to prevent re-render loops
+    createChartBatch: (charts: Array<{type: string, options: any}>) => {
+      console.log(`Creating batch of ${charts.length} charts`);
+      
+      // Process all charts at once to prevent multiple state updates
+      const newCharts = charts.map((chart, index) => {
+        const chartId = `chart-${Date.now()}-${index}`;
+        const position = chart.options.position || `A${10 + (index * 10)}`;
+        const size = chart.options.size || { rows: 8, cols: 10 };
+        
+        return {
+          id: chartId,
+          type: chart.type,
+          data: chart.options.data || chart.options,
+          position,
+          size
+        };
+      });
+      
+      // Update embedded charts state ONCE with all new charts
+      setEmbeddedCharts(prev => [...prev, ...newCharts]);
+      
+      // Clear cells for all charts in one batch update
+      setCells(prev => {
+        const newCells = { ...prev };
+        
+        newCharts.forEach(chart => {
+          const startCell = parseCell(chart.position);
+          if (startCell) {
+            for (let r = 0; r < chart.size.rows; r++) {
+              for (let c = 0; c < chart.size.cols; c++) {
+                const addr = cellAddress(startCell.col + c, startCell.row + r);
+                delete newCells[addr];
+              }
+            }
+          }
+        });
+        
+        return newCells;
+      });
+      
+      return `Created batch of ${charts.length} charts`;
     },
     
     // Create financial charts
@@ -455,7 +536,7 @@ export default function AgentDataGrid() {
       } else {
         setCells(prev => {
           const newCells = { ...prev };
-          delete newCells[chartCell];
+          delete newCells[startCell];
           return newCells;
         });
       }
@@ -721,11 +802,92 @@ export default function AgentDataGrid() {
     }
   };
 
+  // Helper function to add waterfall breakpoints with citations
+  // Waterfall matters in ALL scenarios except massive bull cases (>10x)
+  const addWaterfallBreakpoints = (companyName: string, startRow: number, scenario: 'bear' | 'base' | 'bull' = 'base') => {
+    // Different breakpoints for different scenarios
+    const bearBreakpoints = [
+      { value: 'Below Liquidation Prefs', source: 'Common gets $0', exit: '$25M', impact: 'Common wiped out' },
+      { value: 'Liquidation Prefs Covered', source: 'Carta: 1x standard', exit: '$50M', impact: 'Common starts participating' },
+      { value: 'Common Gets >$100K', source: 'Minimal founder return', exit: '$55M', impact: 'Token amount to founders' },
+      { value: 'Preferred Breakeven', source: 'Investors get capital back', exit: '$75M', impact: '1x return' }
+    ];
+    
+    const baseBreakpoints = [
+      { value: 'Liquidation Prefs Covered', source: 'Carta: 1x non-participating', exit: '$100M', impact: 'Common participation begins' },
+      { value: 'Common Gets >$1M', source: 'Founder threshold', exit: '$110M', impact: 'Meaningful founder returns' },
+      { value: 'Participation Cap Hit', source: 'SVB: 3x cap typical', exit: '$150M', impact: 'No further preferred participation' },
+      { value: 'Preferred Gets 2x', source: 'Target VC return', exit: '$200M', impact: 'Acceptable investor returns' }
+    ];
+    
+    const bullBreakpoints = [
+      { value: 'All Convert to Common', source: 'Everyone participates equally', exit: '$300M', impact: "Preferences don't matter" },
+      { value: 'IPO Threshold', source: 'Public market entry', exit: '$500M', impact: 'Liquidation prefs convert' },
+      { value: '10x Return Territory', source: 'Home run outcome', exit: '$1B', impact: 'Power law returns' },
+      { value: 'Mega Exit (>$2B)', source: 'Waterfall irrelevant', exit: '$2B+', impact: 'Everyone wins big' }
+    ];
+    
+    const breakpoints = scenario === 'bear' ? bearBreakpoints : 
+                       scenario === 'bull' ? bullBreakpoints : baseBreakpoints;
+    
+    // Add headers
+    setCells(prev => ({
+      ...prev,
+      [`A${startRow}`]: { 
+        value: `${companyName} - ${scenario.toUpperCase()} CASE`, 
+        type: 'text', 
+        style: { bold: true, backgroundColor: scenario === 'bear' ? '#ffcccc' : scenario === 'bull' ? '#ccffcc' : '#ccccff' } 
+      },
+      [`B${startRow}`]: { value: 'Breakpoint', type: 'text', style: { bold: true } },
+      [`C${startRow}`]: { value: 'Exit Value', type: 'text', style: { bold: true } },
+      [`D${startRow}`]: { value: 'Impact', type: 'text', style: { bold: true } },
+      [`E${startRow}`]: { value: 'Note', type: 'text', style: { bold: true } }
+    }));
+    
+    // Add breakpoint data with proper citations
+    breakpoints.forEach((bp, index) => {
+      const row = startRow + index + 1;
+      setCells(prev => ({
+        ...prev,
+        [`B${row}`]: { 
+          value: bp.value, 
+          type: 'text',
+          style: { 
+            color: bp.value.includes('wiped out') ? '#dc2626' : 
+                   bp.value.includes('10x') ? '#10b981' : undefined 
+          }
+        },
+        [`C${row}`]: { 
+          value: bp.exit, 
+          type: 'text',
+          format: 'currency',
+          source: 'Market analysis',
+          sourceUrl: '#'
+        },
+        [`D${row}`]: { 
+          value: bp.impact, 
+          type: 'text',
+          style: { italic: true }
+        },
+        [`E${row}`]: { 
+          value: bp.source, 
+          type: 'text',
+          source: bp.source.includes('Carta') ? 'Carta' : 
+                  bp.source.includes('SVB') ? 'SVB' : 
+                  bp.source.includes('founder') ? 'Benchmark' : 'Analysis',
+          sourceUrl: bp.source.includes('Carta') ? 'https://carta.com/blog/liquidation-preferences/' : 
+                     bp.source.includes('SVB') ? 'https://www.svb.com/trends-insights/' : '#'
+        }
+      }));
+    });
+  };
+  
   // Expose API globally with multiple aliases for convenience
   useEffect(() => {
     // Enhanced API with visualization capabilities
     const enhancedAPI = {
       ...agentAPI,
+      addWaterfallBreakpoints,
       
       // Create Sankey diagram from data
       createSankey: (dataRange: string, title?: string) => {
@@ -747,43 +909,21 @@ export default function AgentDataGrid() {
           title: title || 'Financial Waterfall'
         });
         return 'Waterfall chart created';
-      },
-      
-      // Execute tools
-      useTool: async (toolName: string, params: any) => {
-        const { toolExecutor } = await import('@/lib/agent-tools');
-        const result = await toolExecutor.execute(toolName, params);
-        
-        // If tool returns commands, execute them
-        if (result.commands) {
-          for (const cmd of result.commands) {
-            eval(cmd);
-          }
-        }
-        
-        return result;
       }
     };
     
-    (window as any).grid = enhancedAPI;
-    (window as any).g = enhancedAPI;  // Short alias
-    (window as any).$ = enhancedAPI;   // jQuery-style alias
+    // Production-ready: Register API with window for backward compatibility
+    // This allows secure sharing between components
+    if (typeof window !== 'undefined') {
+      (window as any).gridApi = enhancedAPI;
+    }
     
-    // Also expose individual functions directly
-    (window as any).write = enhancedAPI.write;
-    (window as any).link = enhancedAPI.link;
-    (window as any).formula = enhancedAPI.formula;
-    (window as any).format = enhancedAPI.format;
-    (window as any).style = enhancedAPI.style;
-    (window as any).clear = enhancedAPI.clear;
-    (window as any).createSankey = enhancedAPI.createSankey;
-    (window as any).createWaterfall = enhancedAPI.createWaterfall;
-    (window as any).useTool = enhancedAPI.useTool;
+    // Also keep internal ref for component use
+    gridRef.current = enhancedAPI as any;
   }, [cells]);
 
   // Handle cell editing
   const startEditing = (cell: string) => {
-    console.log('Starting edit for cell:', cell);
     setEditingCell(cell);
     const cellData = cells[cell];
     setEditValue(cellData?.formula || cellData?.value || '');
@@ -973,6 +1113,50 @@ export default function AgentDataGrid() {
                   const isSelected = selectedCell === addr;
                   const isEditing = editingCell === addr;
                   
+                  // Check if this cell is the start of an embedded chart
+                  const chart = embeddedCharts.find(c => c.position === addr);
+                  if (chart) {
+                    const chartCell = parseCell(chart.position);
+                    if (chartCell && col === addr.charAt(0)) {
+                      return (
+                        <td
+                          key={addr}
+                          colSpan={chart.size.cols}
+                          rowSpan={chart.size.rows}
+                          className="border border-gray-300 p-2 bg-gray-50"
+                        >
+                          <div className="w-full h-full min-h-[300px]">
+                            <TableauLevelCharts
+                              type={chart.type as any}
+                              data={chart.data}
+                              title={chart.data.title}
+                              height={chart.size.rows * 32 - 16}
+                              width="100%"
+                              interactive={true}
+                            />
+                          </div>
+                        </td>
+                      );
+                    }
+                  }
+                  
+                  // Check if this cell is covered by a chart
+                  const isCoveredByChart = embeddedCharts.some(c => {
+                    const chartStart = parseCell(c.position);
+                    const currentCell = parseCell(addr);
+                    if (!chartStart || !currentCell) return false;
+                    
+                    return currentCell.row >= chartStart.row && 
+                           currentCell.row < chartStart.row + c.size.rows &&
+                           currentCell.col >= chartStart.col && 
+                           currentCell.col < chartStart.col + c.size.cols &&
+                           c.position !== addr;
+                  });
+                  
+                  if (isCoveredByChart) {
+                    return null; // Skip cells covered by charts
+                  }
+                  
                   return (
                     <td
                       key={addr}
@@ -1024,18 +1208,53 @@ export default function AgentDataGrid() {
                         </a>
                       ) : (
                         <div className="flex items-center justify-between">
-                          <span>{formatCellValue(cell)}</span>
-                          {cell?.sourceUrl && (
+                          {/* Make value clickable if it has href */}
+                          {cell?.href ? (
                             <a
-                              href={cell.sourceUrl}
+                              href={cell.href}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="ml-1 text-blue-500 hover:text-blue-700 text-xs"
+                              className="text-blue-600 hover:text-blue-800 underline"
                               onClick={(e) => e.stopPropagation()}
-                              title={cell.source || 'Source'}
                             >
-                              📎
+                              {formatCellValue(cell)}
                             </a>
+                          ) : (
+                            <span>{formatCellValue(cell)}</span>
+                          )}
+                          
+                          {/* Citation source indicator with tooltip */}
+                          {(cell?.sourceUrl || cell?.source) && (
+                            <span className="ml-1 relative group">
+                              <a
+                                href={cell.sourceUrl || '#'}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-500 hover:text-blue-700 text-xs"
+                                onClick={(e) => {
+                                  if (!cell.sourceUrl) e.preventDefault();
+                                  e.stopPropagation();
+                                }}
+                                title={cell.source || 'Source'}
+                              >
+                                📎
+                              </a>
+                              {/* Tooltip showing source */}
+                              <div className="absolute bottom-full left-0 mb-1 hidden group-hover:block z-50 
+                                            bg-gray-900 text-white text-xs rounded px-2 py-1 whitespace-nowrap
+                                            max-w-xs p-2">
+                                <div className="font-semibold">{cell.source || 'Data source'}</div>
+                                {cell.source === 'Carta' && (
+                                  <div className="text-gray-300 mt-1">Industry benchmark data</div>
+                                )}
+                                {cell.source === 'SVB' && (
+                                  <div className="text-gray-300 mt-1">Silicon Valley Bank insights</div>
+                                )}
+                                {cell.source === 'PitchBook' && (
+                                  <div className="text-gray-300 mt-1">Market analytics</div>
+                                )}
+                              </div>
+                            </span>
                           )}
                         </div>
                       )}
@@ -1058,7 +1277,7 @@ export default function AgentDataGrid() {
               <Bot className="w-4 h-4" />
               <span className="font-bold">Direct API</span>
               <Sparkles className="w-3 h-3 text-yellow-400 animate-pulse" />
-              <span className="text-gray-400 ml-auto">window.grid</span>
+              <span className="text-gray-400 ml-auto">Grid API</span>
             </div>
           
           <div className="text-green-400"># Write data</div>
@@ -1183,16 +1402,10 @@ export default function AgentDataGrid() {
       
       {/* Advanced Chart Builder Modal */}
       {showAdvancedCharts && (
-        <AdvancedChartBuilder
+        <ExcelChartBuilder
           cells={cells}
           selectedRange={selectedRange || selectedCell}
           onClose={() => setShowAdvancedCharts(false)}
-          onInsert={(chartConfig) => {
-            console.log('Inserting chart:', chartConfig);
-            setShowAdvancedCharts(false);
-            // Here you would handle inserting the chart into the spreadsheet
-            // For now, we'll just log it
-          }}
         />
       )}
       

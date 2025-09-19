@@ -138,7 +138,7 @@ export default function AgentChartGenerator({
     if (prompt && !chartData) {
       generateChart();
     }
-  }, Array.from(mpt));
+  }, [prompt]); // Only depend on prompt to avoid re-render loop
 
   if (error) {
     return (

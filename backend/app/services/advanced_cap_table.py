@@ -13,8 +13,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 logger = logging.getLogger(__name__)
 
-# HARDCODED ASSUMPTION: Industry benchmark shows 75% of options don't get exercised at exit
-DEFAULT_OPTION_EXERCISE_RATE = 0.25  # Only 25% of options are typically exercised
+# HARDCODED ASSUMPTION: Industry benchmark shows 70% of options don't get exercised at exit
+DEFAULT_OPTION_EXERCISE_RATE = 0.30  # 30% of options are typically exercised (70% unexercised)
 
 
 class ShareClass(str, Enum):
@@ -258,6 +258,168 @@ class CapTableCalculator:
             }
         }
         
+    def calculate_liquidation_waterfall(
+        self,
+        exit_value: float,
+        cap_table: Dict[str, float],
+        liquidation_preferences: Optional[Dict[str, Dict]] = None,
+        funding_rounds: Optional[List[Dict]] = None
+    ) -> Dict[str, Any]:
+        """Calculate liquidation waterfall for exit scenarios
+        
+        This is the method called by the orchestrator for waterfall calculations.
+        Now properly implements LIFO/stacked preferences (last money in, first money out).
+        """
+        # Convert exit value to Decimal for precision
+        exit_value_decimal = Decimal(str(exit_value))
+        
+        # If we have existing share entries, use the detailed calculation
+        if self.share_entries:
+            df_result = self.calculate_exit_waterfall(exit_value_decimal)
+            # Convert DataFrame to dict format
+            return {
+                'distributions': df_result.to_dict('records'),
+                'total_distributed': float(df_result['total'].sum()),
+                'escrow': float(exit_value_decimal * Decimal('0.1')),
+                'summary': {
+                    'founders': float(df_result[df_result['share_class'] == 'common']['total'].sum()),
+                    'investors': float(df_result[df_result['share_class'] != 'common']['total'].sum()),
+                    'employees': float(df_result[df_result['shareholder'].str.contains('Employee|Option', case=False, na=False)]['total'].sum())
+                }
+            }
+        
+        # LIFO/Stacked waterfall implementation
+        distributions = []
+        total_distributed = 0
+        remaining = exit_value
+        
+        # Build liquidation stack from funding rounds (LIFO order)
+        liquidation_stack = []
+        
+        if funding_rounds:
+            # Process rounds in REVERSE order (last round first)
+            for round_data in reversed(funding_rounds):
+                round_name = round_data.get('round', 'Unknown')
+                amount_raised = round_data.get('amount', 0)
+                investors = round_data.get('investors', [])
+                lead_investor = round_data.get('lead_investor', '')
+                
+                # Default to 1x non-participating liquidation preference
+                liq_multiple = round_data.get('liquidation_multiple', 1.0)
+                participating = round_data.get('participating', False)
+                
+                # Calculate preference amount (typically 1x the investment)
+                preference_amount = amount_raised * liq_multiple
+                
+                liquidation_stack.append({
+                    'round': round_name,
+                    'investors': investors,
+                    'lead_investor': lead_investor,
+                    'preference_amount': preference_amount,
+                    'participating': participating,
+                    'amount_raised': amount_raised
+                })
+        
+        # Step 1: Pay out liquidation preferences in LIFO order
+        for round_info in liquidation_stack:
+            if remaining <= 0:
+                break
+                
+            pref_amount = round_info['preference_amount']
+            round_name = round_info['round']
+            
+            # Determine how much this round gets
+            if remaining >= pref_amount:
+                # Full preference paid
+                amount_to_distribute = pref_amount
+                remaining -= pref_amount
+            else:
+                # Partial preference (not enough money left)
+                amount_to_distribute = remaining
+                remaining = 0
+            
+            # Distribute to this round's investors
+            if round_info['lead_investor']:
+                # Lead gets 60% of the round's distribution
+                lead_amount = amount_to_distribute * 0.6
+                distributions.append({
+                    'shareholder': f"{round_info['lead_investor']} ({round_name} Lead)",
+                    'amount': lead_amount,
+                    'type': 'liquidation_preference',
+                    'round': round_name
+                })
+                total_distributed += lead_amount
+                
+                # Other investors split remaining 40%
+                other_investors = [inv for inv in round_info['investors'] if inv != round_info['lead_investor']]
+                if other_investors:
+                    per_investor = (amount_to_distribute * 0.4) / len(other_investors)
+                    for investor in other_investors:
+                        distributions.append({
+                            'shareholder': f"{investor} ({round_name})",
+                            'amount': per_investor,
+                            'type': 'liquidation_preference',
+                            'round': round_name
+                        })
+                        total_distributed += per_investor
+            elif round_info['investors']:
+                # Equal split among all investors
+                per_investor = amount_to_distribute / len(round_info['investors'])
+                for investor in round_info['investors']:
+                    distributions.append({
+                        'shareholder': f"{investor} ({round_name})",
+                        'amount': per_investor,
+                        'type': 'liquidation_preference',
+                        'round': round_name
+                    })
+                    total_distributed += per_investor
+            else:
+                # Generic investor label
+                distributions.append({
+                    'shareholder': f"{round_name} Investors",
+                    'amount': amount_to_distribute,
+                    'type': 'liquidation_preference',
+                    'round': round_name
+                })
+                total_distributed += amount_to_distribute
+        
+        # Step 2: Distribute remaining to common shareholders (founders, employees)
+        if remaining > 0:
+            # Common shareholders include founders and employees
+            common_holders = {k: v for k, v in cap_table.items() 
+                            if 'Founder' in k or 'Employee' in k or 'Option' in k or k == 'Founders'}
+            
+            if common_holders:
+                total_common_ownership = sum(common_holders.values())
+                if total_common_ownership > 0:
+                    for shareholder, ownership_pct in common_holders.items():
+                        # Pro-rata distribution of remaining value
+                        amount = remaining * (ownership_pct / total_common_ownership)
+                        distributions.append({
+                            'shareholder': shareholder,
+                            'amount': amount,
+                            'type': 'common_distribution'
+                        })
+                        total_distributed += amount
+        
+        # Calculate escrow (typically 10% held back)
+        escrow = exit_value * 0.1
+        
+        return {
+            'distributions': distributions,
+            'total_distributed': total_distributed,
+            'escrow': escrow,
+            'remaining_after_preferences': max(0, remaining),
+            'summary': {
+                'founders': sum(d['amount'] for d in distributions if 'Founder' in d['shareholder']),
+                'investors': sum(d['amount'] for d in distributions if any(x in d['shareholder'] for x in ['Lead', 'Investor', 'VC', 'Series', 'Seed'])),
+                'employees': sum(d['amount'] for d in distributions if 'Employee' in d['shareholder'] or 'Option' in d['shareholder']),
+                'total_preferences_paid': sum(d['amount'] for d in distributions if d['type'] == 'liquidation_preference'),
+                'common_distributions': sum(d['amount'] for d in distributions if d['type'] == 'common_distribution')
+            },
+            'preference_stack': liquidation_stack  # Include for transparency
+        }
+    
     def calculate_exit_waterfall(
         self,
         exit_value: Decimal,
@@ -272,7 +434,7 @@ class CapTableCalculator:
         
         # Deduct escrow if applicable
         if include_escrow:
-            distributable = exit_value * Decimal(str(1 - escrow_pct))
+            distributable = exit_value * (Decimal('1') - Decimal(str(escrow_pct)))
             escrow_amount = exit_value * Decimal(str(escrow_pct))
         else:
             distributable = exit_value
@@ -394,7 +556,7 @@ class CapTableCalculator:
             
             for round_num in range(1, num_rounds + 1):
                 # Apply dilution
-                cumulative_ownership['ownership_pct'] *= (1 - dilution_rate)
+                cumulative_ownership['ownership_pct'] *= (Decimal('1') - Decimal(str(dilution_rate)))
                 
                 scenarios.append({
                     'scenario': f'{dilution_rate*100:.0f}% dilution',
@@ -407,10 +569,156 @@ class CapTableCalculator:
                         ~cumulative_ownership.index.str.contains('Founder', case=False), 
                         'ownership_pct'
                     ].sum() if any('founder' in idx.lower() for idx in cumulative_ownership.index) else 100,
-                    'total_dilution': (1 - (1 - dilution_rate) ** round_num) * 100
+                    'total_dilution': float((Decimal('1') - (Decimal('1') - Decimal(str(dilution_rate))) ** round_num) * 100)
                 })
                 
         return pd.DataFrame(scenarios)
+    
+    def calculate_waterfall_breakpoints(
+        self,
+        base_case_exit: Decimal,
+        bull_multiplier: float = 2.0,
+        bear_multiplier: float = 0.5
+    ) -> Dict[str, Any]:
+        """Calculate liquidation waterfall breakpoints for base, bull, and bear cases
+        
+        Args:
+            base_case_exit: Base case exit value
+            bull_multiplier: Multiplier for bull case (default 2x base)
+            bear_multiplier: Multiplier for bear case (default 0.5x base)
+            
+        Returns:
+            Dictionary with breakpoint analysis for each scenario
+        """
+        
+        scenarios = {
+            'bear': base_case_exit * Decimal(str(bear_multiplier)),
+            'base': base_case_exit,
+            'bull': base_case_exit * Decimal(str(bull_multiplier))
+        }
+        
+        results = {}
+        
+        for scenario_name, exit_value in scenarios.items():
+            # Calculate waterfall for this scenario
+            waterfall_df = self.calculate_exit_waterfall(exit_value)
+            
+            # Calculate key breakpoints
+            total_liquidation_prefs = Decimal('0')
+            investor_breakeven_points = {}
+            
+            for entry in self.share_entries:
+                if entry.share_class != ShareClass.COMMON:
+                    liq_pref = entry.num_shares * entry.price_per_share * Decimal(str(entry.rights.liquidation_preference))
+                    total_liquidation_prefs += liq_pref
+                    
+                    # Calculate breakeven point for this investor
+                    investment = entry.num_shares * entry.price_per_share
+                    investor_breakeven_points[entry.shareholder_name] = {
+                        'investment': float(investment),
+                        'liquidation_preference': float(liq_pref),
+                        'breakeven_exit': float(investment),  # Minimum exit to return capital
+                        '2x_exit': float(investment * 2),     # Exit needed for 2x return
+                        '3x_exit': float(investment * 3),     # Exit needed for 3x return
+                        '5x_exit': float(investment * 5),     # Exit needed for 5x return
+                        '10x_exit': float(investment * 10)    # Exit needed for 10x return
+                    }
+            
+            # Identify key transition points
+            transition_points = []
+            
+            # Point 1: Liquidation preferences fully covered
+            if total_liquidation_prefs > 0:
+                transition_points.append({
+                    'exit_value': float(total_liquidation_prefs),
+                    'description': 'All liquidation preferences covered',
+                    'impact': 'Preferred shareholders receive full preference, common starts participating'
+                })
+            
+            # Point 2: Common shareholders start receiving meaningful proceeds (>$1M)
+            common_threshold = total_liquidation_prefs + Decimal('1000000')
+            transition_points.append({
+                'exit_value': float(common_threshold),
+                'description': 'Common shareholders receive >$1M',
+                'impact': 'Founders/employees start seeing meaningful returns'
+            })
+            
+            # Point 3: Conversion point (where preferred would convert to common)
+            # This happens when common proceeds > liquidation preference
+            conversion_point = self._calculate_conversion_point()
+            if conversion_point > 0:
+                transition_points.append({
+                    'exit_value': float(conversion_point),
+                    'description': 'Optimal conversion point for preferred',
+                    'impact': 'Preferred shareholders would convert to common for better returns'
+                })
+            
+            # Calculate actual distributions at this exit value
+            distributions = waterfall_df[waterfall_df['shareholder'] != 'TOTAL']
+            
+            # Group by share class
+            by_class = distributions.groupby('share_class').agg({
+                'total': 'sum',
+                'liquidation_preference': 'sum',
+                'common_distribution': 'sum'
+            }).to_dict('index')
+            
+            # Calculate return multiples for major investors
+            investor_returns = {}
+            for idx, row in distributions.iterrows():
+                if row['shareholder'] != 'TOTAL':
+                    investment = self._get_investment(row['shareholder'])
+                    if investment > 0:
+                        investor_returns[row['shareholder']] = {
+                            'proceeds': row['total'],
+                            'investment': investment,
+                            'return_multiple': row['total'] / investment,
+                            'irr_5_year': ((row['total'] / investment) ** (1/5) - 1) * 100  # Approximate 5-year IRR
+                        }
+            
+            results[scenario_name] = {
+                'exit_value': float(exit_value),
+                'total_liquidation_preferences': float(total_liquidation_prefs),
+                'transition_points': sorted(transition_points, key=lambda x: x['exit_value']),
+                'distributions_by_class': by_class,
+                'investor_returns': investor_returns,
+                'investor_breakeven_points': investor_breakeven_points,
+                'common_shareholders_total': float(distributions[distributions['share_class'] == 'common']['total'].sum()),
+                'preferred_shareholders_total': float(distributions[distributions['share_class'] != 'common']['total'].sum())
+            }
+        
+        # Add comparative analysis
+        results['comparative_analysis'] = {
+            'bear_to_base_ratio': float(scenarios['bear'] / scenarios['base']),
+            'bull_to_base_ratio': float(scenarios['bull'] / scenarios['base']),
+            'common_upside': {
+                'bear': results['bear']['common_shareholders_total'],
+                'base': results['base']['common_shareholders_total'],
+                'bull': results['bull']['common_shareholders_total']
+            },
+            'preferred_protection': {
+                'bear_coverage': results['bear']['preferred_shareholders_total'] / float(total_liquidation_prefs) if total_liquidation_prefs > 0 else 0,
+                'base_coverage': results['base']['preferred_shareholders_total'] / float(total_liquidation_prefs) if total_liquidation_prefs > 0 else 0,
+                'bull_coverage': results['bull']['preferred_shareholders_total'] / float(total_liquidation_prefs) if total_liquidation_prefs > 0 else 0
+            }
+        }
+        
+        return results
+    
+    def _calculate_conversion_point(self) -> Decimal:
+        """Calculate the exit value where preferred would convert to common"""
+        # Simplified calculation - actual would depend on specific terms
+        total_shares = sum(entry.num_shares for entry in self.share_entries)
+        total_liquidation_prefs = sum(
+            entry.num_shares * entry.price_per_share * Decimal(str(entry.rights.liquidation_preference))
+            for entry in self.share_entries
+            if entry.share_class != ShareClass.COMMON
+        )
+        
+        # Conversion happens when: exit_value / total_shares > liquidation_pref_per_share
+        if total_shares > 0:
+            return total_liquidation_prefs * Decimal('1.5')  # Rough approximation
+        return Decimal('0')
         
     def anti_dilution_adjustment(
         self,

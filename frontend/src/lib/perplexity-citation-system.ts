@@ -261,8 +261,8 @@ export class PerplexityCitationSystem {
   ): InlineCitation | null {
     for (const [key, source] of this.benchmarkSources.entries()) {
       const section = source.sections.get(category);
-      if (section && sectionArray.from(ric)) {
-        const data = sectionArray.from(ric);
+      if (section && section.data.get(metric)) {
+        const data = section.data.get(metric);
         const text = value || data;
         const page = data.source_page || null;
         

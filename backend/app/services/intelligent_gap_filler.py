@@ -112,6 +112,46 @@ class IntelligentGapFiller:
         }
     }
     
+    # GPU/Compute Intensity Cost Analysis (from CLAUDE.md)
+    GPU_COST_PER_TRANSACTION = {
+        "code_generation": {  # Lovable, Cursor, Replit
+            "cost_range": (5, 20),  # $5-20 per full output
+            "examples": ["Cursor", "Replit", "GitHub Copilot", "Lovable"],
+            "compute_intensity": "extreme",
+            "margin_impact": 0.40  # 40% margin reduction
+        },
+        "search_synthesis": {  # Perplexity, You.com
+            "cost_range": (0.10, 0.50),  # $0.10-0.50 per query
+            "examples": ["Perplexity", "You.com", "Phind"],
+            "compute_intensity": "high", 
+            "margin_impact": 0.25  # 25% margin reduction
+        },
+        "chat_exchange": {  # ChatGPT wrappers
+            "cost_range": (0.01, 0.05),  # $0.01-0.05 per interaction
+            "examples": ["Jasper", "Copy.ai", "ChatGPT clones"],
+            "compute_intensity": "moderate",
+            "margin_impact": 0.15  # 15% margin reduction
+        },
+        "image_video_gen": {  # Midjourney, RunwayML
+            "cost_range": (0.50, 5.00),  # $0.50-5.00 per asset
+            "examples": ["Midjourney", "Runway", "Stable Diffusion apps"],
+            "compute_intensity": "extreme",
+            "margin_impact": 0.35  # 35% margin reduction
+        },
+        "traditional_ml": {  # Classic ML/analytics
+            "cost_range": (0.001, 0.01),  # $0.001-0.01 per prediction
+            "examples": ["DataRobot", "H2O.ai", "Traditional ML platforms"],
+            "compute_intensity": "low",
+            "margin_impact": 0.05  # 5% margin reduction
+        },
+        "no_ai": {  # Pure software, no AI
+            "cost_range": (0, 0),
+            "examples": ["Traditional SaaS", "Databases", "Dev tools"],
+            "compute_intensity": "none",
+            "margin_impact": 0.0
+        }
+    }
+    
     # Stage-based benchmarks from Carta/SVB Benchmark (1).pdf data
     # These are ACTUAL median values from Carta State of Private Markets Q3 2024 + SVB reports
     STAGE_BENCHMARKS = {
@@ -1154,12 +1194,15 @@ class IntelligentGapFiller:
         base_gross_margin: Optional[float] = None
     ) -> Dict[str, Any]:
         """
-        Calculate gross margin adjusted for API dependency
+        Calculate gross margin adjusted for BOTH API dependency AND GPU compute costs
         This affects valuation multiples significantly
         """
         # Detect API dependency level
         dependency_level = self.detect_api_dependency(company_data)
         dependency_impact = self.API_DEPENDENCY_IMPACT[dependency_level]
+        
+        # ALSO calculate GPU compute intensity impact
+        gpu_metrics = self.calculate_gpu_adjusted_metrics(company_data)
         
         # Get base gross margin from benchmarks or data
         if base_gross_margin is None:
@@ -1169,8 +1212,13 @@ class IntelligentGapFiller:
             else:
                 base_gross_margin = 0.75  # Default SaaS gross margin
         
-        # Calculate adjusted gross margin
-        adjusted_gross_margin = base_gross_margin - dependency_impact["gross_margin_penalty"]
+        # Calculate adjusted gross margin - COMBINE API and GPU penalties
+        api_penalty = dependency_impact["gross_margin_penalty"]
+        gpu_penalty = gpu_metrics["margin_impact"]
+        
+        # Use the LARGER of the two penalties (they overlap, not additive)
+        total_penalty = max(api_penalty, gpu_penalty)
+        adjusted_gross_margin = base_gross_margin - total_penalty
         
         # Calculate API costs impact on unit economics
         revenue_raw = company_data.get("revenue", company_data.get("arr", 1_000_000))
@@ -1301,17 +1349,32 @@ class IntelligentGapFiller:
         else:  # own_models
             valuation_multiple_adjustment = 1.1  # 10% premium for own IP
         
+        # Combine valuation adjustments from API and GPU
+        combined_valuation_adjustment = min(valuation_multiple_adjustment, gpu_metrics["valuation_multiple_adjustment"])
+        
+        # Choose the more severe investment recommendation
+        if gpu_metrics["compute_intensity"] in ["extreme", "high"]:
+            investment_rec = gpu_metrics["investment_thesis"]
+        else:
+            investment_rec = self._get_api_dependency_recommendation(dependency_level)
+        
         return {
             "base_gross_margin": base_gross_margin,
             "adjusted_gross_margin": adjusted_gross_margin,
             "api_dependency_level": dependency_level,
-            "gross_margin_penalty": dependency_impact["gross_margin_penalty"],
+            "compute_intensity": gpu_metrics["compute_intensity"],
+            "gross_margin_penalty": total_penalty,
+            "api_penalty": api_penalty,
+            "gpu_penalty": gpu_penalty,
             "estimated_annual_api_costs": annual_api_costs,
+            "estimated_annual_gpu_costs": gpu_metrics["annual_gpu_costs"],
+            "total_compute_costs": annual_api_costs + gpu_metrics["annual_gpu_costs"],
             "api_cost_per_user": api_cost_per_user,
-            "valuation_multiple_adjustment": valuation_multiple_adjustment,
+            "gpu_cost_per_transaction": gpu_metrics["cost_per_transaction"],
+            "valuation_multiple_adjustment": combined_valuation_adjustment,
             "scalability_discount": dependency_impact["scalability_discount"],
-            "investment_recommendation": self._get_api_dependency_recommendation(dependency_level),
-            "risk_factors": self._get_api_dependency_risks(dependency_level)
+            "investment_recommendation": investment_rec,
+            "risk_factors": self._get_api_dependency_risks(dependency_level) + self._get_gpu_intensity_risks(gpu_metrics["compute_intensity"])
         }
     
     def _get_api_dependency_recommendation(self, dependency_level: str) -> str:
@@ -1324,6 +1387,27 @@ class IntelligentGapFiller:
             return "✅ ACCEPTABLE: Light API usage maintains healthy margins."
         else:
             return "🚀 STRONG: Proprietary models provide competitive moat and superior unit economics."
+    
+    def _ensure_numeric(self, value: Any, default: float = 0) -> float:
+        """
+        Ensure a value is numeric, handling various input types
+        """
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            # Remove common string patterns
+            cleaned = value.replace('$', '').replace(',', '').replace('%', '').strip()
+            try:
+                return float(cleaned)
+            except:
+                return default
+        if hasattr(value, 'value'):
+            return self._ensure_numeric(value.value, default)
+        if isinstance(value, dict) and 'value' in value:
+            return self._ensure_numeric(value['value'], default)
+        return default
     
     def extract_investor_names_from_funding(self, funding_rounds: List[Dict[str, Any]]) -> Dict[str, List[str]]:
         """
@@ -1859,6 +1943,156 @@ class IntelligentGapFiller:
         founder_profile["risk_score"] = max(0, min(100, risk_score))
         
         return founder_profile
+    
+    def detect_compute_intensity(self, company_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Detect compute intensity category based on business model
+        Returns category, cost range, and margin impact
+        """
+        business_model = str(company_data.get("business_model", "")).lower()
+        product = str(company_data.get("product_description", "")).lower()
+        category = str(company_data.get("category", "")).lower()
+        sector = str(company_data.get("sector", "")).lower()
+        
+        combined_text = f"{business_model} {product} {category} {sector}"
+        
+        # Check for code generation patterns
+        code_gen_signals = ["code generation", "code editor", "ide", "coding assistant", 
+                            "code completion", "copilot", "developer tools", "ai-powered code"]
+        if any(signal in combined_text for signal in code_gen_signals):
+            return self.GPU_COST_PER_TRANSACTION["code_generation"]
+            
+        # Check for search/synthesis patterns  
+        search_signals = ["search engine", "conversational search", "answer engine",
+                         "knowledge synthesis", "research assistant"]
+        if any(signal in combined_text for signal in search_signals):
+            return self.GPU_COST_PER_TRANSACTION["search_synthesis"]
+            
+        # Check for image/video generation
+        media_signals = ["image generation", "video generation", "visual ai", "generative art",
+                         "text-to-image", "text-to-video", "stable diffusion", "dall-e"]
+        if any(signal in combined_text for signal in media_signals):
+            return self.GPU_COST_PER_TRANSACTION["image_video_gen"]
+            
+        # Check for AI agents (high compute)
+        agent_signals = ["ai agent", "autonomous agent", "ai assistant", "virtual assistant",
+                        "workflow automation", "ai copilot", "intelligent automation"]
+        if any(signal in combined_text for signal in agent_signals):
+            # Agents are typically high compute, similar to code gen
+            return {
+                "cost_range": (2, 10),  # $2-10 per agent task
+                "examples": ["AI agents", "Virtual assistants"],
+                "compute_intensity": "high",
+                "margin_impact": 0.30  # 30% margin reduction
+            }
+            
+        # Check for chat/writing tools
+        chat_signals = ["chatbot", "ai writer", "content generation", "copywriting",
+                       "chat assistant", "conversational ai"]
+        if any(signal in combined_text for signal in chat_signals):
+            return self.GPU_COST_PER_TRANSACTION["chat_exchange"]
+            
+        # Check for traditional ML
+        ml_signals = ["machine learning", "predictive analytics", "data science platform",
+                      "ml platform", "automl"]
+        if any(signal in combined_text for signal in ml_signals) and "generative" not in combined_text:
+            return self.GPU_COST_PER_TRANSACTION["traditional_ml"]
+            
+        # Default to no AI if no patterns found
+        if "ai" not in combined_text and "ml" not in combined_text:
+            return self.GPU_COST_PER_TRANSACTION["no_ai"]
+            
+        # If AI is mentioned but no specific pattern, assume moderate
+        return self.GPU_COST_PER_TRANSACTION["chat_exchange"]
+    
+    def calculate_gpu_adjusted_metrics(self, company_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Calculate GPU cost impact on unit economics and valuation
+        """
+        # Detect compute intensity
+        compute_profile = self.detect_compute_intensity(company_data)
+        
+        # Get revenue and customer metrics
+        revenue = company_data.get("revenue", company_data.get("arr", 1_000_000))
+        if isinstance(revenue, dict):
+            revenue = revenue.get('value', 1_000_000)
+        elif hasattr(revenue, 'value'):
+            revenue = revenue.value
+        else:
+            revenue = revenue or 1_000_000
+            
+        # Estimate transaction volume based on business type
+        customers = company_data.get("customers", 100)
+        if isinstance(customers, list):
+            customers = len(customers)
+        
+        # Estimate monthly transactions per customer
+        transactions_per_customer = {
+            "extreme": 50,    # Code gen: ~50 sessions/month
+            "high": 200,      # Search: ~200 queries/month  
+            "moderate": 500,  # Chat: ~500 messages/month
+            "low": 1000,      # Traditional ML: many predictions
+            "none": 0
+        }.get(compute_profile.get("compute_intensity", "moderate"), 100)
+        
+        # Calculate monthly GPU costs
+        cost_per_transaction = sum(compute_profile["cost_range"]) / 2  # Use midpoint
+        monthly_transactions = customers * transactions_per_customer
+        monthly_gpu_costs = monthly_transactions * cost_per_transaction
+        annual_gpu_costs = monthly_gpu_costs * 12
+        
+        # Calculate impact on gross margin
+        gpu_cost_as_percent_revenue = (annual_gpu_costs / revenue * 100) if revenue > 0 else 0
+        
+        # Determine valuation impact based on GPU dependency
+        if compute_profile["compute_intensity"] == "extreme":
+            valuation_multiple = 0.4  # 60% discount - these are tough businesses
+            investment_thesis = "⚠️ EXTREME GPU COSTS: Very challenging unit economics. Need massive scale or pricing power."
+        elif compute_profile["compute_intensity"] == "high":
+            valuation_multiple = 0.6  # 40% discount
+            investment_thesis = "🔶 HIGH GPU COSTS: Monitor unit economics carefully. Path to profitability unclear."
+        elif compute_profile["compute_intensity"] == "moderate":
+            valuation_multiple = 0.8  # 20% discount
+            investment_thesis = "✅ MODERATE GPU COSTS: Manageable if pricing and retention are strong."
+        else:
+            valuation_multiple = 1.0  # No discount
+            investment_thesis = "🚀 LOW/NO GPU COSTS: Strong unit economics potential."
+            
+        return {
+            "compute_intensity": compute_profile["compute_intensity"],
+            "compute_category": compute_profile.get("examples", ["Unknown"])[0],
+            "cost_per_transaction": cost_per_transaction,
+            "monthly_gpu_costs": monthly_gpu_costs,
+            "annual_gpu_costs": annual_gpu_costs,
+            "gpu_cost_as_percent_revenue": gpu_cost_as_percent_revenue,
+            "margin_impact": compute_profile["margin_impact"],
+            "valuation_multiple_adjustment": valuation_multiple,
+            "investment_thesis": investment_thesis,
+            "cost_range": compute_profile["cost_range"]
+        }
+    
+    def _get_gpu_intensity_risks(self, compute_intensity: str) -> List[str]:
+        """Get risk factors based on GPU compute intensity"""
+        if compute_intensity == "extreme":
+            return [
+                "GPU costs could exceed 40% of revenue",
+                "Unit economics worsen with scale",
+                "Requires massive funding to reach profitability",
+                "Competition from Big Tech with cheaper compute"
+            ]
+        elif compute_intensity == "high":
+            return [
+                "GPU costs impact margins by 25-30%",
+                "Need efficient caching and optimization",
+                "Scaling challenges with user growth"
+            ]
+        elif compute_intensity == "moderate":
+            return [
+                "GPU costs manageable at 10-15% of revenue",
+                "Room for margin improvement with optimization"
+            ]
+        else:
+            return []
     
     def _get_api_dependency_risks(self, dependency_level: str) -> List[str]:
         """Get risk factors based on API dependency"""

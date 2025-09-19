@@ -12,7 +12,7 @@ import json
 import asyncio
 
 # from app.services.orchestrator_service import orchestrator, AgentMode, AGENT_CAPABILITIES
-from app.services.mcp_orchestrator import MCPOrchestrator
+from app.services.mcp_orchestrator import SingleAgentOrchestrator as MCPOrchestrator
 orchestrator = MCPOrchestrator()
 AgentMode = None
 AGENT_CAPABILITIES = {}

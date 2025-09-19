@@ -2,6 +2,8 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import AgentProgressTracker from '@/components/AgentProgressTracker';
+import CitationDisplay from '@/components/CitationDisplay';
+import AgentChartGenerator from '@/components/AgentChartGenerator';
 import { 
   Presentation, 
   Send,
@@ -96,6 +98,8 @@ interface GeneratedDeck {
   slides: Slide[];
   theme?: any;
   data_sources?: DataSource[];
+  citations?: any[];
+  charts?: any[];
 }
 
 interface DeckTemplate {
@@ -123,6 +127,9 @@ export default function DeckAgentPage() {
   const [currentDeck, setCurrentDeck] = useState<GeneratedDeck | null>(null);
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
   const [isEditingSlide, setIsEditingSlide] = useState(false);
+  const [citations, setCitations] = useState<any[]>([]);
+  const [charts, setCharts] = useState<any[]>([]);
+  const [showCharts, setShowCharts] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState<string | undefined>();
   const [editedContent, setEditedContent] = useState<SlideContent | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -397,10 +404,63 @@ export default function DeckAgentPage() {
                   break;
                   
                 case 'complete':
-                  // Deck is complete
-                  deck = data.result;
+                  // Deck is complete - backend returns data.result (singular) with slides at top level
+                  console.log('🔍 [Deck Agent] Raw complete data:', data);
+                  console.log('🔍 [Deck Agent] data.result structure:', data.result);
+                  console.log('🔍 [Deck Agent] data.result.slides:', data.result?.slides);
+                  console.log('🔍 [Deck Agent] Slides count:', data.result?.slides?.length || 0);
+                  
+                  // DEBUG: Log full result to see what we actually get
+                  try {
+                    console.log('🔴 FULL RESULT OBJECT:', JSON.stringify(data.result, null, 2));
+                  } catch (e) {
+                    console.log('🔴 RESULT OBJECT (non-stringifiable):', data.result);
+                  }
+                  
+                  // The backend returns the deck data directly in result (singular, not results)
+                  // The deck format has slides, theme, citations, charts at the top level of result
+                  // Check if result has format: 'deck' structure
+                  if (data.result && data.result.format === 'deck') {
+                    console.log('✅ [Deck Agent] Found unified format deck structure');
+                    deck = {
+                      id: `deck-${Date.now()}`,
+                      title: data.result.metadata?.title || 'Investment Analysis Deck',
+                      type: selectedTemplate || 'pitch',
+                      slides: data.result.slides || [],
+                      theme: data.result.theme,
+                      data_sources: data.result.metadata?.data_sources || [],
+                      citations: data.result.citations || [],
+                      charts: data.result.charts || []
+                    };
+                  } else if (data.result && Array.isArray(data.result.slides)) {
+                    // Direct slides array in result
+                    console.log('✅ [Deck Agent] Found direct slides in result');
+                    deck = {
+                      id: `deck-${Date.now()}`,
+                      title: 'Investment Analysis Deck',
+                      type: selectedTemplate || 'pitch',
+                      slides: data.result.slides,
+                      theme: data.result.theme,
+                      data_sources: [],
+                      citations: data.result.citations || [],
+                      charts: data.result.charts || []
+                    };
+                  } else {
+                    // Fallback - use result as deck
+                    console.log('⚠️ [Deck Agent] Using result as deck directly');
+                    deck = data.result;
+                  }
+                  
+                  // Extract citations and charts if available
+                  if (deck?.citations) {
+                    setCitations(deck.citations);
+                  }
+                  if (deck?.charts) {
+                    setCharts(deck.charts);
+                  }
+                  
                   setGenerationProgress(100);
-                  console.log('✅ Deck generation complete');
+                  console.log('✅ Deck generation complete with', deck?.slides?.length || 0, 'slides');
                   // Also log the skills that were used from metadata
                   if (data.metadata?.skills_used) {
                     console.log('📊 Skills used:', data.metadata.skills_used);
@@ -427,21 +487,36 @@ export default function DeckAgentPage() {
       
       if (deck) {
         console.log('✅ [Deck Agent] Using streamed deck data');
+        console.log('📊 [Deck Agent] Full deck object:', deck);
         console.log('📊 [Deck Agent] Deck structure:', {
-          title: deck.title,
+          format: (deck as any).format || 'deck',
+          title: deck.title || 'Generated Deck',
           slideCount: deck.slides?.length,
           hasTheme: !!deck.theme,
-          hasDataSources: !!deck.data_sources
+          hasDataSources: !!(deck as any).data_sources,
+          hasCitations: !!(deck as any).citations,
+          hasCharts: !!(deck as any).charts
         });
         
-        // Ensure proper structure
+        // The backend returns format: 'deck' with slides array
+        // We need to wrap it in the expected deck structure
         if (!deck.id) deck.id = `deck-${Date.now()}`;
         if (!deck.type) deck.type = selectedTemplate || 'pitch';
+        if (!deck.title) deck.title = 'Investment Analysis Deck';
         
         // Check if we actually have valid slides
         if (!deck.slides || deck.slides.length === 0) {
-          console.error('❌ [Deck Agent] No slides in generated deck, using sample');
-          deck = generateSampleDeck(input, selectedTemplate || 'pitch');
+          console.error('❌ [Deck Agent] No slides in generated deck');
+          console.error('📋 [Deck Agent] Deck keys:', Object.keys(deck));
+          // Instead of using sample, show an error
+          setMessages(prev => [...prev, {
+            id: `msg-error-${Date.now()}`,
+            role: 'assistant',
+            content: `⚠️ The deck generation completed but no slides were created. This might be due to insufficient data. Please try again with more specific company names or prompts.`,
+            timestamp: new Date()
+          }]);
+          setIsGenerating(false);
+          return;
         } else {
           console.log(`✅ [Deck Agent] Generated real deck with ${deck.slides.length} slides`);
           // Log first slide for debugging
@@ -454,9 +529,16 @@ export default function DeckAgentPage() {
           }
         }
       } else {
-        // Generate sample deck as fallback if streaming failed
+        // No deck received - show error instead of template
         console.error('No deck received from streaming');
-        deck = generateSampleDeck(input, selectedTemplate || 'pitch');
+        setMessages(prev => [...prev, {
+          id: `msg-error-${Date.now()}`,
+          role: 'assistant',
+          content: `❌ Failed to generate deck. Backend returned no data.`,
+          timestamp: new Date()
+        }]);
+        setIsGenerating(false);
+        return;
       }
 
       console.log('🎯 handleSubmit Setting deck:', deck.title, 'with', deck.slides?.length, 'slides');
@@ -477,18 +559,13 @@ export default function DeckAgentPage() {
       setMessages(prev => [...prev, assistantMessage]);
     } catch (error) {
       console.error('Error calling API:', error);
-      // Generate fallback deck
-      const deck = generateSampleDeck(input, selectedTemplate || 'pitch');
-      setCurrentDeck(deck);
-      setCurrentSlideIndex(0);
-      
+      // Show error instead of template
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: `I've created your presentation with ${deck.slides.length} slides. You can view and edit each slide using the viewer above.`,
+        content: `❌ Error generating deck: ${error instanceof Error ? error.message : 'Unknown error'}`,
         timestamp: new Date(),
-        status: 'complete',
-        deck: deck
+        status: 'error'
       };
       setMessages(prev => [...prev, assistantMessage]);
     } finally {
@@ -497,237 +574,7 @@ export default function DeckAgentPage() {
     }
   };
 
-  const generateSampleDeck = (query: string, type: string): GeneratedDeck => {
-    // Extract company name from query or use fallback
-    let companyName = 'TechVenture Inc';
-    const companyMatch = query.match(/(?:for|about|on)\s+([A-Z][A-Za-z0-9\s&.]+?)(?:\s+|$)/i);
-    if (companyMatch) {
-      companyName = companyMatch[1].trim();
-    } else if (query.toLowerCase().includes('saas')) {
-      companyName = 'CloudScale AI';
-    }
-    
-    return {
-      id: `deck-${Date.now()}`,
-      title: `${companyName} - ${type === 'pitch' ? 'Series A Pitch Deck' : 'Investor Presentation'}`,
-      type: type,
-      slides: [
-        {
-          id: 'slide-1',
-          order: 1,
-          template: 'title',
-          content: {
-            title: companyName,
-            subtitle: 'Revolutionizing Enterprise AI Automation',
-            body: 'Series A Fundraising | Q1 2025',
-            notes: 'Opening slide - keep it impactful and memorable'
-          }
-        },
-        {
-          id: 'slide-2',
-          order: 2,
-          template: 'problem_solution',
-          content: {
-            title: 'The Problem',
-            subtitle: 'Enterprise AI adoption is broken',
-            bullets: [
-              '87% of AI projects fail to reach production',
-              'Average implementation time: 18 months',
-              'Integration costs exceed $2.5M per deployment',
-              'Lack of technical expertise in 73% of enterprises'
-            ],
-            body: 'Enterprises struggle with complex AI implementation, resulting in wasted resources and missed opportunities.',
-            notes: 'Emphasize pain points that resonate with investors'
-          }
-        },
-        {
-          id: 'slide-3',
-          order: 3,
-          template: 'solution',
-          content: {
-            title: 'Our Solution',
-            subtitle: 'One-click AI deployment platform',
-            bullets: [
-              'No-code AI model deployment in minutes',
-              'Pre-built integrations with 200+ enterprise tools',
-              'Automated model optimization and monitoring',
-              'White-glove onboarding and support'
-            ],
-            body: 'We make AI accessible to every enterprise, regardless of technical expertise.',
-            notes: 'Focus on unique value proposition'
-          }
-        },
-        {
-          id: 'slide-4',
-          order: 4,
-          template: 'market_opportunity',
-          content: {
-            title: 'Market Opportunity',
-            subtitle: '$250B TAM by 2027',
-            body: 'The enterprise AI market is experiencing unprecedented growth',
-            chart_data: {
-              type: 'bar',
-              data: {
-                labels: ['2023', '2024', '2025', '2026', '2027'],
-                datasets: [{
-                  data: [50, 85, 130, 190, 250],
-                  label: 'Market Size ($B)',
-                  backgroundColor: '#667eea'
-                }]
-              }
-            },
-            metrics: {
-              'TAM': '$250B',
-              'CAGR': '47%',
-              'Target Segment': '$45B'
-            },
-            notes: 'Source: Gartner, McKinsey AI Report 2024'
-          }
-        },
-        {
-          id: 'slide-5',
-          order: 5,
-          template: 'traction',
-          content: {
-            title: 'Traction & Growth',
-            subtitle: 'Proven product-market fit',
-            metrics: {
-              'ARR': '$10M',
-              'Growth Rate': '15% MoM',
-              'Customers': '127',
-              'NRR': '145%',
-              'NPS': '72',
-              'Churn': '<2%'
-            },
-            chart_data: {
-              type: 'line',
-              data: {
-                labels: ['Q1 2024', 'Q2 2024', 'Q3 2024', 'Q4 2024'],
-                datasets: [{
-                  data: [2.5, 4.2, 6.8, 10.0],
-                  label: 'ARR ($M)',
-                  borderColor: '#667eea',
-                  backgroundColor: 'rgba(102, 126, 234, 0.1)'
-                }]
-              }
-            },
-            notes: 'Highlight exponential growth and retention metrics'
-          }
-        },
-        {
-          id: 'slide-6',
-          order: 6,
-          template: 'business_model',
-          content: {
-            title: 'Business Model',
-            subtitle: 'SaaS with usage-based pricing',
-            bullets: [
-              'Platform fee: $50K-500K annually',
-              'Usage-based pricing for compute resources',
-              'Professional services: 20% attach rate',
-              'Marketplace revenue share: 30% on third-party models'
-            ],
-            metrics: {
-              'ACV': '$125K',
-              'Gross Margin': '82%',
-              'CAC Payback': '14 months'
-            },
-            notes: 'Emphasize scalability and unit economics'
-          }
-        },
-        {
-          id: 'slide-7',
-          order: 7,
-          template: 'team',
-          content: {
-            title: 'Leadership Team',
-            subtitle: 'Second-time founders with deep AI expertise',
-            bullets: [
-              'CEO: Ex-Google AI, 2 successful exits',
-              'CTO: Ex-OpenAI, Stanford PhD in ML',
-              'VP Sales: Ex-Salesforce, $100M+ in career bookings',
-              'VP Engineering: Ex-Meta, Led teams of 200+'
-            ],
-            body: '85 employees across engineering, sales, and customer success',
-            notes: 'Highlight relevant experience and previous successes'
-          }
-        },
-        {
-          id: 'slide-8',
-          order: 8,
-          template: 'financials',
-          content: {
-            title: 'Financial Projections',
-            subtitle: 'Path to $100M ARR',
-            chart_data: {
-              type: 'bar',
-              data: {
-                labels: ['2024', '2025', '2026', '2027'],
-                datasets: [
-                  {
-                    data: [10, 28, 62, 105],
-                    label: 'Revenue ($M)',
-                    backgroundColor: '#10b981'
-                  },
-                  {
-                    data: [15, 25, 45, 70],
-                    label: 'Expenses ($M)',
-                    backgroundColor: '#ef4444'
-                  }
-                ]
-              }
-            },
-            metrics: {
-              '2025 ARR': '$28M',
-              '2026 ARR': '$62M',
-              '2027 ARR': '$105M',
-              'Break-even': 'Q3 2026'
-            },
-            notes: 'Conservative projections based on current growth rate'
-          }
-        },
-        {
-          id: 'slide-9',
-          order: 9,
-          template: 'competition',
-          content: {
-            title: 'Competitive Landscape',
-            subtitle: 'Unique positioning in a growing market',
-            body: 'We are the only platform combining no-code deployment with enterprise-grade security',
-            bullets: [
-              'DataRobot: Complex, requires data scientists',
-              'H2O.ai: Limited integrations, technical focus',
-              'AWS SageMaker: Infrastructure-heavy, steep learning curve',
-              'Our advantage: True no-code, 10x faster deployment'
-            ],
-            notes: 'Position as complementary, not competitive'
-          }
-        },
-        {
-          id: 'slide-10',
-          order: 10,
-          template: 'ask',
-          content: {
-            title: 'The Ask',
-            subtitle: 'Series A: $25M',
-            bullets: [
-              'Product development: 40% - Scale platform capabilities',
-              'Sales & Marketing: 35% - Enterprise go-to-market',
-              'Customer Success: 15% - White-glove support',
-              'Operations: 10% - Infrastructure and compliance'
-            ],
-            metrics: {
-              'Raise': '$25M',
-              'Valuation': '$150M',
-              'Lead': 'Target: Tier 1 VC',
-              'Timeline': 'Close Q1 2025'
-            },
-            notes: 'Be specific about use of funds'
-          }
-        }
-      ]
-    };
-  };
+  // Template generation function removed - only real data from backend
 
   const handleQuickPrompt = (prompt: string) => {
     setInput(prompt);
@@ -1930,6 +1777,44 @@ export default function DeckAgentPage() {
                   PDF
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* Citations Section */}
+          {citations && citations.length > 0 && (
+            <div className="bg-white rounded-lg shadow-lg p-4 mt-4">
+              <CitationDisplay citations={citations} />
+            </div>
+          )}
+
+          {/* Charts Section */}
+          {charts && charts.length > 0 && (
+            <div className="bg-white rounded-lg shadow-lg p-4 mt-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-700 flex items-center">
+                  <BarChart3 className="w-4 h-4 mr-2" />
+                  Visual Analytics
+                </h3>
+                <button
+                  onClick={() => setShowCharts(!showCharts)}
+                  className="text-xs text-blue-600 hover:text-blue-700"
+                >
+                  {showCharts ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              
+              {showCharts && (
+                <div className="space-y-4">
+                  {charts.map((chart, index) => (
+                    <div key={index} className="bg-gray-50 rounded-lg p-3">
+                      <AgentChartGenerator
+                        prompt={`Chart ${index + 1}: ${chart.title || chart.type}`}
+                        data={chart.data || chart}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>

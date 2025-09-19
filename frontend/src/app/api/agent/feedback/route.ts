@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-// Initialize Supabase client
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
-);
+// Initialize Supabase client with service role key for server-side operations
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY!;
+
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 export async function POST(req: NextRequest) {
   try {
@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     
     // Store feedback in Supabase
     const { data, error } = await supabase
-      .table('agent_feedback')
+      .from('agent_feedback')
       .insert([{
         session_id: sessionId,
         prompt,
@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
     // If this is a correction, create a preference pair for GRPO
     if (corrections || feedbackType === 'semantic') {
       await supabase
-        .table('preference_pairs')
+        .from('preference_pairs')
         .insert([{
           prompt,
           chosen: corrections || feedbackText,
@@ -83,7 +83,7 @@ export async function GET(req: NextRequest) {
     const modelType = searchParams.get('modelType');
     
     let query = supabase
-      .table('agent_feedback')
+      .from('agent_feedback')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(100);

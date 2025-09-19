@@ -244,7 +244,7 @@ export class WebScraper {
   /**
    * Analyze market map image using vision capabilities
    */
-  private async analyzeMarketMapImage(imageUrl: string): string {
+  private async analyzeMarketMapImage(imageUrl: string): Promise<string> {
     // This would integrate with vision API
     // For now, return a placeholder analysis
     return `Market map identified at ${imageUrl}. Contains sector categorization and competitive landscape. Further vision analysis required for detailed extraction.`;

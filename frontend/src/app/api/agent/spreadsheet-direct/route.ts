@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { createClient } from '@supabase/supabase-js';
-import { companyCIMTool, companyWebsiteAnalyzerTool } from '../tools/company-cim-tool';
-import { intelligentWebScraper } from '@/lib/intelligent-web-scraper';
+// Removed missing dependencies - using backend API instead
+// import { companyCIMTool, companyWebsiteAnalyzerTool } from '../tools/company-cim-tool';
+// import { intelligentWebScraper } from '@/lib/intelligent-web-scraper';
 import { dataReconciler } from '@/lib/data-reconciliation';
 import { 
   summarizeGridState, 
@@ -13,7 +14,7 @@ import {
 } from '@/lib/spreadsheet-planner';
 
 const anthropic = new Anthropic({
-  apiKey: process.env.CLAUDE_API_KEY!,
+  apiKey: process.env.ANTHROPIC_API_KEY!,
 });
 
 const supabase = createClient(
@@ -1058,7 +1059,8 @@ export async function POST(request: NextRequest) {
     
     // Check if we should use the orchestrator for multi-step tasks
     if (useOrchestrator && prompt.toLowerCase().includes('then')) {
-      const { orchestrator } = await import('@/lib/agent-orchestrator');
+      // Orchestrator not available
+      // const { orchestrator } = await import('@/lib/agent-orchestrator');
       
       // Plan and execute with minimal context per skill
       const plan = await orchestrator.planTask(prompt, gridState);

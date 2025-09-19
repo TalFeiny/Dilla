@@ -257,7 +257,7 @@ export class SECValuationExtractor {
     for (const company of companies) {
       const data = await this.getCompanyValuation(company);
       if (data) {
-        valuationsArray.from(pany) = data;
+        valuations[company] = data;
       }
       
       // Be respectful with rate limiting

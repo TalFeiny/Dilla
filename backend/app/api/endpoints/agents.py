@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel
 import logging
-from app.services.agent_service import self_learning_agent
+# from app.services.agent_service import self_learning_agent  # Temporarily disabled
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

@@ -517,7 +517,7 @@ async def analyze_content_for_deck(
         Return as structured JSON.
         """
         
-        from app.services.mcp_orchestrator import MCPOrchestrator
+        from app.services.mcp_orchestrator import SingleAgentOrchestrator as MCPOrchestrator
         mcp = MCPOrchestrator()
         
         analysis = await mcp.process_request(analysis_prompt)

@@ -193,12 +193,107 @@ export default function AgentChat({ sessionId = 'default', onMessageSent }: Agen
         throw new Error(data.error || 'Failed to process request');
       }
 
-      // Extract content from MCP response
-      const content = data.analysis || data.synthesis || '';
-      const toolsUsed = data.tool_calls?.map((tc: any) => tc.tool) || data.metadata?.tools_used || [];
+      // Extract content from unified brain response
+      const result = data.result || data;
       
-      // Charts come from the results array if they were generated
-      const charts = data.results?.find((r: any) => r.skill === 'chart-generator')?.data?.charts || [];
+      // Format the content from the structured analysis
+      let content = '';
+      let capTables = [];
+      let citations = [];
+      
+      // Check for companies in the backend response structure
+      // Backend returns everything in result object
+      const companies = result.companies || data.companies || [];
+      const allCharts = result.charts || data.charts || [];
+      const allCitations = result.citations || data.citations || [];
+      
+      if (companies && companies.length > 0) {
+        content = `# Company Analysis\n\n`;
+        
+        companies.forEach((company: any, index: number) => {
+          const companyName = company.company || company.name || `Company ${index + 1}`;
+          content += `## ${index + 1}. ${companyName}\n\n`;
+          
+          // Display fund fit score
+          if (company.fund_fit_score) {
+            content += `**Fund Fit Score:** ${company.fund_fit_score}/100\n\n`;
+          }
+          
+          // Display financial metrics
+          if (company.valuation) content += `**Valuation:** $${(company.valuation / 1e9).toFixed(2)}B\n`;
+          if (company.revenue) content += `**Revenue:** $${(company.revenue / 1e6).toFixed(1)}M\n`;
+          if (company.arr) content += `**ARR:** $${(company.arr / 1e6).toFixed(1)}M\n`;
+          if (company.growth_rate) content += `**Growth Rate:** ${(company.growth_rate * 100).toFixed(1)}%\n`;
+          if (company.business_model) content += `**Business Model:** ${company.business_model}\n`;
+          
+          // Display funding information
+          if (company.funding) {
+            const funding = company.funding;
+            if (funding.total_raised) content += `**Total Raised:** $${(funding.total_raised / 1e6).toFixed(1)}M\n`;
+            if (funding.last_round_type) content += `**Last Round:** ${funding.last_round_type}\n`;
+            if (funding.last_round_amount) content += `**Last Amount:** $${(funding.last_round_amount / 1e6).toFixed(1)}M\n`;
+            if (funding.last_round_date) content += `**Last Date:** ${funding.last_round_date}\n`;
+          }
+          
+          // Display cap table if available
+          if (company.cap_table) {
+            content += `\n### Ownership Structure\n`;
+            capTables.push({ company: companyName, capTable: company.cap_table });
+            
+            // Show investor ownership
+            if (company.cap_table.investors) {
+              content += `**Investors:**\n`;
+              company.cap_table.investors.forEach((investor: any) => {
+                content += `- ${investor.name}: ${(investor.ownership * 100).toFixed(2)}% (${investor.round || 'Unknown'})\n`;
+              });
+            }
+            
+            // Show liquidation preferences
+            if (company.cap_table.liquidation_stack) {
+              content += `\n**Liquidation Preferences:**\n`;
+              company.cap_table.liquidation_stack.forEach((pref: any, idx: number) => {
+                content += `${idx + 1}. ${pref.investor}: $${(pref.amount / 1e6).toFixed(1)}M at ${pref.multiple}x\n`;
+              });
+            }
+          }
+          
+          // Display valuation methods if available
+          if (company.valuation_methods) {
+            content += `\n### Valuation Analysis\n`;
+            const methods = company.valuation_methods;
+            if (methods.pwerm) content += `**PWERM:** $${(methods.pwerm / 1e6).toFixed(1)}M\n`;
+            if (methods.dcf) content += `**DCF:** $${(methods.dcf / 1e6).toFixed(1)}M\n`;
+            if (methods.comparables) content += `**Comparables:** $${(methods.comparables / 1e6).toFixed(1)}M\n`;
+          }
+          
+          content += '\n';
+        });
+      } else if (result.analysis && result.analysis.executive_summary) {
+        // Fallback to old structure if needed
+        const analysis = result.analysis;
+        content = `# Executive Summary\n\n${analysis.executive_summary}\n\n`;
+      } else {
+        // Final fallback
+        content = data.analysis || data.synthesis || result.content || JSON.stringify(result, null, 2);
+      }
+      
+      // Add citations section if available
+      if (allCitations && allCitations.length > 0) {
+        content += `\n## Sources & Citations\n`;
+        allCitations.forEach((citation: any, idx: number) => {
+          if (citation.url) {
+            content += `${idx + 1}. [${citation.source || citation.title || 'Source'}](${citation.url})\n`;
+          }
+        });
+        citations = allCitations;
+      }
+      
+      const toolsUsed = data.tool_calls?.map((tc: any) => tc.tool) || 
+                        data.metadata?.tools_used || 
+                        (result.metadata ? result.metadata.entities?.actions || [] : []);
+      
+      // Charts come directly from the backend response
+      const charts = data.charts || result.charts || [];
 
       // Update the placeholder message with the actual response
       setMessages(prev => prev.map(msg => 
@@ -208,7 +303,10 @@ export default function AgentChat({ sessionId = 'default', onMessageSent }: Agen
               content,
               toolsUsed,
               charts,
+              capTables,
+              citations,
               analysisData: data.results || data,
+              companies: companies,
               processing: false,
             }
           : msg
@@ -342,6 +440,40 @@ export default function AgentChat({ sessionId = 'default', onMessageSent }: Agen
                                   </code>
                                 );
                               },
+                              a({ node, className, children, href, ...props }: any) {
+                                return (
+                                  <a
+                                    href={href}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 underline font-medium transition-colors"
+                                    {...props}
+                                  >
+                                    {children}
+                                  </a>
+                                );
+                              },
+                              p({ node, className, children, ...props }: any) {
+                                return (
+                                  <p className="mb-3 leading-relaxed" {...props}>
+                                    {children}
+                                  </p>
+                                );
+                              },
+                              h1({ node, className, children, ...props }: any) {
+                                return (
+                                  <h1 className="text-xl font-bold mb-3 mt-4 text-gray-900 dark:text-gray-100" {...props}>
+                                    {children}
+                                  </h1>
+                                );
+                              },
+                              h2({ node, className, children, ...props }: any) {
+                                return (
+                                  <h2 className="text-lg font-semibold mb-2 mt-3 text-gray-800 dark:text-gray-200" {...props}>
+                                    {children}
+                                  </h2>
+                                );
+                              },
                             }}
                           >
                             {message.content}
@@ -351,6 +483,7 @@ export default function AgentChat({ sessionId = 'default', onMessageSent }: Agen
                         {/* Render charts if available */}
                         {message.charts && message.charts.length > 0 && (
                           <div className="mt-4 space-y-4">
+                            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">📊 Charts & Visualizations</h3>
                             {message.charts.map((chart, idx) => (
                               <div key={idx} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
                                 <TableauLevelCharts
@@ -362,6 +495,48 @@ export default function AgentChat({ sessionId = 'default', onMessageSent }: Agen
                                 />
                               </div>
                             ))}
+                          </div>
+                        )}
+                        
+                        {/* Render cap tables if available */}
+                        {message.capTables && message.capTables.length > 0 && (
+                          <div className="mt-4 space-y-4">
+                            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">📋 Cap Tables</h3>
+                            {message.capTables.map((item, idx) => (
+                              <div key={idx} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                                <h4 className="font-medium mb-2">{item.company}</h4>
+                                {item.capTable.investors && (
+                                  <div className="space-y-1">
+                                    {item.capTable.investors.map((investor, invIdx) => (
+                                      <div key={invIdx} className="flex justify-between text-sm">
+                                        <span>{investor.name}</span>
+                                        <span className="font-mono">{(investor.ownership * 100).toFixed(2)}%</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        {/* Render citations if available */}
+                        {message.citations && message.citations.length > 0 && (
+                          <div className="mt-4 pt-3 border-t border-gray-200 dark:border-gray-700">
+                            <h3 className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-2">Sources</h3>
+                            <div className="space-y-1">
+                              {message.citations.slice(0, 5).map((citation, idx) => (
+                                <a
+                                  key={idx}
+                                  href={citation.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="block text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 truncate"
+                                >
+                                  [{idx + 1}] {citation.source || citation.title || citation.url}
+                                </a>
+                              ))}
+                            </div>
                           </div>
                         )}
                         

@@ -41,7 +41,7 @@ export default function CustomAnalysisPage() {
 
   useEffect(() => {
     fetchAnalysis();
-  }, Array.from(umentId));
+  }, [documentId]);
 
   const fetchAnalysis = async () => {
     try {

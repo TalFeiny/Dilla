@@ -100,18 +100,18 @@ Break this down into specific tasks that need to be executed. For each task, spe
 
 Return a JSON array of tasks:
 [
-  {{
+  {
     "id": "task_0",
     "type": "research",
     "tool": "tavily",
     "description": "Search for company information",
-    "parameters": {{
+    "parameters": {
       "query": "specific search query",
       "search_depth": "advanced",
       "include_raw_content": true
-    }},
+    },
     "extract": ["funding", "revenue", "team_size", "customers"]
-  }}
+  }
 ]
 
 Focus on getting:
@@ -239,6 +239,136 @@ class StructuredDataExtractor:
             logger.warning("Claude client not available for extraction")
             self.claude_client = None
     
+    async def extract_structured_data_from_parsed(self, parsed_data: Dict, company_name: str) -> Dict[str, Any]:
+        """
+        Structure pre-parsed data using Claude - much more accurate
+        """
+        if not self.claude_client:
+            return {}
+        
+        extraction_prompt = f"""Structure this ACTUAL extracted data for {company_name}:
+
+ACTUAL Customers (from img alt tags): {parsed_data.get('customers', [])[:20]}
+ACTUAL Investors (from funding articles): {parsed_data.get('investors', [])}
+ACTUAL Pricing: {parsed_data.get('pricing', {})}
+ACTUAL Team: {parsed_data.get('team', {})}
+ACTUAL Product: {parsed_data.get('product', {})}
+BUSINESS CONTEXT (first 2000 chars of content): {parsed_data.get('business_context', '')}
+
+Task: Convert this REAL data into structured format. DO NOT make up data.
+
+CRITICAL BUSINESS MODEL ANALYSIS:
+Analyze the business_context to determine the company's business model. Look for:
+- Recurring revenue language ("SaaS", "subscription", "per month")
+- Marketplace indicators ("buyers and sellers", "two-sided", "platform")
+- Roll-up patterns ("acquiring", "consolidating", "portfolio of brands")
+- API/Developer focus ("API", "developers", "integration", "SDK")
+- Services language ("agency", "consulting", "managed services")
+- Hardware mentions ("device", "hardware", "IoT")
+
+Business Model Categories:
+- "Traditional SaaS": Pure recurring software (e.g., CRM, project management)
+- "AI SaaS": AI-powered software platform (e.g., AI research tools, AI analytics)
+- "Roll-up Model": Acquiring/consolidating businesses (e.g., acquiring agencies)
+- "Marketplace": Two-sided platform with network effects
+- "API/Infrastructure": Developer tools, usage-based pricing
+- "Services with Tech": Tech-enabled services/agency model
+- "Hardware + Software": Integrated hardware/software solution
+
+CRITICAL FUNDING EXTRACTION WITH CURRENCY CONVERSION:
+- Extract ANY funding amount with ANY currency symbol (£, €, $, ¥, ₹, etc.)
+- CONVERT TO USD IMMEDIATELY:
+  * £ (GBP) → multiply by 1.25
+  * € (EUR) → multiply by 1.10  
+  * ¥ (JPY) → divide by 150
+  * ₹ (INR) → divide by 83
+  * Default to USD if no symbol
+- Examples to extract and convert:
+  * "raised £8.5 million" → amount: 10625000 (8.5 * 1.25 * 1000000)
+  * "€10M funding" → amount: 11000000 (10 * 1.10 * 1000000)
+  * "$5 million Series A" → amount: 5000000 (already USD)
+
+CRITICAL DATE EXTRACTION:
+- Search for funding dates in the text: "raised in 2025", "March 2025", "announced today", "last year"
+- Convert relative dates: "today" = "2025-09", "last year" = "2024", "Q1 2025" = "2025-01"
+- Look for patterns: "raised £X in [DATE]", "[DATE] funding round", "closed [ROUND] in [DATE]"
+
+1. For customers: Identify which are enterprise (Fortune 500, large companies) vs SMB
+2. For pricing: Extract numeric amounts from strings like "$99/month"
+3. For investors: First name in list is usually lead investor
+4. For team: Parse founder names and employee count
+5. For business model: Analyze the business_context to categorize accurately
+
+Return structured data for IntelligentGapFiller. Format EXACTLY as:
+{{
+  "funding_analysis": {{
+    "rounds": [
+      {{
+        "date": "YYYY-MM-DD" format ONLY (e.g., "2024-08-15" for August 15, 2024)
+                 - If only month/year: use "YYYY-MM-01" (e.g., "2024-08-01" for August 2024)
+                 - If only year: use "YYYY-01-01" (e.g., "2024-01-01" for 2024)
+                 - Extract from text like "raised in August 2024" → "2024-08-01",
+        "amount": numeric_value,
+        "round": "Seed" or "Series A" etc,
+        "investors": [list of investor names],
+        "valuation": numeric_value or null
+      }}
+    ],
+    "total_raised": sum_of_all_rounds,
+    "current_stage": "latest round type"
+  }},
+  "company_basics": {{
+    "headquarters_location": "San Francisco" or city from data,
+    "founded_year": year or null,
+    "industry": "SaaS" or sector
+  }},
+  "customers": {{
+    "list": [actual customer names],
+    "enterprise": [Fortune 500/large companies],
+    "count": total_number
+  }},
+  "metrics": {{
+    "employees": number from team data or 0,
+    "revenue": extract from pricing if possible or 0,
+    "burn_rate": 0,  // Will be inferred by IntelligentGapFiller
+    "growth_rate": 0  // Will be inferred
+  }},
+  "pricing": {{
+    "has_pricing": true/false,
+    "enterprise_motion": true if "Contact Sales",
+    "lowest_tier": numeric or 0,
+    "model": "per-seat" or "usage" or "enterprise"
+  }},
+  "business_model": "Specific description like 'AI-powered legal document automation for enterprise' or 'Vertical SaaS for restaurant inventory'",
+  "category": "ai_first" or "ai_saas" or "saas" or "marketplace" or "services" or "rollup" or "hardware",
+  "vertical": "Healthcare" or "Legal Tech" or "FinTech" or "Developer Tools" or other specific industry,
+  "compute_intensity": "high" or "medium" or "low",
+  "careers": careers data if exists
+}}"""
+        
+        try:
+            response = await self.claude_client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=2000,
+                messages=[{"role": "user", "content": extraction_prompt}]
+            )
+            
+            # Parse response
+            response_text = response.content[0].text if response.content else ""
+            
+            # Extract JSON from response
+            import json
+            import re
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+            
+            return {}
+            
+        except Exception as e:
+            logger.error(f"Failed to structure parsed data: {e}")
+            return {}
+    
     async def extract_structured_data(self, raw_html: str, company_name: str) -> Dict[str, Any]:
         """
         Extract comprehensive structured data from raw HTML using Claude
@@ -251,13 +381,20 @@ class StructuredDataExtractor:
 
 CRITICAL: Extract ALL of the following if present:
 
-1. FUNDING HISTORY (MOST IMPORTANT - needed for IntelligentGapFiller):
-   - Each round with: date (YYYY-MM-DD format), amount ($X million), round type (Seed, Series A, etc), investors
+1. COMPANY BASICS (CRITICAL for geographic adjustments):
+   - headquarters_location: Extract city name (e.g., "San Francisco", "NYC", "London", "Berlin", "Singapore")
+   - founded_year: Year company was founded
+   - current_stage: Company stage (Pre-Seed, Seed, Series A, etc)
+   - industry: Main industry/sector
+
+2. FUNDING HISTORY (MOST IMPORTANT - needed for IntelligentGapFiller):
+   - Each round with: date (YYYY-MM-DD format), amount ($X million), round type (Seed, Series A, etc)
+   - investors: EXTRACT ALL INVESTOR NAMES (e.g., "Sequoia Capital", "Andreessen Horowitz", "Accel", "Y Combinator")
    - Total raised to date
    - Last round details (amount, date, lead investor)
    - Valuation if mentioned
 
-2. TEAM COMPOSITION (EXTRACT EVERY PERSON AND TITLE):
+3. TEAM COMPOSITION (EXTRACT EVERY PERSON AND TITLE):
    - Total employee count (critical for burn estimation)
    - ALL employees with titles (extract from team pages, about us, LinkedIn links)
    - Engineering team: List every engineer with title (Senior/Staff/Principal/Junior)
@@ -318,50 +455,65 @@ CRITICAL: Extract ALL of the following if present:
 HTML Content:
 {raw_html[:15000]}
 
-Return ONLY a JSON object with this structure:
+CRITICAL FORMATTING RULES:
+1. ALL numeric values MUST be returned as numbers, NOT strings
+2. Convert all amounts to raw numbers (e.g., "$10M" becomes 10000000)
+3. Convert all percentages to decimals (e.g., "85%" becomes 0.85)
+4. Dates should be in "YYYY-MM-DD" format as strings
+5. Arrays should contain actual values, not descriptions
+6. If a value is unknown, use 0 for numbers, empty string for text, empty array for lists
+
+Return ONLY a JSON object where funding.rounds EXACTLY matches this format for IntelligentGapFiller:
 {{
+  "company_basics": {{
+    "headquarters_location": "San Francisco",  // Or "NYC", "London", "Berlin", "Singapore", etc
+    "founded_year": 2020,
+    "current_stage": "Series A",  // Or "Pre-Seed", "Seed", etc
+    "industry": "SaaS"
+  }},
   "funding": {{
     "rounds": [
-      {{"date": "YYYY-MM-DD", "amount": X000000, "round": "Series X", "investors": ["name1", "name2"]}}
+      {{"date": "2023-06-15", "amount": 20000000, "round": "Series A", "investors": ["Sequoia", "Accel"], "valuation": 100000000}},
+      {{"date": "2022-03-10", "amount": 5000000, "round": "Seed", "investors": ["Y Combinator", "Angel"], "valuation": 20000000}}
     ],
-    "total_raised_millions": X,
-    "last_round": "Series X",
-    "last_round_date": "YYYY-MM-DD",
-    "last_round_amount": X000000,
-    "valuation": X000000
+    "total_raised": 25000000,
+    "last_round": "Series A",
+    "last_round_date": "2023-06-15", 
+    "last_round_amount": 20000000,
+    "current_valuation": 100000000
   }},
   "team": {{
-    "total_employees": X,
+    "total_employees": 45,
     "all_employees": [
       {{"name": "John Doe", "title": "Senior Software Engineer", "department": "Engineering"}},
       {{"name": "Jane Smith", "title": "VP Sales", "department": "Sales"}}
     ],
     "engineering_team": [
-      {{"name": "X", "title": "Staff Engineer", "seniority": "senior"}},
-      {{"name": "Y", "title": "Junior Developer", "seniority": "junior"}}
+      {{"name": "Alice Chen", "title": "Staff Engineer", "seniority": "senior"}},
+      {{"name": "Bob Wilson", "title": "Junior Developer", "seniority": "junior"}}
     ],
     "sales_team": [
-      {{"name": "X", "title": "Account Executive", "seniority": "mid"}}
+      {{"name": "Sarah Lee", "title": "Account Executive", "seniority": "mid"}}
     ],
     "marketing_team": [
-      {{"name": "X", "title": "Growth Marketing Manager", "seniority": "mid"}}
+      {{"name": "Mike Brown", "title": "Growth Marketing Manager", "seniority": "mid"}}
     ],
     "product_team": [
-      {{"name": "X", "title": "Senior PM", "seniority": "senior"}}
+      {{"name": "Lisa Zhang", "title": "Senior PM", "seniority": "senior"}}
     ],
     "founders": [
-      {{"name": "X", "role": "CEO", "background": "Previously founder at Y (acquired), Stanford CS"}}
+      {{"name": "Tom Anderson", "role": "CEO", "background": "Previously founder at DataCo (acquired), Stanford CS"}}
     ],
     "executives": [
-      {{"name": "X", "role": "CTO", "background": "Ex-Google L7, MIT PhD"}}
+      {{"name": "Emma Davis", "role": "CTO", "background": "Ex-Google L7, MIT PhD"}}
     ],
     "board_advisors": [
-      {{"name": "X", "role": "Board Member", "background": "Partner at Sequoia"}}
+      {{"name": "Jim Partner", "role": "Board Member", "background": "Partner at Sequoia"}}
     ],
     "seniority_breakdown": {{
-      "senior": X,
-      "mid": X,
-      "junior": X
+      "senior": 15,
+      "mid": 20,
+      "junior": 10
     }},
     "open_positions": [
       {{"title": "Senior Backend Engineer", "department": "Engineering", "location": "Remote"}},
@@ -389,18 +541,16 @@ Return ONLY a JSON object with this structure:
   }},
   "customers": {{
     "logos": ["Company1", "Company2"],
-    "count": X,
+    "count": 500,
     "notable_enterprise": ["Fortune500Co"],
     "verticals": ["Finance", "Healthcare"],
     "case_studies": [
-      {{"customer": "X", "result": "50% reduction in Y"}}
+      {{"customer": "Acme Corp", "result": "50% reduction in costs"}}
     ]
   }},
   "metrics": {{
-    "revenue_arr": X000000,
-    "growth_rate": X.X,
-    "user_count": X,
-    "nrr": X.XX
+    "revenue_arr": 10000000,
+    "user_count": 50000
   }},
   "competitive": {{
     "competitors": ["Competitor1", "Competitor2"],
@@ -426,11 +576,39 @@ Extract ONLY verifiable information from the HTML. Use null for missing fields."
             # Parse JSON from response
             import json
             import re
+            
+            # Log first 200 chars to debug
+            logger.debug(f"Claude response for {company_name} (first 200 chars): {response_text[:200]}")
+            
+            # Try to extract JSON
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
-                extracted_data = json.loads(json_match.group())
-                logger.info(f"Extracted structured data for {company_name}: {len(extracted_data)} fields")
-                return extracted_data
+                json_str = json_match.group()
+                # Clean up common issues
+                # Remove JavaScript-style comments
+                json_str = re.sub(r'//.*?(?=\n|$)', '', json_str)
+                # Remove trailing commas before closing braces/brackets
+                json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+                
+                try:
+                    extracted_data = json.loads(json_str)
+                    logger.info(f"Extracted structured data for {company_name}: {len(extracted_data)} fields")
+                    # Log what we actually extracted
+                    logger.info(f"Extracted data: business_model={extracted_data.get('business_model', 'MISSING')}, "
+                               f"funding={extracted_data.get('funding', {}).get('total_raised', 0)}, "
+                               f"team_size={extracted_data.get('team', {}).get('total_count', 0)}")
+                    return extracted_data
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON decode error at position {e.pos}: {e}")
+                    logger.error(f"JSON string around error: ...{json_str[max(0, e.pos-20):min(len(json_str), e.pos+20)]}...")
+                    # Try one more time with aggressive cleaning
+                    json_str = re.sub(r'[\x00-\x1f]', '', json_str)  # Remove control chars
+                    try:
+                        extracted_data = json.loads(json_str)
+                        logger.info(f"Extracted after aggressive cleaning")
+                        return extracted_data
+                    except:
+                        pass
                 
         except Exception as e:
             logger.error(f"Claude extraction failed for {company_name}: {e}")
@@ -457,7 +635,9 @@ class MCPToolExecutor:
     
     async def __aenter__(self):
         """Async context manager entry"""
-        self.session = aiohttp.ClientSession()
+        # Create session with default timeout
+        timeout = aiohttp.ClientTimeout(total=30, connect=5, sock_read=10)
+        self.session = aiohttp.ClientSession(timeout=timeout)
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -474,6 +654,7 @@ class MCPToolExecutor:
         - search_depth: "basic" or "advanced" (default: "basic")
         - max_results: Number of results (default: 5)
         - include_raw_content: Include raw HTML (default: False)
+        - include_domains: List of domains to specifically include
         - exclude_domains: List of domains to exclude
         """
         if not self.tavily_api_key:
@@ -484,9 +665,10 @@ class MCPToolExecutor:
                 "data": {"results": []}
             }
         
-        # Ensure we have a session
+        # Ensure we have a session with timeout
         if not self.session:
-            self.session = aiohttp.ClientSession()
+            timeout = aiohttp.ClientTimeout(total=30, connect=5, sock_read=10)
+            self.session = aiohttp.ClientSession(timeout=timeout)
         
         try:
             headers = {
@@ -502,15 +684,24 @@ class MCPToolExecutor:
                 "include_raw_content": params.get("include_raw_content", False),
                 "include_answer": params.get("include_answer", False),
                 "include_images": params.get("include_images", False),
-                "exclude_domains": params.get("exclude_domains", [])
             }
             
+            # Add domain filters if provided
+            if params.get("include_domains"):
+                payload["include_domains"] = params.get("include_domains", [])
+            if params.get("exclude_domains"):
+                payload["exclude_domains"] = params.get("exclude_domains", [])
+            
             logger.info(f"Executing Tavily search: {payload['query'][:100]}...")
+            
+            # Add timeout for Tavily API calls (10 seconds)
+            timeout = aiohttp.ClientTimeout(total=10)
             
             async with self.session.post(
                 "https://api.tavily.com/search",
                 json=payload,
-                headers=headers
+                headers=headers,
+                timeout=timeout
             ) as response:
                 data = await response.json()
                 
@@ -551,9 +742,10 @@ class MCPToolExecutor:
                 "data": {"results": []}
             }
         
-        # Ensure we have a session
+        # Ensure we have a session with timeout
         if not self.session:
-            self.session = aiohttp.ClientSession()
+            timeout = aiohttp.ClientTimeout(total=30, connect=5, sock_read=10)
+            self.session = aiohttp.ClientSession(timeout=timeout)
         
         try:
             headers = {
@@ -613,9 +805,10 @@ class MCPToolExecutor:
                 "data": {}
             }
         
-        # Ensure we have a session
+        # Ensure we have a session with timeout
         if not self.session:
-            self.session = aiohttp.ClientSession()
+            timeout = aiohttp.ClientTimeout(total=30, connect=5, sock_read=10)
+            self.session = aiohttp.ClientSession(timeout=timeout)
         
         try:
             headers = {

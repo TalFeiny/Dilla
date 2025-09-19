@@ -2,6 +2,9 @@
 
 import React, { useState, useEffect } from 'react';
 import UnifiedFeedback from '@/components/UnifiedFeedback';
+import SaveCompaniesToDatabase from '@/components/SaveCompaniesToDatabase';
+import CitationDisplay from '@/components/CitationDisplay';
+import AgentChartGenerator from '@/components/AgentChartGenerator';
 import { 
   Table,
   Calculator,
@@ -60,6 +63,9 @@ export default function MatrixPage() {
   const [sessionId, setSessionId] = useState<string>('');
   const [showFeedback, setShowFeedback] = useState(false);
   const [lastPrompt, setLastPrompt] = useState('');
+  const [citations, setCitations] = useState<any[]>([]);
+  const [charts, setCharts] = useState<any[]>([]);
+  const [showCharts, setShowCharts] = useState(false);
 
   // Sample queries for quick start
   const sampleQueries = [
@@ -104,53 +110,94 @@ export default function MatrixPage() {
         throw new Error(`Request failed: ${response.status}`);
       }
 
-      // Handle streaming response
+      // Handle streaming response with error recovery
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       let matrixResult: any = null;
+      let streamError: Error | null = null;
 
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      try {
+        while (reader) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const dataStr = line.slice(6);
-            if (dataStr === '[DONE]') continue;
-            
-            try {
-              const streamData = JSON.parse(dataStr);
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const dataStr = line.slice(6);
+              if (dataStr === '[DONE]') continue;
               
-              switch (streamData.type) {
-                case 'progress':
-                  setProgressMessage(streamData.message);
-                  setExecutionSteps(prev => [...prev, streamData.message]);
-                  break;
-                  
-                case 'status':
-                  setProgressMessage(streamData.message);
-                  break;
-                  
-                case 'complete':
-                  console.log('Received complete data:', streamData);
-                  matrixResult = streamData.result;
-                  setProgressMessage('✅ Matrix generation complete');
-                  setExecutionSteps(prev => [...prev, '✅ Analysis complete']);
-                  break;
-                  
-                case 'error':
-                  setError(streamData.message);
-                  setProgressMessage('');
-                  throw new Error(streamData.message);
+              try {
+                const streamData = JSON.parse(dataStr);
+                
+                switch (streamData.type) {
+                  case 'progress':
+                    setProgressMessage(streamData.message);
+                    setExecutionSteps(prev => [...prev, streamData.message]);
+                    break;
+                    
+                  case 'status':
+                    setProgressMessage(streamData.message);
+                    break;
+                    
+                  case 'complete':
+                    console.log('Received complete data:', streamData);
+                    matrixResult = streamData.result;
+                    
+                    // Handle unified format where format: 'matrix' is present
+                    if (streamData.result?.format === 'matrix') {
+                      console.log('Processing unified matrix format');
+                      // All matrix data is at top level
+                      matrixResult = streamData.result;
+                    }
+                    
+                    // Extract citations and charts from the result
+                    if (streamData.result?.citations) {
+                      setCitations(streamData.result.citations);
+                    }
+                    if (streamData.result?.charts) {
+                      setCharts(streamData.result.charts);
+                    }
+                    setProgressMessage('✅ Matrix generation complete');
+                    setExecutionSteps(prev => [...prev, '✅ Analysis complete']);
+                    break;
+                    
+                  case 'error':
+                    streamError = new Error(streamData.message);
+                    setError(streamData.message);
+                    setProgressMessage('');
+                    // Don't throw immediately, let cleanup happen
+                    break;
+                }
+              } catch (e) {
+                console.warn('Could not parse streaming data:', e);
+                // Continue processing other lines
               }
-            } catch (e) {
-              console.warn('Could not parse streaming data:', e);
             }
           }
+          
+          // If we got an error, stop processing
+          if (streamError) break;
         }
+      } catch (streamErr) {
+        console.error('Stream reading error:', streamErr);
+        streamError = streamErr as Error;
+      } finally {
+        // Always clean up the reader
+        try {
+          reader?.releaseLock();
+        } catch (e) {
+          console.warn('Reader already released');
+        }
+      }
+      
+      // Handle any stream errors after cleanup
+      if (streamError) {
+        setError(streamError.message);
+        setProgressMessage('');
+        return;
       }
 
       // Make sure we have valid data
@@ -174,18 +221,38 @@ export default function MatrixPage() {
         console.log('Found columns:', data.columns);
         console.log('Found rows:', data.rows);
         
-        // Transform rows to extract values from the new format
+        // Safely transform rows with type guards
         const transformedRows = data.rows.map((row: any) => {
           const flatRow: any = {};
-          Object.keys(row).forEach(key => {
-            // Handle the new format with {value, source, href}
-            if (row[key] && typeof row[key] === 'object' && row[key].value !== undefined) {
-              flatRow[key] = row[key].value;
-              // Store metadata for citations
-              flatRow[`${key}_source`] = row[key].source;
-              flatRow[`${key}_href`] = row[key].href;
+          
+          // Handle both old format (direct values) and new format (cells object)
+          const rowData = row.cells || row;
+          
+          Object.keys(rowData).forEach(key => {
+            const cellData = rowData[key];
+            
+            // Type guard: Check if this is an object with value property
+            if (cellData && typeof cellData === 'object' && !Array.isArray(cellData)) {
+              // New format with {value, source, href} or {value, displayValue}
+              if ('value' in cellData) {
+                flatRow[key] = cellData.value;
+                // Store metadata for citations if available
+                if (cellData.source) {
+                  flatRow[`${key}_source`] = cellData.source;
+                }
+                if (cellData.href) {
+                  flatRow[`${key}_href`] = cellData.href;
+                }
+                if (cellData.displayValue) {
+                  flatRow[`${key}_display`] = cellData.displayValue;
+                }
+              } else {
+                // Unknown object format, store as-is
+                flatRow[key] = cellData;
+              }
             } else {
-              flatRow[key] = row[key];
+              // Direct value (old format) or primitive
+              flatRow[key] = cellData;
             }
           });
           return flatRow;
@@ -216,6 +283,33 @@ export default function MatrixPage() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const renderSparkline = (data: number[], color = '#3B82F6') => {
+    if (!data || data.length === 0) return null;
+    
+    const width = 60;
+    const height = 20;
+    const min = Math.min(...data);
+    const max = Math.max(...data);
+    const range = max - min || 1;
+    
+    const points = data.map((value, i) => {
+      const x = (i / (data.length - 1)) * width;
+      const y = height - ((value - min) / range) * height;
+      return `${x},${y}`;
+    }).join(' ');
+    
+    return (
+      <svg width={width} height={height} className="inline-block ml-2">
+        <polyline
+          points={points}
+          fill="none"
+          stroke={color}
+          strokeWidth="1.5"
+        />
+      </svg>
+    );
   };
 
   const formatCellValue = (value: any, type: string) => {
@@ -281,13 +375,19 @@ export default function MatrixPage() {
               </button>
               
               {matrixData && (
-                <button
-                  onClick={exportToCSV}
-                  className="flex items-center space-x-2 px-3 py-1 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Export CSV</span>
-                </button>
+                <>
+                  <button
+                    onClick={exportToCSV}
+                    className="flex items-center space-x-2 px-3 py-1 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Export CSV</span>
+                  </button>
+                  <SaveCompaniesToDatabase 
+                    companies={matrixData.rows}
+                    onSaveComplete={(count) => console.log(`Saved ${count} companies`)}
+                  />
+                </>
               )}
             </div>
           </div>
@@ -450,7 +550,15 @@ export default function MatrixPage() {
                             </span>
                           ) : (
                             <div className="flex flex-col">
-                              {row[`${col.id}_href`] ? (
+                              {/* Check if this cell has sparkline data */}
+                              {row[col.id] && typeof row[col.id] === 'object' && row[col.id].sparkline ? (
+                                <div className="flex items-center">
+                                  <span className={col.type === 'number' || col.type === 'currency' || col.type === 'percentage' ? 'font-mono' : ''}>
+                                    {formatCellValue(row[col.id].displayValue || row[col.id].value, col.type)}
+                                  </span>
+                                  {renderSparkline(row[col.id].sparkline)}
+                                </div>
+                              ) : row[`${col.id}_href`] ? (
                                 <a 
                                   href={row[`${col.id}_href`]} 
                                   target="_blank" 
@@ -464,6 +572,18 @@ export default function MatrixPage() {
                               ) : (
                                 <span className={col.type === 'number' || col.type === 'currency' || col.type === 'percentage' ? 'font-mono' : ''}>
                                   {formatCellValue(row[col.id], col.type)}
+                                  {/* Add citation superscript if this cell has a citation */}
+                                  {row[`${col.id}_citation`] && (
+                                    <sup className="ml-1 text-blue-600 dark:text-blue-400 cursor-pointer hover:underline"
+                                         onClick={() => {
+                                           const citationElement = document.getElementById('citations-section');
+                                           if (citationElement) {
+                                             citationElement.scrollIntoView({ behavior: 'smooth' });
+                                           }
+                                         }}>
+                                      [{row[`${col.id}_citation`]}]
+                                    </sup>
+                                  )}
                                 </span>
                               )}
                               {row[`${col.id}_source`] && (
@@ -500,6 +620,47 @@ export default function MatrixPage() {
                     {matrixData.rows.length} rows × {matrixData.columns.length} columns
                   </div>
                 </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Citations Section */}
+      {citations && citations.length > 0 && (
+        <div id="citations-section" className="max-w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <CitationDisplay citations={citations} />
+        </div>
+      )}
+
+      {/* Charts Section */}
+      {charts && charts.length > 0 && (
+        <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center">
+                <BarChart3 className="w-5 h-5 mr-2" />
+                Visual Analytics
+              </h3>
+              <button
+                onClick={() => setShowCharts(!showCharts)}
+                className="text-sm text-blue-600 hover:text-blue-700"
+              >
+                {showCharts ? 'Hide Charts' : 'Show Charts'}
+              </button>
+            </div>
+            
+            {showCharts && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {charts.map((chart, index) => (
+                  <div key={index} className="bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
+                    <AgentChartGenerator
+                      prompt={`Chart ${index + 1}: ${chart.title || chart.type}`}
+                      chartData={chart}
+                      autoGenerate={true}
+                    />
+                  </div>
+                ))}
               </div>
             )}
           </div>

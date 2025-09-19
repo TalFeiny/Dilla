@@ -937,39 +937,7 @@ export class FormulaEngine {
     return expr;
   }
 
-  /**
-   * Text Functions
-   */
-  private processTextFunctions(expr: string): string {
-    // CONCATENATE
-    expr = expr.replace(/CONCATENATE\(([^)]+)\)/g, (match, args) => {
-      const parts = args.split(',').map(p => p.trim().replace(/"/g, ''));
-      return '"' + parts.join('') + '"';
-    });
-
-    // LEN
-    expr = expr.replace(/LEN\(([^)]+)\)/g, (match, text) => {
-      const str = text.replace(/"/g, '');
-      return str.length.toString();
-    });
-
-    // UPPER
-    expr = expr.replace(/UPPER\(([^)]+)\)/g, (match, text) => {
-      return '"' + text.replace(/"/g, '').toUpperCase() + '"';
-    });
-
-    // LOWER
-    expr = expr.replace(/LOWER\(([^)]+)\)/g, (match, text) => {
-      return '"' + text.replace(/"/g, '').toLowerCase() + '"';
-    });
-
-    // TRIM
-    expr = expr.replace(/TRIM\(([^)]+)\)/g, (match, text) => {
-      return '"' + text.replace(/"/g, '').trim() + '"';
-    });
-
-    return expr;
-  }
+  // Duplicate function removed - see line 736 for implementation
 
   /**
    * Date Functions

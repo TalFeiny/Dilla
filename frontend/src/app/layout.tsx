@@ -3,6 +3,7 @@ import { Inter } from 'next/font/google';
 import './globals.css';
 import { Sidebar } from '@/components/layout/Sidebar';
 import SessionProvider from '@/components/providers/SessionProvider';
+import { GridProvider } from '@/contexts/GridContext';
 
 const inter = Inter({ 
   subsets: ['latin'],
@@ -25,11 +26,13 @@ export default function RootLayout({ children }: RootLayoutProps): JSX.Element {
     <html lang="en" className={inter.className}>
       <body className="antialiased bg-gray-50">
         <SessionProvider>
-          <Sidebar />
-          {/* Main Content - with left margin for fixed sidebar */}
-          <div className="ml-16 min-h-screen p-4 lg:p-8">
-            {children}
-          </div>
+          <GridProvider>
+            <Sidebar />
+            {/* Main Content - with left margin for fixed sidebar */}
+            <div className="ml-16 min-h-screen p-4 lg:p-8">
+              {children}
+            </div>
+          </GridProvider>
         </SessionProvider>
       </body>
     </html>

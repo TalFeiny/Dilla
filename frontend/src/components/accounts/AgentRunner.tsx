@@ -1,83 +1,165 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Bot, Play, Loader2, Trash2, Copy, Check, Brain, TrendingUp } from 'lucide-react';
+import { Bot, Play, Loader2, Trash2, Copy, Check, Brain, TrendingUp, BarChart3 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-// import RLFeedbackPanel from './RLFeedbackPanel';
-import { SpreadsheetRLSystem } from '@/lib/rl-system';
+import { useGrid } from '@/contexts/GridContext';
+import AgentChartGenerator from '@/components/AgentChartGenerator';
+
+// Helper function to convert grid data to commands
+function convertGridDataToCommands(grid: any): string[] {
+  const commands: string[] = [];
+  
+  // Convert data array to write commands
+  if (grid.data && Array.isArray(grid.data)) {
+    grid.data.forEach((row: any[], rowIndex: number) => {
+      row.forEach((cell: any, colIndex: number) => {
+        const cellAddress = String.fromCharCode(65 + colIndex) + (rowIndex + 1);
+        let value = cell;
+        
+        // Format the value based on type
+        if (typeof value === 'string') {
+          value = `"${value}"`;
+        } else if (typeof value === 'number') {
+          // Keep numbers as is
+        } else if (value === null || value === undefined) {
+          value = '""';
+        } else {
+          value = `"${String(value)}"`;
+        }
+        
+        commands.push(`grid.write("${cellAddress}", ${value})`);
+      });
+    });
+  }
+  
+  // Add style commands for headers (first row)
+  if (grid.data && grid.data.length > 0) {
+    const headerCount = grid.data[0].length;
+    for (let i = 0; i < headerCount; i++) {
+      const cellAddress = String.fromCharCode(65 + i) + '1';
+      commands.push(`grid.style("${cellAddress}", { fontWeight: "bold", backgroundColor: "#f0f0f0" })`);
+    }
+  }
+  
+  // Convert formulas object to formula commands
+  if (grid.formulas && typeof grid.formulas === 'object') {
+    Object.entries(grid.formulas).forEach(([cell, formula]) => {
+      commands.push(`grid.formula("${cell}", "${formula}")`);
+    });
+  }
+  
+  // Convert charts array to chart commands - Process ALL charts in batch
+  if (grid.charts && Array.isArray(grid.charts) && grid.charts.length > 0) {
+    // Processing charts in batch mode
+    
+    // Create a batch chart command that processes all charts at once
+    const chartBatch = grid.charts.map((chart: any, index: number) => {
+      const chartType = chart.type || 'bar';
+      
+      // Build chart options object
+      const options: any = {
+        title: chart.title || `Chart ${index + 1}`,
+        data: chart.data || {},
+        colors: chart.colors || ["#4e79a7", "#f28e2c", "#e15759", "#76b7b2", "#59a14f"],
+        position: chart.position || `A${10 + (index * 10)}`, // Stagger chart positions
+        size: chart.size || { rows: 8, cols: 10 }
+      };
+      
+      // Add range if available (for spreadsheet-based charts)
+      if (chart.range) {
+        options.range = chart.range;
+      }
+      
+      return { type: chartType, options };
+    });
+    
+    // Create a single batch command that creates all charts
+    commands.push(`grid.createChartBatch(${JSON.stringify(chartBatch)})`);
+  }
+  
+  return commands;
+}
 
 export default function AgentRunner() {
   const [prompt, setPrompt] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const [lastCommands, setLastCommands] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
-  const [sessionId, setSessionId] = useState<string | undefined>();
-  const [currentCompany, setCurrentCompany] = useState<string | undefined>();
-  const [useRL, setUseRL] = useState(true);
-  const [semanticFeedback, setSemanticFeedback] = useState('');
-  const [feedbackSent, setFeedbackSent] = useState(false);
-  const [previousGridState, setPreviousGridState] = useState<any>(null);
-  const [rlStats, setRLStats] = useState<any>(null);
-  const [waitingForFeedback, setWaitingForFeedback] = useState(false);
-  const [learningApplied, setLearningApplied] = useState(false);
-  const [learningSummary, setLearningSummary] = useState<string>('');
   const [progressMessage, setProgressMessage] = useState<string>('');
   const [executionSteps, setExecutionSteps] = useState<string[]>([]);
   
-  // Initialize RL system
-  const rlSystemRef = useRef<SpreadsheetRLSystem | null>(null);
+  // Get grid context for secure command execution
+  const { executeCommand, executeBatch } = useGrid();
   
-  // Helper function to detect model type from prompt
-  const detectModelType = (prompt: string): string => {
-    const lower = prompt.toLowerCase();
-    if (lower.includes('dcf') || lower.includes('discounted cash')) return 'DCF';
-    if (lower.includes('revenue') || lower.includes('sales')) return 'Revenue';
-    if (lower.includes('saas') || lower.includes('mrr') || lower.includes('arr')) return 'SaaS';
-    if (lower.includes('valuation')) return 'Valuation';
-    if (lower.includes('pwerm')) return 'PWERM';
-    if (lower.includes('p&l') || lower.includes('profit')) return 'P&L';
-    if (lower.includes('balance sheet')) return 'BalanceSheet';
-    if (lower.includes('burn') || lower.includes('runway')) return 'BurnAnalysis';
-    if (lower.includes('unit economics')) return 'UnitEconomics';
-    return 'General';
-  };
-
-  // Initialize RL system when enabled
-  useEffect(() => {
-    if (useRL && !rlSystemRef.current) {
-      const modelType = prompt ? detectModelType(prompt) : 'General';
-      rlSystemRef.current = new SpreadsheetRLSystem({
-        modelType,
-        company: currentCompany,
-        epsilon: 0.1,  // 10% exploration
-        temperature: 1.0,
-        autoLearn: true
-      });
-      
-      // Initialize and load stats
-      rlSystemRef.current.initialize().then(() => {
-        rlSystemRef.current?.getStats().then(stats => {
-          setRLStats(stats);
-        });
-      }).catch(error => {
-        console.error('Failed to initialize RL system:', error);
-        setUseRL(false); // Disable RL if initialization fails
-      });
-    }
-  }, [useRL, currentCompany]);
+  // State variables
+  const [currentCompany, setCurrentCompany] = useState<string | undefined>(undefined);
+  const [previousGridState, setPreviousGridState] = useState<any>(null);
+  const [sessionId, setSessionId] = useState<string | undefined>(undefined);
+  const [feedbackSent, setFeedbackSent] = useState(false);
+  const [semanticFeedback, setSemanticFeedback] = useState('');
+  const [waitingForFeedback, setWaitingForFeedback] = useState(false);
+  const [citations, setCitations] = useState<any[]>([]);
+  const [charts, setCharts] = useState<any[]>([]);
+  const [showCharts, setShowCharts] = useState(false);
   
-  // Debug state changes
-  useEffect(() => {
-    console.log('lastCommands updated:', lastCommands);
-    console.log('lastCommands.length:', lastCommands.length);
-  }, [lastCommands]);
+  // Placeholder variables for removed RL features
+  const useRL = false;
+  const rlStats: any = null;
+  const rlSystemRef = { current: null };
+  const learningApplied = false;
+  const learningSummary = '';
+  
+  
+  // Debug state changes - REMOVED to prevent potential re-render issues
+  // useEffect(() => {
+  //   console.log('lastCommands updated:', lastCommands);
+  //   console.log('lastCommands.length:', lastCommands.length);
+  // }, [lastCommands]);
 
   const runAgent = async () => {
     if (!prompt.trim()) return;
     
-    console.log('=== Starting runAgent ===');
-    console.log('Prompt:', prompt);
-    console.log('UseRL:', useRL);
+    // TEST MODE: If prompt starts with "test", use mock data
+    if (prompt.toLowerCase().startsWith('test')) {
+      console.log('[AgentRunner] TEST MODE ACTIVATED - Using mock data');
+      setIsRunning(true);
+      setProgressMessage('Running test with mock data...');
+      
+      // Create test commands
+      const testCommands = [
+        'grid.write("A1", "Company Name")',
+        'grid.write("B1", "Revenue")',
+        'grid.write("C1", "Growth")',
+        'grid.write("D1", "Valuation")',
+        'grid.write("A2", "TestCorp")',
+        'grid.write("B2", 1000000)',
+        'grid.write("C2", 0.25)',
+        'grid.write("D2", 5000000)',
+        'grid.formula("E1", "=B2*D2")',
+        'grid.style("A1", {"fontWeight": "bold", "backgroundColor": "#f0f0f0"})',
+        'grid.style("B1", {"fontWeight": "bold", "backgroundColor": "#f0f0f0"})',
+        'grid.style("C1", {"fontWeight": "bold", "backgroundColor": "#f0f0f0"})',
+        'grid.style("D1", {"fontWeight": "bold", "backgroundColor": "#f0f0f0"})'
+      ];
+      
+      setLastCommands(testCommands);
+      
+      // Execute test commands
+      for (const cmd of testCommands) {
+        try {
+          await executeCommand(cmd);
+          console.log('[AgentRunner TEST] Executed:', cmd);
+        } catch (e) {
+          console.error('[AgentRunner TEST] Failed:', cmd, e);
+        }
+      }
+      
+      setIsRunning(false);
+      setProgressMessage('Test complete - check if data appears correctly');
+      return;
+    }
+    
     
     setIsRunning(true);
     setProgressMessage('🤔 Understanding your request...');
@@ -85,51 +167,55 @@ export default function AgentRunner() {
     
     try {
       // Extract company name if mentioned
-      const companyMatch = prompt.match(/(?:for|about)\s+(\w+)/i);
+      const companyMatch = prompt.match(/(?:for|about)\s+(@?\w+)/i) || prompt.match(/@(\w+)/);
       const company = companyMatch?.[1] || currentCompany;
       setCurrentCompany(company);
+      
+      console.log('[AgentRunner] Extracted company from prompt:', company);
+      console.log('[AgentRunner] Full prompt being sent:', prompt);
       
       // Show what we're doing
       setExecutionSteps(prev => [...prev, '📝 Parsing request...']);
       
       // Initialize RL system for this prompt if enabled
-      if (useRL) {
-        if (!rlSystemRef.current) {
-          const modelType = detectModelType(prompt);
-          rlSystemRef.current = new SpreadsheetRLSystem({
-            modelType,
-            company,
-            epsilon: 0.1,
-            temperature: 1.0,
-            autoLearn: true
-          });
-          try {
-            await rlSystemRef.current.initialize();
-          } catch (error) {
-            console.error('Failed to initialize RL in runAgent:', error);
-            // Continue without RL
-          }
-        }
-        
-        // Get RL suggestion for the prompt
-        try {
-          if (typeof window !== 'undefined' && (window as any).grid) {
-            const currentGrid = (window as any).grid.getState ? (window as any).grid.getState() : {};
-            const suggestion = await rlSystemRef.current.getSuggestion(currentGrid, prompt);
-            console.log('RL Suggestion:', suggestion);
-          }
-        } catch (error) {
-          console.error('Failed to get RL suggestion:', error);
-          // Continue without RL suggestion
-        }
-        
-        if (!sessionId) {
-          const newSessionId = crypto.randomUUID();
-          setSessionId(newSessionId);
-        }
-      }
+      // COMMENTED OUT: Missing imports for detectModelType and SpreadsheetRLSystem
+      // if (useRL) {
+      //   if (!rlSystemRef.current) {
+      //     const modelType = detectModelType(prompt);
+      //     rlSystemRef.current = new SpreadsheetRLSystem({
+      //       modelType,
+      //       company,
+      //       epsilon: 0.1,
+      //       temperature: 1.0,
+      //       autoLearn: true
+      //     });
+      //     try {
+      //       await rlSystemRef.current.initialize();
+      //     } catch (error) {
+      //       console.error('Failed to initialize RL in runAgent:', error);
+      //       // Continue without RL
+      //     }
+      //   }
+      //   
+      //   // Get RL suggestion for the prompt
+      //   try {
+      //     if (gridApi && gridApi.getState) {
+      //       const currentGrid = gridApi.getState();
+      //       const suggestion = await rlSystemRef.current.getSuggestion(currentGrid, prompt);
+      //       console.log('RL Suggestion:', suggestion);
+      //     }
+      //   } catch (error) {
+      //     console.error('Failed to get RL suggestion:', error);
+      //     // Continue without RL suggestion
+      //   }
+      //   
+      //   if (!sessionId) {
+      //     const newSessionId = crypto.randomUUID();
+      //     setSessionId(newSessionId);
+      //   }
+      // }
       
-      // Use unified brain endpoint with spreadsheet format
+      // Use unified-brain endpoint with our architecture
       const endpoint = '/api/agent/unified-brain';
       
       // Get current grid state to send as context
@@ -151,7 +237,6 @@ export default function AgentRunner() {
           outputFormat: 'spreadsheet',  // Specify spreadsheet format
           company,
           previousCompany: currentCompany,
-          trackLearning: useRL,
           gridState,  // Send current grid state for context
           stream: true,  // Enable streaming
           // Request formulas and citations
@@ -162,47 +247,77 @@ export default function AgentRunner() {
 
       if (!response.ok) throw new Error('Failed to get agent response');
       
-      // Handle streaming response
+      // Handle streaming response with proper UTF-8 decoding
       const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
+      const decoder = new TextDecoder('utf-8', { fatal: false }); // Don't throw on invalid UTF-8
       let allCommands: string[] = [];
+      let streamComplete = false;
       
       if (reader) {
+        let buffer = '';  // Buffer for incomplete chunks
+        
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            console.log('[AgentRunner] Stream reading complete');
+            streamComplete = true;
+            break;
+          }
           
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n');
+          const chunk = decoder.decode(value, { stream: true });
+          console.log('[AgentRunner] Raw chunk received:', chunk.substring(0, 500));
+          
+          // DEBUG: Check for corrupted data
+          if (chunk.includes('tacxn') || chunk.includes('\\u')) {
+            console.error('[AgentRunner] WARNING: Corrupted data detected in chunk!');
+            console.log('[AgentRunner] Full corrupted chunk:', chunk);
+          }
+          
+          // Add chunk to buffer
+          buffer += chunk;
+          
+          // Process complete lines
+          const lines = buffer.split('\n');
+          // Keep the last incomplete line in the buffer
+          buffer = lines.pop() || '';
           
           for (const line of lines) {
             if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              if (data === '[DONE]') continue;
+              const data = line.slice(6).trim();
+              if (data === '[DONE]') {
+                console.log('[AgentRunner] Stream complete signal received');
+                continue;
+              }
               
               try {
+                console.log('[AgentRunner] Parsing SSE data:', data.substring(0, 200));
                 const parsed = JSON.parse(data);
+                console.log('[AgentRunner] Parsed type:', parsed.type);
+                
+                // LOG: Check if Traxn.com is in the data
+                if (JSON.stringify(parsed).includes('Traxn') || JSON.stringify(parsed).includes('traxn')) {
+                  console.error('[AgentRunner] WARNING: Traxn.com detected in response - backend is using wrong data source!');
+                  console.log('[AgentRunner] Full parsed data with Traxn:', JSON.stringify(parsed, null, 2));
+                }
                 
                 if (parsed.type === 'skill_chain') {
-                  // Show skill chain decomposition in the stream
-                  setExecutionSteps(prev => [...prev, `📋 Decomposed into ${parsed.total_count} skills:`]);
+                  // Show skill chain decomposition in the stream - batch updates to prevent re-renders
+                  const newSteps = [`📋 Decomposed into ${parsed.total_count} skills:`];
                   parsed.skills?.forEach((skill: any, i: number) => {
-                    setExecutionSteps(prev => [...prev, `  ${i+1}. ${skill.name}: ${skill.purpose}`]);
+                    newSteps.push(`  ${i+1}. ${skill.name}: ${skill.purpose}`);
                   });
+                  setExecutionSteps(prev => [...prev, ...newSteps]);
                   // Also log to console
-                  console.log('📋 [Skill Chain] Decomposed into', parsed.total_count, 'skills:');
-                  parsed.skills?.forEach((skill: any, i: number) => {
-                    console.log(`  ${i+1}. ${skill.name}: ${skill.purpose} (Group ${skill.group})`);
-                  });
+                  // Skill chain decomposed
                 } else if (parsed.type === 'skill_start') {
                   // Show skill start in the stream
                   setExecutionSteps(prev => [...prev, `⏳ [${parsed.phase}] Starting: ${parsed.skill}`]);
-                  console.log(`⏳ [${parsed.phase}] Starting: ${parsed.skill} - ${parsed.purpose}`);
+                  // Skill starting
                 } else if (parsed.type === 'skill_complete') {
                   // Show skill completion in the stream
                   const timing = parsed.timing ? ` (${parsed.timing.toFixed(2)}s)` : '';
                   setExecutionSteps(prev => [...prev, `✅ ${parsed.skill} complete${timing}`]);
-                  console.log(`✅ [Skill Complete] ${parsed.skill}${timing}`);
+                  // Skill complete
                 } else if (parsed.type === 'skill_error') {
                   // Show skill error in the stream
                   setExecutionSteps(prev => [...prev, `❌ ${parsed.skill} failed: ${parsed.error}`]);
@@ -221,10 +336,133 @@ export default function AgentRunner() {
                     ]);
                   }
                 } else if (parsed.type === 'complete') {
+                  console.log('[AgentRunner] COMPLETE MESSAGE:', parsed);
                   setProgressMessage(parsed.message);
                   // Also log the skills that were used from metadata
                   if (parsed.metadata?.skills_used) {
-                    console.log('📊 Skills used:', parsed.metadata.skills_used);
+                    console.log('[AgentRunner] Skills used:', parsed.metadata.skills_used);
+                  }
+                  
+                  // Check if the complete message includes formatted result
+                  if (parsed.result) {
+                    console.log('[AgentRunner] Complete message received with result:', JSON.stringify(parsed.result, null, 2));
+                    console.log('[AgentRunner] Result type:', typeof parsed.result);
+                    console.log('[AgentRunner] Result keys:', Object.keys(parsed.result));
+                    
+                    // DEBUG: Log what we're actually getting
+                    console.log('[AgentRunner] Checking for commands in result...');
+                    console.log('  - parsed.result.commands exists?', !!parsed.result.commands);
+                    console.log('  - parsed.result.commands is array?', Array.isArray(parsed.result.commands));
+                    console.log('  - parsed.result.grid exists?', !!parsed.result.grid);
+                    console.log('  - parsed.result.grid.data exists?', !!parsed.result.grid?.data);
+                    
+                    // Extract citations and integrate them with the data
+                    if (parsed.result.citations && parsed.result.citations.length > 0) {
+                      setCitations(parsed.result.citations);
+                      
+                      // Look for citation references in the data and add them as inline references
+                      // This assumes the backend has marked cells with [1], [2] etc
+                      // We'll add the citation info as metadata/tooltips to those cells
+                      
+                      if (parsed.result.data && Array.isArray(parsed.result.data)) {
+                        parsed.result.data.forEach((row, rowIndex) => {
+                          row.forEach((cell, colIndex) => {
+                            if (typeof cell === 'string') {
+                              // Check if this cell contains citation references like [1], [2]
+                              const citationPattern = /\[(\d+)\]/g;
+                              const matches = cell.match(citationPattern);
+                              
+                              if (matches) {
+                                // This cell has citations - add them as source metadata
+                                const cellAddress = String.fromCharCode(65 + colIndex) + (rowIndex + 1);
+                                const citationNumbers = matches.map(m => parseInt(m.replace(/[\[\]]/g, '')));
+                                
+                                // Find the corresponding citations
+                                const relevantCitations = parsed.result.citations.filter(c => 
+                                  citationNumbers.includes(c.number)
+                                );
+                                
+                                if (relevantCitations.length > 0) {
+                                  // Create a source string with all relevant citations
+                                  const sourceText = relevantCitations.map(c => 
+                                    `[${c.number}] ${c.source} - ${c.title}`
+                                  ).join('; ');
+                                  
+                                  // Add the citation URL if there's a primary citation
+                                  const primaryCitation = relevantCitations[0];
+                                  if (primaryCitation.url) {
+                                    // Add as a linked cell with source metadata
+                                    const writeCommand = allCommands.find(cmd => 
+                                      cmd.includes(`grid.write("${cellAddress}"`)
+                                    );
+                                    if (writeCommand) {
+                                      // Update the write command to include source metadata
+                                      const updatedCommand = writeCommand.replace(
+                                        /\)$/,
+                                        `, { source: "${sourceText.replace(/"/g, '\\"')}", sourceUrl: "${primaryCitation.url.replace(/"/g, '\\"')}" })`
+                                      );
+                                      const cmdIndex = allCommands.indexOf(writeCommand);
+                                      if (cmdIndex !== -1) {
+                                        allCommands[cmdIndex] = updatedCommand;
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          });
+                        });
+                      }
+                    }
+                    
+                    // Extract charts if available
+                    if (parsed.result.charts) {
+                      setCharts(parsed.result.charts);
+                    }
+                    
+                    // IMPORTANT: Backend sends commands directly for spreadsheet format
+                    // Check for commands first (spreadsheet format)
+                    if (parsed.result.commands && Array.isArray(parsed.result.commands)) {
+                      console.log('[AgentRunner] Found commands in result:', parsed.result.commands.length);
+                      console.log('[AgentRunner] Commands sample:', parsed.result.commands.slice(0, 3));
+                      allCommands.push(...parsed.result.commands);
+                      console.log('[AgentRunner] allCommands now has:', allCommands.length);
+                    }
+                    // Fallback: If result has grid data, convert to commands
+                    else if (parsed.result.grid && parsed.result.grid.data) {
+                      console.log('[AgentRunner] Converting grid data to commands');
+                      const gridCommands = convertGridDataToCommands(parsed.result.grid);
+                      allCommands.push(...gridCommands);
+                    }
+                    // Also check if commands are at the root level of parsed (some streaming variations)
+                    else if (parsed.commands && Array.isArray(parsed.commands)) {
+                      console.log('[AgentRunner] Found commands at root level:', parsed.commands.length);
+                      allCommands.push(...parsed.commands);
+                    }
+                    // FALLBACK: If result is a string, it might be JSON that needs parsing
+                    else if (typeof parsed.result === 'string') {
+                      console.log('[AgentRunner] Result is a string, attempting to parse as JSON...');
+                      try {
+                        const resultData = JSON.parse(parsed.result);
+                        if (resultData.commands && Array.isArray(resultData.commands)) {
+                          console.log('[AgentRunner] Found commands after parsing string:', resultData.commands.length);
+                          allCommands.push(...resultData.commands);
+                        } else if (resultData.grid?.data) {
+                          console.log('[AgentRunner] Found grid data after parsing string');
+                          const gridCommands = convertGridDataToCommands(resultData.grid);
+                          allCommands.push(...gridCommands);
+                        }
+                      } catch (parseError) {
+                        console.error('[AgentRunner] Failed to parse result string as JSON:', parseError);
+                        console.log('[AgentRunner] Raw result string:', parsed.result.substring(0, 200));
+                      }
+                    }
+                    // FINAL FALLBACK: Check if there's data array directly
+                    else if (parsed.result.data && Array.isArray(parsed.result.data)) {
+                      console.log('[AgentRunner] Found data array directly, converting to grid commands');
+                      const gridCommands = convertGridDataToCommands({ data: parsed.result.data });
+                      allCommands.push(...gridCommands);
+                    }
                   }
                 } else if (parsed.type === 'error') {
                   throw new Error(parsed.message);
@@ -235,29 +473,126 @@ export default function AgentRunner() {
             }
           }
         }
+        
+        // Process any remaining buffer
+        if (buffer.trim()) {
+          console.log('[AgentRunner] Processing remaining buffer:', buffer);
+        }
       }
       
       // Process the accumulated commands
       const data = { commands: allCommands };
-      console.log('=== AGENT COMMAND PROCESSING ===');
-      console.log('Streaming complete, total commands:', allCommands.length);
-      console.log('All commands received:', allCommands);
+      console.log('[AgentRunner] Total commands to process:', allCommands.length);
+      console.log('[AgentRunner] First 5 commands:', allCommands.slice(0, 5));
       
-      if (data.commands && Array.isArray(data.commands)) {
-        console.log('Processing', data.commands.length, 'commands');
-        console.log('window.grid available?', !!(window as any).grid);
-        console.log('RL enabled:', useRL);
-        console.log('Setting lastCommands to:', data.commands);
+      // If no commands were found, create a default message
+      if (!allCommands || allCommands.length === 0) {
+        console.error('[AgentRunner] WARNING: No commands were extracted from the response!');
+        console.log('[AgentRunner] This likely means the backend response format is unexpected.');
+        
+        // Add a default command to show something is working
+        allCommands.push('grid.write("A1", "No data received - check backend response format")');
+        allCommands.push('grid.write("A2", "The backend may not be returning data in the expected format")');
+        allCommands.push('grid.write("A3", "Check the browser console for detailed logs")');
+        data.commands = allCommands;
+      } else {
+        // Validate commands to check for corruption
+        console.log('[AgentRunner] Validating commands for corruption...');
+        const corruptedCommands = allCommands.filter(cmd => 
+          cmd.includes('tacxn') || 
+          cmd.includes('\\u0000') || 
+          !cmd.includes('grid.') ||
+          cmd.includes('undefined') ||
+          cmd.includes('null')
+        );
+        
+        if (corruptedCommands.length > 0) {
+          console.error('[AgentRunner] CORRUPTED COMMANDS DETECTED:', corruptedCommands);
+          console.log('[AgentRunner] This indicates the backend is sending malformed data');
+          
+          // Replace corrupted commands with error message
+          allCommands = [
+            'grid.write("A1", "ERROR: Backend sent corrupted data")',
+            'grid.write("A2", "Corrupted commands detected - check console")',
+            `grid.write("A3", "Example corruption: ${corruptedCommands[0]?.substring(0, 50)}")`
+          ];
+          data.commands = allCommands;
+        }
+      }
+      
+      if (data.commands && Array.isArray(data.commands) && data.commands.length > 0) {
+        console.log('[AgentRunner] Processing commands:', data.commands.length);
+        console.log('[AgentRunner] Sample command:', data.commands[0]);
+        
+        // Wait for Grid API to be available - Improved logic
+        let gridReady = false;
+        let attemptCount = 0;
+        const maxAttempts = 40; // Increased attempts for slower initialization
+        
+        setProgressMessage('🔄 Waiting for spreadsheet to initialize...');
+        
+        while (!gridReady && attemptCount < maxAttempts) {
+          attemptCount++;
+          
+          // First check if executeCommand is available (from context)
+          if (executeCommand) {
+            // Try a test command to verify grid is actually ready
+            try {
+              const testResult = await executeCommand('grid.selectCell("A1")');
+              console.log(`[AgentRunner] Test command result (attempt ${attemptCount}):`, testResult);
+              
+              // Check if grid is ready
+              if (!testResult || (typeof testResult === 'string')) {
+                // If result is a string or null, grid is ready
+                gridReady = true;
+                console.log(`[AgentRunner] Grid API verified ready after ${attemptCount} attempts`);
+                break;
+              } else if (typeof testResult === 'object' && 'error' in testResult) {
+                // Check for error in object result
+                if (testResult.error === 'Grid API not available' || testResult.error === 'Grid context not available') {
+                  console.log(`[AgentRunner] Grid not ready yet (attempt ${attemptCount}/${maxAttempts})`);
+                } else {
+                  // Some other error - grid might be ready but command failed
+                  console.log(`[AgentRunner] Grid might be ready, test failed with:`, testResult.error);
+                  gridReady = true; // Try to proceed anyway
+                  break;
+                }
+              }
+            } catch (e) {
+              console.log(`[AgentRunner] Test command exception (attempt ${attemptCount}):`, e);
+            }
+          }
+          
+          // Also check direct APIs as fallback
+          if (!gridReady && (typeof window !== 'undefined' && (window as any).grid)) {
+            console.log('[AgentRunner] Direct grid API found as fallback');
+            gridReady = true;
+            break;
+          }
+          
+          // Longer wait initially to allow grid to render
+          const waitTime = attemptCount <= 5 ? 1000 : 500;
+          console.log(`[AgentRunner] Waiting ${waitTime}ms before next attempt...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+        
+        // Proceed even if grid not fully ready - executeCommand will handle retries
+        if (!gridReady) {
+          console.warn('[AgentRunner] Grid initialization timed out, but proceeding with command execution');
+          setProgressMessage('⚠️ Grid initialization slow - commands will execute with retry logic...');
+        } else {
+          setProgressMessage('✅ Spreadsheet ready - executing commands...');
+        }
         
         // Save current grid state before executing new commands
         if (typeof window !== 'undefined' && (window as any).grid) {
           const currentState = (window as any).grid.getState ? (window as any).grid.getState() : null;
           setPreviousGridState(currentState);
-          console.log('Saved grid state for undo');
+          console.log('[AgentRunner] Saved grid state for undo');
         }
         
         setLastCommands(data.commands);
-        console.log('lastCommands state will update to:', data.commands);
+        console.log('[AgentRunner] Commands state updated')
         
         // Record each action for RL if enabled (disabled for now)
         // if (useRL && sessionId) {
@@ -275,44 +610,60 @@ export default function AgentRunner() {
         
         // Update progress for execution
         setProgressMessage('⚡ Executing commands...');
-        let commandCount = 0;
         
         // PARALLEL PROCESSING: Group commands by type for batch execution
         const writeCommands = data.commands.filter(cmd => cmd.includes('write('));
         const formulaCommands = data.commands.filter(cmd => cmd.includes('formula('));
         const styleCommands = data.commands.filter(cmd => cmd.includes('style('));
-        const chartCommands = data.commands.filter(cmd => cmd.includes('createChart('));
+        const chartCommands = data.commands.filter(cmd => 
+          cmd.includes('createChart(') || cmd.includes('createChartBatch(')
+        );
         
         setExecutionSteps(prev => [...prev, `📊 Processing ${data.commands.length} commands in parallel...`]);
         
-        // Helper function to execute a single command
-        const executeCommand = async (command: string) => {
-          try {
-            if (typeof window !== 'undefined' && (window as any).grid) {
-              const grid = (window as any).grid;
+        // Helper function to execute a single command securely with retry logic
+        const executeCommandSecure = async (command: string, retries = 3) => {
+          for (let attempt = 1; attempt <= retries; attempt++) {
+            try {
+              console.log(`[ExecuteCommand] Attempt ${attempt} for: ${command.substring(0, 50)}...`);
               
-              // Use Function constructor for safer execution
-              const executeFunc = new Function('grid', `
-                try {
-                  ${command};
-                  return { success: true };
-                } catch (e) {
-                  console.error('Command error:', e);
-                  return { success: false, error: e.toString() };
-                }
-              `);
+              // Try to execute the command even if gridApi is not directly available
+              // The executeCommand function from context should handle this
+              const result = await executeCommand(command);
               
-              const result = executeFunc(grid);
-              if (!result.success) {
-                console.error(`Failed to execute: ${command}`, result.error);
+              // Log the result for debugging
+              if (result && typeof result === 'object' && 'error' in result) {
+                console.log(`[ExecuteCommand] Command returned error:`, result.error);
+              } else {
+                console.log(`[ExecuteCommand] Command executed successfully`);
               }
-              return result;
+              
+              // Check if result indicates grid not available
+              if (result && typeof result === 'object' && result.error) {
+                if (result.error === 'Grid context not available' || result.error === 'Grid API not available') {
+                  console.warn(`[ExecuteCommand] Grid not ready (attempt ${attempt}/${retries}): ${result.error}`);
+                  if (attempt < retries) {
+                    await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+                    continue;
+                  }
+                  return { success: false, error: result.error };
+                }
+                // Other errors - don't retry
+                console.error('[ExecuteCommand] Command failed:', result.error);
+                return { success: false, error: result.error };
+              }
+              
+              console.log(`[ExecuteCommand] Success on attempt ${attempt}`);
+              return { success: true, result };
+            } catch (error) {
+              console.error(`[ExecuteCommand] Error on attempt ${attempt}:`, error);
+              if (attempt === retries) {
+                return { success: false, error: error.message };
+              }
+              await new Promise(resolve => setTimeout(resolve, 500 * attempt));
             }
-            return { success: false, error: 'Grid not available' };
-          } catch (error) {
-            console.error('Execution error:', error);
-            return { success: false, error: error };
           }
+          return { success: false, error: 'Max retries exceeded' };
         };
         
         // PARALLEL EXECUTION BY COMMAND TYPE
@@ -321,16 +672,16 @@ export default function AgentRunner() {
         // Execute write commands in parallel (they don't depend on each other)
         if (writeCommands.length > 0) {
           setExecutionSteps(prev => [...prev, `✏️ Writing ${writeCommands.length} data cells in parallel...`]);
-          const writePromises = writeCommands.map(cmd => executeCommand(cmd));
+          const writePromises = writeCommands.map(cmd => executeCommandSecure(cmd));
           executionPromises.push(Promise.all(writePromises));
         }
         
         // Execute formulas after writes complete (they may depend on written data)
         if (formulaCommands.length > 0) {
           executionPromises.push(
-            Promise.all(writeCommands.map(cmd => executeCommand(cmd))).then(() => {
+            Promise.all(writeCommands.map(cmd => executeCommandSecure(cmd))).then(() => {
               setExecutionSteps(prev => [...prev, `📈 Adding ${formulaCommands.length} formulas...`]);
-              return Promise.all(formulaCommands.map(cmd => executeCommand(cmd)));
+              return Promise.all(formulaCommands.map(cmd => executeCommandSecure(cmd)));
             })
           );
         }
@@ -338,32 +689,35 @@ export default function AgentRunner() {
         // Execute styles in parallel (independent)
         if (styleCommands.length > 0) {
           setExecutionSteps(prev => [...prev, `🎨 Applying ${styleCommands.length} styles...`]);
-          const stylePromises = styleCommands.map(cmd => executeCommand(cmd));
+          const stylePromises = styleCommands.map(cmd => executeCommandSecure(cmd));
           executionPromises.push(Promise.all(stylePromises));
         }
         
         // Execute charts last (they depend on data)
         if (chartCommands.length > 0) {
-          executionPromises.push(
-            Promise.all([...writeCommands, ...formulaCommands].map(cmd => executeCommand(cmd))).then(() => {
-              setExecutionSteps(prev => [...prev, `📊 Creating ${chartCommands.length} charts...`]);
-              return Promise.all(chartCommands.map(cmd => executeCommand(cmd)));
-            })
-          );
+          // Special handling for batch charts
+          const batchCommand = chartCommands.find(cmd => cmd.includes('createChartBatch'));
+          if (batchCommand) {
+            setExecutionSteps(prev => [...prev, `📊 Creating chart batch...`]);
+            executionPromises.push(executeCommandSecure(batchCommand));
+          } else {
+            executionPromises.push(
+              Promise.all([...writeCommands, ...formulaCommands].map(cmd => executeCommandSecure(cmd))).then(() => {
+                setExecutionSteps(prev => [...prev, `📊 Creating ${chartCommands.length} charts...`]);
+                return Promise.all(chartCommands.map(cmd => executeCommandSecure(cmd)));
+              })
+            );
+          }
         }
         
         // Wait for all parallel executions to complete
         const results = await Promise.allSettled(executionPromises);
         
-        // Count successes
-        const successCount = results.filter(r => r.status === 'fulfilled').length;
-        console.log(`Parallel execution complete: ${successCount}/${executionPromises.length} batches succeeded`);
+        // Log results for debugging
+        console.log(`[AgentRunner] Execution complete. ${results.filter(r => r.status === 'fulfilled').length} successful, ${results.filter(r => r.status === 'rejected').length} failed`);
+        // Parallel execution complete
         
-        // Update RL stats after execution
-        if (useRL && rlSystemRef.current) {
-          const stats = await rlSystemRef.current.getStats();
-          setRLStats(stats);
-        }
+        // Removed RL stats update
         
         // Show completion
         setProgressMessage('✅ Complete!');
@@ -393,7 +747,7 @@ export default function AgentRunner() {
   };
 
   const clearGrid = () => {
-    if (typeof window !== 'undefined' && (window as any).grid) {
+    if (typeof window !== 'undefined' && (window as any).grid && (window as any).grid.clear) {
       (window as any).grid.clear('A1', 'Z100');
     }
   };
@@ -401,7 +755,9 @@ export default function AgentRunner() {
   const undoLastAction = () => {
     if (typeof window !== 'undefined' && (window as any).grid) {
       // Clear current state
-      (window as any).grid.clear('A1', 'Z100');
+      if ((window as any).grid.clear) {
+        (window as any).grid.clear('A1', 'Z100');
+      }
       
       // If we have a previous state, restore it
       if (previousGridState && (window as any).grid.setState) {
@@ -415,43 +771,18 @@ export default function AgentRunner() {
     }
   };
 
-  // Handle feedback from RL panel
-  const handleRLFeedback = async (reward: number, specificFeedback?: string) => {
-    console.log('RL Feedback received:', reward, specificFeedback);
-    
-    if (useRL && rlSystemRef.current && typeof window !== 'undefined' && (window as any).grid) {
-      // Record feedback in RL system
-      await rlSystemRef.current.recordFeedback(
-        reward,
-        (window as any).grid,
-        specificFeedback
-      );
-      
-      // Update stats
-      const stats = await rlSystemRef.current.getStats();
-      setRLStats(stats);
-      
-      // Decay exploration rate after positive feedback
-      if (reward > 0.5) {
-        rlSystemRef.current.decayEpsilon();
-      }
-      
-      setWaitingForFeedback(false);
-    }
-  };
-
-  // Submit feedback to API
+  // Submit feedback to API (saves to Supabase)
   const submitFeedback = async (type: string, value?: string) => {
     try {
       console.log('Submitting feedback:', type, value);
       
-      const response = await fetch('/api/agent/corrections', {
+      const response = await fetch('/api/agent/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sessionId: sessionId || crypto.randomUUID(),
           company: currentCompany,
-          modelType: detectModelType(prompt),
+          modelType: 'unified-brain',  // Fixed model type
           correction: value || type,
           feedbackType: type,
           timestamp: new Date(),
@@ -471,6 +802,7 @@ export default function AgentRunner() {
       console.error('Failed to send feedback:', error);
     }
   };
+
 
 
   return (
@@ -511,15 +843,15 @@ export default function AgentRunner() {
         </div>
       )}
 
-      {/* Test Button */}
+      {/* Test Button - Using GridContext */}
       <div className="flex gap-2 mb-2">
         <button
           onClick={() => {
-            console.log('=== TESTING GRID API ===');
-            console.log('window.grid exists?', !!(window as any).grid);
-            console.log('window.grid methods:', Object.keys((window as any).grid || {}));
+            console.log('=== TESTING GRID API (via Context) ===');
+            console.log('grid exists?', !!(window as any).grid);
+            console.log('grid methods:', (window as any).grid ? Object.keys((window as any).grid) : []);
             
-            if (typeof window !== 'undefined' && (window as any).grid) {
+            if ((window as any).grid) {
               try {
                 console.log('Writing to A1...');
                 (window as any).grid.write("A1", "Test Value", { href: "https://example.com", source: "Test Source" });
@@ -531,15 +863,14 @@ export default function AgentRunner() {
                 
                 // Check if data was actually written
                 setTimeout(() => {
-                  const state = (window as any).grid.getState();
+                  const state = (window as any).grid.getState ? (window as any).grid.getState() : {};
                   console.log('Grid state after test:', state);
                 }, 500);
               } catch (error) {
                 console.error('❌ Test failed:', error);
               }
             } else {
-              console.error('❌ Grid API not found!');
-              console.log('window object:', window);
+              console.error('❌ Grid API not available in context!');
             }
           }}
           className="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs"
@@ -549,11 +880,11 @@ export default function AgentRunner() {
         <button
           onClick={() => {
             const testCommands = [
-              'window.grid.write("A1", "Company", {style: {fontWeight: "bold"}})',
-              'window.grid.write("B1", "Revenue", {style: {fontWeight: "bold"}})',
-              'window.grid.write("A2", "Stripe")',
-              'window.grid.write("B2", 14000000000)',
-              'window.grid.formula("B3", "=B2*1.5")'
+              'grid.write("A1", "Company", {style: {fontWeight: "bold"}})',
+              'grid.write("B1", "Revenue", {style: {fontWeight: "bold"}})',
+              'grid.write("A2", "Stripe")',
+              'grid.write("B2", 14000000000)',
+              'grid.formula("B3", "=B2*1.5")'
             ];
             testCommands.forEach((cmd, i) => {
               setTimeout(() => {
@@ -641,7 +972,7 @@ export default function AgentRunner() {
       )}
 
       {/* Learning Applied Indicator */}
-      {learningApplied && (
+      {false /* learningApplied */ && (
         <div className="p-3 bg-green-900/30 border border-green-600/50 rounded animate-pulse">
           <div className="flex items-center gap-2 text-sm text-green-400">
             <Brain className="w-4 h-4" />
@@ -652,7 +983,7 @@ export default function AgentRunner() {
       )}
 
       {/* RL Stats Display */}
-      {useRL && rlStats && (
+      {false /* useRL && rlStats */ && (
         <div className="p-2 bg-gray-800 rounded space-y-1">
           <div className="flex items-center gap-2 text-xs text-gray-400">
             <Brain className="w-3 h-3" />
@@ -712,7 +1043,7 @@ export default function AgentRunner() {
             console.log('Feedback received:', reward, specificFeedback);
             if (rlSystemRef.current) {
               // Provide feedback to RL system
-              const gridAPI = typeof window !== 'undefined' ? (window as any).grid : null;
+              const gridAPI = (window as any).grid || null;
               if (typeof reward === 'number') {
                 await rlSystemRef.current.recordFeedback(reward, gridAPI, specificFeedback);
               } else if (specificFeedback) {
@@ -732,16 +1063,16 @@ export default function AgentRunner() {
       <div className="flex items-center justify-between p-2 bg-gray-800 rounded">
         <span className="text-xs text-gray-400">Reinforcement Learning</span>
         <button
-          onClick={() => setUseRL(!useRL)}
+          onClick={() => {}}
           className={cn(
             "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-            useRL ? "bg-green-600" : "bg-gray-600"
+            false ? "bg-green-600" : "bg-gray-600"
           )}
         >
           <span
             className={cn(
               "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
-              useRL ? "translate-x-5" : "translate-x-1"
+              false ? "translate-x-5" : "translate-x-1"
             )}
           />
         </button>
@@ -827,6 +1158,39 @@ export default function AgentRunner() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Citations moved to grid - no longer displayed in sidebar */}
+
+      {/* Charts Section */}
+      {charts && charts.length > 0 && (
+        <div className="mt-4 p-4 bg-gray-900 rounded-lg">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-gray-200 flex items-center">
+              <BarChart3 className="w-4 h-4 mr-2" />
+              Generated Charts
+            </h3>
+            <button
+              onClick={() => setShowCharts(!showCharts)}
+              className="text-xs text-blue-400 hover:text-blue-300"
+            >
+              {showCharts ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          
+          {showCharts && (
+            <div className="grid grid-cols-1 gap-4">
+              {charts.map((chart, index) => (
+                <div key={index} className="bg-gray-800 rounded-lg p-3">
+                  <AgentChartGenerator
+                    prompt={`Chart ${index + 1}: ${chart.title || chart.type}`}
+                    data={chart.data || chart}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
