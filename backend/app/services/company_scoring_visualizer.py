@@ -145,7 +145,8 @@ class CompanyScoringVisualizer:
         Generate base, bull, and bear case scenarios with growth deceleration
         """
         # CRITICAL: Ensure we never have None values for calculations
-        current_revenue = company_data.get("revenue") or company_data.get("arr") or 0
+        # Use actual revenue first, then inferred revenue (which should ALWAYS exist)
+        current_revenue = company_data.get("revenue") or company_data.get("arr") or company_data.get("inferred_revenue")
         if current_revenue is None or current_revenue == 0:
             # Infer from stage if available
             stage = company_data.get("stage", "Series A")

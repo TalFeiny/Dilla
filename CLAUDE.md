@@ -87,6 +87,14 @@ Multiple = Base SaaS Multiple ×
 - AI/ML: `@Anthropic`, `@Perplexity`, `@Cursor`
 - Vertical: `@Toast`, `@Veeva`, `@Procore`
 
+## CRITICAL REVENUE RULE
+**NEVER have None type errors for revenue:**
+1. First check for actual revenue: `company_data.get('revenue')` or `company_data.get('arr')`
+2. If None/missing → use `company_data.get('inferred_revenue')` 
+3. The inferred_revenue MUST ALWAYS exist - it's calculated for every company
+4. NEVER use defaults like 1_000_000 - inferred_revenue should always be present
+5. NEVER use `arr_median` directly - always use the inferred_revenue variable
+
 ## Current Status
 
 ### ✅ Working

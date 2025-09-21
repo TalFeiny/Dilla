@@ -5,6 +5,7 @@ to intelligently infer missing data and score companies for fund fit
 """
 
 import logging
+import math
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
@@ -294,7 +295,8 @@ class IntelligentGapFiller:
                 ) - 6
                 
                 if months_of_burn > 0:
-                    estimated_burn = prev_round.get("amount", 0) / months_of_burn
+                    prev_amount = self._ensure_numeric(prev_round.get("amount"))
+                    estimated_burn = prev_amount / months_of_burn if prev_amount > 0 else 500_000
                     
                     inferences["burn_rate"] = InferenceResult(
                         field="burn_rate",
@@ -371,7 +373,21 @@ class IntelligentGapFiller:
             }
             
             dilution = dilution_map.get(last_round.get("round", ""), 0.15)
-            implied_post = last_round.get("amount", 0) / dilution
+            amount = self._ensure_numeric(last_round.get("amount"))
+            
+            # If no amount, use stage-based estimates
+            if amount == 0:
+                stage_amounts = {
+                    "seed": 3_000_000,
+                    "series a": 15_000_000,
+                    "series b": 50_000_000,
+                    "series c": 100_000_000,
+                    "series d": 200_000_000
+                }
+                round_name = (last_round.get("round") or "").lower()
+                amount = stage_amounts.get(round_name, 10_000_000)
+                
+            implied_post = amount / dilution if dilution > 0 else amount * 7
             
             # Apply geography adjustment only (keep this as it's based on real market data)
             geography = company_data.get("geography", "US")
@@ -412,26 +428,70 @@ class IntelligentGapFiller:
         # Determine stage
         stage = self._determine_stage(company_data)
         if not stage:
-            return inferences
+            stage = 'Seed'  # Default to Seed
         
-        benchmarks = self.STAGE_BENCHMARKS.get(stage, {})
+        # Map stage to benchmark key - CRITICAL FIX
+        stage_key = stage
+        if stage not in self.STAGE_BENCHMARKS:
+            # Map various stage names to our benchmark keys
+            stage_lower = (stage or 'seed').lower()
+            if 'seed' in stage_lower:
+                stage_key = 'Seed'
+            elif 'series a' in stage_lower or stage == 'A':
+                stage_key = 'Series A'
+            elif 'series b' in stage_lower or stage == 'B':
+                stage_key = 'Series B'
+            elif 'series c' in stage_lower or stage == 'C':
+                stage_key = 'Series C'
+            elif 'series d' in stage_lower or stage == 'D':
+                stage_key = 'Series D+'
+            else:
+                stage_key = 'Seed'  # Default to Seed
+        
+        benchmarks = self.STAGE_BENCHMARKS.get(stage_key, self.STAGE_BENCHMARKS.get('Seed', {}))
+        
+        print(f"\n[GAP FILLER] Stage mapping for {company_data.get('name', 'unknown')}:")
+        print(f"  Original stage: {stage}")
+        print(f"  Mapped to: {stage_key}")
+        print(f"  Base ARR median: ${benchmarks.get('arr_median', 0):,.0f}")
         
         # Infer revenue if missing
         if "revenue" in missing_fields:
-            rev_range = benchmarks.get("revenue_range", (0, 0))
+            # Start with arr_median, NOT revenue_range midpoint
+            benchmark_revenue = benchmarks.get("arr_median", 1_000_000)
             
-            # Start with benchmark midpoint
-            benchmark_revenue = (rev_range[0] + rev_range[1]) / 2
+            # Apply time-based growth since last funding
+            funding_rounds = company_data.get('funding_rounds', [])
+            if funding_rounds:
+                last_round = funding_rounds[-1]
+                last_funding_date = last_round.get('date')
+                if last_funding_date:
+                    months_since = self._months_since_date(last_funding_date)
+                    if months_since and months_since > 0:
+                        # Get growth rate for this stage
+                        growth_rate = benchmarks.get('growth_rate', 1.0)
+                        # Apply monthly compound growth
+                        monthly_growth = (1 + growth_rate) ** (1/12) - 1
+                        benchmark_revenue = benchmark_revenue * ((1 + monthly_growth) ** months_since)
             
-            # Layer 1: Team size adjustment
+            # Apply geographic adjustment
+            location = (company_data.get('headquarters') or '').lower()
+            if 'san francisco' in location or 'new york' in location or 'sf' in location or 'nyc' in location:
+                benchmark_revenue *= 1.15  # SF/NYC premium
+            elif 'europe' in location or 'berlin' in location or 'london' in location or 'paris' in location:
+                benchmark_revenue *= 0.85  # European discount
+            
+            # Apply investor quality adjustment
+            if funding_rounds:
+                tier1_vcs = ['sequoia', 'a16z', 'benchmark', 'accel', 'greylock', 'kleiner', 'bessemer', 'index']
+                investors_str = str(funding_rounds).lower()
+                if any(vc in investors_str for vc in tier1_vcs):
+                    benchmark_revenue *= 1.2  # Tier 1 VC boost
+            
+            print(f"  After time/geo/investor adjustments: ${benchmark_revenue:,.0f}")
+            
+            # Start with benchmark revenue after adjustments
             team_adjusted_revenue = benchmark_revenue
-            team_ratio = 1.0
-            if "team_size" in company_data:
-                team = company_data["team_size"]
-                expected_team = benchmarks.get("team_size", (10, 50))
-                team_midpoint = (expected_team[0] + expected_team[1]) / 2
-                team_ratio = team / team_midpoint if team_midpoint > 0 else 1
-                team_adjusted_revenue *= team_ratio
             
             # Layer 2: Pricing model adjustment
             pricing_adjusted_revenue = team_adjusted_revenue
@@ -485,7 +545,7 @@ class IntelligentGapFiller:
                 # Check for enterprise customers
                 enterprise_signals = ['fortune', '500', 'bank', 'insurance', 'global', 'microsoft', 'google', 'amazon']
                 enterprise_count = sum(1 for customer in customer_logos 
-                                      if any(signal in str(customer).lower() for signal in enterprise_signals))
+                                      if customer and any(signal in str(customer).lower() for signal in enterprise_signals))
                 
                 if enterprise_count > 5:
                     # Strong enterprise presence
@@ -502,8 +562,7 @@ class IntelligentGapFiller:
             
             # Build comprehensive reasoning
             reasoning_parts = [f"{stage} benchmark: ${benchmark_revenue/1e6:.1f}M"]
-            if team_ratio != 1:
-                reasoning_parts.append(f"Team size adjustment: {team_ratio:.1f}x")
+            # Team ratio removed - no longer calculated
             if pricing_reasoning:
                 reasoning_parts.append(pricing_reasoning)
             if customer_reasoning:
@@ -515,8 +574,12 @@ class IntelligentGapFiller:
                 confidence=0.6 if (pricing or customer_logos) else 0.4,
                 source="layered_inference",
                 reasoning=" | ".join(reasoning_parts),
-                citations=[f"Industry benchmark for {stage} stage", "Pricing page analysis", "Customer logo analysis"]
+                citations=[f"Industry benchmark for {stage_key} stage", "Pricing page analysis", "Customer logo analysis"]
             )
+            
+            print(f"  FINAL INFERRED REVENUE: ${final_revenue:,.0f}")
+            print(f"  Confidence: {0.6 if (pricing or customer_logos) else 0.4}")
+            print(f"  Reasoning: {' | '.join(reasoning_parts)[:100]}...")
         
         # Infer growth rate
         if "growth_rate" in missing_fields:
@@ -532,6 +595,68 @@ class IntelligentGapFiller:
                 source="stage_benchmark",
                 reasoning=f"{stage} companies typically grow at {adjusted_growth:.0%} YoY",
                 citations=[f"{stage} benchmark: {base_growth:.0%}"]
+            )
+        
+        # Infer total funding using the same adjustment logic as revenue
+        if "total_funding" in missing_fields:
+            funding_rounds = company_data.get("funding_rounds", [])
+            total = 0
+            
+            # Sum known funding amounts
+            for r in funding_rounds:
+                if r.get("amount"):
+                    total += r.get("amount", 0)
+            
+            # For missing rounds, use adjusted amounts based on geography/investors
+            stage_order = ["Pre-seed", "Seed", "Series A", "Series B", "Series C", "Series D"]
+            
+            # Base typical raises
+            stage_typical_raise = {
+                "Pre-seed": 500_000,
+                "Seed": 2_000_000,  
+                "Series A": 10_000_000,
+                "Series B": 25_000_000,
+                "Series C": 50_000_000,
+                "Series D": 100_000_000
+            }
+            
+            # Geography adjustment (same as revenue)
+            geography = company_data.get("geography", "US")
+            geo_mult = self.GEOGRAPHY_ADJUSTMENTS.get(geography, {}).get("funding", 1.0)
+            
+            # Investor quality adjustment
+            investor_mult = 1.0
+            investors = company_data.get("investors", [])
+            if any(inv in ["Sequoia", "a16z", "Benchmark", "Accel", "Founders Fund"] for inv in investors):
+                investor_mult = 1.3  # Tier 1 VCs raise larger rounds
+            elif any(inv in ["NEA", "Bessemer", "Lightspeed", "GV"] for inv in investors):
+                investor_mult = 1.15  # Tier 2 VCs
+            
+            # Find where we are in progression
+            current_idx = stage_order.index(stage_key) if stage_key in stage_order else 1
+            
+            # Check which rounds we already have
+            existing_rounds = {r.get("round", "").lower() for r in funding_rounds}
+            
+            # Add all missing preceding rounds with adjustments
+            for i in range(current_idx + 1):  # Include current stage
+                stage = stage_order[i]
+                # Check if we already have this round
+                has_round = any(stage.lower() in r or r in stage.lower() for r in existing_rounds)
+                if not has_round:
+                    # Apply adjustments to typical raise
+                    adjusted_amount = stage_typical_raise.get(stage, 0) * geo_mult * investor_mult
+                    total += adjusted_amount
+            
+            reasoning = f"Known rounds + adjusted typical amounts for {stage_key} ({geography}, {len(investors)} investors)"
+            
+            inferences["total_funding"] = InferenceResult(
+                field="total_funding",
+                value=total,
+                confidence=0.6,
+                source="adjusted_benchmarks",
+                reasoning=reasoning,
+                citations=[f"Adjusted for {geography} market and investor quality"]
             )
         
         return inferences
@@ -564,10 +689,12 @@ class IntelligentGapFiller:
         recommendations = []
         
         # CRITICAL: Extract fund parameters for calculations
-        fund_size = context.get('fund_size', 200_000_000)  # Default $200M
-        fund_year = context.get('fund_year', 2)
-        portfolio_count = context.get('portfolio_count', 5)
+        fund_size = context.get('fund_size', 276_000_000)  # Default $276M remaining
+        fund_year = context.get('fund_year', 3)  # Year 3 of fund
+        portfolio_count = context.get('portfolio_count', 9)  # 9 investments made
         is_lead = context.get('lead_investor', False) or context.get('is_lead', False)
+        current_dpi = context.get('dpi', 0.5)  # 0.5x DPI achieved
+        target_tvpi = context.get('target_tvpi', 3.0)  # 3x target
         
         # Log fund parameters for debugging
         import logging
@@ -759,31 +886,114 @@ class IntelligentGapFiller:
                     "probability": scenario["probability"]
                 })
             
-            # Model fund-level impact
-            # Power law: Need 1-2 deals to return fund
+            # Model fund-level impact with entry valuation consideration
+            # Power law: Need 1-2 deals to return fund, BUT at the right price
             fund_return_needed = fund_size * 3  # 3x target return
-            can_return_fund = (selected_ownership * valuation * 25) >= fund_return_needed
             
-            # Portfolio construction impact
+            # Calculate realistic exit multiples based on entry valuation
+            revenue = all_data.get("revenue", all_data.get("inferred_revenue", 1_000_000))
+            current_revenue_multiple = valuation / revenue if revenue > 0 else 50
+            
+            # Adjust exit multiple based on entry - expensive entry = lower exit multiple
+            if current_revenue_multiple <= 10:  # Great entry
+                realistic_exit_multiple = 20  # Can achieve 20x from here
+            elif current_revenue_multiple <= 20:  # Fair entry
+                realistic_exit_multiple = 10  # Can achieve 10x
+            elif current_revenue_multiple <= 40:  # Expensive entry
+                realistic_exit_multiple = 5   # Only 5x realistic
+            else:  # Very expensive
+                realistic_exit_multiple = 3   # Hard to get good returns
+            
+            can_return_fund = (selected_ownership * valuation * realistic_exit_multiple) >= fund_return_needed
+            value_adjusted_return = (selected_ownership * valuation * realistic_exit_multiple) / fund_size
+            
+            # Portfolio construction impact with value consideration
             if portfolio_count < 10:
-                # Early in fund, need potential fund-returners
-                if can_return_fund:
+                # Early in fund, need potential fund-returners AT RIGHT PRICE
+                if can_return_fund and current_revenue_multiple <= 20:
                     scores["portfolio_fit"] = 100
-                    reasons.append(f"🎯 FUND-RETURNER: Could return {(selected_ownership * valuation * 25)/fund_size:.1f}x the fund")
-                else:
+                    reasons.append(f"🎯 FUND-RETURNER: {value_adjusted_return:.1f}x fund at {realistic_exit_multiple}x exit (entry: {current_revenue_multiple:.0f}x)")
+                elif can_return_fund and current_revenue_multiple > 20:
+                    scores["portfolio_fit"] = 70
+                    reasons.append(f"🔶 Potential returner but expensive entry: {current_revenue_multiple:.0f}x revenue")
+                elif value_adjusted_return >= 0.5:  # Can return 0.5x fund
                     scores["portfolio_fit"] = 60
-                    reasons.append(f"📊 Solid addition but not a fund-returner")
+                    reasons.append(f"📊 Solid addition: {value_adjusted_return:.1f}x fund potential")
+                else:
+                    scores["portfolio_fit"] = 40
+                    reasons.append(f"❌ Poor risk/reward at {current_revenue_multiple:.0f}x entry")
             else:
-                # Later in fund, can take more measured bets
-                scores["portfolio_fit"] = 80
+                # Later in fund, value matters even more
+                if current_revenue_multiple <= 15:
+                    scores["portfolio_fit"] = 90
+                    reasons.append(f"✅ Good value for late-stage fund addition")
+                elif current_revenue_multiple <= 25:
+                    scores["portfolio_fit"] = 70
+                    reasons.append(f"🔶 Acceptable for portfolio balance")
+                else:
+                    scores["portfolio_fit"] = 40
+                    reasons.append(f"⚠️ Too expensive for this stage of fund")
             
-            recommendations.append(f"📊 Expected return: {expected_return:.1f}x across scenarios")
-            recommendations.append(f"💰 Check: ${selected_check/1e6:.1f}M | Ownership: {selected_ownership:.1%} | E[Return]: {expected_return:.1f}x")
+            # =====================================================
+            # BACKWARD ANALYSIS: What do we need for fund returns?
+            # =====================================================
             
-            # Deployment pacing check
-            if fund_year >= 3 and portfolio_count < 10:
-                scores["deployment_urgency"] = 90
-                reasons.append(f"⚡ DEPLOYMENT PRESSURE: Year {fund_year} with only {portfolio_count} deals")
+            # Calculate fund-level requirements
+            current_value = fund_size * current_dpi
+            target_value = fund_size * target_tvpi
+            needed_returns = target_value - current_value
+            per_investment_target = needed_returns / 25  # Assume 25 total investments
+            
+            # What ownership would we need at different exit multiples to hit our target?
+            backward_scenarios = []
+            for exit_multiple in [5, 10, 25, 50]:
+                exit_value = valuation * exit_multiple
+                required_proceeds = per_investment_target
+                required_exit_ownership = required_proceeds / exit_value if exit_value > 0 else 1.0
+                
+                # Account for dilution - work backwards
+                dilution_factor = 0.65  # Assume 35% dilution to exit
+                required_initial_ownership = required_exit_ownership / dilution_factor
+                required_check = (valuation * required_initial_ownership) / (1 - required_initial_ownership) if required_initial_ownership < 1 else float('inf')
+                
+                is_feasible = required_check <= max_check_size and required_initial_ownership <= 0.30  # 30% max ownership
+                
+                backward_scenarios.append({
+                    "exit_multiple": exit_multiple,
+                    "required_check": required_check,
+                    "required_ownership": required_initial_ownership,
+                    "is_feasible": is_feasible
+                })
+            
+            # Add detailed math breakdown
+            recommendations.append(f"📊 FORWARD: ${selected_check/1e6:.1f}M → {selected_ownership:.1%} ownership → E[{expected_return:.1f}x] return")
+            recommendations.append(f"💰 Expected proceeds: ${selected_check * expected_return / 1e6:.1f}M ({(selected_check * expected_return / needed_returns):.1%} of ${needed_returns/1e6:.0f}M fund target)")
+            
+            # Find best backward scenario
+            feasible_scenarios = [s for s in backward_scenarios if s["is_feasible"]]
+            if feasible_scenarios:
+                best_scenario = feasible_scenarios[0]  # Take lowest multiple that works
+                recommendations.append(f"🎯 BACKWARD: For {best_scenario['exit_multiple']}x exit, need ${best_scenario['required_check']/1e6:.1f}M for {best_scenario['required_ownership']:.1%} ownership")
+            else:
+                min_check_scenario = min(backward_scenarios, key=lambda x: x["required_check"])
+                recommendations.append(f"⚠️ CHALLENGE: Even at 50x exit, need ${min_check_scenario['required_check']/1e6:.1f}M (exceeds ${max_check_size/1e6:.1f}M limit)")
+            
+            # Add fund context
+            recommendations.append(f"📈 FUND CONTEXT: Year {fund_year}, {portfolio_count} deals, ${remaining_capital/1e6:.0f}M remaining, need ${needed_returns/1e6:.0f}M returns")
+            
+            # Deployment pacing check with more context
+            if fund_year >= 3:
+                deployment_rate = actual_deployed / fund_size
+                if deployment_rate < 0.45:  # Should be ~45% deployed by year 3
+                    scores["deployment_urgency"] = 95
+                    reasons.append(f"⚡ URGENT: Only {deployment_rate:.0%} deployed in Year {fund_year} (target: 45%)")
+                    recommendations.append(f"🚨 Must deploy ${remaining_to_deploy/1e6:.0f}M across {remaining_investments} deals")
+                elif portfolio_count < 10:
+                    scores["deployment_urgency"] = 90
+                    reasons.append(f"⚡ DEPLOYMENT PRESSURE: Year {fund_year} with only {portfolio_count} deals")
+                else:
+                    scores["deployment_urgency"] = 70
+                    reasons.append(f"✅ On track: {deployment_rate:.0%} deployed, {portfolio_count} investments")
         else:
             scores["fund_economics"] = 0
             reasons.append("⚠️ Cannot evaluate - no valuation data")
@@ -924,13 +1134,14 @@ class IntelligentGapFiller:
             scores["timing_fit"] = 80
             reasons.append(f"🔶 Good timing window: {next_round_timing:.0f} months")
         
-        # 6. Return Potential (0-100)
+        # 6. Return Potential (0-100) - ENHANCED WITH ENTRY CONSIDERATION
         valuation = all_data.get("valuation", 100_000_000)
         growth_rate = all_data.get("growth_rate", 0.5)
+        revenue = all_data.get("revenue", 1_000_000)
         
         # Simple exit multiple calculation
         years_to_exit = self.fund.typical_holding_period / 12
-        projected_revenue = all_data.get("revenue", 1_000_000) * ((1 + growth_rate) ** years_to_exit)
+        projected_revenue = revenue * ((1 + growth_rate) ** years_to_exit)
         exit_valuation = projected_revenue * 10  # Assume 10x revenue multiple at exit
         
         return_multiple = exit_valuation / valuation if valuation > 0 else 0
@@ -945,6 +1156,147 @@ class IntelligentGapFiller:
             scores["return_potential"] = 40
             reasons.append(f"❌ Below return threshold: {return_multiple:.1f}x vs {self.fund.exit_multiple_target}x target")
         
+        # 7. Entry Value Score (0-100) - NEW: Evaluate entry point attractiveness
+        current_multiple = valuation / revenue if revenue > 0 else float('inf')
+        stage = self._determine_stage(all_data)
+        stage_benchmark_multiple = self.STAGE_BENCHMARKS.get(stage, {}).get("valuation_multiple", 15)
+        
+        # Calculate max entry valuation we should pay (backward looking)
+        exit_revenue = projected_revenue
+        target_irr = 0.30  # 30% IRR target
+        target_multiple = self.fund.exit_multiple_target
+        max_entry_valuation_irr = exit_valuation / ((1 + target_irr) ** years_to_exit)
+        max_entry_valuation_multiple = exit_valuation / target_multiple
+        max_entry_valuation = min(max_entry_valuation_irr, max_entry_valuation_multiple)
+        
+        # Score based on how attractive the entry point is
+        if valuation <= max_entry_valuation * 0.8:  # 20% discount to our max
+            scores["entry_value"] = 100
+            reasons.append(f"💎 EXCELLENT ENTRY: Valued at {current_multiple:.1f}x revenue (max: {max_entry_valuation/revenue:.1f}x)")
+            recommendations.append(f"Strong value at entry - can pay up to ${max_entry_valuation/1e6:.1f}M")
+        elif valuation <= max_entry_valuation:
+            scores["entry_value"] = 80
+            reasons.append(f"✅ Fair entry: {current_multiple:.1f}x revenue vs {stage_benchmark_multiple}x benchmark")
+        elif valuation <= max_entry_valuation * 1.2:  # Up to 20% premium
+            scores["entry_value"] = 60
+            reasons.append(f"🔶 Slightly expensive: {current_multiple:.1f}x revenue (20% above our max)")
+            recommendations.append(f"Try to negotiate down from ${valuation/1e6:.1f}M to ${max_entry_valuation/1e6:.1f}M")
+        elif valuation <= max_entry_valuation * 1.5:  # Up to 50% premium
+            scores["entry_value"] = 40
+            reasons.append(f"⚠️ Overvalued: {current_multiple:.1f}x revenue ({((valuation/max_entry_valuation - 1) * 100):.0f}% premium)")
+            recommendations.append(f"Wait for better entry in next round or market correction")
+        else:
+            scores["entry_value"] = 20
+            reasons.append(f"🚫 SEVERELY OVERVALUED: {current_multiple:.1f}x revenue (benchmark: {stage_benchmark_multiple}x)")
+            recommendations.append(f"PASS - Entry valuation ${valuation/1e6:.1f}M vs max ${max_entry_valuation/1e6:.1f}M")
+        
+        # 8. Growth Trajectory & TAM Analysis (0-100) - Acceleration/Deceleration + Upside
+        # Get historical growth if available
+        historical_growth = []
+        if "funding_rounds" in all_data:
+            rounds = sorted(all_data["funding_rounds"], key=lambda x: x.get("date", ""))
+            for i in range(1, len(rounds)):
+                if rounds[i].get("revenue") and rounds[i-1].get("revenue"):
+                    time_diff = 1  # Assume 1 year between rounds if no dates
+                    growth = (rounds[i]["revenue"] / rounds[i-1]["revenue"] - 1) / time_diff
+                    historical_growth.append(growth)
+        
+        # Calculate growth trajectory (accelerating vs decelerating)
+        if len(historical_growth) >= 2:
+            recent_growth = historical_growth[-1]
+            prior_growth = historical_growth[-2]
+            is_accelerating = recent_growth > prior_growth
+            growth_delta = recent_growth - prior_growth
+        else:
+            # Use current growth rate vs stage benchmark
+            recent_growth = growth_rate
+            stage_benchmark_growth = self.STAGE_BENCHMARKS.get(stage, {}).get("yoy_growth", 1.5)
+            is_accelerating = recent_growth > stage_benchmark_growth
+            growth_delta = recent_growth - stage_benchmark_growth
+        
+        # Calculate TAM penetration and remaining upside
+        tam = all_data.get("tam", all_data.get("market_size", 10_000_000_000))  # Default $10B TAM
+        current_penetration = revenue / tam if tam > 0 else 0
+        
+        # Calculate potential exit size based on TAM capture
+        # Best case: 10% TAM capture for category leader
+        # Base case: 1% TAM capture for strong player
+        # Bear case: 0.1% TAM capture for niche player
+        best_case_revenue = tam * 0.10
+        base_case_revenue = tam * 0.01
+        bear_case_revenue = tam * 0.001
+        
+        # How many years to reach different TAM penetrations at current growth?
+        if growth_rate > 0:
+            years_to_1pct = math.log(base_case_revenue / revenue) / math.log(1 + growth_rate) if revenue > 0 else 20
+            years_to_10pct = math.log(best_case_revenue / revenue) / math.log(1 + growth_rate) if revenue > 0 else 20
+        else:
+            years_to_1pct = 20
+            years_to_10pct = 20
+        
+        # Calculate upside from current valuation
+        # What would company be worth at different TAM penetrations?
+        base_case_valuation = base_case_revenue * 8  # 8x revenue at scale
+        best_case_valuation = best_case_revenue * 12  # 12x for category leader
+        
+        base_upside = base_case_valuation / valuation if valuation > 0 else 0
+        best_upside = best_case_valuation / valuation if valuation > 0 else 0
+        
+        # Score based on growth trajectory AND TAM upside
+        trajectory_score = 0
+        tam_score = 0
+        
+        # Growth trajectory scoring
+        if is_accelerating and growth_delta > 0.2:  # Strongly accelerating
+            trajectory_score = 100
+            # Check if prior_growth is defined
+            if 'prior_growth' in locals():
+                reasons.append(f"🚀 ACCELERATING: Growth increasing from {prior_growth:.0%} to {recent_growth:.0%}")
+            else:
+                reasons.append(f"🚀 ACCELERATING: Growth at {recent_growth:.0%}")
+        elif is_accelerating:
+            trajectory_score = 80
+            reasons.append(f"📈 Accelerating growth: {recent_growth:.0%} YoY")
+        elif growth_delta > -0.1:  # Slight deceleration
+            trajectory_score = 60
+            reasons.append(f"📊 Stable growth: {recent_growth:.0%} YoY")
+        elif growth_delta > -0.3:  # Moderate deceleration
+            trajectory_score = 40
+            reasons.append(f"📉 Decelerating: Growth slowing to {recent_growth:.0%}")
+        else:  # Severe deceleration
+            trajectory_score = 20
+            reasons.append(f"⚠️ RAPID DECELERATION: Growth collapsed to {recent_growth:.0%}")
+        
+        # TAM upside scoring
+        if base_upside >= 50 and years_to_1pct <= 7:  # Can be 50x+ in 7 years
+            tam_score = 100
+            reasons.append(f"🎯 MASSIVE TAM: ${tam/1e9:.0f}B market, {base_upside:.0f}x upside to 1% penetration")
+            recommendations.append(f"Can reach ${base_case_revenue/1e6:.0f}M revenue (1% TAM) in {years_to_1pct:.1f} years")
+        elif base_upside >= 20 and years_to_1pct <= 10:
+            tam_score = 80
+            reasons.append(f"✅ Large TAM: ${tam/1e9:.0f}B market, {base_upside:.0f}x upside potential")
+        elif base_upside >= 10:
+            tam_score = 60
+            reasons.append(f"🔶 Decent TAM: ${tam/1e9:.0f}B market, {base_upside:.0f}x upside")
+        elif base_upside >= 5:
+            tam_score = 40
+            reasons.append(f"📊 Limited TAM upside: Only {base_upside:.0f}x to 1% penetration")
+        else:
+            tam_score = 20
+            reasons.append(f"❌ TAM CONSTRAINED: <5x upside even at 1% market share")
+            recommendations.append(f"Already at {current_penetration:.2%} of ${tam/1e9:.1f}B TAM")
+        
+        # Combined growth trajectory score
+        scores["growth_trajectory"] = (trajectory_score * 0.4 + tam_score * 0.6)
+        
+        # Add specific recommendations based on trajectory
+        if is_accelerating and base_upside >= 20:
+            recommendations.append(f"🎯 IDEAL: Accelerating growth + {base_upside:.0f}x TAM upside = compound winner")
+        elif not is_accelerating and base_upside >= 20:
+            recommendations.append(f"⚠️ WATCH: Great TAM but decelerating - why is growth slowing?")
+        elif is_accelerating and base_upside < 10:
+            recommendations.append(f"📊 CAUTION: Accelerating but TAM-limited - exit timing critical")
+        
         # 6. Geography Fit (0-100)
         geography = all_data.get("geography", "Unknown")
         if geography in self.fund.geography_focus:
@@ -954,17 +1306,19 @@ class IntelligentGapFiller:
             scores["geography_fit"] = 50
             reasons.append(f"🔶 Geography outside focus: {geography}")
         
-        # Calculate overall score (weighted average) - UPDATED with unit economics
-        # Fund economics is THE MOST IMPORTANT - if deal doesn't work, nothing else matters
+        # Calculate overall score (weighted average) - REBALANCED for value + growth
+        # Entry value and growth trajectory are now key factors
         weights = {
-            "fund_economics": 0.40,  # PRIMARY: Can we get ownership? Does math work?
-            "stage_fit": 0.10,
-            "sector_fit": 0.10,
-            "unit_economics": 0.15,
-            "check_size_fit": 0.05,  # Already covered in fund_economics
-            "timing_fit": 0.10,
-            "return_potential": 0.05,  # Already covered in fund_economics
-            "geography_fit": 0.05
+            "fund_economics": 0.25,      # Still important: ownership & fund math
+            "entry_value": 0.20,          # NEW: Is the entry price attractive?
+            "growth_trajectory": 0.20,    # NEW: TAM upside + acceleration
+            "unit_economics": 0.10,       # Gross margins matter
+            "stage_fit": 0.05,            
+            "sector_fit": 0.05,           
+            "check_size_fit": 0.03,       # Less important (covered in fund_economics)
+            "timing_fit": 0.07,           
+            "return_potential": 0.03,     # Less important (covered by entry_value)
+            "geography_fit": 0.02         
         }
         
         # Add deployment urgency if present
@@ -1220,15 +1574,30 @@ class IntelligentGapFiller:
         total_penalty = max(api_penalty, gpu_penalty)
         adjusted_gross_margin = base_gross_margin - total_penalty
         
-        # Calculate API costs impact on unit economics
-        revenue_raw = company_data.get("revenue", company_data.get("arr", 1_000_000))
-        # Handle case where revenue might be a dict or InferenceResult
-        if isinstance(revenue_raw, dict):
-            revenue = revenue_raw.get('value', 1_000_000) if 'value' in revenue_raw else 1_000_000
-        elif hasattr(revenue_raw, 'value'):
-            revenue = revenue_raw.value
+        # Always start with inferred revenue - NEVER None
+        # Use the properly inferred revenue if available
+        inferred_revenue = company_data.get('inferred_revenue', 0)
+        if inferred_revenue and inferred_revenue > 0:
+            final_revenue = inferred_revenue
         else:
-            revenue = revenue_raw or 1_000_000
+            # Fallback to stage benchmark if no inference available
+            stage = company_data.get('stage', 'Seed')
+            stage_key = self._normalize_stage_key(stage)
+            
+            if stage_key in self.STAGE_BENCHMARKS:
+                final_revenue = self.STAGE_BENCHMARKS[stage_key].get('arr_median', 500_000)
+            else:
+                final_revenue = self.STAGE_BENCHMARKS['Seed'].get('arr_median', 500_000)
+        
+        # Check if we have actual extracted revenue to overwrite the inferred
+        revenue_raw = company_data.get("revenue", company_data.get("arr", None))
+        if revenue_raw:
+            if isinstance(revenue_raw, dict) and revenue_raw.get('value'):
+                final_revenue = revenue_raw['value']
+            elif hasattr(revenue_raw, 'value') and revenue_raw.value:
+                final_revenue = revenue_raw.value
+            elif isinstance(revenue_raw, (int, float)) and revenue_raw > 0:
+                final_revenue = revenue_raw
             
         # Smart customer contract estimation based on tiers
         customers_raw = company_data.get("customers", {})
@@ -1241,7 +1610,7 @@ class IntelligentGapFiller:
             total_customers = self._ensure_numeric(customers_raw.get('customer_count', len(customer_names)))
             
             # Determine company stage for ACV estimation
-            stage = company_data.get('stage', 'seed').lower()
+            stage = (company_data.get('stage') or 'seed').lower()
             
             # Stage-based ACV ranges (not hardcoded - based on market data)
             acv_by_stage = {
@@ -1281,11 +1650,11 @@ class IntelligentGapFiller:
                 num_smb = total_customers - num_enterprise - num_mid
             else:
                 # No customer data, estimate from revenue
-                if revenue > 10_000_000:
+                if final_revenue and final_revenue > 10_000_000:
                     num_enterprise = 20
                     num_mid = 50
                     num_smb = 100
-                elif revenue > 1_000_000:
+                elif final_revenue and final_revenue > 1_000_000:
                     num_enterprise = 5
                     num_mid = 20
                     num_smb = 50
@@ -1313,12 +1682,12 @@ class IntelligentGapFiller:
             )
             
             # Use the better of actual revenue or estimated revenue
-            if revenue > estimated_revenue * 0.5 and revenue < estimated_revenue * 2:
-                # Actual revenue seems reasonable
-                final_revenue = revenue
+            if final_revenue > estimated_revenue * 0.5 and final_revenue < estimated_revenue * 2:
+                # Actual revenue seems reasonable, keep it
+                pass
             else:
                 # Our estimate might be better
-                final_revenue = max(revenue, estimated_revenue)
+                final_revenue = max(final_revenue, estimated_revenue)
                 logger.info(f"Using estimated revenue ${final_revenue:,.0f} based on customer tiers")
             
             customers = api_adjusted_customers if api_adjusted_customers > 0 else total_customers
@@ -1327,11 +1696,11 @@ class IntelligentGapFiller:
             customers = self._ensure_numeric(customers_raw.value)
         else:
             # Fallback to simple customer count
-            customers = self._ensure_numeric(customers_raw) if customers_raw else revenue / 12_000
+            customers = self._ensure_numeric(customers_raw) if customers_raw else final_revenue / 12_000
         
         # Ensure customers is a valid number
         if not isinstance(customers, (int, float)) or customers <= 0:
-            customers = max(10, revenue / 12_000)
+            customers = max(10, final_revenue / 12_000)
         
         api_cost_per_user = dependency_impact["typical_api_cost_per_user"]
         monthly_api_costs = api_cost_per_user * customers
@@ -1370,7 +1739,7 @@ class IntelligentGapFiller:
             "estimated_annual_gpu_costs": gpu_metrics["annual_gpu_costs"],
             "total_compute_costs": annual_api_costs + gpu_metrics["annual_gpu_costs"],
             "api_cost_per_user": api_cost_per_user,
-            "gpu_cost_per_transaction": gpu_metrics["cost_per_transaction"],
+            "gpu_cost_per_transaction": gpu_metrics.get("cost_per_transaction", 0),
             "valuation_multiple_adjustment": combined_valuation_adjustment,
             "scalability_discount": dependency_impact["scalability_discount"],
             "investment_recommendation": investment_rec,
@@ -1464,7 +1833,8 @@ class IntelligentGapFiller:
         Calculate what an investor should pay today given expected growth deceleration
         This is the core VC math: what's the entry price for target returns?
         """
-        current_revenue = company_data.get("revenue", company_data.get("arr", 1_000_000))
+        # Use actual revenue first, then inferred (which should ALWAYS exist)
+        current_revenue = company_data.get("revenue") or company_data.get("arr") or company_data.get("inferred_revenue")
         current_growth = company_data.get("growth_rate", 1.0)  # 100% YoY
         nrr = company_data.get("nrr", 1.10)  # 110% net retention
         current_valuation = company_data.get("valuation", 100_000_000)
@@ -1505,9 +1875,9 @@ class IntelligentGapFiller:
         standard_saas_multiple = 5.0  # Standard SaaS acquisition (3-8x range)
         
         # Determine if this is a strategic or standard acquisition candidate
-        is_ai_company = any(keyword in company_data.get("description", "").lower() 
+        is_ai_company = any(keyword in (company_data.get("description") or "").lower() 
                            for keyword in ["ai", "ml", "gpt", "llm", "model"])
-        has_strategic_value = exit_revenue > 50_000_000 and final_growth > 0.30
+        has_strategic_value = exit_revenue and exit_revenue > 50_000_000 and final_growth > 0.30
         
         if is_ai_company and has_strategic_value:
             # Could get strategic premium like OpenAI acquisition
@@ -1617,7 +1987,7 @@ class IntelligentGapFiller:
         for round_data in funding_rounds:
             investors = round_data.get("investors", [])
             for investor in investors:
-                if any(strategic in investor.lower() for strategic in strategic_keywords):
+                if investor and any(strategic in investor.lower() for strategic in strategic_keywords):
                     return True
         return False
     
@@ -1637,30 +2007,72 @@ class IntelligentGapFiller:
         exit_value = revenue * exit_multiple
         return exit_value / ((1 + target_irr) ** years)
     
-    def _get_investment_recommendation(self, gap, ask):
-        """Get investment recommendation based on valuation gap"""
+    def _get_investment_recommendation(self, gap, ask, context=None):
+        """Get detailed investment recommendation with math and reasoning"""
+        if context is None:
+            context = {}
+            
+        # Extract fund parameters
+        fund_size = context.get('fund_size', 276_000_000)
+        max_check = fund_size * 0.05  # 5% concentration limit
+        target_ownership = 0.15 if context.get('is_lead') else 0.10
+        
+        # Calculate required check for target ownership at ask valuation
+        required_check = (ask * target_ownership) / (1 - target_ownership)
+        
+        # Calculate what we'd get at max check
+        ownership_at_max = max_check / (ask + max_check)
+        
+        # Calculate expected returns
+        exit_multiple = 10  # Assume 10x for good outcomes
+        dilution_factor = 0.65  # 35% dilution to exit
+        exit_ownership = ownership_at_max * dilution_factor
+        proceeds_at_exit = exit_ownership * (ask * exit_multiple)
+        return_multiple = proceeds_at_exit / max_check if max_check > 0 else 0
+        
+        # Build detailed recommendation
         if gap < -ask * 0.20:  # 20%+ discount
-            return "🟢 STRONG BUY - Significantly undervalued"
+            rec = f"🟢 STRONG BUY at ${ask/1e6:.0f}M valuation\n"
+            rec += f"   • Can get {ownership_at_max:.1%} ownership with ${min(required_check, max_check)/1e6:.1f}M check\n"
+            rec += f"   • Expected {return_multiple:.1f}x return at 10x exit (${proceeds_at_exit/1e6:.0f}M proceeds)\n"
+            rec += f"   • {abs(gap)/ask:.0%} discount to fair value"
+            return rec
         elif gap < 0:
-            return "🟢 BUY - Fairly priced for target returns"
-        elif gap < ask * 0.20:  # Up to 20% premium
-            return "🟡 NEGOTIATE - Close to fair value, push for lower"
-        elif gap < ask * 0.50:
-            return "🟡 PASS - Overvalued, wait for reality check"
+            rec = f"🟢 BUY at ${ask/1e6:.0f}M - fairly priced\n"
+            rec += f"   • ${min(required_check, max_check)/1e6:.1f}M for {ownership_at_max:.1%} ownership\n"
+            rec += f"   • {return_multiple:.1f}x expected return"
+            return rec
+        elif gap < ask * 0.20:
+            rec = f"🟡 NEGOTIATE - asking ${ask/1e6:.0f}M (${gap/1e6:.0f}M premium)\n"
+            rec += f"   • At ask: only {ownership_at_max:.1%} ownership with max ${max_check/1e6:.1f}M\n"
+            rec += f"   • Returns {return_multiple:.1f}x (below 10x target)\n"
+            rec += f"   • Push for ${(ask-gap)/1e6:.0f}M valuation"
+            return rec
+        elif required_check > max_check:
+            rec = f"❌ TOO EXPENSIVE at ${ask/1e6:.0f}M\n"
+            rec += f"   • Need ${required_check/1e6:.1f}M for {target_ownership:.0%} ownership (exceeds ${max_check/1e6:.1f}M limit)\n"
+            rec += f"   • Max check only gets {ownership_at_max:.1%} ownership\n"
+            rec += f"   • Wait for Series B+ when valuation resets"
+            return rec
         else:
-            return "🔴 HARD PASS - Severely overvalued"
+            rec = f"🔴 PASS at ${ask/1e6:.0f}M - severely overvalued\n"
+            rec += f"   • {gap/ask:.0%} above fair value\n"
+            rec += f"   • Would need {(ask * exit_multiple)/1e9:.1f}B exit to make 10x\n"
+            rec += f"   • Consider revisiting if drops below ${(ask-gap)/1e6:.0f}M"
+            return rec
     
     def calculate_required_growth_rates(self, company_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Calculate required growth rates to justify valuation multiples
         Both forward (next 12 months) and backward (last 12 months) looking
         """
-        current_revenue = company_data.get("revenue", company_data.get("arr", 1_000_000))
+        # Use actual revenue first, then inferred (which should ALWAYS exist)
+        current_revenue = company_data.get("revenue") or company_data.get("arr") or company_data.get("inferred_revenue")
         valuation = company_data.get("valuation", 100_000_000)
         nrr = company_data.get("nrr", company_data.get("net_retention", 1.10))  # Default 110%
         
         # Current revenue multiple
-        current_multiple = valuation / current_revenue if current_revenue > 0 else 0
+        current_multiple = valuation / current_revenue if current_revenue and current_revenue > 0 else 0
         
         # Stage-based benchmark multiples (from real market data)
         stage = self._determine_stage(company_data)
@@ -1918,8 +2330,8 @@ class IntelligentGapFiller:
             risk_score -= 5
         
         # Domain expertise check
-        industry = company_data.get("industry", "").lower()
-        description = company_data.get("description", "").lower()
+        industry = (company_data.get("industry") or "").lower()
+        description = (company_data.get("description") or "").lower()
         
         # Check if founders have relevant domain experience
         domain_keywords = {
@@ -2009,40 +2421,101 @@ class IntelligentGapFiller:
         """
         Calculate GPU cost impact on unit economics and valuation
         """
-        # Detect compute intensity
-        compute_profile = self.detect_compute_intensity(company_data)
+        # Get GPU workload info from extraction
+        gpu_unit_of_work = company_data.get('gpu_unit_of_work', '')
+        gpu_workload_description = company_data.get('gpu_workload_description', '')
+        compute_intensity = company_data.get('compute_intensity', 'moderate')
         
-        # Get revenue and customer metrics
-        revenue = company_data.get("revenue", company_data.get("arr", 1_000_000))
-        if isinstance(revenue, dict):
-            revenue = revenue.get('value', 1_000_000)
-        elif hasattr(revenue, 'value'):
-            revenue = revenue.value
+        # Use Claude-extracted unit economics if available
+        unit_economics = company_data.get('unit_economics', {})
+        gpu_cost_per_unit = unit_economics.get('gpu_cost_per_unit', 0)
+        units_per_customer_per_month = unit_economics.get('units_per_customer_per_month', 100)
+        
+        # Ensure gpu_cost_per_unit is numeric
+        if isinstance(gpu_cost_per_unit, str):
+            # Try to extract number from string like "$5.00" or "5.00"
+            import re
+            match = re.search(r'[\d.]+', str(gpu_cost_per_unit))
+            gpu_cost_per_unit = float(match.group()) if match else 0
+        
+        # Map intensity to cost if not provided by extraction
+        if not gpu_cost_per_unit or gpu_cost_per_unit == 0:
+            intensity_to_cost = {
+                'extreme': 10.0,  # $10 midpoint of $5-20
+                'high': 2.0,      # $2 midpoint of $0.50-5
+                'moderate': 0.1,  # $0.10 midpoint of $0.01-0.50
+                'low': 0.005,     # $0.005 midpoint of $0.001-0.01
+                'none': 0
+            }
+            gpu_cost_per_unit = intensity_to_cost.get(compute_intensity, 0.1)
+        
+        # Build compute profile from extraction
+        compute_profile = {
+            "cost_range": (gpu_cost_per_unit * 0.5, gpu_cost_per_unit * 2),
+            "compute_intensity": compute_intensity,
+            "margin_impact": unit_economics.get('gross_margin_impact', 0.2),
+            "workload": gpu_workload_description or 'Unknown workload',
+            "unit_of_work": gpu_unit_of_work or 'per transaction'
+        }
+        
+        # Always start with inferred revenue - NEVER None
+        # Use the properly inferred revenue if available
+        inferred_revenue = company_data.get('inferred_revenue', 0)
+        if inferred_revenue and inferred_revenue > 0:
+            revenue = inferred_revenue
         else:
-            revenue = revenue or 1_000_000
+            # This should NEVER happen - inferred_revenue should ALWAYS be set
+            # by infer_from_stage_benchmarks which runs BEFORE this
+            revenue = 1_000_000  # Emergency fallback
+            print(f"ERROR: No inferred_revenue for {company_data.get('name')} - using emergency fallback")
+        
+        # Check if we have actual extracted revenue to overwrite the inferred
+        revenue_raw = company_data.get("revenue", company_data.get("arr", None))
+        if revenue_raw:
+            if isinstance(revenue_raw, dict) and revenue_raw.get('value'):
+                revenue = revenue_raw['value']
+            elif hasattr(revenue_raw, 'value') and revenue_raw.value:
+                revenue = revenue_raw.value
+            elif isinstance(revenue_raw, (int, float)) and revenue_raw > 0:
+                revenue = revenue_raw
             
         # Estimate transaction volume based on business type
         customers = company_data.get("customers", 100)
         if isinstance(customers, list):
             customers = len(customers)
         
-        # Estimate monthly transactions per customer
-        transactions_per_customer = {
-            "extreme": 50,    # Code gen: ~50 sessions/month
-            "high": 200,      # Search: ~200 queries/month  
-            "moderate": 500,  # Chat: ~500 messages/month
-            "low": 1000,      # Traditional ML: many predictions
-            "none": 0
-        }.get(compute_profile.get("compute_intensity", "moderate"), 100)
+        # Ensure customers is numeric
+        try:
+            customers = float(customers) if customers else 100
+        except (TypeError, ValueError):
+            customers = 100
         
-        # Calculate monthly GPU costs
-        cost_per_transaction = sum(compute_profile["cost_range"]) / 2  # Use midpoint
-        monthly_transactions = customers * transactions_per_customer
-        monthly_gpu_costs = monthly_transactions * cost_per_transaction
+        # Use extracted units per customer or fall back to intensity-based defaults
+        if not units_per_customer_per_month or units_per_customer_per_month == 0:
+            # Define the UNIT OF WORK for different AI workloads
+            # This is critical - we're measuring actual GPU-intensive operations
+            units_per_customer_per_month = {
+                "extreme": 10,     # Code gen: ~10 full code completions/month per user
+                "high": 50,        # Search: ~50 complex searches/month per user
+                "moderate": 200,   # Chat: ~200 messages/month per user
+                "low": 1000,       # Traditional ML: many small predictions
+                "none": 0
+            }.get(compute_intensity, 100)
+        
+        # Calculate monthly GPU costs using actual units of work
+        # Ensure all values are numeric
+        cost_per_unit = float(gpu_cost_per_unit)  # Already validated above
+        monthly_units = float(customers) * float(units_per_customer_per_month)
+        monthly_gpu_costs = monthly_units * cost_per_unit
         annual_gpu_costs = monthly_gpu_costs * 12
         
         # Calculate impact on gross margin
-        gpu_cost_as_percent_revenue = (annual_gpu_costs / revenue * 100) if revenue > 0 else 0
+        # Ensure revenue is never None for comparison
+        if revenue is None or revenue == 0:
+            revenue = 1_000_000  # Emergency fallback for GPU calculations
+            gpu_cost_as_percent_revenue = 0  # Can't calculate percentage without revenue
+        else:
+            gpu_cost_as_percent_revenue = (annual_gpu_costs / revenue * 100)
         
         # Determine valuation impact based on GPU dependency
         if compute_profile["compute_intensity"] == "extreme":
@@ -2061,14 +2534,18 @@ class IntelligentGapFiller:
         return {
             "compute_intensity": compute_profile["compute_intensity"],
             "compute_category": compute_profile.get("examples", ["Unknown"])[0],
-            "cost_per_transaction": cost_per_transaction,
+            "cost_per_unit": cost_per_unit,
+            "cost_per_transaction": cost_per_unit,  # Alias for compatibility
+            "unit_of_work": compute_profile.get("unit_of_work", "per transaction"),
             "monthly_gpu_costs": monthly_gpu_costs,
             "annual_gpu_costs": annual_gpu_costs,
             "gpu_cost_as_percent_revenue": gpu_cost_as_percent_revenue,
             "margin_impact": compute_profile["margin_impact"],
             "valuation_multiple_adjustment": valuation_multiple,
             "investment_thesis": investment_thesis,
-            "cost_range": compute_profile["cost_range"]
+            "cost_range": compute_profile["cost_range"],
+            "workload_description": compute_profile.get("workload", "Unknown workload"),
+            "units_per_customer_per_month": units_per_customer_per_month
         }
     
     def _get_gpu_intensity_risks(self, compute_intensity: str) -> List[str]:
@@ -2160,12 +2637,25 @@ class IntelligentGapFiller:
                 stage_multiples = []
                 
                 for company in stage_companies:
-                    revenue = company.get('revenue', 0)
+                    revenue = company.get('revenue')
                     valuation = company.get('valuation', 0)
                     growth = company.get('growth_rate')
                     
-                    if revenue <= 0:
-                        continue
+                    # Use inferred revenue if actual revenue is missing
+                    if not revenue or revenue <= 0:
+                        inferred_revenue = company.get('inferred_revenue')
+                        if inferred_revenue and inferred_revenue > 0:
+                            revenue = inferred_revenue
+                        else:
+                            # If still no revenue, skip
+                            continue
+                    
+                    # Use inferred growth if actual growth is missing
+                    if growth is None:
+                        growth = company.get('inferred_growth_rate')
+                        if growth is None:
+                            # Infer from investors using existing method
+                            growth = self._infer_growth_from_investors(company.get('funding_rounds', []))
                     
                     # Trailing revenue multiple (valuation / current revenue)
                     trailing_multiple = valuation / revenue
@@ -2679,8 +3169,8 @@ class IntelligentGapFiller:
         Dynamically analyze AI impact based on actual signals, not hardcoded companies
         AI has created massive bifurcation in the market (Sep 2025)
         """
-        name = company_data.get('name', '').lower()
-        description = company_data.get('description', '').lower()
+        name = (company_data.get('name') or '').lower()
+        description = (company_data.get('description') or '').lower()
         tags = company_data.get('tags', [])
         
         # Extract actual growth and traction signals
@@ -2734,8 +3224,8 @@ class IntelligentGapFiller:
         ]
         
         # Check for agent washing
-        has_red_flags = sum(1 for flag in agent_washing_red_flags if flag in description.lower())
-        has_green_flags = sum(1 for flag in agent_washing_green_flags if flag in description.lower())
+        has_red_flags = sum(1 for flag in agent_washing_red_flags if description and flag in description.lower())
+        has_green_flags = sum(1 for flag in agent_washing_green_flags if description and flag in description.lower())
         
         agent_washing_likelihood = 'low'
         if has_red_flags > 2 and has_green_flags == 0:
@@ -2749,17 +3239,17 @@ class IntelligentGapFiller:
         # 1. Core AI indicators (0-3 points)
         if 'ai' in name or 'artificial intelligence' in description:
             ai_score += 1
-        if any(term in description.lower() for term in ['llm', 'large language model', 'foundation model']):
+        if description and any(term in description.lower() for term in ['llm', 'large language model', 'foundation model']):
             ai_score += 2
         
         # 2. Technical depth (0-3 points)
-        tech_matches = sum(1 for term in ai_tech_depth if term in description.lower())
+        tech_matches = sum(1 for term in ai_tech_depth if description and term in description.lower())
         ai_score += min(3, tech_matches)
         
         # 3. AI-native business model (0-2 points)
-        if any(signal in description.lower() for signal in ai_revenue_signals):
+        if description and any(signal in description.lower() for signal in ai_revenue_signals):
             ai_score += 1
-        if any(signal in description.lower() for signal in ai_customer_signals):
+        if description and any(signal in description.lower() for signal in ai_customer_signals):
             ai_score += 1
         
         # 4. Momentum signals (0-2 points)
@@ -2813,7 +3303,7 @@ class IntelligentGapFiller:
             'recruiting', 'staffing', 'outsourcing'
         ]
         
-        is_cost_center = any(industry in description.lower() for industry in cost_center_industries)
+        is_cost_center = description and any(industry in description.lower() for industry in cost_center_industries)
         
         if is_cost_center and ai_score < 2:
             # These companies are getting disrupted by AI
@@ -2920,7 +3410,7 @@ class IntelligentGapFiller:
             'asia': {'founder': 80_000, 'senior': 100_000, 'mid': 60_000, 'junior': 35_000},
         }
         
-        salaries = base_salaries.get(region.lower(), base_salaries['us'])
+        salaries = base_salaries.get((region or 'us').lower(), base_salaries['us'])
         
         # Calculate salary burn
         annual_salaries = (
@@ -2931,7 +3421,7 @@ class IntelligentGapFiller:
         )
         
         # Add employer burden (taxes, benefits, equity)
-        burden_rate = {'us': 1.35, 'uk': 1.14, 'europe': 1.45, 'asia': 1.2}.get(region.lower(), 1.3)
+        burden_rate = {'us': 1.35, 'uk': 1.14, 'europe': 1.45, 'asia': 1.2}.get((region or 'us').lower(), 1.3)
         annual_salaries_with_burden = annual_salaries * burden_rate
         
         # Fixed costs based on headcount
@@ -2953,11 +3443,11 @@ class IntelligentGapFiller:
             'seed': 0.2,      # 20% of salary burn
             'series_a': 0.4,  # 40% of salary burn (CAC investment)
             'series_b': 0.6   # 60% of salary burn (growth mode)
-        }.get(stage.lower().replace(' ', '_'), 0.25)
+        }.get((stage or 'seed').lower().replace(' ', '_'), 0.25)
         
         # OTHER COSTS
         # Legal & Accounting
-        legal_monthly = 5000 if stage.lower() in ['seed', 'pre_seed', 'pre-seed'] else 15000
+        legal_monthly = 5000 if (stage or 'seed').lower() in ['seed', 'pre_seed', 'pre-seed'] else 15000
         
         # Insurance (D&O, E&O, General)
         insurance_monthly = 2000 + (headcount * 50)
@@ -3053,7 +3543,7 @@ class IntelligentGapFiller:
         
         # Calculate as % of revenue (key efficiency metric)
         revenue = company_data.get('revenue', company_data.get('arr', benchmarks.get('arr_median', 1000000)))
-        sm_as_percent_revenue = (total_sm_spend / revenue * 100) if revenue > 0 else 0
+        sm_as_percent_revenue = (total_sm_spend / revenue * 100) if revenue and revenue > 0 else 0
         
         # SVB benchmarks for S&M spend as % of revenue
         benchmark_sm_percent = {
@@ -3088,4 +3578,459 @@ class IntelligentGapFiller:
             'implied_cac': implied_cac,
             'sales_productivity': (revenue / sales_count) if sales_count > 0 else 0,
             'marketing_efficiency': new_customers_monthly / marketing_count if marketing_count > 0 else 0
+        }
+    
+    def extract_tam_from_search(self, search_content: str, company_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Use Claude to intelligently extract TAM data from search results
+        
+        Args:
+            search_content: Combined search results text
+            company_data: Company info including sector, business model
+            
+        Returns:
+            Dict with tam_value, source, confidence, and citation
+        """
+        if not search_content:
+            return None
+            
+        try:
+            import anthropic
+            client = anthropic.Anthropic()
+            
+            prompt = f"""
+            Extract the Total Addressable Market (TAM) information from these search results.
+            
+            Company Context:
+            - Business Model: {company_data.get('business_model', 'Unknown')}
+            - Sector: {company_data.get('sector', 'Unknown')}
+            - Category: {company_data.get('category', 'Unknown')}
+            
+            Search Results:
+            {search_content[:3000]}
+            
+            Extract and return JSON with:
+            1. tam_value: The TAM in dollars (number only)
+            2. tam_formatted: Formatted string like "$50B"
+            3. year: What year the TAM estimate is for
+            4. growth_rate: Annual growth rate if mentioned (as decimal, e.g. 0.15 for 15%)
+            5. source: The source/report mentioned (e.g. "Gartner", "IDC")
+            6. citation: The exact sentence containing the TAM figure
+            7. confidence: Your confidence in this TAM (0.0-1.0)
+            
+            If multiple TAMs are mentioned, choose the most relevant to the company's specific market.
+            Return only valid JSON, no other text.
+            """
+            
+            response = client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=500,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            import json
+            tam_data = json.loads(response.content[0].text)
+            
+            # Validate and normalize the response
+            if tam_data and 'tam_value' in tam_data:
+                return {
+                    'tam_value': tam_data['tam_value'],
+                    'tam_formatted': tam_data.get('tam_formatted', f"${tam_data['tam_value']/1e9:.1f}B"),
+                    'citation': tam_data.get('citation', 'Market research'),
+                    'confidence': tam_data.get('confidence', 0.7),
+                    'source': tam_data.get('source', 'Search results'),
+                    'year': tam_data.get('year'),
+                    'growth_rate': tam_data.get('growth_rate')
+                }
+                
+        except Exception as e:
+            logger.warning(f"Failed to extract TAM with Claude: {e}")
+            
+        return None
+    
+    def calculate_market_opportunity(self, company_data: Dict[str, Any], search_content: str = None) -> Dict[str, Any]:
+        """Calculate TAM analysis and market opportunity for a company
+        
+        Uses intelligent market segmentation based on business model and category
+        to determine both bottom-up and top-down TAM estimates.
+        
+        Args:
+            company_data: Company information dictionary
+            search_content: Optional search results to extract TAM from
+        """
+        
+        # Get business model and sector - safely handle None values
+        business_model = str(company_data.get('business_model', '')).lower() if company_data.get('business_model') else ''
+        sector = str(company_data.get('sector', '')).lower() if company_data.get('sector') else ''
+        category = str(company_data.get('category', '')).lower() if company_data.get('category') else ''
+        description = str(company_data.get('description', '')).lower() if company_data.get('description') else ''
+        
+        # Try to extract TAM from search results if provided using Claude
+        search_extracted_tam = None
+        if search_content:
+            try:
+                search_extracted_tam = self.extract_tam_from_search(search_content, company_data)
+            except Exception as e:
+                logger.warning(f"TAM extraction failed: {e}")
+                search_extracted_tam = None
+        
+        # Combine all text for analysis
+        combined_text = f"{business_model} {sector} {category} {description}"
+        
+        # Detect if it's a roll-up strategy
+        is_rollup = any(term in combined_text for term in [
+            'roll-up', 'rollup', 'acquisition', 'acquire', 
+            'consolidate', 'buying companies', 'agency acquisition',
+            'consolidation play', 'buy and build', 'acquiring'
+        ])
+        
+        # Get revenue and customer metrics
+        revenue = self._ensure_numeric(company_data.get('revenue', 0))
+        customers = self._ensure_numeric(company_data.get('customers', 0))
+        stage = str(company_data.get('stage', '')).lower() if company_data.get('stage') else 'seed'
+        
+        # Get global economic constants
+        GLOBAL_GDP = 105_000_000_000_000  # $105T global GDP (2024)
+        GLOBAL_LABOR_FORCE = 3_500_000_000  # 3.5B global workforce
+        AVG_LABOR_COST = 30_000  # $30K average global labor cost per year
+        
+        # INTELLIGENT BOTTOM-UP TAM CALCULATION
+        # Based on actual market penetration and labor replacement potential
+        if revenue and revenue > 0:
+            # Stage-based market penetration (more nuanced)
+            penetration_rates = {
+                'seed': 0.00001,     # 0.001% - very early, just proving concept
+                'pre-seed': 0.000005, # 0.0005% - even earlier
+                'series a': 0.00005,  # 0.005% - product-market fit found
+                'series b': 0.0002,   # 0.02% - scaling GTM
+                'series c': 0.001,    # 0.1% - established player
+                'series d': 0.005,    # 0.5% - mature growth
+                'late stage': 0.01    # 1% - pre-IPO scale
+            }
+            
+            # Find the right penetration rate
+            market_penetration = 0.0001  # Default
+            for stage_key, rate in penetration_rates.items():
+                if stage_key in stage:
+                    market_penetration = rate
+                    break
+            
+            # Adjust penetration based on business model specificity
+            if 'ai' in combined_text and 'code' in combined_text:
+                market_penetration *= 2  # AI coding tools have faster adoption
+            elif 'vertical' in combined_text or sector in ['healthcare', 'fintech', 'proptech']:
+                market_penetration *= 0.8  # Verticals have slower but deeper penetration
+            
+            # Bottom-up TAM = current revenue / penetration rate
+            bottom_up_tam = revenue / market_penetration
+            
+            # Cap bottom-up TAM at reasonable percentage of global GDP
+            max_tam_pct_of_gdp = 0.01  # No single software market > 1% of global GDP
+            bottom_up_tam = min(bottom_up_tam, GLOBAL_GDP * max_tam_pct_of_gdp)
+        else:
+            bottom_up_tam = None  # Don't guess if no revenue data
+        
+        # INTELLIGENT TOP-DOWN TAM CALCULATION
+        # Based on business model, sector, and category - not keywords
+        
+        # Market sizing based on actual extracted data
+        tam_citation = "Market sizing based on GDP and labor analysis"
+        market_category = sector or category or business_model or 'Technology'
+        
+        # Normalize the business model and sector for comparison
+        bm_lower = business_model.lower()
+        sector_lower = sector.lower()
+        category_lower = category.lower()
+        
+        # AI Markets
+        if any(x in bm_lower for x in ['ai', 'artificial intelligence', 'ml', 'machine learning']):
+            if any(x in bm_lower for x in ['code', 'development', 'coding', 'copilot']):
+                developers_globally = GLOBAL_LABOR_FORCE * 0.02
+                addressable_spend = developers_globally * AVG_LABOR_COST
+                top_down_tam = addressable_spend * 0.3
+                tam_citation = 'GitHub: 100M+ developers, AI code tools $21B by 2028'
+                market_category = 'AI Code Generation'
+            elif any(x in bm_lower for x in ['agent', 'assistant', 'automation']):
+                knowledge_workers = GLOBAL_LABOR_FORCE * 0.15
+                addressable_spend = knowledge_workers * AVG_LABOR_COST
+                top_down_tam = addressable_spend * 0.2
+                tam_citation = 'McKinsey: AI agents market $65B by 2030'
+                market_category = 'AI Agents'
+            else:
+                top_down_tam = GLOBAL_GDP * 0.002
+                tam_citation = 'IDC: Global AI spending $500B by 2027'
+                market_category = 'AI Infrastructure'
+                
+        # FinTech Markets
+        elif sector_lower == 'fintech' or 'financial' in sector_lower:
+            if any(x in bm_lower for x in ['payment', 'stripe', 'checkout']):
+                top_down_tam = GLOBAL_GDP * 0.003
+                tam_citation = 'Global payments revenue $2.5T annually'
+                market_category = 'Payments'
+            elif any(x in bm_lower for x in ['lending', 'loan', 'credit']):
+                top_down_tam = GLOBAL_GDP * 0.04
+                tam_citation = 'Global lending market $8T+'
+                market_category = 'Lending'
+            elif any(x in bm_lower for x in ['bank', 'neobank', 'banking']):
+                top_down_tam = GLOBAL_GDP * 0.001
+                tam_citation = 'Digital banking market $100B+ by 2030'
+                market_category = 'Digital Banking'
+            else:
+                top_down_tam = GLOBAL_GDP * 0.005
+                tam_citation = 'FinTech market $300B+ by 2025'
+                market_category = 'FinTech'
+                
+        # Healthcare Markets  
+        elif sector_lower == 'healthcare' or 'health' in sector_lower:
+            healthcare_spend = GLOBAL_GDP * 0.10
+            top_down_tam = healthcare_spend * 0.03  # 3% on software
+            tam_citation = 'Healthcare IT market $500B+ globally'
+            market_category = 'Healthcare Tech'
+            
+        # PropTech Markets
+        elif sector_lower == 'proptech' or 'real estate' in sector_lower:
+            real_estate_spend = GLOBAL_GDP * 0.13
+            top_down_tam = real_estate_spend * 0.01
+            tam_citation = 'PropTech market $30B growing 15% CAGR'
+            market_category = 'PropTech'
+            
+        # Restaurant/Food Tech
+        elif sector_lower == 'restaurant' or 'food' in sector_lower:
+            food_services = GLOBAL_GDP * 0.03
+            top_down_tam = food_services * 0.02
+            tam_citation = 'Restaurant tech market $15B+'
+            market_category = 'Restaurant Tech'
+            
+        # E-commerce
+        elif 'ecommerce' in sector_lower or 'retail' in sector_lower:
+            retail_spend = GLOBAL_GDP * 0.05
+            top_down_tam = retail_spend * 0.02
+            tam_citation = 'Global ecommerce $6.3T, platform fees 2-3% of GMV'
+            market_category = 'E-commerce Platform'
+            
+        # Developer Tools
+        elif 'developer' in bm_lower or 'devops' in bm_lower or 'dev tools' in bm_lower:
+            developers_globally = GLOBAL_LABOR_FORCE * 0.02
+            top_down_tam = developers_globally * 5000  # $5K/dev/year
+            tam_citation = 'IDC: Developer tools market $35B growing 22% CAGR'
+            market_category = 'Developer Tools'
+            
+        # CRM/Sales Tools
+        elif 'crm' in bm_lower or 'sales' in bm_lower:
+            top_down_tam = GLOBAL_GDP * 0.0005
+            tam_citation = 'CRM market $90B in 2024, 13.9% CAGR to $262B by 2032'
+            market_category = 'CRM/Sales'
+            
+        # Cybersecurity
+        elif 'security' in bm_lower or 'cyber' in bm_lower:
+            top_down_tam = GLOBAL_GDP * 0.002
+            tam_citation = 'Cybersecurity market $202B in 2024, 12.3% CAGR'
+            market_category = 'Cybersecurity'
+            
+        # HR Tech
+        elif 'hr' in bm_lower or 'human resources' in bm_lower or 'payroll' in bm_lower:
+            workforce = GLOBAL_LABOR_FORCE * 1.0
+            top_down_tam = workforce * 80  # $80/employee/year
+            tam_citation = 'HR Tech market $35B by 2025, 11.7% CAGR'
+            market_category = 'HR Tech'
+            
+        # Marketing Tech
+        elif 'marketing' in bm_lower or 'martech' in bm_lower:
+            top_down_tam = GLOBAL_GDP * 0.001
+            tam_citation = 'MarTech market $121B in 2024'
+            market_category = 'MarTech'
+            
+        # Data/Analytics
+        elif 'analytics' in bm_lower or 'data' in bm_lower or 'bi' in bm_lower:
+            top_down_tam = GLOBAL_GDP * 0.0008
+            tam_citation = 'Analytics market $84B by 2025, 18.5% CAGR'
+            market_category = 'Data Analytics'
+            
+        # Collaboration Tools
+        elif 'collaboration' in bm_lower or 'communication' in bm_lower:
+            workforce = GLOBAL_LABOR_FORCE * 0.8
+            top_down_tam = workforce * 150  # $150/user/year
+            tam_citation = 'Collaboration software $50B by 2025, 11% CAGR'
+            market_category = 'Collaboration'
+            
+        # Generic SaaS or Unknown
+        else:
+            if 'saas' in bm_lower or 'software' in bm_lower:
+                top_down_tam = GLOBAL_GDP * 0.001
+                market_category = 'SaaS'
+                tam_citation = 'Global SaaS market $200B+ growing 18% CAGR'
+            else:
+                top_down_tam = GLOBAL_GDP * 0.0005
+                market_category = 'Technology'
+                tam_citation = 'Generic technology market sizing'
+        
+        # INTELLIGENT TAM RECONCILIATION
+        # Combine search-extracted, bottom-up and top-down with confidence weighting
+        
+        # If we have search-extracted TAM, use it with high confidence
+        if search_extracted_tam and search_extracted_tam['confidence'] > 0.7:
+            # Use search-extracted TAM as primary source
+            tam = search_extracted_tam['tam_value']
+            tam_methodology = f"Market research: {search_extracted_tam['tam_formatted']}"
+            tam_citation = search_extracted_tam['citation']
+            confidence = search_extracted_tam['confidence']
+            
+            # Validate against our calculations
+            if bottom_up_tam and abs(tam - bottom_up_tam) / tam > 0.5:
+                # If bottom-up differs by >50%, blend them
+                tam = (tam * 0.7 + bottom_up_tam * 0.3)
+                tam_methodology += " (adjusted with bottom-up analysis)"
+                confidence *= 0.9
+        elif bottom_up_tam and revenue > 10_000_000:  # Trust bottom-up more if revenue > $10M
+            # Weight bottom-up more heavily for companies with proven traction
+            tam = (bottom_up_tam * 0.6 + top_down_tam * 0.4)
+            tam_methodology = "Weighted average (60% bottom-up, 40% top-down)"
+            confidence = 0.75
+            if search_extracted_tam:  # Use search TAM as validation
+                tam = (tam * 0.8 + search_extracted_tam['tam_value'] * 0.2)
+                tam_citation = search_extracted_tam.get('citation', tam_citation)
+        elif bottom_up_tam and revenue > 1_000_000:  # Some revenue validation
+            # Equal weighting for early revenue companies  
+            tam = (bottom_up_tam * 0.5 + top_down_tam * 0.5)
+            tam_methodology = "Weighted average (50/50 split)"
+            confidence = 0.65
+        elif bottom_up_tam:  # Low revenue, less trust in bottom-up
+            # Favor top-down for very early companies
+            tam = (bottom_up_tam * 0.3 + top_down_tam * 0.7)
+            tam_methodology = "Weighted average (30% bottom-up, 70% top-down)"
+            confidence = 0.55
+        else:  # No revenue data, pure top-down
+            tam = top_down_tam
+            tam_methodology = "Top-down analysis only (no revenue data)"
+            confidence = 0.50
+            if search_extracted_tam:  # Prefer search TAM if available
+                tam = (tam * 0.4 + search_extracted_tam['tam_value'] * 0.6)
+                tam_methodology = "Market research + sector analysis"
+                tam_citation = search_extracted_tam.get('citation', tam_citation)
+                confidence = 0.60
+        
+        # Apply reality checks
+        tam = min(tam, GLOBAL_GDP * 0.01)  # No market > 1% of global GDP
+        tam = max(tam, 1_000_000_000)  # Minimum $1B for venture-backable market
+        
+        # SPECIAL HANDLING FOR ROLL-UPS
+        if is_rollup:
+            # Roll-ups target fragmented markets of existing businesses
+            if 'agency' in combined_text or 'agencies' in combined_text:
+                # Marketing/creative agencies: $600B global market
+                tam = 600_000_000_000 * 0.1  # 10% is acquirable SMB agencies
+                market_category = 'Agency Roll-up'
+                tam_citation = 'Global agency market $600B, 10% SMB segment'
+            elif 'smb' in combined_text:
+                # SMB services companies
+                tam = GLOBAL_GDP * 0.001  # 0.1% of GDP in acquirable SMBs
+                market_category = 'SMB Roll-up'
+                tam_citation = 'SMB services consolidation opportunity'
+            elif 'dental' in combined_text or 'veterinary' in combined_text:
+                # Healthcare practice roll-ups
+                tam = 200_000_000_000  # Specific to practice management
+                market_category = 'Healthcare Practice Roll-up'
+                tam_citation = 'Fragmented healthcare practices market'
+            else:
+                tam = 100_000_000_000  # Generic roll-up opportunity
+                market_category = 'Services Roll-up'
+                tam_citation = 'Generic services consolidation play'
+            
+            sam = tam * 0.15  # Roll-ups can address 15% of fragmented markets
+            som = sam * 0.10  # Can capture 10% of SAM in 5 years through M&A
+            growth_rate = 0.30  # 30% growth through acquisitions
+            tam_methodology = "Roll-up market analysis"
+        else:
+            # STANDARD SAM/SOM CALCULATION
+            # SAM based on geographic and segment focus
+            if 'global' in combined_text or 'international' in combined_text:
+                sam_multiplier = 0.20  # Can serve 20% of global TAM
+            elif 'us' in combined_text or 'america' in combined_text:
+                sam_multiplier = 0.30  # US is 30% of most tech markets
+            elif 'vertical' in sector or sector_lower in ['healthcare', 'proptech', 'restaurant']:
+                sam_multiplier = 0.15  # Verticals have focused SAM
+            else:
+                sam_multiplier = 0.10  # Default 10% SAM
+            
+            sam = tam * sam_multiplier
+            
+            # SOM based on competitive dynamics and stage
+            if 'series c' in stage or 'series d' in stage:
+                som_multiplier = 0.05  # Later stage can capture 5% of SAM
+            elif 'series b' in stage:
+                som_multiplier = 0.02  # Series B targets 2% of SAM
+            elif 'series a' in stage:
+                som_multiplier = 0.01  # Series A targets 1% of SAM  
+            else:
+                som_multiplier = 0.005  # Early stage targets 0.5% of SAM
+            
+            som = sam * som_multiplier
+            
+            # DYNAMIC GROWTH RATE based on market category
+            if 'ai' in market_category.lower():
+                if 'code' in market_category.lower():
+                    growth_rate = 0.50  # 50% CAGR - explosive AI code growth
+                elif 'agent' in market_category.lower():
+                    growth_rate = 0.45  # 45% CAGR for AI agents
+                else:
+                    growth_rate = 0.40  # 40% CAGR for AI infrastructure
+            elif market_category == 'Payments':
+                growth_rate = 0.15  # 15% - mature market
+            elif market_category == 'Lending':
+                growth_rate = 0.12  # 12% - regulated growth
+            elif market_category == 'Digital Banking':
+                growth_rate = 0.25  # 25% - digital transformation
+            elif market_category == 'Healthcare Tech':
+                growth_rate = 0.18  # 18% - steady vertical growth
+            elif market_category == 'PropTech':
+                growth_rate = 0.20  # 20% - modernizing real estate
+            elif market_category == 'Restaurant Tech':
+                growth_rate = 0.15  # 15% - steady adoption
+            elif market_category == 'Collaboration':
+                growth_rate = 0.12  # 12% - mature horizontal
+            elif market_category == 'CRM/Sales':
+                growth_rate = 0.13  # 13% - established market
+            elif market_category == 'Cybersecurity':
+                growth_rate = 0.22  # 22% - growing threats
+            elif market_category == 'Developer Tools':
+                growth_rate = 0.22  # 22% - strong dev tools growth
+            elif market_category == 'MarTech':
+                growth_rate = 0.09  # 9% - saturated market
+            elif market_category == 'Data Analytics':
+                growth_rate = 0.18  # 18.5% CAGR
+            elif market_category == 'HR Tech':
+                growth_rate = 0.12  # 11.7% CAGR
+            elif market_category == 'E-commerce Platform':
+                growth_rate = 0.15  # 15% CAGR
+            else:
+                growth_rate = 0.18  # Default 18% CAGR
+        
+        return {
+            'tam_calculation': {
+                'tam': tam,
+                'sam': sam,
+                'som': som,
+                'tam_formatted': f"${tam / 1_000_000_000:.1f}B",
+                'sam_formatted': f"${sam / 1_000_000_000:.1f}B",
+                'som_formatted': f"${som / 1_000_000_000:.1f}B",
+                'growth_rate': growth_rate,
+                'cagr_percentage': f"{growth_rate * 100:.0f}%",
+                'is_rollup': is_rollup,
+                'market_category': market_category,
+                'market_segment': market_category.lower().replace(' ', '_'),
+                'tam_methodology': tam_methodology,
+                'tam_citation': tam_citation,
+                'bottom_up_tam': bottom_up_tam,
+                'top_down_tam': top_down_tam,
+                'confidence': confidence,
+                'confidence_level': 'High' if confidence > 0.7 else 'Medium' if confidence > 0.5 else 'Low',
+                'assumptions': {
+                    'global_gdp': f"${GLOBAL_GDP / 1_000_000_000_000:.1f}T",
+                    'global_workforce': f"{GLOBAL_LABOR_FORCE / 1_000_000_000:.1f}B",
+                    'avg_labor_cost': f"${AVG_LABOR_COST:,}",
+                    'market_penetration': f"{market_penetration * 100:.4f}%" if revenue and revenue > 0 else "N/A",
+                    'sam_percentage_of_tam': f"{sam_multiplier * 100:.0f}%" if not is_rollup else "15%",
+                    'som_percentage_of_sam': f"{som_multiplier * 100:.1f}%" if not is_rollup else "10%"
+                }
+            }
         }

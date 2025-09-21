@@ -291,6 +291,7 @@ export default function DeckAgentPage() {
         body: JSON.stringify({
           prompt: deckPrompt,
           outputFormat: 'deck',
+          stream: true,  // Enable streaming for real-time updates
           specificInstructions: `
             CRITICAL: Create a COMPLETE professional ${selectedTemplate || 'pitch'} deck with NO empty slides.
             
@@ -343,13 +344,19 @@ export default function DeckAgentPage() {
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       let deck: GeneratedDeck | null = null;
+      let fullChunk = ''; // Buffer for incomplete chunks
 
       while (reader) {
         const { done, value } = await reader.read();
         if (done) break;
 
         const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
+        fullChunk += chunk; // Add to buffer
+        console.log('📥 [Deck Agent] Raw chunk received:', chunk);
+        
+        const lines = fullChunk.split('\n');
+        // Keep the last line if it's incomplete
+        fullChunk = lines[lines.length - 1].startsWith('data: ') ? '' : lines.pop() || '';
 
         for (const line of lines) {
           if (line.startsWith('data: ')) {
@@ -358,6 +365,7 @@ export default function DeckAgentPage() {
             
             try {
               const data = JSON.parse(dataStr);
+              console.log('📊 [Deck Agent] Parsed stream data type:', data.type);
               
               switch (data.type) {
                 case 'skill_chain':
@@ -404,51 +412,49 @@ export default function DeckAgentPage() {
                   break;
                   
                 case 'complete':
-                  // Deck is complete - backend returns data.result (singular) with slides at top level
+                  // Deck is complete - backend returns data in various structures
                   console.log('🔍 [Deck Agent] Raw complete data:', data);
                   console.log('🔍 [Deck Agent] data.result structure:', data.result);
-                  console.log('🔍 [Deck Agent] data.result.slides:', data.result?.slides);
-                  console.log('🔍 [Deck Agent] Slides count:', data.result?.slides?.length || 0);
                   
-                  // DEBUG: Log full result to see what we actually get
-                  try {
-                    console.log('🔴 FULL RESULT OBJECT:', JSON.stringify(data.result, null, 2));
-                  } catch (e) {
-                    console.log('🔴 RESULT OBJECT (non-stringifiable):', data.result);
-                  }
+                  // Try multiple paths to find deck slides
+                  const slides = 
+                    data.result?.slides ||                    // Direct structure
+                    data.result?.deck?.slides ||             // Nested in deck
+                    data.result?.results?.slides ||          // In results  
+                    data.result?.data?.slides ||             // In data
+                    data.results?.slides ||                  // Direct in results (streaming)
+                    [];
                   
-                  // The backend returns the deck data directly in result (singular, not results)
-                  // The deck format has slides, theme, citations, charts at the top level of result
-                  // Check if result has format: 'deck' structure
-                  if (data.result && data.result.format === 'deck') {
-                    console.log('✅ [Deck Agent] Found unified format deck structure');
+                  console.log('🔍 [Deck Agent] Found slides:', slides.length);
+                  
+                  // Build deck object from whatever structure we have
+                  if (slides && slides.length > 0) {
+                    console.log('✅ [Deck Agent] Building deck from', slides.length, 'slides');
                     deck = {
                       id: `deck-${Date.now()}`,
-                      title: data.result.metadata?.title || 'Investment Analysis Deck',
+                      title: data.result?.metadata?.title || 
+                             data.result?.title || 
+                             'Investment Analysis Deck',
                       type: selectedTemplate || 'pitch',
-                      slides: data.result.slides || [],
-                      theme: data.result.theme,
-                      data_sources: data.result.metadata?.data_sources || [],
-                      citations: data.result.citations || [],
-                      charts: data.result.charts || []
+                      slides: slides,
+                      theme: data.result?.theme || 'professional',
+                      data_sources: data.result?.metadata?.data_sources || 
+                                  data.result?.data_sources || 
+                                  [],
+                      citations: data.result?.citations || 
+                               data.results?.citations || 
+                               [],
+                      charts: data.result?.charts || 
+                            data.results?.charts || 
+                            []
                     };
-                  } else if (data.result && Array.isArray(data.result.slides)) {
-                    // Direct slides array in result
-                    console.log('✅ [Deck Agent] Found direct slides in result');
-                    deck = {
-                      id: `deck-${Date.now()}`,
-                      title: 'Investment Analysis Deck',
-                      type: selectedTemplate || 'pitch',
-                      slides: data.result.slides,
-                      theme: data.result.theme,
-                      data_sources: [],
-                      citations: data.result.citations || [],
-                      charts: data.result.charts || []
-                    };
-                  } else {
-                    // Fallback - use result as deck
-                    console.log('⚠️ [Deck Agent] Using result as deck directly');
-                    deck = data.result;
+                  } else if (data.result) {
+                    // Fallback - try to use result directly if it looks like a deck
+                    console.log('⚠️ [Deck Agent] No slides array found, checking result structure');
+                    if (data.result.id && data.result.type) {
+                      // Looks like a deck object
+                      deck = data.result;
+                    }
                   }
                   
                   // Extract citations and charts if available
@@ -484,6 +490,8 @@ export default function DeckAgentPage() {
 
       clearInterval(progressInterval);
       setGenerationProgress(100);
+      
+      console.log('🔍 [Deck Agent] Stream complete. Deck received?', !!deck);
       
       if (deck) {
         console.log('✅ [Deck Agent] Using streamed deck data');
@@ -622,7 +630,8 @@ export default function DeckAgentPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt,
-            outputFormat: 'deck'
+            outputFormat: 'deck',
+            stream: true
           })
         });
 
@@ -660,8 +669,8 @@ export default function DeckAgentPage() {
                   case 'status':
                     setProgressMessage(data.message);
                     break;
-                  case 'complete':
-                    templateDeck = data.result;
+                  case 'final':
+                    templateDeck = data.data;
                     setGenerationProgress(100);
                     break;
                   case 'error':

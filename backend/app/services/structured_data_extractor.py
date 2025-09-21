@@ -314,8 +314,15 @@ MUST return category as "ai_first" - CORRECT!
   "vertical": "Healthcare",
   "customer_segment": "Enterprise",
   "category": "ai_first",
+  "gpu_unit_of_work": "per medical consultation analyzed",
+  "gpu_workload_description": "Real-time transcription of 30-minute consultations using Whisper, followed by GPT-4 analysis for medical insights and documentation generation",
   "compute_intensity": "high",
-  "compute_signals": ["uses LLMs", "real-time transcription"],
+  "compute_signals": ["Real-time speech-to-text for 30min sessions", "GPT-4 medical analysis", "Generates 5-page clinical summaries"],
+  "unit_economics": {
+    "gpu_cost_per_unit": 2.50,
+    "units_per_customer_per_month": 200,
+    "reasoning": "Each consultation requires ~$0.50 transcription + $2.00 GPT-4 analysis. Enterprise hospitals average 200 consultations/month"
+  },
   "stage": "Series B",
   "burn_rate": 2000000,
   "runway_months": 18,
@@ -338,7 +345,22 @@ REQUIRED FIELD VALUES:
 - business_model: STRING - Must be specific description like "AI-powered patient consultation analysis for healthcare" NOT a dict
 - vertical: STRING - Industry like "Healthcare", "FinTech", "Legal Tech", "Defense", "Marketing", etc. 
 - category: STRING - Must be one of: "ai_first", "ai_saas", "saas", "marketplace", "services", "rollup", "hardware"
-- compute_intensity: STRING - Must be one of: "high", "medium", "low"
+- gpu_unit_of_work: STRING - The atomic unit that triggers GPU usage. Semantically derive from what the product actually does:
+  * For code generation tools: "per code completion" or "per file generated"  
+  * For search/RAG: "per search query" or "per research task"
+  * For transcription: "per minute of audio" or "per meeting transcribed"
+  * For image/video: "per image generated" or "per video rendered"
+  * For chat: "per conversation" or "per message exchange"
+  * For analysis: "per document analyzed" or "per dataset processed"
+- gpu_workload_description: STRING - Describe the actual compute workload in technical detail
+- compute_intensity: STRING - Based on the workload description, infer intensity:
+  * "extreme": Full code file generation, video generation, multi-step agents
+  * "high": Search with synthesis, image generation, real-time transcription
+  * "moderate": Chat responses, simple completions
+  * "low": Traditional ML, embeddings, classification
+  * "none": No AI/GPU workload
+- compute_signals: ARRAY - Specific technical signals about GPU usage extracted from description
+- unit_economics: OBJECT with gpu_cost_per_unit, units_per_customer_per_month, and reasoning
 - All other text fields: STRING values, use empty string "" if unknown
 - All numeric fields: NUMBER values, use 0 if unknown
 
@@ -365,16 +387,16 @@ EXTRACTION GUIDELINES FOR {company_clean}:
    - If only year: "2024-01-01" for 2024
 7. DO NOT GUESS - use null/0 for unknown values
 8. IGNORE all data about companies other than {company_clean}
-9. CATEGORY INFERENCE - REQUIRED: Infer category from business_model semantically:
-   - If business_model contains "AI", "LLM", "foundation model", "generative" → "ai_first"
-   - If business_model contains "SaaS with AI", "AI-powered SaaS" → "ai_saas"
-   - If business_model contains "roll-up", "acquisition", "consolidation" AND mentions AI → "ai_enhanced_rollup"
-   - If business_model contains "roll-up", "acquisition", "consolidation" → "rollup"
-   - If business_model contains "marketplace", "platform", "two-sided" → "marketplace"
-   - If business_model contains "SaaS", "software as a service" → "saas"
-   - If business_model contains "services", "consulting", "agency" → "services"
-   - If business_model contains "hardware", "device", "equipment" → "hardware"
-   - NEVER leave category as null - always infer from business_model
+9. CATEGORY INFERENCE - REQUIRED: Semantically analyze the business_model to determine category:
+   - "full_stack_ai": AI-enabled company that delivers the COMPLETE service (e.g., AI insurance company that underwrites/pays claims, AI law firm that files documents, AI accountant that files taxes)
+   - "ai_first": Core product IS the AI model or AI capability (selling AI tools/APIs)
+   - "ai_saas": Traditional SaaS enhanced with AI features
+   - "rollup": Acquiring and consolidating multiple companies
+   - "marketplace": Connects buyers and sellers, takes a transaction fee
+   - "saas": Software delivered as a subscription service
+   - "services": Human labor/consulting as primary offering
+   - "hardware": Physical products or devices
+   - Analyze what the company actually DOES, not keywords
 
 ENHANCED EXTRACTION FOR INVESTMENT CASE:
 9. FOUNDER QUALITY - Extract specific signals:
@@ -384,13 +406,13 @@ ENHANCED EXTRACTION FOR INVESTMENT CASE:
    - Technical credentials (PhD, patents, publications)
 10. BUSINESS MODEL & STRATEGY:
    - Roll-up: Look for "acquisition", "consolidation", "buy and build"
-   - AI-first: "foundation model", "LLM", "generative AI"
-   - Services: "consulting", "agency", "professional services"
-   - Marketplace: "connects buyers and sellers", "two-sided"
-11. COMPUTE INTENSITY - Look for:
-   - High: "GPU", "training models", "LLM", "inference at scale"
-   - Medium: "ML models", "real-time processing", "data pipeline"
-   - Low: "API wrapper", "no-code", "workflow automation"
+11. GPU WORKLOAD ANALYSIS - CRITICAL:
+   Analyze the business model to understand the actual computational work being performed:
+   - What action does the user take that triggers GPU usage?
+   - What is the atomic unit of work? (Not generic "transaction" but specific: "legal document review", "code file generation", "30-min meeting transcription")
+   - What is the technical workload? (LLM inference, embedding generation, diffusion model, speech-to-text, etc.)
+   - How frequently would a typical customer trigger this unit? (Based on the product's actual use case)
+   - Estimate the GPU cost per unit based on the workload complexity and duration
 12. TRACTION SIGNALS - Extract ACTUAL data:
    - Named customers (Fortune 500, specific companies)
    - Specific metrics with numbers

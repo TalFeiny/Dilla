@@ -22,18 +22,79 @@ export class SpreadsheetHandler implements IFormatHandler {
         }
       }
       
-      // New unified backend structure - commands are at top level
-      if (parsedData && parsedData.commands) {
-        console.log('Using backend-generated commands:', parsedData.commands.length);
-        result = {
-          commands: parsedData.commands,
-          hasFormulas: parsedData.hasFormulas || false,
-          hasCharts: parsedData.hasCharts || false,
-          charts: parsedData.charts || charts || [],
-          metadata: parsedData.metadata || {
-            companies: parsedData.companies || extractedCompanies,
-            timestamp: new Date().toISOString()
+      // Try multiple paths to find spreadsheet commands
+      const commands = 
+        parsedData?.commands ||                           // Direct structure from skill
+        parsedData?.spreadsheet?.commands ||             // Nested in spreadsheet (old format)
+        parsedData?.result?.commands ||                  // In result
+        parsedData?.results?.commands ||                 // In results (streaming)
+        parsedData?.result?.spreadsheet?.commands ||     // Nested in result.spreadsheet
+        [];
+      
+      // Check if we found commands
+      if (commands && commands.length > 0) {
+        console.log('[SpreadsheetHandler] Found', commands.length, 'commands');
+        
+        // Extract exit modeling data and add to spreadsheet
+        const exitModeling = parsedData.exit_modeling || parsedData.results?.exit_modeling;
+        const exitCommands = [];
+        
+        if (exitModeling) {
+          // Add fund-level metrics
+          if (exitModeling.portfolio_metrics) {
+            exitCommands.push(
+              `grid.cell(1, 10).value("FUND METRICS").bold()`,
+              `grid.cell(2, 10).value("Total Expected DPI")`,
+              `grid.cell(2, 11).value(${exitModeling.portfolio_metrics.total_expected_dpi || 0})`,
+              `grid.cell(3, 10).value("Avg Expected Multiple")`,
+              `grid.cell(3, 11).value(${exitModeling.portfolio_metrics.avg_expected_multiple || 0})`,
+              `grid.cell(4, 10).value("Avg Expected IRR %")`,
+              `grid.cell(4, 11).value(${exitModeling.portfolio_metrics.avg_expected_irr || 0})`
+            );
           }
+          
+          // Add company-level exit analysis
+          if (exitModeling.scenarios) {
+            let row = 7;
+            exitCommands.push(`grid.cell(${row}, 10).value("COMPANY EXIT ANALYSIS").bold()`);
+            row++;
+            
+            // Headers
+            exitCommands.push(
+              `grid.cell(${row}, 10).value("Company")`,
+              `grid.cell(${row}, 11).value("Initial %")`,
+              `grid.cell(${row}, 12).value("Current %")`,
+              `grid.cell(${row}, 13).value("Expected Multiple")`,
+              `grid.cell(${row}, 14).value("Expected IRR %")`,
+              `grid.cell(${row}, 15).value("DPI Contribution")`
+            );
+            row++;
+            
+            // Data rows
+            exitModeling.scenarios.forEach((scenario: any) => {
+              exitCommands.push(
+                `grid.cell(${row}, 10).value("${scenario.company}")`,
+                `grid.cell(${row}, 11).value(${scenario.initial_ownership || 0})`,
+                `grid.cell(${row}, 12).value(${scenario.diluted_ownership || 0})`,
+                `grid.cell(${row}, 13).value(${scenario.expected_multiple || 0})`,
+                `grid.cell(${row}, 14).value(${scenario.expected_irr || 0})`,
+                `grid.cell(${row}, 15).value(${scenario.expected_dpi_contribution || 0})`
+              );
+              row++;
+            });
+          }
+        }
+        
+        result = {
+          commands: [...commands, ...exitCommands],
+          hasFormulas: parsedData?.hasFormulas || parsedData?.result?.hasFormulas || false,
+          hasCharts: parsedData?.hasCharts || parsedData?.result?.hasCharts || exitCommands.some(cmd => cmd.includes('createChart')),
+          charts: parsedData?.charts || parsedData?.result?.charts || charts || [],
+          metadata: parsedData?.metadata || parsedData?.result?.metadata || {
+            companies: parsedData?.companies || parsedData?.result?.companies || extractedCompanies,
+            timestamp: new Date().toISOString()
+          },
+          exitModeling: exitModeling
         };
       }
       // Legacy grid data format (for backward compatibility)

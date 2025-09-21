@@ -185,6 +185,20 @@ async def process_unified_request(request: UnifiedRequest):
                         response_data['comparison'] = formatted_results['comparison']
                     if 'valuation' in formatted_results:
                         response_data['valuation'] = formatted_results['valuation']
+                    if 'valuations' in formatted_results:
+                        response_data['valuations'] = formatted_results['valuations']  # Bull/bear/base scenarios
+                    if 'cap_tables' in formatted_results:
+                        response_data['cap_tables'] = formatted_results['cap_tables']
+                    if 'portfolio_analysis' in formatted_results:
+                        response_data['portfolio_analysis'] = formatted_results['portfolio_analysis']
+                    if 'exit_modeling' in formatted_results:
+                        response_data['exit_modeling'] = formatted_results['exit_modeling']
+                    if 'fund_metrics' in formatted_results:
+                        response_data['fund_metrics'] = formatted_results['fund_metrics']
+                    if 'stage_analysis' in formatted_results:
+                        response_data['stage_analysis'] = formatted_results['stage_analysis']
+                    if 'market_analysis' in formatted_results:
+                        response_data['market_analysis'] = formatted_results['market_analysis']  # Market sizing
                     if 'slides' in formatted_results:
                         response_data['slides'] = formatted_results['slides']
                     if 'matrix' in formatted_results:
@@ -192,13 +206,16 @@ async def process_unified_request(request: UnifiedRequest):
                         response_data['columns'] = formatted_results.get('columns', [])
                         response_data['rows'] = formatted_results.get('rows', [])
                     
-                    return JSONResponse(content=response_data)
+                    # Clean the response for JSON serialization
+                    cleaned_response = clean_for_json(response_data)
+                    return JSONResponse(content=cleaned_response)
                 
                 # Legacy format handling (shouldn't happen with new code)
                 elif isinstance(formatted_results, dict) and output_format.value in ["structured", "analysis", "spreadsheet", "deck", "matrix"]:
                     # Old structured data format
                     actual_format = request.output_format.lower().replace('-', '_')
-                    return JSONResponse(content={
+                    # Clean the response for JSON serialization
+                    response_data = {
                         "success": True,
                         "format": actual_format,
                         "result": formatted_results,
@@ -209,22 +226,36 @@ async def process_unified_request(request: UnifiedRequest):
                         "data": formatted_results.get('data', {}),
                         "comparison": formatted_results.get('comparison', {}),
                         "valuation": formatted_results.get('valuation', {}),
+                        "valuations": formatted_results.get('valuations', {}),  # Bull/bear/base
+                        "cap_tables": formatted_results.get('cap_tables', {}),
+                        "portfolio_analysis": formatted_results.get('portfolio_analysis', {}),
+                        "exit_modeling": formatted_results.get('exit_modeling', {}),
+                        "fund_metrics": formatted_results.get('fund_metrics', {}),
+                        "stage_analysis": formatted_results.get('stage_analysis', {}),
+                        "market_analysis": formatted_results.get('market_analysis', {}),  # Market sizing
                         "metadata": formatted_results.get('metadata', {}),
                         "execution_time": result.get('execution_time', 0),
                         "errors": result.get('errors', [])
-                    })
+                    }
+                    cleaned_response = clean_for_json(response_data)
+                    return JSONResponse(content=cleaned_response)
                 # For markdown or other string formats
                 elif isinstance(formatted_results, str):
-                    return JSONResponse(content={
+                    # Clean the response for JSON serialization
+                    response_data = {
                         "success": True,
                         "content": formatted_results,
                         "format": output_format.value,
                         "execution_time": result.get('execution_time', 0),
                         "errors": result.get('errors', [])
-                    })
+                    }
+                    cleaned_response = clean_for_json(response_data)
+                    return JSONResponse(content=cleaned_response)
                 # Fallback: return the entire result
                 else:
-                    return JSONResponse(content=result)
+                    # Clean the result for JSON serialization
+                    cleaned_result = clean_for_json(result)
+                    return JSONResponse(content=cleaned_result)
             else:
                 return JSONResponse(content={"success": False, "error": result.get('error', 'No results generated')})
     

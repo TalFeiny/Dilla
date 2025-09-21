@@ -29,33 +29,139 @@ export class MatrixHandler implements IFormatHandler {
       }
     }
     
-    // Check for new unified backend structure
-    if (parsedData && parsedData.format === 'matrix') {
-      console.log('[MatrixHandler] Using unified backend matrix data');
+    // Try multiple paths to find matrix data
+    const matrixData = 
+      parsedData?.matrix ||                       // Direct structure 
+      parsedData?.data?.matrix ||                // Nested in data
+      parsedData?.matrix_data ||                 // Alternative name
+      parsedData?.result?.matrix ||              // In result
+      parsedData?.results?.matrix ||             // In results (streaming)
+      parsedData?.result?.matrix_data ||         // Nested in result.matrix_data
+      null;
+    
+    // Check if we found matrix data
+    if (matrixData) {
+      console.log('[MatrixHandler] Found matrix data');
+      
+      // Extract exit modeling data if available
+      const exitModeling = parsedData.exit_modeling || parsedData.results?.exit_modeling;
+      const ownershipCharts = [];
+      
+      // Add fund-level portfolio chart FIRST
+      if (exitModeling?.portfolio_metrics || exitModeling?.deployment_discipline) {
+        ownershipCharts.push({
+          type: 'funnel',
+          title: 'Fund Portfolio Analysis',
+          data: {
+            stages: [
+              'Total Portfolio',
+              'Expected Failures (50%)',
+              'Base Returns (30%)',
+              'Moderate Winners (15%)',
+              'Home Runs (5%)'
+            ],
+            values: [100, 50, 30, 15, 5],
+            metrics: {
+              total_expected_dpi: exitModeling.portfolio_metrics?.total_expected_dpi || 0,
+              avg_expected_multiple: exitModeling.portfolio_metrics?.avg_expected_multiple || 0,
+              avg_expected_irr: exitModeling.portfolio_metrics?.avg_expected_irr || 0,
+              deployment_pace: exitModeling.deployment_discipline?.deployment_pace_rating || 'Unknown',
+              capital_per_month: exitModeling.deployment_discipline?.capital_per_month || 0,
+              concentration_risk: exitModeling.portfolio_construction?.concentration_risk || 'Unknown'
+            }
+          }
+        });
+        
+        // Add deployment pacing chart
+        if (exitModeling.deployment_discipline) {
+          ownershipCharts.push({
+            type: 'gauge',
+            title: 'Deployment Pacing',
+            data: {
+              value: (exitModeling.deployment_discipline.capital_per_month / exitModeling.deployment_discipline.remaining_capital) * 100,
+              target: 4.17, // 24 months = 4.17% per month
+              ranges: [
+                { min: 0, max: 2, label: 'Too Slow', color: '#e15759' },
+                { min: 2, max: 6, label: 'On Track', color: '#59a14f' },
+                { min: 6, max: 10, label: 'Too Fast', color: '#f28e2c' }
+              ],
+              label: `$${(exitModeling.deployment_discipline.capital_per_month / 1000000).toFixed(1)}M/month`
+            }
+          });
+        }
+      }
+      
+      // Generate company-level ownership evolution charts
+      if (exitModeling?.scenarios) {
+        exitModeling.scenarios.forEach((scenario: any) => {
+          if (scenario.ownership_evolution) {
+            // Create waterfall chart data for this company
+            ownershipCharts.push({
+              type: 'waterfall',
+              title: `${scenario.company} - Ownership & Exit Analysis`,
+              data: {
+                ownership_evolution: scenario.ownership_evolution,
+                preference_stack: scenario.ownership_evolution.preference_stack,
+                exit_waterfall: scenario.ownership_evolution.exit_waterfall,
+                company: scenario.company,
+                initial_ownership: scenario.initial_ownership,
+                diluted_ownership: scenario.diluted_ownership,
+                expected_multiple: scenario.expected_multiple,
+                expected_irr: scenario.expected_irr,
+                investment_recommendation: scenario.investment_recommendation
+              }
+            });
+          }
+        });
+        
+        // Add comparative analysis chart for all companies
+        if (exitModeling.scenarios.length > 1) {
+          ownershipCharts.push({
+            type: 'scatter',
+            title: 'Portfolio Risk/Return Analysis',
+            data: {
+              points: exitModeling.scenarios.map((s: any) => ({
+                x: s.expected_irr || 0,
+                y: s.expected_multiple || 0,
+                z: s.expected_dpi_contribution * 100 || 0,
+                label: s.company,
+                color: s.portfolio_fit_score > 0.7 ? '#59a14f' : s.portfolio_fit_score > 0.4 ? '#f28e2c' : '#e15759'
+              })),
+              xAxis: 'Expected IRR %',
+              yAxis: 'Expected Multiple',
+              zAxis: 'DPI Contribution %'
+            }
+          });
+        }
+      }
       
       const result = {
-        matrix: parsedData.matrix || {},
-        columns: parsedData.columns || [],
-        rows: parsedData.rows || [],
-        scores: parsedData.scores || {},
-        winner: parsedData.winner,
-        hasScoring: parsedData.hasScoring || Boolean(parsedData.scores),
-        charts: parsedData.charts || charts || [],
+        matrix: matrixData || parsedData?.matrix || {},
+        columns: parsedData?.columns || parsedData?.result?.columns || [],
+        rows: parsedData?.rows || parsedData?.result?.rows || [],
+        scores: parsedData?.scores || parsedData?.result?.scores || {},
+        winner: parsedData?.winner || parsedData?.result?.winner,
+        hasScoring: parsedData?.hasScoring || parsedData?.result?.hasScoring || Boolean(parsedData?.scores),
+        charts: [...(parsedData?.charts || parsedData?.result?.charts || charts || []), ...ownershipCharts],
         chartBatch: true, // Always batch process charts
-        formulas: parsedData.formulas || {},
-        metadata: parsedData.metadata || {}
+        formulas: parsedData?.formulas || parsedData?.result?.formulas || {},
+        metadata: parsedData?.metadata || parsedData?.result?.metadata || {},
+        exitModeling: exitModeling, // Include full exit modeling data
+        ownershipCharts: ownershipCharts // Separate reference for ownership charts
       };
       
       return {
         success: true,
         result,
-        citations: parsedData.citations || citations || [],
+        citations: parsedData?.citations || parsedData?.result?.citations || citations || [],
         metadata: {
-          companies: parsedData.companies || extractedCompanies || [],
-          timestamp: result.metadata.timestamp || new Date().toISOString(),
+          companies: parsedData?.companies || parsedData?.result?.companies || extractedCompanies || [],
+          timestamp: result.metadata?.timestamp || new Date().toISOString(),
           format: 'matrix',
           hasScoring: result.hasScoring,
-          winner: result.winner
+          winner: result.winner,
+          hasExitModeling: Boolean(exitModeling),
+          hasOwnershipCharts: ownershipCharts.length > 0
         }
       };
     }
@@ -312,11 +418,14 @@ export class MatrixHandler implements IFormatHandler {
     // Generate dynamic columns INCLUDING SCENARIOS
     const allKeys = new Set<string>();
     
-    // Add standard columns first
+    // Add standard columns first - ENHANCED with entry value analysis
     const standardColumns = [
       'Company', 'Stage', 'Last Round', 'Valuation',
+      'Entry Multiple', 'Value Score', 'Growth Trajectory', // NEW: Entry analysis
       'Bear Case', 'Base Case', 'Bull Case', // Scenario columns
       'Bear IRR', 'Base IRR', 'Bull IRR', // IRR columns
+      'Max Entry Price', 'Entry vs Max', // NEW: Value metrics
+      'TAM Upside', 'Growth Accel/Decel', // NEW: Growth metrics
       'Liquidation Pref', 'Participation', // Waterfall terms
       'Revenue', 'Growth Rate', 'Burn Rate', 'Runway'
     ];
@@ -337,36 +446,64 @@ export class MatrixHandler implements IFormatHandler {
       
       // Calculate scenario valuations (bear 0.5x, base 1x, bull 2x)
       const currentVal = company.valuation || company.last_round_valuation || 100;
+      const revenue = company.revenue || company.arr || 10; // Default 10M if no revenue
       const bearCase = currentVal * 0.5;
       const baseCase = currentVal;
       const bullCase = currentVal * 2;
       
-      // Calculate IRRs assuming 5-year exit
+      // Calculate entry multiple and value metrics
+      const entryMultiple = currentVal / revenue;
+      const growthRate = company.growth_rate || 1.0; // 100% default
+      const maxEntryMultiple = growthRate > 2.0 ? 25 : growthRate > 1.5 ? 20 : growthRate > 1.0 ? 15 : 10;
+      const maxEntryPrice = revenue * maxEntryMultiple;
+      const entryVsMax = ((currentVal - maxEntryPrice) / maxEntryPrice * 100).toFixed(0);
+      const valueScore = currentVal <= maxEntryPrice ? 'Good' : currentVal <= maxEntryPrice * 1.2 ? 'Fair' : 'Expensive';
+      
+      // Calculate TAM upside
+      const tam = company.tam || company.market_size || 10000; // Default $10B TAM
+      const tamPenetration = revenue / tam;
+      const tamUpside = tam * 0.01 / revenue; // Upside to 1% market share
+      
+      // Determine growth trajectory
+      const priorGrowth = company.prior_growth_rate || growthRate * 0.8;
+      const isAccelerating = growthRate > priorGrowth;
+      const growthTrend = isAccelerating ? '📈 Accelerating' : growthRate === priorGrowth ? '➡️ Stable' : '📉 Decelerating';
+      
+      // Calculate IRRs assuming 5-year exit with VALUE ADJUSTMENT
       const investment = company.our_investment || currentVal * 0.1; // Assume 10% ownership
-      const bearIRR = Math.pow(bearCase / investment, 1/5) - 1;
-      const baseIRR = Math.pow(baseCase / investment, 1/5) - 1;
-      const bullIRR = Math.pow(bullCase / investment, 1/5) - 1;
+      // Adjust exit multiples based on entry value
+      const exitMultiplier = entryMultiple <= 15 ? 3 : entryMultiple <= 25 ? 2 : 1.5;
+      const bearIRR = Math.pow((bearCase * exitMultiplier) / investment, 1/5) - 1;
+      const baseIRR = Math.pow((baseCase * exitMultiplier) / investment, 1/5) - 1;
+      const bullIRR = Math.pow((bullCase * exitMultiplier) / investment, 1/5) - 1;
       
       // Extract waterfall terms
       const liquidationPref = company.liquidation_preference || '1x (Carta benchmark)';
       const participation = company.participating ? 'Yes' : 'No (SVB: 85% non-participating)';
       
-      // Create row with all data points and citations
+      // Create row with all data points and citations - ENHANCED with value metrics
       const row: any[] = [
         name,
         company.stage || company.funding_stage || 'N/A',
         company.last_round || company.last_round_date || 'N/A',
         `$${currentVal}M`,
+        `${entryMultiple.toFixed(1)}x`,           // Entry Multiple
+        valueScore,                                // Value Score
+        `${tamUpside.toFixed(0)}x`,               // Growth Trajectory (TAM upside)
         `$${bearCase.toFixed(1)}M`,
         `$${baseCase.toFixed(1)}M`,
         `$${bullCase.toFixed(1)}M`,
         `${(bearIRR * 100).toFixed(1)}%`,
         `${(baseIRR * 100).toFixed(1)}%`,
         `${(bullIRR * 100).toFixed(1)}%`,
+        `$${maxEntryPrice.toFixed(0)}M`,          // Max Entry Price
+        `${entryVsMax}%`,                         // Entry vs Max
+        `${tamUpside.toFixed(0)}x to 1%`,         // TAM Upside
+        growthTrend,                               // Growth Accel/Decel
         liquidationPref,
         participation,
         company.revenue ? `$${company.revenue}M` : 'N/A',
-        company.growth_rate ? `${company.growth_rate}%` : 'N/A',
+        company.growth_rate ? `${(growthRate * 100).toFixed(0)}%` : 'N/A',
         company.burn_rate ? `$${company.burn_rate}M/mo` : 'N/A',
         company.runway ? `${company.runway} months` : 'N/A'
       ];

@@ -589,7 +589,7 @@ class PrePostCapTable:
             "final_cap_table_at_exit": final_cap_table_float,
             "total_raised": float(cumulative_invested),
             "num_rounds": len(cap_table_history),  # Use actual processed rounds count
-            "founder_dilution": float(Decimal('100.0') - sum(
+            "founder_ownership": float(sum(
                 v for k, v in current_cap_table.items() 
                 if "Founder" in k or k == "Founders"
             )),

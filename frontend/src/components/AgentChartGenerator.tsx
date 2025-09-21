@@ -100,12 +100,17 @@ export default function AgentChartGenerator({
   onChartGenerated
 }: AgentChartGeneratorProps) {
   const [isGenerating, setIsGenerating] = useState(false);
-  const [chartData, setChartData] = useState<any>(null);
+  const [chartData, setChartData] = useState<any>(initialData || null);
   const [error, setError] = useState<string | null>(null);
+  const [hasGeneratedForPrompt, setHasGeneratedForPrompt] = useState<string | null>(null);
 
   const generateChart = async () => {
+    // Prevent multiple generations for the same prompt
+    if (hasGeneratedForPrompt === prompt) return;
+    
     setIsGenerating(true);
     setError(null);
+    setHasGeneratedForPrompt(prompt);
 
     try {
       // Call the unified brain API to generate chart data
@@ -135,10 +140,18 @@ export default function AgentChartGenerator({
   };
 
   useEffect(() => {
-    if (prompt && !chartData) {
+    // If initial data is provided, use it directly without generating
+    if (initialData) {
+      setChartData(initialData);
+      onChartGenerated?.(initialData);
+      return;
+    }
+    
+    // Only generate if we have a prompt and haven't generated for this prompt yet
+    if (prompt && hasGeneratedForPrompt !== prompt && !chartData) {
       generateChart();
     }
-  }, [prompt]); // Only depend on prompt to avoid re-render loop
+  }, [prompt, hasGeneratedForPrompt, initialData]); // Track prompt, generation status, and initial data
 
   if (error) {
     return (

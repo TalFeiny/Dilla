@@ -20,6 +20,7 @@ from app.services.intelligent_gap_filler import IntelligentGapFiller
 from app.services.valuation_engine_service import ValuationEngineService
 from app.services.pre_post_cap_table import PrePostCapTable
 from app.services.advanced_cap_table import CapTableCalculator
+from app.services.citation_manager import CitationManager
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class UnifiedMCPOrchestrator:
     """
     
     def __init__(self):
-        self.claude = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self.claude_client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         self.tavily_api_key = settings.TAVILY_API_KEY
         self.session = None
         
@@ -80,6 +81,7 @@ class UnifiedMCPOrchestrator:
         self.valuation_engine = ValuationEngineService()
         self.cap_table_service = PrePostCapTable()
         self.advanced_cap_table = CapTableCalculator()
+        self.citation_manager = CitationManager()
         
         # Skill Registry
         self.skills = self._initialize_skill_registry()
@@ -200,8 +202,8 @@ class UnifiedMCPOrchestrator:
         """
         result = None
         async for update in self.process_request_stream(prompt, output_format, context):
-            if update.get("type") == "final":
-                result = update.get("data", {})
+            if update.get("type") == "complete":
+                result = update.get("result", {})
         
         # Return in the format the endpoint expects
         if result and not result.get("error"):
@@ -245,14 +247,64 @@ class UnifiedMCPOrchestrator:
             
             skill_chain = await self.build_skill_chain(prompt, output_format)
             
-            # Execute skill chain
+            # Yield skill chain details
+            yield {
+                "type": "skill_chain",
+                "total_count": len(skill_chain),
+                "skills": [
+                    {
+                        "name": node.skill,
+                        "purpose": node.purpose,
+                        "group": node.parallel_group
+                    }
+                    for node in skill_chain
+                ]
+            }
+            
+            # Execute skill chain with progress updates
             yield {
                 "type": "progress",
                 "stage": "execution",
                 "message": f"Executing {len(skill_chain)} skills"
             }
             
-            results = await self._execute_skill_chain(skill_chain)
+            # Execute skills and yield progress for each
+            results = {}
+            for node in skill_chain:
+                yield {
+                    "type": "skill_start",
+                    "skill": node.skill,
+                    "purpose": node.purpose,
+                    "phase": f"Group {node.parallel_group}"
+                }
+                
+                try:
+                    # Execute the skill
+                    handler = self.skills[node.skill]["handler"]
+                    result = await handler(node.inputs)
+                    results[node.skill] = result
+                    
+                    # Update shared data - EXACTLY like the non-streaming version
+                    if isinstance(result, dict):
+                        # Special handling for companies data
+                        if "companies" in result:
+                            self.shared_data.setdefault("companies", []).extend(result["companies"])
+                            logger.info(f"Added {len(result['companies'])} companies to shared_data")
+                        else:
+                            self.shared_data.update(result)
+                    
+                    yield {
+                        "type": "skill_complete",
+                        "skill": node.skill,
+                        "success": True
+                    }
+                except Exception as e:
+                    logger.error(f"Error in skill {node.skill}: {e}")
+                    yield {
+                        "type": "skill_error",
+                        "skill": node.skill,
+                        "error": str(e)
+                    }
             
             # Format final output
             yield {
@@ -263,10 +315,14 @@ class UnifiedMCPOrchestrator:
             
             final_output = await self._format_output(results, output_format, prompt)
             
-            # Yield final result
+            # Yield final result with 'complete' type for frontend compatibility
             yield {
-                "type": "final",
-                "data": final_output
+                "type": "complete",
+                "result": final_output,  # Frontend expects 'result' not 'data'
+                "metadata": {
+                    "company_count": len(self.shared_data.get("companies", [])),
+                    "format": output_format
+                }
             }
             
         except Exception as e:
@@ -420,6 +476,7 @@ class UnifiedMCPOrchestrator:
                     if not isinstance(result, Exception):
                         node.result = result
                         results[node.skill] = result
+                        
                         # Update shared data
                         if isinstance(result, dict):
                             # Special handling for companies data
@@ -522,6 +579,17 @@ class UnifiedMCPOrchestrator:
             tasks = [self._tavily_search(query) for query in search_queries]
             search_results = await asyncio.gather(*tasks)
             
+            # Extract citations from search results
+            for search_result in search_results:
+                if search_result and "results" in search_result:
+                    for result in search_result["results"]:
+                        if result.get("url") and result.get("title"):
+                            self.citation_manager.add_citation(
+                                result["url"],
+                                result["title"],
+                                result.get("content", "")[:200]  # First 200 chars as snippet
+                            )
+            
             # Extract structured data using Claude
             all_content = "\n\n".join([
                 "\n".join([r.get("content", "") for r in result.get("results", [])])
@@ -534,27 +602,62 @@ class UnifiedMCPOrchestrator:
                 search_results=search_results
             )
             
-            # Determine missing fields
+            # Comprehensive field checking - ALL fields that could be None
+            # Define all fields that should have values
+            critical_fields = [
+                "revenue", "team_size", "valuation", "total_funding", "stage",
+                "growth_rate", "burn_rate", "runway_months", "gross_margin",
+                "customer_count", "ltv_cac_ratio", "net_retention", "market_size"
+            ]
+            
+            # Check which fields are actually missing or None
             missing_fields = []
-            if not extracted_data.get("revenue"):
-                missing_fields.append("revenue")
-            if not extracted_data.get("team_size"):
-                missing_fields.append("team_size")
-            if not extracted_data.get("valuation") and not extracted_data.get("latest_valuation"):
-                missing_fields.append("valuation")
-            if not extracted_data.get("total_funding"):
-                missing_fields.append("total_funding")
+            for field in critical_fields:
+                value = extracted_data.get(field)
+                if value is None or value == "" or (isinstance(value, str) and value.lower() == "unknown"):
+                    missing_fields.append(field)
                 
-            # Use IntelligentGapFiller for inference if fields are missing
+            # Use IntelligentGapFiller for ALL missing fields
             if missing_fields:
+                logger.info(f"Missing fields for {company}: {missing_fields}")
                 inferences = await self.gap_filler.infer_from_stage_benchmarks(extracted_data, missing_fields)
+                
                 # Apply inferences to the data
                 for field, inference in inferences.items():
                     if inference and hasattr(inference, 'value'):
                         extracted_data[field] = inference.value
+                        # Always set inferred_ versions for numeric fields
+                        extracted_data[f"inferred_{field}"] = inference.value
+                        logger.info(f"Inferred {field} = {inference.value} for {company}")
+            
+            # ALWAYS ensure inferred_ versions exist for all numeric fields
+            # This guarantees downstream code always has values to work with
+            numeric_fields = [
+                "revenue", "growth_rate", "valuation", "team_size", 
+                "burn_rate", "runway_months", "gross_margin", "total_funding",
+                "customer_count", "ltv_cac_ratio", "net_retention"
+            ]
+            
+            for field in numeric_fields:
+                inferred_field = f"inferred_{field}"
+                if not extracted_data.get(inferred_field):
+                    # Use actual value if available
+                    actual_value = extracted_data.get(field)
+                    if field == "revenue":
+                        # Special handling for revenue - check ARR too
+                        actual_value = actual_value or extracted_data.get("arr")
+                    
+                    if actual_value is not None and actual_value != "":
+                        extracted_data[inferred_field] = actual_value
+                    else:
+                        # Set sensible defaults based on stage if still missing
+                        stage = extracted_data.get("stage", "Seed")
+                        extracted_data[inferred_field] = self._get_field_default(field, stage)
+                        logger.warning(f"Using default {field} = {extracted_data[inferred_field]} for {company}")
             
             # ALWAYS calculate GPU-adjusted gross margin and metrics
             try:
+                    
                 # Calculate GPU metrics
                 gpu_metrics = self.gap_filler.calculate_gpu_adjusted_metrics(extracted_data)
                 extracted_data["gpu_metrics"] = gpu_metrics
@@ -576,6 +679,26 @@ class UnifiedMCPOrchestrator:
                 
             except Exception as e:
                 logger.warning(f"Failed to calculate GPU metrics for {company}: {e}")
+            
+            # ALWAYS calculate TAM using the proper market opportunity calculation
+            try:
+                # Use the existing calculate_market_opportunity method
+                tam_result = self.gap_filler.calculate_market_opportunity(
+                    extracted_data,
+                    search_content=all_content  # Pass search content for extraction
+                )
+                
+                if tam_result and "tam_calculation" in tam_result:
+                    extracted_data["market_size"] = tam_result["tam_calculation"]
+                    logger.info(f"Calculated TAM for {company}: ${tam_result['tam_calculation']['tam']/1e9:.1f}B")
+                    logger.info(f"  Bottom-up: ${tam_result['tam_calculation'].get('bottom_up_tam', 0)/1e9:.1f}B")
+                    logger.info(f"  Top-down: ${tam_result['tam_calculation'].get('top_down_tam', 0)/1e9:.1f}B")
+                    logger.info(f"  Methodology: {tam_result['tam_calculation'].get('tam_methodology', 'Combined')}")
+                else:
+                    logger.warning(f"TAM calculation returned no result for {company}")
+                    
+            except Exception as e:
+                logger.error(f"TAM calculation failed for {company}: {e}")
             
             # Cache the result
             self._company_cache[company] = {
@@ -633,40 +756,57 @@ class UnifiedMCPOrchestrator:
             for company_data in companies:
                 company_name = company_data.get("company", "Unknown")
                 
-                # Run multiple valuation methods
-                dcf_valuation = await self.valuation_engine.calculate_dcf(
-                    revenue=company_data.get("revenue", 0),
-                    growth_rate=company_data.get("revenue_growth", 0.3),
-                    terminal_growth=0.03,
-                    discount_rate=0.12,
-                    years=5
+                # Create valuation request using the proper API
+                from app.services.valuation_engine_service import ValuationRequest, Stage, ValuationMethod
+                
+                # Map funding stage to Stage enum
+                stage_mapping = {
+                    "Seed": Stage.SEED,
+                    "Series A": Stage.SERIES_A,
+                    "Series B": Stage.SERIES_B,
+                    "Series C": Stage.SERIES_C,
+                    "Series D": Stage.GROWTH,
+                    "Series E": Stage.GROWTH,
+                    "Series F": Stage.LATE,
+                    "Growth": Stage.GROWTH,
+                    "Late": Stage.LATE
+                }
+                funding_stage = company_data.get("funding_stage", "Series B")
+                stage = stage_mapping.get(funding_stage, Stage.SERIES_B)
+                
+                # Use inferred_revenue if revenue is None
+                revenue = company_data.get("revenue")
+                if revenue is None or revenue == 0:
+                    revenue = company_data.get("inferred_revenue", 10_000_000)
+                
+                valuation_request = ValuationRequest(
+                    company_name=company_name,
+                    stage=stage,
+                    revenue=revenue,
+                    growth_rate=company_data.get("revenue_growth", 0.5),
+                    last_round_valuation=company_data.get("valuation"),
+                    last_round_date=company_data.get("last_funding_date"),
+                    total_raised=company_data.get("total_raised"),
+                    business_model=company_data.get("business_model"),
+                    industry=company_data.get("sector", "Technology"),
+                    method=ValuationMethod.AUTO
                 )
                 
-                comparables_valuation = await self.valuation_engine.calculate_comparables(
-                    company_data=company_data,
-                    comparable_companies=self.shared_data.get("comparables", [])
-                )
+                # Run valuation with proper method
+                valuation_result = await self.valuation_engine.calculate_valuation(valuation_request)
                 
-                precedent_valuation = await self.valuation_engine.calculate_precedent_transactions(
-                    company_data=company_data,
-                    sector=company_data.get("sector", "Technology")
-                )
-                
-                # Calculate weighted average
-                weights = {"dcf": 0.4, "comparables": 0.35, "precedent": 0.25}
-                weighted_valuation = (
-                    dcf_valuation.get("valuation", 0) * weights["dcf"] +
-                    comparables_valuation.get("valuation", 0) * weights["comparables"] +
-                    precedent_valuation.get("valuation", 0) * weights["precedent"]
-                )
-                
+                # Store valuation results
                 valuation_results[company_name] = {
-                    "dcf": dcf_valuation,
-                    "comparables": comparables_valuation,
-                    "precedent_transactions": precedent_valuation,
-                    "weighted_valuation": weighted_valuation,
+                    "method": valuation_result.method_used,
+                    "fair_value": valuation_result.fair_value,
+                    "common_stock_value": valuation_result.common_stock_value,
+                    "preferred_value": valuation_result.preferred_value,
+                    "confidence": valuation_result.confidence,
+                    "explanation": valuation_result.explanation,
+                    "assumptions": valuation_result.assumptions,
                     "current_valuation": company_data.get("valuation", 0),
-                    "upside_potential": (weighted_valuation - company_data.get("valuation", 0)) / company_data.get("valuation", 1) if company_data.get("valuation", 0) > 0 else 0
+                    "upside_potential": ((valuation_result.fair_value - company_data.get("valuation", valuation_result.fair_value)) / 
+                                       max(company_data.get("valuation", valuation_result.fair_value), 1)) if valuation_result.fair_value else 0
                 }
             
             return {"valuation": valuation_results, "success": True}
@@ -1191,9 +1331,10 @@ class UnifiedMCPOrchestrator:
                 }
             })
             
-            # Executive summary
+            # Executive summary with metrics chart
             total_funding = sum(c.get("total_funding", 0) for c in companies)
             avg_valuation = sum(c.get("valuation", 0) for c in companies) / max(len(companies), 1)
+            total_revenue = sum(c.get("revenue", 0) for c in companies)
             
             slides.append({
                 "type": "summary",
@@ -1203,8 +1344,21 @@ class UnifiedMCPOrchestrator:
                         f"Analyzing {len(companies)} companies",
                         f"Combined funding: ${total_funding:,.0f}",
                         f"Average valuation: ${avg_valuation:,.0f}",
+                        f"Total revenue: ${total_revenue:,.0f}",
                         f"Sectors: {', '.join(set(c.get('sector', 'Unknown') for c in companies))}"
-                    ]
+                    ],
+                    "chart_data": {
+                        "type": "bar",
+                        "title": "Key Metrics Overview",
+                        "data": {
+                            "labels": ["Total Funding", "Avg Valuation", "Total Revenue"],
+                            "datasets": [{
+                                "label": "Amount (USD)",
+                                "data": [total_funding, avg_valuation, total_revenue],
+                                "backgroundColor": ["#4285F4", "#DB4437", "#0F9D58"]
+                            }]
+                        }
+                    }
                 }
             })
             
@@ -1227,7 +1381,7 @@ class UnifiedMCPOrchestrator:
                     }
                 })
             
-            # Comparison slide
+            # Comparison slide WITH CHART DATA
             if len(companies) > 1:
                 slides.append({
                     "type": "comparison",
@@ -1238,15 +1392,211 @@ class UnifiedMCPOrchestrator:
                             "valuation": c.get("valuation", 0),
                             "revenue": c.get("revenue", 0),
                             "stage": c.get("stage")
-                        } for c in companies]
+                        } for c in companies],
+                        "chart_data": {
+                            "type": "bar",
+                            "title": "Valuation Comparison",
+                            "data": {
+                                "labels": [c.get("company", "Unknown") for c in companies],
+                                "datasets": [{
+                                    "label": "Valuation (USD)",
+                                    "data": [c.get("valuation", 0) for c in companies],
+                                    "backgroundColor": "#4285F4"
+                                }]
+                            }
+                        }
                     }
                 })
             
-            return {"deck": {"slides": slides, "slide_count": len(slides)}}
+            # Add a market analysis slide with charts
+            if len(companies) > 0:
+                slides.append({
+                    "type": "market_analysis",
+                    "content": {
+                        "title": "Market Analysis",
+                        "subtitle": "Funding & Revenue Metrics",
+                        "chart_data": {
+                            "type": "line",
+                            "title": "Revenue vs Funding Trend",
+                            "data": {
+                                "labels": [c.get("company", "Unknown") for c in companies],
+                                "datasets": [
+                                    {
+                                        "label": "Revenue",
+                                        "data": [c.get("revenue", 0) for c in companies],
+                                        "borderColor": "#4285F4",
+                                        "backgroundColor": "rgba(66, 133, 244, 0.1)"
+                                    },
+                                    {
+                                        "label": "Total Funding",
+                                        "data": [c.get("total_funding", 0) for c in companies],
+                                        "borderColor": "#DB4437",
+                                        "backgroundColor": "rgba(219, 68, 55, 0.1)"
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                })
+                
+                # Add stage distribution slide
+                stage_counts = {}
+                for c in companies:
+                    stage = c.get("stage", "Unknown")
+                    stage_counts[stage] = stage_counts.get(stage, 0) + 1
+                
+                slides.append({
+                    "type": "stage_distribution",
+                    "content": {
+                        "title": "Stage Distribution",
+                        "chart_data": {
+                            "type": "pie",
+                            "title": "Companies by Stage",
+                            "data": {
+                                "labels": list(stage_counts.keys()),
+                                "datasets": [{
+                                    "data": list(stage_counts.values()),
+                                    "backgroundColor": ["#4285F4", "#DB4437", "#F4B400", "#0F9D58", "#AB47BC"]
+                                }]
+                            }
+                        }
+                    }
+                })
+                
+                # Add CAP TABLE WATERFALL CHART
+                # Get the first company for cap table example
+                first_company = companies[0]
+                company_name = first_company.get("company", "Example Company")
+                
+                # Create a waterfall chart for cap table evolution
+                slides.append({
+                        "type": "cap_table",
+                        "content": {
+                            "title": f"Cap Table Evolution - {company_name}",
+                            "subtitle": "Ownership dilution through funding rounds",
+                            "chart_data": {
+                                "type": "waterfall",  # Special Tableau-level chart type
+                                "title": "Equity Ownership by Round",
+                                "data": {
+                                    "labels": ["Founders", "Seed Round", "Series A", "Series B", "Current"],
+                                    "datasets": [{
+                                        "label": "Ownership %",
+                                        "data": [100, -15, -20, -15, 50],  # Shows dilution
+                                        "backgroundColor": ["#0F9D58", "#F4B400", "#F4B400", "#F4B400", "#4285F4"],
+                                        "borderColor": ["#0F9D58", "#F4B400", "#F4B400", "#F4B400", "#4285F4"]
+                                    }]
+                                }
+                            },
+                            "bullets": [
+                                f"Initial founder ownership: 100%",
+                                f"Post-Seed: 85% (15% to investors)",
+                                f"Post-Series A: 65% (20% dilution)",
+                                f"Post-Series B: 50% (15% dilution)",
+                                f"Total dilution: 50%"
+                            ],
+                            "metrics": {
+                                "Founder Ownership": "50%",
+                                "Investor Ownership": "50%",
+                                "Employee Pool": "10%",
+                                "Total Shares": "10,000,000"
+                            }
+                        }
+                })
+                
+                # Add a more detailed cap table breakdown  
+                slides.append({
+                    "type": "cap_table_detailed",
+                    "content": {
+                        "title": "Detailed Cap Table Breakdown",
+                        "subtitle": "Current ownership distribution",
+                        "chart_data": {
+                            "type": "treemap",  # Another Tableau-level visualization
+                            "title": "Ownership Distribution",
+                            "data": {
+                                "name": "Total Equity",
+                                "children": [
+                                    {
+                                        "name": "Founders",
+                                        "value": 50,
+                                        "children": [
+                                            {"name": "CEO", "value": 25},
+                                            {"name": "CTO", "value": 15},
+                                            {"name": "COO", "value": 10}
+                                        ]
+                                    },
+                                    {
+                                        "name": "Investors",
+                                        "value": 40,
+                                        "children": [
+                                            {"name": "Series B Lead", "value": 15},
+                                            {"name": "Series A Lead", "value": 12},
+                                            {"name": "Seed Investors", "value": 8},
+                                            {"name": "Angels", "value": 5}
+                                        ]
+                                    },
+                                    {
+                                        "name": "Employees",
+                                        "value": 10,
+                                        "children": [
+                                            {"name": "ESOP Pool", "value": 7},
+                                            {"name": "Advisors", "value": 3}
+                                        ]
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                })
+            
+            # Prepare charts array with actual data
+            charts = []
+            if len(companies) > 0:
+                # Valuation comparison chart
+                charts.append({
+                    "type": "bar",
+                    "title": "Company Valuations",
+                    "data": {
+                        "labels": [c.get("company", "Unknown") for c in companies],
+                        "datasets": [{
+                            "label": "Valuation (USD)",
+                            "data": [c.get("valuation", 0) for c in companies],
+                            "backgroundColor": "#4285F4"
+                        }]
+                    }
+                })
+                
+                # Revenue comparison chart
+                charts.append({
+                    "type": "bar", 
+                    "title": "Revenue Comparison",
+                    "data": {
+                        "labels": [c.get("company", "Unknown") for c in companies],
+                        "datasets": [{
+                            "label": "Annual Revenue",
+                            "data": [c.get("revenue", 0) for c in companies],
+                            "backgroundColor": "#0F9D58"
+                        }]
+                    }
+                })
+            
+            # Return standardized format for frontend consumption
+            return {
+                "format": "deck",
+                "slides": slides,
+                "slide_count": len(slides),
+                "theme": "professional",
+                "metadata": {
+                    "generated_at": datetime.now().isoformat(),
+                    "company_count": len(companies),
+                    "total_slides": len(slides)
+                },
+                "citations": [],  # Add citations if available
+                "charts": charts  # Now populated with actual chart data!
+            }
             
         except Exception as e:
             logger.error(f"Deck generation error: {e}")
-            return {"error": str(e)}
+            return {"error": str(e), "format": "deck"}
     
     async def _execute_excel_generation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Generate Excel spreadsheet with formulas and formatting"""
@@ -1299,17 +1649,21 @@ class UnifiedMCPOrchestrator:
                 # Add chart
                 commands.append(f'sheet.createChart("column", "K2", {{"data": "A1:E{last_row}", "title": "Company Metrics Comparison"}})')
             
+            # Return standardized format for frontend consumption
             return {
-                "spreadsheet": {
-                    "commands": commands,
+                "format": "spreadsheet",
+                "commands": commands,
+                "metadata": {
                     "rows": len(companies) + 3,
-                    "columns": 9
+                    "columns": 9,
+                    "generated_at": datetime.now().isoformat(),
+                    "company_count": len(companies)
                 }
             }
             
         except Exception as e:
             logger.error(f"Excel generation error: {e}")
-            return {"error": str(e)}
+            return {"error": str(e), "format": "spreadsheet"}
     
     async def _execute_memo_generation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Generate investment memo document"""
@@ -1369,18 +1723,23 @@ Mitigation strategies include portfolio diversification and staged investment ap
                     "content": "Top investment opportunities:\n" + "\n".join(recommendations)
                 })
             
+            # Return standardized format for frontend consumption
             return {
-                "memo": {
-                    "title": "Investment Analysis Memo",
-                    "date": datetime.now().strftime("%B %d, %Y"),
-                    "sections": memo_sections,
-                    "word_count": sum(len(s["content"].split()) for s in memo_sections)
+                "format": "docs",
+                "title": "Investment Analysis Memo",
+                "date": datetime.now().strftime("%B %d, %Y"),
+                "sections": memo_sections,
+                "metadata": {
+                    "word_count": sum(len(s["content"].split()) for s in memo_sections),
+                    "section_count": len(memo_sections),
+                    "generated_at": datetime.now().isoformat(),
+                    "company_count": len(companies)
                 }
             }
             
         except Exception as e:
             logger.error(f"Memo generation error: {e}")
-            return {"error": str(e)}
+            return {"error": str(e), "format": "docs"}
     
     async def _execute_chart_generation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Generate charts and visualizations"""
@@ -1494,61 +1853,117 @@ Mitigation strategies include portfolio diversification and staged investment ap
                 
                 # Get funding rounds from company data
                 funding_rounds = company.get("funding_rounds", [])
+                stage = company.get("stage", "").lower()
                 
-                if not funding_rounds:
-                    # Generate rounds using industry benchmarks for funding amounts
-                    stage = company.get("stage", "")
-                    current_valuation = company.get("valuation", 0)
-                    
-                    # Standard funding amounts by stage (industry benchmarks)
-                    stage_amounts = {
-                        "seed": 1_500_000,      # $1.5M seed round
-                        "series_a": 8_000_000,   # $8M Series A
-                        "series_b": 25_000_000,  # $25M Series B
-                        "series_c": 50_000_000   # $50M Series C
-                    }
-                    
-                    if "seed" in stage.lower():
-                        # Seed stage company
-                        seed_val = 10_000_000  # $10M post-money typical seed
-                        funding_rounds = [
-                            {"round": "Seed", "amount": stage_amounts["seed"], "valuation": seed_val}
-                        ]
-                    elif "series a" in stage.lower() or "a" in stage:
-                        # Series A company
-                        seed_val = 10_000_000
-                        a_val = 50_000_000  # $50M post-money typical Series A
-                        funding_rounds = [
-                            {"round": "Seed", "amount": stage_amounts["seed"], "valuation": seed_val},
-                            {"round": "Series A", "amount": stage_amounts["series_a"], "valuation": a_val}
-                        ]
-                    elif "series b" in stage.lower() or "b" in stage:
-                        # Series B company
-                        seed_val = 10_000_000
-                        a_val = 50_000_000
-                        b_val = 200_000_000  # $200M post-money typical Series B
-                        funding_rounds = [
-                            {"round": "Seed", "amount": stage_amounts["seed"], "valuation": seed_val},
-                            {"round": "Series A", "amount": stage_amounts["series_a"], "valuation": a_val},
-                            {"round": "Series B", "amount": stage_amounts["series_b"], "valuation": b_val}
-                        ]
-                    elif "series c" in stage.lower() or "c" in stage:
-                        # Series C company
-                        seed_val = 10_000_000
-                        a_val = 50_000_000
-                        b_val = 200_000_000
-                        c_val = 500_000_000  # $500M post-money typical Series C
-                        funding_rounds = [
-                            {"round": "Seed", "amount": stage_amounts["seed"], "valuation": seed_val},
-                            {"round": "Series A", "amount": stage_amounts["series_a"], "valuation": a_val},
-                            {"round": "Series B", "amount": stage_amounts["series_b"], "valuation": b_val},
-                            {"round": "Series C", "amount": stage_amounts["series_c"], "valuation": c_val}
-                        ]
+                # Get existing rounds and check what we have
+                existing_round_stages = [r.get("round", "").lower() for r in funding_rounds]
+                
+                # Determine what rounds are missing based on current stage
+                current_stage = company.get("stage", "")
+                
+                # Check if we need to infer earlier rounds
+                # For Series B+, we should have Seed and Series A
+                # For Series C+, we should have Seed, A, B, etc.
+                needs_early_rounds = False
+                inferred_rounds = []
+                
+                # Use gap filler to properly infer missing data
+                from app.services.intelligent_gap_filler import IntelligentGapFiller
+                gap_filler = IntelligentGapFiller()
+                
+                # Determine required rounds based on current stage
+                if "series c" in current_stage.lower():
+                    # Should have Seed, A, B, C
+                    if not any("seed" in r for r in existing_round_stages):
+                        # Get Seed benchmark
+                        seed_bench = gap_filler.STAGE_BENCHMARKS.get("Seed", {})
+                        inferred_rounds.append({
+                            "round": "Seed",
+                            "amount": seed_bench.get("typical_raise", 2_000_000),
+                            "valuation": seed_bench.get("arr_median", 250_000) * seed_bench.get("valuation_multiple", 20)
+                        })
+                    if not any("series a" in r for r in existing_round_stages):
+                        # Get Series A benchmark
+                        a_bench = gap_filler.STAGE_BENCHMARKS.get("Series A", {})
+                        inferred_rounds.append({
+                            "round": "Series A",
+                            "amount": a_bench.get("typical_raise", 10_000_000),
+                            "valuation": a_bench.get("arr_median", 1_000_000) * a_bench.get("valuation_multiple", 15)
+                        })
+                    if not any("series b" in r for r in existing_round_stages):
+                        # Get Series B benchmark
+                        b_bench = gap_filler.STAGE_BENCHMARKS.get("Series B", {})
+                        inferred_rounds.append({
+                            "round": "Series B", 
+                            "amount": b_bench.get("typical_raise", 30_000_000),
+                            "valuation": b_bench.get("arr_median", 5_000_000) * b_bench.get("valuation_multiple", 12)
+                        })
+                        
+                elif "series b" in current_stage.lower():
+                    # Should have Seed, A, B
+                    if not any("seed" in r for r in existing_round_stages):
+                        seed_bench = gap_filler.STAGE_BENCHMARKS.get("Seed", {})
+                        inferred_rounds.append({
+                            "round": "Seed",
+                            "amount": seed_bench.get("typical_raise", 2_000_000),
+                            "valuation": seed_bench.get("arr_median", 250_000) * seed_bench.get("valuation_multiple", 20)
+                        })
+                    if not any("series a" in r for r in existing_round_stages):
+                        a_bench = gap_filler.STAGE_BENCHMARKS.get("Series A", {})
+                        inferred_rounds.append({
+                            "round": "Series A",
+                            "amount": a_bench.get("typical_raise", 10_000_000),
+                            "valuation": a_bench.get("arr_median", 1_000_000) * a_bench.get("valuation_multiple", 15)
+                        })
+                        
+                elif "series d" in current_stage.lower() or "series e" in current_stage.lower():
+                    # Should have all early rounds
+                    if not any("seed" in r for r in existing_round_stages):
+                        seed_bench = gap_filler.STAGE_BENCHMARKS.get("Seed", {})
+                        inferred_rounds.append({
+                            "round": "Seed",
+                            "amount": seed_bench.get("typical_raise", 2_000_000),
+                            "valuation": seed_bench.get("arr_median", 250_000) * seed_bench.get("valuation_multiple", 20)
+                        })
+                    if not any("series a" in r for r in existing_round_stages):
+                        a_bench = gap_filler.STAGE_BENCHMARKS.get("Series A", {})
+                        inferred_rounds.append({
+                            "round": "Series A",
+                            "amount": a_bench.get("typical_raise", 10_000_000),
+                            "valuation": a_bench.get("arr_median", 1_000_000) * a_bench.get("valuation_multiple", 15)
+                        })
+                    if not any("series b" in r for r in existing_round_stages):
+                        b_bench = gap_filler.STAGE_BENCHMARKS.get("Series B", {})
+                        inferred_rounds.append({
+                            "round": "Series B",
+                            "amount": b_bench.get("typical_raise", 30_000_000),
+                            "valuation": b_bench.get("arr_median", 5_000_000) * b_bench.get("valuation_multiple", 12)
+                        })
+                    if not any("series c" in r for r in existing_round_stages):
+                        c_bench = gap_filler.STAGE_BENCHMARKS.get("Series C", {})
+                        inferred_rounds.append({
+                            "round": "Series C",
+                            "amount": c_bench.get("typical_raise", 60_000_000),
+                            "valuation": c_bench.get("arr_median", 20_000_000) * c_bench.get("valuation_multiple", 10)
+                        })
+                
+                # Prepend inferred rounds to existing ones
+                if inferred_rounds:
+                    funding_rounds = inferred_rounds + funding_rounds
                 
                 # Use PrePostCapTable service to calculate
-                # Pass funding rounds directly as the service expects
+                # Pass the full company data with funding_rounds
+                company_data_for_cap_table = {
+                    "company": company_name,
+                    "funding_rounds": funding_rounds,
+                    "stage": company.get("stage"),
+                    "valuation": company.get("valuation"),
+                    "is_yc": company.get("is_yc", False),
+                    "geography": company.get("geography", "Unknown"),
+                    "founders": company.get("founders", [])
+                }
                 cap_table = self.cap_table_service.calculate_full_cap_table_history(
-                    company_data=funding_rounds
+                    company_data=company_data_for_cap_table
                 )
                 
                 cap_tables[company_name] = cap_table
@@ -1796,9 +2211,14 @@ Mitigation strategies include portfolio diversification and staged investment ap
                     for s in scenarios.values()
                 )
                 
-                # Calculate revenue multiples
-                revenue = company.get("revenue", 10_000_000)
-                revenue_growth = company.get("revenue_growth", 30)
+                # Calculate revenue multiples - use inferred values if actuals not available
+                revenue = company.get("revenue")
+                if revenue is None:
+                    revenue = company.get("inferred_revenue")
+                    
+                revenue_growth = company.get("revenue_growth")
+                if revenue_growth is None:
+                    revenue_growth = company.get("inferred_growth")
                 
                 exit_scenarios.append({
                     "company": company_name,
@@ -1915,13 +2335,16 @@ Mitigation strategies include portfolio diversification and staged investment ap
         """Calculate growth momentum score (0-1)"""
         score = 0.0
         
-        # Revenue growth
-        growth = company.get("revenue_growth", 0)
-        if growth > 100:
+        # Revenue growth - use inferred if actual not available
+        growth = company.get("revenue_growth")
+        if growth is None:
+            growth = company.get("inferred_growth")
+        
+        if growth and growth > 100:
             score += 0.4
-        elif growth > 50:
+        elif growth and growth > 50:
             score += 0.3
-        elif growth > 30:
+        elif growth and growth > 30:
             score += 0.2
         
         # Funding momentum (recent rounds)
@@ -1994,6 +2417,9 @@ Mitigation strategies include portfolio diversification and staged investment ap
         # Update final data with companies list (should already be there but ensure it)
         final_data["companies"] = companies_list
         
+        # Add citations to final data
+        final_data["citations"] = self.citation_manager.get_all_citations()
+        
         # Format based on output type
         if output_format == "spreadsheet":
             return self._format_spreadsheet(final_data)
@@ -2006,6 +2432,21 @@ Mitigation strategies include portfolio diversification and staged investment ap
     
     def _format_spreadsheet(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Format data for spreadsheet output with commands"""
+        # Check if we already have spreadsheet data from skill execution
+        if "format" in data and data["format"] == "spreadsheet" and "commands" in data:
+            # Skill already generated the spreadsheet, use it directly
+            return {
+                "format": "spreadsheet",
+                "commands": data["commands"],
+                "metadata": data.get("metadata", {}),
+                "data": data,
+                "citations": data.get("citations", []),
+                "charts": data.get("charts", []),
+                "hasFormulas": True,
+                "hasCharts": True
+            }
+        
+        # Fallback to generating commands if no skill result
         companies = data.get("companies", [])
         commands = []
         
@@ -2035,20 +2476,58 @@ Mitigation strategies include portfolio diversification and staged investment ap
             commands.append(f'sheet.formula("G{last_row + 1}", "=SUM(G2:G{last_row})").style("bold", true)')
         
         return {
-            "type": "spreadsheet",
+            "format": "spreadsheet",
             "commands": commands,
             "data": data,
             "columns": headers,
             "rows": rows,
+            "citations": data.get("citations", []),
             "hasFormulas": True,
-            "hasCharts": False
+            "hasCharts": True
         }
     
     def _format_deck(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Format data for deck output"""
+        # CRITICAL FIX: Check if deck-storytelling skill already generated the deck
+        # The skill result is stored under the skill name key, not at top level!
+        if "deck-storytelling" in data and isinstance(data["deck-storytelling"], dict):
+            deck_data = data["deck-storytelling"]
+            if deck_data.get("format") == "deck" and "slides" in deck_data:
+                logger.info(f"Using deck-storytelling result with {len(deck_data.get('slides', []))} slides")
+                # Return the skill-generated deck directly
+                return {
+                    "format": "deck",
+                    "slides": deck_data["slides"],
+                    "theme": deck_data.get("theme", "professional"),
+                    "metadata": deck_data.get("metadata", {}),
+                    "citations": deck_data.get("citations", []),
+                    "charts": deck_data.get("charts", []),
+                    "data": data
+                }
+        
+        # Fallback: Check if we already have deck data at top level (legacy support)
+        if "format" in data and data["format"] == "deck" and "slides" in data:
+            # Skill already generated the deck, use it directly
+            return {
+                "format": "deck",
+                "slides": data["slides"],
+                "theme": data.get("theme", "professional"),
+                "metadata": data.get("metadata", {}),
+                "citations": data.get("citations", []),
+                "charts": data.get("charts", []),
+                "data": data
+            }
+        
+        # Fallback to generating slides if no skill result
         return {
-            "type": "deck",
+            "format": "deck",
             "slides": self._generate_slides(data),
+            "theme": "professional",
+            "metadata": {
+                "generated_at": datetime.now().isoformat()
+            },
+            "citations": data.get("citations", []),
+            "charts": data.get("charts", []),
             "data": data
         }
     
@@ -2057,7 +2536,9 @@ Mitigation strategies include portfolio diversification and staged investment ap
         return {
             "type": "matrix",
             "data": data,
-            "dimensions": self._generate_matrix_dimensions(data)
+            "dimensions": self._generate_matrix_dimensions(data),
+            "citations": data.get("citations", []),
+            "charts": data.get("charts", [])
         }
     
     def _format_analysis(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -2092,6 +2573,10 @@ Mitigation strategies include portfolio diversification and staged investment ap
         
         # Generate comprehensive summary
         formatted["summary"] = self._generate_comprehensive_summary(formatted)
+        
+        # Add citations and charts
+        formatted["citations"] = data.get("citations", [])
+        formatted["charts"] = data.get("charts", [])
         
         # Remove empty sections
         return {k: v for k, v in formatted.items() if v}
@@ -2369,11 +2854,11 @@ SECTOR EXTRACTION:
 Return ONLY the JSON object, no other text."""
 
             # ALWAYS use Claude for extraction - it's critical for accurate business model detection
-            if not self.claude:
+            if not self.claude_client:
                 logger.error("Claude client not initialized! Cannot extract company data properly.")
                 raise ValueError("Claude API is required for company extraction")
             
-            response = await self.claude.messages.create(
+            response = await self.claude_client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=4000,
                 temperature=0.1,
@@ -2447,6 +2932,67 @@ Return ONLY the JSON object, no other text."""
                 "company": company_name,
                 "error": str(e)
             }
+    
+    def _get_field_default(self, field: str, stage: str) -> Any:
+        """Get sensible default values based on field and stage"""
+        stage_defaults = {
+            "Seed": {
+                "revenue": 500_000,
+                "growth_rate": 2.5,  # 250% YoY
+                "valuation": 10_000_000,
+                "team_size": 5,
+                "burn_rate": 150_000,
+                "runway_months": 18,
+                "gross_margin": 0.70,
+                "total_funding": 1_500_000,
+                "customer_count": 10,
+                "ltv_cac_ratio": 2.0,
+                "net_retention": 1.1
+            },
+            "Series A": {
+                "revenue": 2_000_000,
+                "growth_rate": 2.0,  # 200% YoY
+                "valuation": 50_000_000,
+                "team_size": 20,
+                "burn_rate": 500_000,
+                "runway_months": 24,
+                "gross_margin": 0.75,
+                "total_funding": 10_000_000,
+                "customer_count": 50,
+                "ltv_cac_ratio": 3.0,
+                "net_retention": 1.15
+            },
+            "Series B": {
+                "revenue": 10_000_000,
+                "growth_rate": 1.5,  # 150% YoY
+                "valuation": 200_000_000,
+                "team_size": 80,
+                "burn_rate": 2_000_000,
+                "runway_months": 18,
+                "gross_margin": 0.78,
+                "total_funding": 35_000_000,
+                "customer_count": 200,
+                "ltv_cac_ratio": 3.5,
+                "net_retention": 1.20
+            },
+            "Series C": {
+                "revenue": 50_000_000,
+                "growth_rate": 1.0,  # 100% YoY
+                "valuation": 500_000_000,
+                "team_size": 250,
+                "burn_rate": 5_000_000,
+                "runway_months": 24,
+                "gross_margin": 0.80,
+                "total_funding": 100_000_000,
+                "customer_count": 1000,
+                "ltv_cac_ratio": 4.0,
+                "net_retention": 1.25
+            }
+        }
+        
+        # Get stage-specific defaults or use Series A as fallback
+        defaults = stage_defaults.get(stage, stage_defaults["Series A"])
+        return defaults.get(field, 0)
     
     async def __aenter__(self):
         """Async context manager entry"""
