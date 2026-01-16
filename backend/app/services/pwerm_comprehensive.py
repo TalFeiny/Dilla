@@ -14,6 +14,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Base valuation for template scenarios (will be scaled to company's actual valuation)
+BASE_VALUATION = 100_000_000  # $100M base for Series A company
 
 @dataclass
 class ComprehensivePWERMScenario:
@@ -80,6 +82,12 @@ class ComprehensivePWERM:
             'Pre-seed,seed,A,B,C,D': 0.10,
             'Pre-seed,seed,A,B,C,D,E': 0.15,
             'Pre-seed,seed,A,B,C,D,E,F': 0.20
+        },
+        'Roll-up': {
+            'Pre-seed,seed,A,B': 0.03,
+            'Pre-seed,seed,A,B,C': 0.04,
+            'Pre-seed,seed,A,B,C,D': 0.03,
+            'Pre-seed,seed,A,B,C,D,E': 0.02
         }
     }
     
@@ -115,17 +123,17 @@ class ComprehensivePWERM:
                     has_extension = True
                 else:
                     path_components.append('seed')
-            elif 'series a' in round_type or 'a round' in round_type:
+            elif 'series a' in round_type or 'series_a' in round_type or 'a round' in round_type:
                 path_components.append('A')
-            elif 'series b' in round_type or 'b round' in round_type:
+            elif 'series b' in round_type or 'series_b' in round_type or 'b round' in round_type:
                 path_components.append('B')
-            elif 'series c' in round_type or 'c round' in round_type:
+            elif 'series c' in round_type or 'series_c' in round_type or 'c round' in round_type:
                 path_components.append('C')
-            elif 'series d' in round_type or 'd round' in round_type:
+            elif 'series d' in round_type or 'series_d' in round_type or 'd round' in round_type:
                 path_components.append('D')
-            elif 'series e' in round_type or 'e round' in round_type:
+            elif 'series e' in round_type or 'series_e' in round_type or 'e round' in round_type:
                 path_components.append('E')
-            elif 'series f' in round_type or 'f round' in round_type:
+            elif 'series f' in round_type or 'series_f' in round_type or 'f round' in round_type:
                 path_components.append('F')
             elif 'debt' in round_type or 'venture debt' in round_type:
                 has_debt = True
@@ -148,11 +156,12 @@ class ComprehensivePWERM:
     
     def _build_full_scenario_matrix(self) -> List[ComprehensivePWERMScenario]:
         """
-        Build complete scenario matrix from your provided data
+        Build complete scenario matrix with base dollar amounts.
+        These are for a typical $100M Series A company and will be scaled.
         """
         scenarios = []
         
-        # LIQUIDATION SCENARIOS ($1M - $45M)
+        # LIQUIDATION SCENARIOS ($1M - $45M base)
         liquidation_ranges = [
             (1, 5), (5, 10), (10, 15), (15, 20), (20, 25),
             (25, 30), (30, 35), (35, 40), (40, 45)
@@ -171,108 +180,160 @@ class ComprehensivePWERM:
         
         for value_range in liquidation_ranges:
             for path in liquidation_paths:
-                # Probability decreases with higher valuations and more rounds
-                base_prob = 0.15 - (value_range[0] / 500) - (path.count(',') * 0.01)
-                base_prob = max(0.001, base_prob)  # Minimum probability
+                # Get probability from benchmark data
+                base_prob = self.EXIT_PROBABILITIES.get('Liquidation', {}).get(path, 0.20)
+                # Adjust slightly based on exit value (lower values more likely)
+                value_adjustment = 1.0 + (45 - value_range[1]) / 100  # Higher prob for lower values
+                adjusted_prob = base_prob * value_adjustment / len(liquidation_ranges)
                 
                 scenarios.append(ComprehensivePWERMScenario(
                     scenario_type="Liquidation",
                     funding_path=path,
                     exit_value_range=(value_range[0] * 1_000_000, value_range[1] * 1_000_000),
                     exit_description=f"Liquidation at ${value_range[0]}-{value_range[1]}M",
-                    probability=base_prob,
+                    probability=adjusted_prob,
                     time_to_exit=2.0
                 ))
         
-        # STRATEGIC ACQUISITION SCENARIOS ($50M - $500M)
+        # ACQUIHIRE SCENARIOS ($5M - $30M base)
+        acquihire_ranges = [
+            (5, 10), (10, 15), (15, 20), (20, 25), (25, 30)
+        ]
+        
+        acquihire_paths = [
+            "Pre-seed only",
+            "Pre-seed and seed",
+            "Pre-seed,seed and A"
+        ]
+        
+        for value_range in acquihire_ranges:
+            for path in acquihire_paths:
+                # Get base probability from benchmark data
+                base_prob = self.EXIT_PROBABILITIES.get('Acquihire', {}).get(path, 0.10)
+                # Distribute across value ranges, slightly favoring lower values  
+                value_adjustment = 1.0 + (30 - value_range[1]) / 50
+                adjusted_prob = base_prob * value_adjustment / len(acquihire_ranges)
+                
+                scenarios.append(ComprehensivePWERMScenario(
+                    scenario_type="Acquihire",
+                    funding_path=path,
+                    exit_value_range=(value_range[0] * 1_000_000, value_range[1] * 1_000_000),
+                    exit_description=f"Acquihire at ${value_range[0]}-{value_range[1]}M",
+                    probability=adjusted_prob,
+                    time_to_exit=2.5
+                ))
+        
+        # STRATEGIC ACQUISITION SCENARIOS ($50M - $500M base)
         acquisition_ranges = [
             (50, 100), (100, 150), (150, 200), (200, 250),
             (250, 300), (300, 350), (350, 400), (400, 450), (450, 500)
         ]
         
         for value_range in acquisition_ranges:
-            for path in ["Pre-seed,seed,A", "Pre-seed,seed,A,B", "Pre-seed,seed,A,B,C"]:
-                base_prob = 0.08 - (abs(value_range[0] - 200) / 5000)  # Peak around $200M
-                base_prob = max(0.001, base_prob)
+            for path in ["Pre-seed,seed and A", "Pre-seed,seed,A,B", "Pre-seed,seed,A,B,C"]:
+                # Get base probability from benchmark data
+                base_prob = self.EXIT_PROBABILITIES.get('Strategic Acquisition', {}).get(path, 0.15)
+                # Distribute across value ranges, peak around mid-range
+                value_adjustment = 1.0 - abs(value_range[0] - 250) / 500
+                value_adjustment = max(0.5, value_adjustment)  # Ensure minimum adjustment
+                adjusted_prob = base_prob * value_adjustment / len(acquisition_ranges)
                 
                 scenarios.append(ComprehensivePWERMScenario(
                     scenario_type="Strategic Acquisition",
                     funding_path=path,
                     exit_value_range=(value_range[0] * 1_000_000, value_range[1] * 1_000_000),
                     exit_description=f"Strategic acquisition at ${value_range[0]}-{value_range[1]}M",
-                    probability=base_prob,
+                    probability=adjusted_prob,
                     time_to_exit=3.5
                 ))
         
-        # IPO SCENARIOS ($500M - $10B+)
+        # IPO SCENARIOS (5x - 100x of valuation)
+        # For a $100M company, this is $500M - $10B+
         ipo_scenarios = [
-            # Microcap IPO ($500M - $1B)
+            # Microcap IPO (5x - 10x)
             {
                 'type': 'Microcap Regional IPO',
-                'ranges': [(500, 600), (600, 700), (700, 800), (800, 900), (900, 1000)],
-                'paths': ["Pre-seed,seed,A,B,C", "Pre-seed,seed,A,B,C,D"],
-                'base_prob': 0.02
+                'ranges': [(5, 6), (6, 7), (7, 8), (8, 9), (9, 10)],
+                'paths': ["Pre-seed,seed,A,B,C", "Pre-seed,seed,A,B,C,D"]
             },
-            # Midcap IPO ($1B - $2B)
+            # Midcap IPO (10x - 20x)
             {
                 'type': 'Midcap IPO',
-                'ranges': [(1000, 1200), (1200, 1400), (1400, 1600), (1600, 1800), (1800, 2000)],
-                'paths': ["Pre-seed,seed,A,B,C,D", "Pre-seed,seed,A,B,C,D,E"],
-                'base_prob': 0.015
+                'ranges': [(10, 12), (12, 14), (14, 16), (16, 18), (18, 20)],
+                'paths': ["Pre-seed,seed,A,B,C,D", "Pre-seed,seed,A,B,C,D,E"]
             },
-            # Largecap IPO ($2B - $5B)
+            # Largecap IPO (20x - 50x)
             {
                 'type': 'Largecap IPO',
-                'ranges': [(2000, 2500), (2500, 3000), (3000, 3500), (3500, 4000), (4000, 5000)],
-                'paths': ["Pre-seed,seed,A,B,C,D,E", "Pre-seed,seed,A,B,C,D,E,F"],
-                'base_prob': 0.01
+                'ranges': [(20, 25), (25, 30), (30, 35), (35, 40), (40, 50)],
+                'paths': ["Pre-seed,seed,A,B,C,D,E", "Pre-seed,seed,A,B,C,D,E,F"]
             },
-            # Mega IPO ($5B+)
+            # Mega IPO (50x+)
             {
                 'type': 'Mega IPO',
-                'ranges': [(5000, 6000), (6000, 7000), (7000, 8000), (8000, 9000), (9000, 10000)],
-                'paths': ["Pre-seed,seed,A,B,C,D,E,F"],
-                'base_prob': 0.005
+                'ranges': [(50, 60), (60, 70), (70, 80), (80, 90), (90, 100)],
+                'paths': ["Pre-seed,seed,A,B,C,D,E,F"]
             }
         ]
         
         for ipo_config in ipo_scenarios:
             for value_range in ipo_config['ranges']:
                 for path in ipo_config['paths']:
+                    # Get base probability from benchmark data
+                    base_prob = self.EXIT_PROBABILITIES.get('IPO', {}).get(path, 0.05)
+                    # Distribute across IPO tiers and value ranges
+                    # Higher tier IPOs (larger multiples) are less likely
+                    tier_index = ipo_scenarios.index(ipo_config)
+                    tier_adjustment = 1.0 / (1 + tier_index * 0.3)  # Decrease probability for higher tiers
+                    range_count = len(ipo_config['ranges']) * len(ipo_config['paths'])
+                    adjusted_prob = base_prob * tier_adjustment / range_count
+                    
                     scenarios.append(ComprehensivePWERMScenario(
                         scenario_type=ipo_config['type'],
                         funding_path=path,
-                        exit_value_range=(value_range[0] * 1_000_000, value_range[1] * 1_000_000),
-                        exit_description=f"{ipo_config['type']} at ${value_range[0]/1000:.1f}-{value_range[1]/1000:.1f}B",
-                        probability=ipo_config['base_prob'],
+                        exit_value_range=(value_range[0] * BASE_VALUATION, value_range[1] * BASE_VALUATION),
+                        exit_description=f"{ipo_config['type']} at {value_range[0]:.0f}x-{value_range[1]:.0f}x",
+                        probability=adjusted_prob,
                         time_to_exit=7.0  # Median time to IPO
                     ))
         
-        # ROLL-UP SCENARIOS ($400M - $2B)
-        rollup_ranges = [(400, 600), (600, 800), (800, 1000), (1000, 1500), (1500, 2000)]
+        # ROLL-UP SCENARIOS (4x - 20x of valuation)
+        # For a $100M company, this is $400M - $2B
+        rollup_ranges = [(4, 6), (6, 8), (8, 10), (10, 15), (15, 20)]
         
         for value_range in rollup_ranges:
             for path in ["Pre-seed,seed,A,B", "Pre-seed,seed,A,B,C"]:
+                # Get base probability from benchmark data
+                base_prob = self.EXIT_PROBABILITIES.get('Roll-up', {}).get(path, 0.03)
+                # Distribute across value ranges
+                adjusted_prob = base_prob / len(rollup_ranges)
+                
                 scenarios.append(ComprehensivePWERMScenario(
                     scenario_type="Roll-up",
                     funding_path=path,
-                    exit_value_range=(value_range[0] * 1_000_000, value_range[1] * 1_000_000),
-                    exit_description=f"Industry roll-up at ${value_range[0]}-{value_range[1]}M",
-                    probability=0.03,
+                    exit_value_range=(value_range[0] * BASE_VALUATION, value_range[1] * BASE_VALUATION),
+                    exit_description=f"Industry roll-up at {value_range[0]:.0f}x-{value_range[1]:.0f}x",
+                    probability=adjusted_prob,
                     time_to_exit=4.0
                 ))
         
-        # PE BUYOUT SCENARIOS ($500M - $3B)
-        pe_ranges = [(500, 750), (750, 1000), (1000, 1500), (1500, 2000), (2000, 3000)]
+        # PE BUYOUT SCENARIOS (5x - 30x of valuation)
+        # For a $100M company, this is $500M - $3B
+        pe_ranges = [(5, 7.5), (7.5, 10), (10, 15), (15, 20), (20, 30)]
         
         for value_range in pe_ranges:
             for path in ["Pre-seed,seed,A,B,C", "Pre-seed,seed,A,B,C,D"]:
+                # Get base probability from benchmark data
+                base_prob = self.EXIT_PROBABILITIES.get('PE Buyout', {}).get(path, 0.08)
+                # Distribute across value ranges
+                adjusted_prob = base_prob / len(pe_ranges)
+                
                 scenarios.append(ComprehensivePWERMScenario(
                     scenario_type="PE Buyout",
                     funding_path=path,
-                    exit_value_range=(value_range[0] * 1_000_000, value_range[1] * 1_000_000),
-                    exit_description=f"PE buyout at ${value_range[0]/1000:.1f}-{value_range[1]/1000:.1f}B",
-                    probability=0.04,
+                    exit_value_range=(value_range[0] * BASE_VALUATION, value_range[1] * BASE_VALUATION),
+                    exit_description=f"PE buyout at {value_range[0]:.0f}x-{value_range[1]:.0f}x",
+                    probability=adjusted_prob,
                     time_to_exit=5.0
                 ))
         
@@ -308,8 +369,11 @@ class ComprehensivePWERM:
         # Filter scenarios based on funding path
         relevant_scenarios = self._filter_scenarios_by_path(funding_path)
         
+        # Scale scenarios based on company's actual valuation
+        scaled_scenarios = self._scale_scenarios_to_company(relevant_scenarios, company_data)
+        
         # Adjust probabilities based on company-specific factors
-        adjusted_scenarios = self._adjust_probabilities(relevant_scenarios, company_data)
+        adjusted_scenarios = self._adjust_probabilities(scaled_scenarios, company_data)
         
         # Calculate present values
         for scenario in adjusted_scenarios:
@@ -336,13 +400,21 @@ class ComprehensivePWERM:
             scenario_groups[scenario.scenario_type]['weighted_value'] += scenario.probability * scenario.present_value
         
         return {
+            'valuation': fair_value,  # Primary valuation output
             'fair_value': fair_value,
             'pre_dlom_value': total_value,
+            'expected_return': total_value,  # Expected return before DLOM
             'dlom_applied': dlom,
             'discount_rate': discount_rate,
             'funding_path': funding_path,
             'scenario_count': len(adjusted_scenarios),
             'scenario_groups': scenario_groups,
+            'scenarios': [{
+                'type': s.scenario_type,
+                'exit_value': s.exit_value,
+                'probability': s.probability,
+                'present_value': s.present_value
+            } for s in sorted(adjusted_scenarios, key=lambda x: x.probability, reverse=True)[:10]],
             'top_scenarios': sorted(adjusted_scenarios, key=lambda x: x.probability, reverse=True)[:10],
             'methodology': 'Comprehensive PWERM with funding path analysis'
         }
@@ -418,3 +490,107 @@ class ComprehensivePWERM:
             scenario.probability = scenario.probability / total_prob
         
         return adjusted
+    
+    def _scale_scenarios_to_company(
+        self,
+        scenarios: List[ComprehensivePWERMScenario],
+        company_data: Dict
+    ) -> List[ComprehensivePWERMScenario]:
+        """
+        Scale scenario exit values based on company's actual valuation.
+        This transforms the hardcoded template values into company-specific ranges.
+        """
+        # Extract company's current valuation
+        current_val = (
+            company_data.get('valuation') or 
+            company_data.get('last_round_valuation') or 
+            company_data.get('post_money_valuation') or
+            100_000_000  # Default $100M if no valuation found
+        )
+        
+        # Handle case where valuation might be a dict with 'value' field
+        if isinstance(current_val, dict) and 'value' in current_val:
+            current_val = current_val['value']
+        
+        # Determine the company's stage
+        stage = company_data.get('stage', 'series_a')
+        if isinstance(stage, str):
+            stage = stage.lower().replace(' ', '_')
+        
+        # Define base valuations that the hardcoded scenarios assume
+        # These are the median valuations for each stage
+        stage_bases = {
+            'pre_seed': 5_000_000,       # $5M pre-seed
+            'pre-seed': 5_000_000,       # $5M pre-seed (alternate spelling)
+            'seed': 20_000_000,          # $20M seed
+            'series_a': 50_000_000,      # $50M Series A
+            'series_b': 150_000_000,     # $150M Series B
+            'series_c': 400_000_000,     # $400M Series C
+            'series_d': 800_000_000,     # $800M Series D
+            'series_e': 1_500_000_000,   # $1.5B Series E
+            'series_f': 3_000_000_000,   # $3B Series F
+            'growth': 250_000_000,       # $250M growth stage
+            'late': 1_000_000_000,       # $1B late stage
+            'unknown': 100_000_000,      # $100M default
+        }
+        
+        # Get the base valuation for this stage
+        stage_base = stage_bases.get(stage, 100_000_000)
+        
+        # Calculate the scaling factor
+        scale_factor = current_val / stage_base
+        
+        logger.info(f"Scaling PWERM scenarios: current_val=${current_val:,.0f}, stage={stage}, base=${stage_base:,.0f}, scale={scale_factor:.2f}x")
+        
+        # Create scaled scenarios
+        scaled_scenarios = []
+        for scenario in scenarios:
+            # Create a copy to avoid modifying the original
+            scaled_scenario = ComprehensivePWERMScenario(
+                scenario_type=scenario.scenario_type,
+                funding_path=scenario.funding_path,
+                exit_value_range=(
+                    scenario.exit_value_range[0] * scale_factor,
+                    scenario.exit_value_range[1] * scale_factor
+                ),
+                exit_description=self._format_scaled_description(
+                    scenario.scenario_type,
+                    scenario.exit_value_range[0] * scale_factor,
+                    scenario.exit_value_range[1] * scale_factor
+                ),
+                probability=scenario.probability,
+                time_to_exit=scenario.time_to_exit,
+                present_value=scenario.present_value
+            )
+            scaled_scenarios.append(scaled_scenario)
+        
+        return scaled_scenarios
+    
+    def _format_scaled_description(self, scenario_type: str, min_val: float, max_val: float) -> str:
+        """
+        Format the exit description with properly scaled values.
+        """
+        # Format values based on magnitude
+        if min_val >= 1_000_000_000:  # Billions
+            return f"{scenario_type} at ${min_val/1_000_000_000:.1f}-{max_val/1_000_000_000:.1f}B"
+        elif min_val >= 1_000_000:  # Millions
+            return f"{scenario_type} at ${min_val/1_000_000:.0f}-{max_val/1_000_000:.0f}M"
+        else:  # Thousands or less
+            return f"{scenario_type} at ${min_val/1_000:.0f}-{max_val/1_000:.0f}K"
+    
+    def _ensure_numeric(self, value: Any, default: float = 0) -> float:
+        """
+        Ensure a value is numeric, extracting from dict if needed.
+        """
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, dict) and 'value' in value:
+            return float(value['value'])
+        if isinstance(value, str):
+            try:
+                return float(value.replace(',', '').replace('$', ''))
+            except:
+                return default
+        return default

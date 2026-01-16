@@ -1,0 +1,590 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Investment Analysis Report</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        .slide {
+            width: 1024px;
+            min-height: 768px;
+            page-break-after: always;
+            page-break-inside: avoid;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        @media print {
+            .slide {
+                page-break-after: always;
+                page-break-inside: avoid;
+            }
+        }
+        .chart-container {
+            position: relative;
+            height: 400px;
+            width: 100%;
+        }
+        /* Professional gradient backgrounds */
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .gradient-subtle {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    
+<div class="slide gradient-bg flex items-center justify-center">
+    <div class="text-center text-white px-16">
+        <h1 class="text-6xl font-bold mb-8">Investment Analysis Report</h1>
+        <p class="text-2xl opacity-90 mb-4">Analysis of 2 companies</p>
+        <p class="text-xl opacity-80">September 2025</p>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Executive Summary</h2>
+    <ul class="list-disc list-inside text-lg"><li class="mb-3 text-gray-700">Mercury: Series C stage, $500M ARR at 6.3x revenue multiple (Fund Fit: 57/100)</li><li class="mb-3 text-gray-700">Deel: Late Stage stage, $800M ARR at 6.7x revenue multiple (Fund Fit: 59/100)</li><li class="mb-3 text-gray-700">Labor replacement opportunity: $2079B addressable labor market</li><li class="mb-3 text-gray-700">Proposed deployment: $4.7M across 2 companies</li></ul>
+    
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-8">Company Overview & Financials</h2>
+    <div class="flex gap-8">
+        
+            <div class="flex-1 bg-gray-50 rounded-xl p-6">
+                <h3 class="text-xl font-bold text-gray-900 mb-4">Mercury</h3>
+                <div class="text-sm text-gray-700 mb-4">Digital banking and financial services platform specifically designed for startups and SMBs, offering integrated banking, treasury management, and VC-specific financial tools</div>
+                <div class="space-y-1">
+                    
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Stage:</span>
+                    <span class="font-semibold">Series C</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Revenue:</span>
+                    <span class="font-semibold">$500M</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Valuation:</span>
+                    <span class="font-semibold">$3.2B</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Revenue Multiple:</span>
+                    <span class="font-semibold">6.3x</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Total Funding:</span>
+                    <span class="font-semibold">$452M</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Capital Efficiency:</span>
+                    <span class="font-semibold">1.11x</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Team Size:</span>
+                    <span class="font-semibold">850 employees</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Founded:</span>
+                    <span class="font-semibold">2017</span>
+                </div>
+                
+                </div>
+            </div>
+            
+            <div class="flex-1 bg-gray-50 rounded-xl p-6">
+                <h3 class="text-xl font-bold text-gray-900 mb-4">Deel</h3>
+                <div class="text-sm text-gray-700 mb-4">Global payroll and HR platform for hiring, onboarding, and paying international employees and contractors across 150+ countries with automated compliance and local regulations handling</div>
+                <div class="space-y-1">
+                    
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Stage:</span>
+                    <span class="font-semibold">Late Stage</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Revenue:</span>
+                    <span class="font-semibold">$800M</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Valuation:</span>
+                    <span class="font-semibold">$5.4B</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Revenue Multiple:</span>
+                    <span class="font-semibold">6.7x</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Total Funding:</span>
+                    <span class="font-semibold">$679M</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Capital Efficiency:</span>
+                    <span class="font-semibold">1.18x</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Team Size:</span>
+                    <span class="font-semibold">3000 employees</span>
+                </div>
+                
+                <div class="flex justify-between py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Founded:</span>
+                    <span class="font-semibold">2019</span>
+                </div>
+                
+                </div>
+            </div>
+            
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-2">Founder & Team Analysis</h2>
+    <p class="text-gray-600 mb-8">Leadership profiles and quality assessment</p>
+    <div class="flex gap-8">
+        
+            <div class="flex-1 bg-gray-50 rounded-xl p-6">
+                <h3 class="text-xl font-bold text-gray-900 mb-4">Mercury</h3>
+                <div class="mb-4">
+                    <h4 class="font-semibold text-gray-700 mb-2">Founders</h4>
+                    
+                <div class="mb-3">
+                    <div class="font-semibold">Technical Founder</div>
+                    <div class="text-sm text-gray-600">Founder</div>
+                    <div class="text-sm text-gray-700 mt-1">N/A...</div>
+                </div>
+                
+                <div class="mb-3">
+                    <div class="font-semibold">Repeat Entrepreneur</div>
+                    <div class="text-sm text-gray-600">Founder</div>
+                    <div class="text-sm text-gray-700 mt-1">Previous successful exits...</div>
+                </div>
+                
+                </div>
+                <div class="mb-3">
+                    <span class="text-sm text-gray-600">Team Size:</span>
+                    <span class="font-semibold ml-2">850 employees</span>
+                </div>
+                <div class="mb-3"><h4 class="font-semibold text-gray-700 mb-1">Quality Signals</h4><ul><li class="text-sm text-green-700">• ✅ Repeat entrepreneurs with exits</li><li class="text-sm text-green-700">• ✅ Technical founder(s)</li></ul></div>
+                
+            </div>
+            
+            <div class="flex-1 bg-gray-50 rounded-xl p-6">
+                <h3 class="text-xl font-bold text-gray-900 mb-4">Deel</h3>
+                <div class="mb-4">
+                    <h4 class="font-semibold text-gray-700 mb-2">Founders</h4>
+                    
+                <div class="mb-3">
+                    <div class="font-semibold">Technical Founder</div>
+                    <div class="text-sm text-gray-600">Founder</div>
+                    <div class="text-sm text-gray-700 mt-1">N/A...</div>
+                </div>
+                
+                <div class="mb-3">
+                    <div class="font-semibold">Repeat Entrepreneur</div>
+                    <div class="text-sm text-gray-600">Founder</div>
+                    <div class="text-sm text-gray-700 mt-1">Previous successful exits...</div>
+                </div>
+                
+                </div>
+                <div class="mb-3">
+                    <span class="text-sm text-gray-600">Team Size:</span>
+                    <span class="font-semibold ml-2">3000 employees</span>
+                </div>
+                <div class="mb-3"><h4 class="font-semibold text-gray-700 mb-1">Quality Signals</h4><ul><li class="text-sm text-green-700">• ✅ Repeat entrepreneurs with exits</li><li class="text-sm text-green-700">• ✅ Technical founder(s)</li></ul></div>
+                
+            </div>
+            
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Path to Unicorn Status</h2>
+    <div class="chart-container">
+        <canvas id="chart-4"></canvas>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-8">Business Analysis Comparison</h2>
+    <div class="flex gap-8">
+        
+            <div class="flex-1 bg-gray-50 rounded-xl p-6">
+                <h3 class="text-xl font-bold text-gray-900 mb-4">Mercury</h3>
+                <div class="space-y-4">
+                    <div>
+                        <span class="text-sm text-gray-500 uppercase tracking-wider">What They Do</span>
+                        <p class="mt-1 text-gray-800">Digital banking and financial services platform specifically designed for startups and SMBs, offering integrated banking, treasury management, and VC-specific financial tools</p>
+                    </div>
+                    <div>
+                        <span class="text-sm text-gray-500 uppercase tracking-wider">What They Sell</span>
+                        <p class="mt-1 text-gray-800">Full-service digital banking platform with integrated treasury tools, venture-specific features, and modern financial workflows designed specifically for startups</p>
+                    </div>
+                    <div>
+                        <span class="text-sm text-gray-500 uppercase tracking-wider">Who They Sell To</span>
+                        <p class="mt-1 text-gray-800">Startups and SMBs</p>
+                    </div>
+                    <div class="pt-3 border-t border-gray-300">
+                        <div class="grid grid-cols-2 gap-2 text-sm">
+                            <div><span class="text-gray-600">Sector:</span> <span class="font-semibold">FinTech Banking</span></div>
+                            <div><span class="text-gray-600">Founded:</span> <span class="font-semibold">2017</span></div>
+                            <div><span class="text-gray-600">Pricing:</span> <span class="font-semibold">Subscription or usage-based</span></div>
+                            <div><span class="text-gray-600">Team Size:</span> <span class="font-semibold">850</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flex-1 bg-gray-50 rounded-xl p-6">
+                <h3 class="text-xl font-bold text-gray-900 mb-4">Deel</h3>
+                <div class="space-y-4">
+                    <div>
+                        <span class="text-sm text-gray-500 uppercase tracking-wider">What They Do</span>
+                        <p class="mt-1 text-gray-800">Global payroll and HR platform for hiring, onboarding, and paying international employees and contractors across 150+ countries with automated compliance and local regulations handling</p>
+                    </div>
+                    <div>
+                        <span class="text-sm text-gray-500 uppercase tracking-wider">What They Sell</span>
+                        <p class="mt-1 text-gray-800">All-in-one HR platform that enables companies to hire, onboard, pay and manage employees and contractors globally while ensuring compliance with local labor laws and regulations</p>
+                    </div>
+                    <div>
+                        <span class="text-sm text-gray-500 uppercase tracking-wider">Who They Sell To</span>
+                        <p class="mt-1 text-gray-800">Global businesses hiring international employees and contractors</p>
+                    </div>
+                    <div class="pt-3 border-t border-gray-300">
+                        <div class="grid grid-cols-2 gap-2 text-sm">
+                            <div><span class="text-gray-600">Sector:</span> <span class="font-semibold">HR Tech / Global Payroll</span></div>
+                            <div><span class="text-gray-600">Founded:</span> <span class="font-semibold">2019</span></div>
+                            <div><span class="text-gray-600">Pricing:</span> <span class="font-semibold">Subscription or usage-based</span></div>
+                            <div><span class="text-gray-600">Team Size:</span> <span class="font-semibold">3000</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Company Comparison</h2>
+    <div class="chart-container">
+        <canvas id="chart-6"></canvas>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-2">TAM Pincer Analysis</h2>
+    <p class="text-gray-600 mb-8">Market Opportunity & Penetration</p>
+    <div class="flex gap-8">
+        
+            <div class="flex-1 bg-gray-50 rounded-xl p-6">
+                <h3 class="text-xl font-bold text-gray-900 mb-4">Mercury</h3>
+                <div class="space-y-4">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="bg-blue-100 rounded-lg p-3">
+                            <div class="text-sm text-blue-600 font-semibold">Software TAM</div>
+                            <div class="text-2xl font-bold text-blue-900">$350.0B</div>
+                            <div class="text-xs text-blue-700 mt-1">Calculated from current revenue and market penetration estimates</div>
+                        </div>
+                        <div class="bg-purple-100 rounded-lg p-3">
+                            <div class="text-sm text-purple-600 font-semibold">Labor TAM</div>
+                            <div class="text-2xl font-bold text-purple-900">$346.5B</div>
+                            <div class="text-xs text-purple-700 mt-1">Estimated from business model</div>
+                        </div>
+                    </div>
+                    <div class="border-t pt-4">
+                        <div class="space-y-2">
+                            <div class="flex justify-between">
+                                <span class="text-gray-600">Selected TAM:</span>
+                                <span class="font-bold text-lg">$350.0B</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600">SAM:</span>
+                                <span class="font-semibold">$50.00B</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600">SOM:</span>
+                                <span class="font-semibold">$2.50B</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600">Current Penetration:</span>
+                                <span class="font-semibold">20.00%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flex-1 bg-gray-50 rounded-xl p-6">
+                <h3 class="text-xl font-bold text-gray-900 mb-4">Deel</h3>
+                <div class="space-y-4">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="bg-blue-100 rounded-lg p-3">
+                            <div class="text-sm text-blue-600 font-semibold">Software TAM</div>
+                            <div class="text-2xl font-bold text-blue-900">$56.0B</div>
+                            <div class="text-xs text-blue-700 mt-1">Calculated from current revenue and market penetration estimates</div>
+                        </div>
+                        <div class="bg-purple-100 rounded-lg p-3">
+                            <div class="text-sm text-purple-600 font-semibold">Labor TAM</div>
+                            <div class="text-2xl font-bold text-purple-900">$1732.5B</div>
+                            <div class="text-xs text-purple-700 mt-1">Estimated from business model</div>
+                        </div>
+                    </div>
+                    <div class="border-t pt-4">
+                        <div class="space-y-2">
+                            <div class="flex justify-between">
+                                <span class="text-gray-600">Selected TAM:</span>
+                                <span class="font-bold text-lg">$1732.5B</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600">SAM:</span>
+                                <span class="font-semibold">$16.00B</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600">SOM:</span>
+                                <span class="font-semibold">$0.08B</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600">Current Penetration:</span>
+                                <span class="font-semibold">100.00%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Cap Table Evolution - Mercury</h2>
+    <div class="chart-container">
+        <canvas id="chart-8"></canvas>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Cap Table Evolution - Deel</h2>
+    <div class="chart-container">
+        <canvas id="chart-9"></canvas>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-8 text-center">Cap Table Evolution</h2>
+    <div class="flex gap-8">
+        
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Exit Scenarios & Ownership Analysis</h2>
+    
+    
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Impact on $78M Fund Returns</h2>
+    <div class="chart-container">
+        <canvas id="chart-12"></canvas>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Follow-on Strategy Decision Framework</h2>
+    
+    
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-2">Investment Recommendations</h2>
+    <p class="text-gray-600 mb-6">Fund Fit Analysis for $78M Fund ($47M remaining to deploy)</p>
+    <div>
+        
+            <div class="rounded-lg p-6 border-2 bg-yellow-50 border-yellow-500 mb-4">
+                <h3 class="text-xl font-bold mb-2">Mercury</h3>
+                <div class="text-yellow-800 text-lg font-semibold mb-3">CONSIDER: Monitor and revisit next round</div>
+                <div class="text-gray-700 mb-2">❌ DOESN'T WORK: Only 0.1% ownership at max $2.3M | ✅ Good value for late-stage fund addition | ⚡ URGENT: Only 40% deployed in Year 3 (target: 45%)</div>
+                <div class="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-gray-300">
+                    <div>
+                        <span class="text-sm text-gray-600">Ownership</span>
+                        <div class="font-semibold">Entry: 0.1% → Exit: 0.0% (after dilution)</div>
+                    </div>
+                    <div>
+                        <span class="text-sm text-gray-600">Expected Proceeds</span>
+                        <div class="font-semibold">TBD</div>
+                    </div>
+                    <div>
+                        <span class="text-sm text-gray-600">Expected IRR</span>
+                        <div class="font-semibold">TBD</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="rounded-lg p-6 border-2 bg-yellow-50 border-yellow-500 mb-4">
+                <h3 class="text-xl font-bold mb-2">Deel</h3>
+                <div class="text-yellow-800 text-lg font-semibold mb-3">CONSIDER: Monitor and revisit next round</div>
+                <div class="text-gray-700 mb-2">❌ DOESN'T WORK: Only 0.0% ownership at max $2.3M | ✅ Good value for late-stage fund addition | ⚡ URGENT: Only 40% deployed in Year 3 (target: 45%)</div>
+                <div class="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-gray-300">
+                    <div>
+                        <span class="text-sm text-gray-600">Ownership</span>
+                        <div class="font-semibold">Entry: 0.0% → Exit: 0.0% (after dilution)</div>
+                    </div>
+                    <div>
+                        <span class="text-sm text-gray-600">Expected Proceeds</span>
+                        <div class="font-semibold">TBD</div>
+                    </div>
+                    <div>
+                        <span class="text-sm text-gray-600">Expected IRR</span>
+                        <div class="font-semibold">TBD</div>
+                    </div>
+                </div>
+            </div>
+            
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-8">Sources & References</h2>
+    <div class="columns-2 gap-8">
+        
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">1.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">2.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">3.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">4.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">5.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">6.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">7.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">8.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">9.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">10.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">11.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">12.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">13.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">14.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">15.</span>
+                <span class="text-sm text-gray-700">Unknown - </span>
+            </div>
+            
+    </div>
+</div>
+        
+    <script>
+        // Initialize all charts after DOM is loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            
+                        var ctx4 = document.getElementById('chart-4');
+                        if (ctx4) {
+                            new Chart(ctx4.getContext('2d'), {"type": "line", "data": {"labels": ["Now", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5"], "datasets": [{"label": "Mercury (1% YoY)", "data": [500.0, 505.0, 510.05, 515.1505000000001, 520.302005, 525.5050250500001], "borderColor": "rgba(59, 130, 246, 1)", "backgroundColor": "rgba(59, 130, 246, 0.1)", "fill": false, "tension": 0.4, "pointRadius": 4, "pointHoverRadius": 6, "borderWidth": 2}, {"label": "Deel (3% YoY)", "data": [800.0, 824.0, 848.72, 874.1816, 900.4070480000001, 927.41925944], "borderColor": "rgba(16, 185, 129, 1)", "backgroundColor": "rgba(16, 185, 129, 0.1)", "fill": false, "tension": 0.4, "pointRadius": 4, "pointHoverRadius": 6, "borderWidth": 2}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 20, "font": {"size": 12, "family": "'Inter', sans-serif"}}}, "title": {"display": true, "text": "ARR Growth Projection", "font": {"size": 16, "family": "'Inter', sans-serif", "weight": "600"}, "padding": {"bottom": 20}}}, "scales": {"y": {"beginAtZero": true, "grid": {"color": "rgba(0, 0, 0, 0.05)", "drawBorder": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}, "x": {"grid": {"display": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}}}});
+                        }
+                    
+
+                        var ctx6 = document.getElementById('chart-6');
+                        if (ctx6) {
+                            new Chart(ctx6.getContext('2d'), {"type": "bar", "data": {"labels": ["Mercury", "Deel"], "datasets": [{"label": "Valuation (USD)", "data": [3164062500.0, 5378906250.0], "backgroundColor": "rgba(59, 130, 246, 0.9)", "borderColor": "rgba(59, 130, 246, 0.9)", "borderWidth": 2}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 20, "font": {"size": 12, "family": "'Inter', sans-serif"}}}, "title": {"display": true, "text": "Valuation Comparison", "font": {"size": 16, "family": "'Inter', sans-serif", "weight": "600"}, "padding": {"bottom": 20}}}, "scales": {"y": {"beginAtZero": true, "grid": {"color": "rgba(0, 0, 0, 0.05)", "drawBorder": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}, "x": {"grid": {"display": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}}}});
+                        }
+                    
+
+                        var ctx8 = document.getElementById('chart-8');
+                        if (ctx8) {
+                            new Chart(ctx8.getContext('2d'), {"type": "waterfall", "data": {"labels": ["Initial (Founders)", "Series B Dilution", "Series C Dilution", "Final Founder Ownership"], "datasets": [{"label": "Ownership %", "data": [100, -18.0, -12.299999999999997, 0], "backgroundColor": ["rgba(59, 130, 246, 0.2)", "rgba(156, 163, 175, 0.2)", "rgba(156, 163, 175, 0.2)", "rgba(59, 130, 246, 0.6)"], "borderColor": ["rgba(59, 130, 246, 1)", "rgba(156, 163, 175, 0.6)", "rgba(156, 163, 175, 0.6)", "rgba(59, 130, 246, 0.8)"], "borderWidth": 2}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 20, "font": {"size": 12, "family": "'Inter', sans-serif"}}}, "title": {"display": true, "text": "Equity Ownership by Round", "font": {"size": 16, "family": "'Inter', sans-serif", "weight": "600"}, "padding": {"bottom": 20}}}, "scales": {"y": {"beginAtZero": true, "grid": {"color": "rgba(0, 0, 0, 0.05)", "drawBorder": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}, "x": {"grid": {"display": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}}}});
+                        }
+                    
+
+                        var ctx9 = document.getElementById('chart-9');
+                        if (ctx9) {
+                            new Chart(ctx9.getContext('2d'), {"type": "waterfall", "data": {"labels": ["Initial (Founders)", "Seed (YC) Dilution", "Series A Dilution", "Series C Dilution", "Series D Dilution", "Final Founder Ownership"], "datasets": [{"label": "Ownership %", "data": [100, -15.0, -25.412371134020617, -23.4094145802651, -8.620902676753456, 0], "backgroundColor": ["rgba(59, 130, 246, 0.2)", "rgba(156, 163, 175, 0.2)", "rgba(156, 163, 175, 0.2)", "rgba(156, 163, 175, 0.2)", "rgba(156, 163, 175, 0.2)", "rgba(59, 130, 246, 0.6)"], "borderColor": ["rgba(59, 130, 246, 1)", "rgba(156, 163, 175, 0.6)", "rgba(156, 163, 175, 0.6)", "rgba(156, 163, 175, 0.6)", "rgba(156, 163, 175, 0.6)", "rgba(59, 130, 246, 0.8)"], "borderWidth": 2}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 20, "font": {"size": 12, "family": "'Inter', sans-serif"}}}, "title": {"display": true, "text": "Equity Ownership by Round", "font": {"size": 16, "family": "'Inter', sans-serif", "weight": "600"}, "padding": {"bottom": 20}}}, "scales": {"y": {"beginAtZero": true, "grid": {"color": "rgba(0, 0, 0, 0.05)", "drawBorder": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}, "x": {"grid": {"display": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}}}});
+                        }
+                    
+
+                        var ctx12 = document.getElementById('chart-12');
+                        if (ctx12) {
+                            new Chart(ctx12.getContext('2d'), {"type": "bar", "data": {"labels": ["0.0x", "0.3x", "0.5x", "0.7x", "1.0x", "2.0x", "3.0x", "5.0x", "10.0x", "20.0x"], "datasets": [{"label": "DPI Contribution", "data": [0.0, 0.009, 0.015, 0.021, 0.03, 0.06, 0.09, 0.15, 0.3, 0.6], "backgroundColor": "rgba(59, 130, 246, 0.9)", "yAxisID": "y1", "borderColor": "rgba(59, 130, 246, 0.9)", "borderWidth": 2}, {"label": "Required from Others for 3x", "data": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "backgroundColor": "rgba(251, 191, 36, 0.9)", "yAxisID": "y2", "borderColor": "rgba(251, 191, 36, 0.9)", "borderWidth": 2}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 20, "font": {"size": 12, "family": "'Inter', sans-serif"}}}, "title": {"display": true, "text": "Exit Multiple Impact on Fund DPI", "font": {"size": 16, "family": "'Inter', sans-serif", "weight": "600"}, "padding": {"bottom": 20}}}, "scales": {"y": {"beginAtZero": true, "grid": {"color": "rgba(0, 0, 0, 0.05)", "drawBorder": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}, "x": {"grid": {"display": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}}}});
+                        }
+                    
+        });
+    </script>
+</body>
+</html>
+        

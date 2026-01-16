@@ -179,8 +179,8 @@ export default function CompaniesPage() {
     <div className="container mx-auto p-6">
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h1 className="text-3xl font-bold">Companies</h1>
-          <p className="text-gray-600">Manage and analyze your portfolio companies</p>
+          <h1 className="font-display text-primary">Companies</h1>
+          <p className="font-body text-secondary">Manage and analyze your portfolio companies</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline">
@@ -201,7 +201,7 @@ export default function CompaniesPage() {
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
             <div>
-              <label className="text-sm font-medium mb-2 block text-gray-700">Search</label>
+              <label className="font-caption text-secondary mb-2 block">Search</label>
               <div className="relative">
                 <Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
                 <Input
@@ -213,7 +213,7 @@ export default function CompaniesPage() {
               </div>
             </div>
             <div>
-              <label className="text-sm font-medium mb-2 block text-gray-700">Sector</label>
+              <label className="font-caption text-secondary mb-2 block">Sector</label>
               <Select value={sectorFilter} onValueChange={setSectorFilter}>
                 <SelectTrigger className="border-gray-300 focus:border-blue-500 focus:ring-blue-500 bg-white">
                   <SelectValue placeholder="All sectors" className="text-gray-600" />
@@ -229,7 +229,7 @@ export default function CompaniesPage() {
               </Select>
             </div>
             <div>
-              <label className="text-sm font-medium mb-2 block text-gray-700">Status</label>
+              <label className="font-caption text-secondary mb-2 block">Status</label>
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger className="border-gray-300 focus:border-blue-500 focus:ring-blue-500 bg-white">
                   <SelectValue placeholder="All statuses" className="text-gray-600" />
@@ -245,7 +245,7 @@ export default function CompaniesPage() {
               </Select>
             </div>
             <div>
-              <label className="text-sm font-medium mb-2 block text-gray-700">Min Growth %</label>
+              <label className="font-caption text-secondary mb-2 block">Min Growth %</label>
               <Select value={growthFilter} onValueChange={setGrowthFilter}>
                 <SelectTrigger className="border-gray-300 focus:border-blue-500 focus:ring-blue-500 bg-white">
                   <SelectValue placeholder="Any growth" className="text-gray-600" />
@@ -260,7 +260,7 @@ export default function CompaniesPage() {
               </Select>
             </div>
             <div>
-              <label className="text-sm font-medium mb-2 block text-gray-700">Min Thesis %</label>
+              <label className="font-caption text-secondary mb-2 block">Min Thesis %</label>
               <Select value={thesisFilter} onValueChange={setThesisFilter}>
                 <SelectTrigger className="border-gray-300 focus:border-blue-500 focus:ring-blue-500 bg-white">
                   <SelectValue placeholder="Any thesis" className="text-gray-600" />
@@ -300,8 +300,8 @@ export default function CompaniesPage() {
             <div className="flex items-center">
               <Building2 className="h-8 w-8 text-blue-600" />
               <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600">Total Companies</p>
-                <p className="text-2xl font-bold">{filteredCompanies.length}</p>
+                <p className="font-caption text-secondary">Total Companies</p>
+                <p className="font-display text-primary">{filteredCompanies.length}</p>
               </div>
             </div>
           </CardContent>
@@ -311,8 +311,8 @@ export default function CompaniesPage() {
             <div className="flex items-center">
               <TrendingUp className="h-8 w-8 text-green-600" />
               <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600">High Growth (&gt;50% YoY)</p>
-                <p className="text-2xl font-bold">
+                <p className="font-caption text-secondary">High Growth (&gt;50% YoY)</p>
+                <p className="font-display text-primary">
                   {filteredCompanies.filter(c => c.revenue_growth_annual_pct && c.revenue_growth_annual_pct > 50).length}
                 </p>
               </div>
@@ -324,8 +324,8 @@ export default function CompaniesPage() {
             <div className="flex items-center">
               <Users className="h-8 w-8 text-purple-600" />
               <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600">PWERM Models</p>
-                <p className="text-2xl font-bold">
+                <p className="font-caption text-secondary">PWERM Models</p>
+                <p className="font-display text-primary">
                   {filteredCompanies.filter(c => c.has_pwerm_model).length}
                 </p>
               </div>
@@ -337,8 +337,8 @@ export default function CompaniesPage() {
             <div className="flex items-center">
               <Building2 className="h-8 w-8 text-orange-600" />
               <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600">High Thesis Match (&gt;70%)</p>
-                <p className="text-2xl font-bold">
+                <p className="font-caption text-secondary">High Thesis Match (&gt;70%)</p>
+                <p className="font-display text-primary">
                   {filteredCompanies.filter(c => c.thesis_match_score && c.thesis_match_score > 70).length}
                 </p>
               </div>

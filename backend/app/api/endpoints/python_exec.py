@@ -4,9 +4,10 @@ Provides controlled execution of analysis scripts
 """
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from pydantic import BaseModel
 import logging
+import uuid
 
 from app.services.python_executor import python_executor
 
@@ -26,6 +27,7 @@ class PWERMExecutionRequest(BaseModel):
     arr: Optional[float] = None
     growth_rate: Optional[float] = None
     scenarios: int = 499
+    sector: Optional[str] = None
 
 
 class CrewAIExecutionRequest(BaseModel):
@@ -44,6 +46,11 @@ class KYCExecutionRequest(BaseModel):
     check_type: str = "full"
 
 
+class ScenarioAnalysisRequest(BaseModel):
+    company_data: Dict[str, Any]
+    num_scenarios: int = 100
+
+
 @router.post("/execute")
 async def execute_script(
     request: ScriptExecutionRequest,
@@ -52,37 +59,34 @@ async def execute_script(
     """Execute a Python analysis script"""
     try:
         if request.async_execution:
-            # Execute in background
             task_id = str(uuid.uuid4())
-            
-            async def run_script():
+
+            async def run_script() -> None:
                 result = await python_executor.execute_script(
                     script_name=request.script_name,
                     arguments=request.arguments,
                     timeout=request.timeout
                 )
-                # Store result in cache or database
-                logger.info(f"Async script execution completed: {task_id}")
-            
+                logger.info("Async script execution %s finished: %s", task_id, result.get("success"))
+
             background_tasks.add_task(run_script)
-            
+
             return {
                 "success": True,
                 "message": "Script execution started",
                 "task_id": task_id,
                 "async": True
             }
-        else:
-            # Execute synchronously
-            result = await python_executor.execute_script(
-                script_name=request.script_name,
-                arguments=request.arguments,
-                timeout=request.timeout
-            )
-            return result
-        
+
+        result = await python_executor.execute_script(
+            script_name=request.script_name,
+            arguments=request.arguments,
+            timeout=request.timeout
+        )
+        return result
+
     except Exception as e:
-        logger.error(f"Error executing script: {e}")
+        logger.error("Error executing script %s: %s", request.script_name, e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -94,12 +98,13 @@ async def execute_pwerm_analysis(request: PWERMExecutionRequest):
             company_name=request.company_name,
             arr=request.arr,
             growth_rate=request.growth_rate,
-            scenarios=request.scenarios
+            scenarios=request.scenarios,
+            sector=request.sector,
         )
         return result
-        
+
     except Exception as e:
-        logger.error(f"Error executing PWERM analysis: {e}")
+        logger.error("Error executing PWERM analysis: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -113,9 +118,9 @@ async def execute_crew_agents(request: CrewAIExecutionRequest):
             analysis_type=request.analysis_type
         )
         return result
-        
+
     except Exception as e:
-        logger.error(f"Error executing CrewAI agents: {e}")
+        logger.error("Error executing CrewAI agents: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -128,9 +133,9 @@ async def execute_market_search(request: MarketSearchRequest):
             deep_search=request.deep_search
         )
         return result
-        
+
     except Exception as e:
-        logger.error(f"Error executing market search: {e}")
+        logger.error("Error executing market search: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -143,24 +148,24 @@ async def execute_kyc_check(request: KYCExecutionRequest):
             check_type=request.check_type
         )
         return result
-        
+
     except Exception as e:
-        logger.error(f"Error executing KYC check: {e}")
+        logger.error("Error executing KYC check: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/scenario-analysis")
-async def execute_scenario_analysis(company_data: Dict[str, Any]):
+async def execute_scenario_analysis(request: ScenarioAnalysisRequest):
     """Execute dynamic scenario generation"""
     try:
         result = await python_executor.execute_scenario_analysis(
-            company_data=company_data,
-            num_scenarios=company_data.get("num_scenarios", 100)
+            company_data=request.company_data,
+            num_scenarios=request.num_scenarios,
         )
         return result
-        
+
     except Exception as e:
-        logger.error(f"Error executing scenario analysis: {e}")
+        logger.error("Error executing scenario analysis: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -173,9 +178,9 @@ async def get_available_scripts():
             "available_scripts": scripts,
             "total": len(scripts)
         }
-        
+
     except Exception as e:
-        logger.error(f"Error getting available scripts: {e}")
+        logger.error("Error getting available scripts: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -185,15 +190,14 @@ async def get_script_info(script_name: str):
     try:
         scripts = python_executor.get_available_scripts()
         script_info = next((s for s in scripts if s["name"] == script_name), None)
-        
+
         if not script_info:
             raise HTTPException(status_code=404, detail="Script not found")
-        
-        # Add parameter information
+
         param_info = {
             "pwerm_analysis": {
                 "required": ["company_name"],
-                "optional": ["arr", "growth_rate", "scenarios"],
+                "optional": ["arr", "growth_rate", "sector", "scenarios"],
                 "description": "PWERM valuation analysis"
             },
             "crewai_agents": {
@@ -210,18 +214,19 @@ async def get_script_info(script_name: str):
                 "required": ["entity_name"],
                 "optional": ["check_type"],
                 "description": "KYC and compliance checking"
-            }
+            },
+            "scenario_analysis": {
+                "required": ["company_data"],
+                "optional": ["num_scenarios"],
+                "description": "Scenario generation using valuation engine"
+            },
         }
-        
+
         script_info["parameters"] = param_info.get(script_name, {})
-        
         return script_info
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting script info: {e}")
+        logger.error("Error getting script info: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-import uuid

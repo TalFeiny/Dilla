@@ -1,0 +1,134 @@
+# Valuation and Stage Benchmarks Configuration
+# These are stage-based benchmarks used when real data is not available
+# Fund-specific values should NEVER be hardcoded here
+
+stage_benchmarks:
+  seed:
+    arr:
+      min: 0
+      median: 1_000_000  # $1M ARR
+      top_quartile: 2_500_000
+    valuation:
+      median: 10_000_000  # $10M
+      range: [5_000_000, 20_000_000]
+    funding:
+      median: 2_000_000
+      range: [500_000, 5_000_000]
+    team_size:
+      median: 8
+      range: [3, 15]
+    
+  series_a:
+    arr:
+      min: 1_000_000
+      median: 5_000_000  # $5M ARR
+      top_quartile: 10_000_000
+      with_tier_1: 15_000_000
+    valuation:
+      median: 40_000_000  # $40M
+      range: [20_000_000, 80_000_000]
+    funding:
+      median: 15_000_000
+      range: [8_000_000, 25_000_000]
+    team_size:
+      median: 35
+      range: [20, 60]
+    
+  series_b:
+    arr:
+      min: 10_000_000
+      median: 20_000_000  # $20M ARR
+      top_quartile: 40_000_000
+      with_tier_1: 50_000_000
+    valuation:
+      median: 150_000_000  # $150M
+      range: [80_000_000, 300_000_000]
+    funding:
+      median: 35_000_000
+      range: [20_000_000, 60_000_000]
+    team_size:
+      median: 120
+      range: [60, 200]
+    
+  series_c:
+    arr:
+      min: 30_000_000
+      median: 50_000_000  # $50M ARR
+      top_quartile: 100_000_000
+      with_tier_1: 120_000_000
+    valuation:
+      median: 400_000_000  # $400M
+      range: [200_000_000, 800_000_000]
+    funding:
+      median: 75_000_000
+      range: [40_000_000, 120_000_000]
+    team_size:
+      median: 350
+      range: [200, 500]
+
+# Round progression defaults
+round_defaults:
+  seed:
+    dilution: 0.20
+    step_up: 2.5
+    default_amount: 2_000_000
+  series_a:
+    dilution: 0.18
+    step_up: 2.5
+    default_amount: 15_000_000
+  series_b:
+    dilution: 0.15
+    step_up: 2.0
+    default_amount: 35_000_000
+  series_c:
+    dilution: 0.12
+    step_up: 1.8
+    default_amount: 75_000_000
+  series_d:
+    dilution: 0.10
+    step_up: 1.5
+    default_amount: 150_000_000
+
+# Growth rate assumptions (annual)
+growth_rates:
+  seed: 3.0  # 300% YoY
+  series_a: 2.5  # 250% YoY
+  series_b: 2.0  # 200% YoY
+  series_c: 1.5  # 150% YoY
+  series_d_plus: 1.3  # 130% YoY
+
+# Burn rate assumptions (as % of revenue)
+burn_rates:
+  pre_revenue: 2_000_000  # $2M annual burn for pre-revenue
+  early_revenue: 1.5  # 150% of revenue
+  growth_stage: 1.2  # 120% of revenue
+  scale_stage: 0.8  # 80% of revenue
+  profitable: 0.5  # 50% of revenue
+
+# Business model multipliers
+business_model_multipliers:
+  ai_first: 25
+  vertical_saas: 15
+  horizontal_saas: 10
+  marketplace: 8
+  services: 2
+  roll_up: 4
+
+# Geographic adjustments
+geographic_multipliers:
+  sf_bay_area: 1.15
+  nyc: 1.10
+  la: 1.05
+  austin: 1.0
+  seattle: 1.05
+  boston: 1.05
+  other_us: 0.95
+  international: 0.85
+
+# Investor quality multipliers
+investor_multipliers:
+  tier_1: 1.2  # a16z, Sequoia, etc.
+  tier_2: 1.1  # General Catalyst, etc.
+  tier_3: 1.0  # Standard VCs
+  strategic: 1.05  # Corporate investors
+  angels: 0.95  # Angel/seed investors

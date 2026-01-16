@@ -5,10 +5,13 @@ Integrates: AI Impact, Fund Fit, Cap Table, Liquidation Preferences, Exit Scenar
 
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
 import logging
+import re
 
 from app.services.intelligent_gap_filler import IntelligentGapFiller
-from app.services.advanced_cap_table import CapTableCalculator
+from app.services.advanced_cap_table import CapTableCalculator, ShareEntry, ShareClass
 from app.services.company_scoring_visualizer import CompanyScoringVisualizer
 from app.services.ownership_return_analyzer import OwnershipReturnAnalyzer
 from app.services.citation_manager import CitationManager
@@ -78,20 +81,31 @@ class ComprehensiveDealAnalyzer:
         Complete deal analysis with all components
         """
         
+        # Reset cap table for this company
+        self.cap_table = CapTableCalculator()
+        
         # 1. AI & Momentum Analysis (Sep 2025 reality)
         ai_analysis = self.gap_filler.analyze_ai_impact(company_data)
         momentum = self.gap_filler.analyze_company_momentum(company_data)
-        ai_valuation = self.gap_filler.calculate_ai_adjusted_valuation(company_data)
+        ai_valuation = await self.gap_filler.calculate_ai_adjusted_valuation(company_data)
         
         # 2. Fund Fit Analysis
         inferred_metrics = await self.gap_filler.infer_from_funding_cadence(
             company_data,
             ["valuation", "revenue", "burn_rate", "runway"]
         )
-        fund_fit = self.gap_filler.score_fund_fit(company_data, inferred_metrics)
+        # Pass fund_size in context for proper fund fit scoring
+        fund_context = {'fund_size': fund_size} if fund_size else {}
+        fund_fit = self.gap_filler.score_fund_fit(company_data, inferred_metrics, context=fund_context)
         
-        # 3. Market Analysis with Citations
-        market_analysis = self._analyze_market_opportunity(company_data, ai_analysis)
+        # 3. Market Analysis placeholder now that TAM is disabled
+        market_analysis = {
+            'category': company_data.get('sector', 'Technology'),
+            'tam_current': 0,
+            'tam_2030': 0,
+            'growth_rate': 0,
+            'notes': 'TAM processing disabled'
+        }
         market_capture = self._calculate_market_capture(company_data, market_analysis, ai_analysis)
         adjacent_markets = self._identify_adjacent_markets(company_data, market_analysis)
         
@@ -107,11 +121,14 @@ class ComprehensiveDealAnalyzer:
         # 4. Scenario Analysis (Base/Bull/Bear)
         gross_margin = self.gap_filler.calculate_adjusted_gross_margin(company_data)
         growth_req = self.gap_filler.calculate_required_growth_rates(company_data)
-        entry_price = self.gap_filler.calculate_investor_entry_price(company_data)
+        # Pass fund context to entry price calculation
+        company_data_with_context = {**company_data, '_fund_context': fund_context}
+        entry_price = self.gap_filler.calculate_investor_entry_price(company_data_with_context)
         
-        scenarios = self.visualizer.generate_scenario_analysis(
+        scenarios = self.visualizer._generate_scenarios(
             company_data,
             gross_margin,
+            founder_profile={},  # Empty for now
             growth_analysis=growth_req,
             entry_price_analysis=entry_price
         )
@@ -123,11 +140,72 @@ class ComprehensiveDealAnalyzer:
         current_valuation = company_data.get('valuation', 100_000_000)
         ownership_target = investment_amount / (current_valuation + investment_amount)
         
-        # Calculate dilution through multiple rounds
-        dilution_scenarios = self._calculate_dilution_scenarios(
-            ownership_target,
-            company_data.get('stage', 'series_a'),
-            ai_analysis['ai_category']
+        # Populate cap table from funding rounds
+        funding_rounds = company_data.get('funding_rounds', [])
+        for round_idx, round_data in enumerate(funding_rounds):
+            share_class = self._infer_share_class(round_data.get('round', ''))
+
+            investors = round_data.get('investors')
+            if not investors:
+                # No structured investors supplied; try to infer a placeholder entry so dilution maths still run
+                placeholder_entry = self._build_share_entry(
+                    investor="Round Investors",
+                    share_class=share_class,
+                    shares=Decimal(str((round_data.get('amount') or 10_000_000) / 10)),
+                    price_per_share=Decimal('10.0'),
+                    round_data=round_data,
+                    round_idx=round_idx,
+                    investor_idx=0
+                )
+                if placeholder_entry:
+                    self.cap_table.add_shareholder(placeholder_entry)
+                continue
+
+            if not isinstance(investors, list):
+                investors = [investors]
+
+            round_amount = round_data.get('amount', 10_000_000) or 0
+            per_investor_amount = round_amount / len(investors) if investors else round_amount
+            shares_per_investor = Decimal(str(per_investor_amount / 10)) if per_investor_amount else Decimal('0')
+
+            for investor_idx, investor in enumerate(investors):
+                entry = self._build_share_entry(
+                    investor=investor,
+                    share_class=share_class,
+                    shares=shares_per_investor,
+                    price_per_share=Decimal('10.0'),
+                    round_data=round_data,
+                    round_idx=round_idx,
+                    investor_idx=investor_idx
+                )
+                if entry:
+                    self.cap_table.add_shareholder(entry)
+
+        # Add founders if cap table is still empty
+        if not self.cap_table.share_entries:
+            # Add default founders
+            self.cap_table.add_shareholder(ShareEntry(
+                shareholder_id="founders_common",
+                shareholder_name="Founders",
+                share_class=ShareClass.COMMON,
+                num_shares=Decimal('10000000'),
+                price_per_share=Decimal('0.001'),
+                investment_date=datetime(2020, 1, 1)  # Assume founded in 2020
+            ))
+            # Add employee pool
+            self.cap_table.add_shareholder(ShareEntry(
+                shareholder_id="employee_pool",
+                shareholder_name="Employee Pool",
+                share_class=ShareClass.OPTIONS,
+                num_shares=Decimal('2000000'),
+                price_per_share=Decimal('0.001'),
+                investment_date=datetime(2020, 1, 1)
+            ))
+        
+        # Calculate dilution through multiple rounds using AdvancedCapTable service
+        dilution_scenarios = self.cap_table.calculate_dilution_scenarios(
+            num_rounds=3,
+            avg_dilution_per_round=0.20
         )
         
         # 6. Liquidation Preference & Exit Waterfall
@@ -152,10 +230,17 @@ class ComprehensiveDealAnalyzer:
         }
         
         # 8. Generate Visualizations
+        # Calculate dilution scenarios for charts (returns dict with 'no_participation' etc)
+        dilution_dict = self._calculate_dilution_scenarios(
+            initial_ownership=ownership_target,
+            current_stage=company_data.get('stage', 'series_a').lower().replace(' ', '_'),
+            ai_category=ai_analysis.get('category', 'standard')
+        )
+        
         charts = self._generate_comprehensive_charts(
             company_data,
             scenarios,
-            dilution_scenarios,
+            dilution_dict,  # Use the dict version, not the DataFrame
             liquidation_analysis,
             ai_analysis,
             momentum
@@ -185,6 +270,99 @@ class ComprehensiveDealAnalyzer:
             charts=charts,
             citations=citations
         )
+
+    def _build_share_entry(
+        self,
+        investor: Any,
+        share_class: ShareClass,
+        shares: Decimal,
+        price_per_share: Decimal,
+        round_data: Dict[str, Any],
+        round_idx: int,
+        investor_idx: int
+    ) -> Optional[ShareEntry]:
+        """Safely construct a ShareEntry, handling missing metadata gracefully."""
+        investor_name = self._normalize_investor_name(investor)
+        if not investor_name:
+            logger.warning("[DEAL_ANALYZER] Skipping investor with missing name in round %s", round_idx)
+            return None
+
+        shareholder_id = self._build_investor_id(investor_name, round_idx, investor_idx)
+        investment_date = self._parse_investment_date(round_data.get('date'))
+
+        try:
+            return ShareEntry(
+                shareholder_id=shareholder_id,
+                shareholder_name=investor_name,
+                share_class=share_class,
+                num_shares=shares or Decimal('0'),
+                price_per_share=price_per_share,
+                investment_date=investment_date
+            )
+        except TypeError as exc:
+            logger.warning(
+                "[DEAL_ANALYZER] Failed creating ShareEntry for %s (round %s): %s",
+                investor_name,
+                round_idx,
+                exc
+            )
+            return None
+
+    @staticmethod
+    def _normalize_investor_name(investor: Any) -> Optional[str]:
+        """Extract a clean investor name from various data shapes."""
+        if isinstance(investor, str):
+            name = investor.strip()
+        elif isinstance(investor, dict):
+            name = investor.get('name') or investor.get('investor') or investor.get('firm')
+            if isinstance(name, str):
+                name = name.strip()
+        else:
+            name = str(investor).strip() if investor is not None else ''
+
+        return name or None
+
+    @staticmethod
+    def _build_investor_id(name: str, round_idx: int, investor_idx: int) -> str:
+        base = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')
+        if not base:
+            base = f'investor_{round_idx}'
+        return f"{base}_{round_idx}_{investor_idx}"
+
+    @staticmethod
+    def _parse_investment_date(raw_date: Optional[str]) -> datetime:
+        if not raw_date or not isinstance(raw_date, str):
+            return datetime.utcnow()
+
+        raw_date = raw_date.strip()
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m", "%Y/%m", "%B %Y", "%b %Y", "%Y"):
+            try:
+                parsed = datetime.strptime(raw_date, fmt)
+                # For year-only formats, default to January 1st
+                if fmt == "%Y":
+                    return parsed.replace(month=1, day=1)
+                if fmt in ("%Y-%m", "%Y/%m"):
+                    return parsed.replace(day=1)
+                return parsed
+            except ValueError:
+                continue
+
+        return datetime.utcnow()
+
+    @staticmethod
+    def _infer_share_class(round_name: str) -> ShareClass:
+        normalized = (round_name or '').lower()
+        if 'seed' in normalized:
+            return ShareClass.PREFERRED_A
+        if 'series b' in normalized or 'round b' in normalized:
+            return ShareClass.PREFERRED_B
+        if 'series c' in normalized or 'round c' in normalized:
+            return ShareClass.PREFERRED_C
+        if 'series d' in normalized or 'round d' in normalized:
+            return ShareClass.PREFERRED_D
+        if 'series e' in normalized or 'round e' in normalized:
+            return ShareClass.PREFERRED_E
+        return ShareClass.PREFERRED_A
     
     def _analyze_market_opportunity(
         self,
@@ -207,8 +385,8 @@ class ComprehensiveDealAnalyzer:
         
         self.citation_manager.add_citation(
             f"Market sizing for {market_category}",
-            tam_data.get('source', 'Industry analysis'),
-            confidence=0.8
+            "2025-01-01",
+            tam_data.get('source', 'Industry analysis')
         )
         
         return {
@@ -263,8 +441,8 @@ class ComprehensiveDealAnalyzer:
         
         self.citation_manager.add_citation(
             "Market capture rates",
-            "Based on historical SaaS capture rates - Bessemer State of Cloud 2024",
-            confidence=0.7
+            "2025-01-01",
+            "Based on historical SaaS capture rates - Bessemer State of Cloud 2024"
         )
         
         return {
@@ -314,8 +492,8 @@ class ComprehensiveDealAnalyzer:
         for market in adjacent[:3]:  # Top 3 most synergistic
             self.citation_manager.add_citation(
                 f"Adjacent market: {market['market']}",
-                f"TAM: ${market['tam']/1e9:.1f}B, Synergy: {market['synergy_score']:.0%}",
-                confidence=0.6
+                "2025-01-01",
+                f"TAM: ${market['tam']/1e9:.1f}B, Synergy: {market['synergy_score']:.0%}"
             )
         
         return adjacent[:5]  # Return top 5
@@ -472,13 +650,18 @@ class ComprehensiveDealAnalyzer:
         company_data: Dict,
         ai_analysis: Dict,
         momentum: Dict,
-        fund_size: float,
+        fund_size: Optional[float],
         market_analysis: Dict
     ) -> Dict[str, Any]:
         """
         Determine if company can return the fund (venture scale)
         """
         current_valuation = company_data.get('valuation', 100_000_000)
+        
+        # Handle missing fund_size gracefully
+        if not fund_size:
+            logger.warning(f"[VENTURE_SCALE] No fund_size provided, using default $100M for {company_data.get('name', 'unknown')}")
+            fund_size = 100_000_000  # Default to $100M fund
         
         # Need to return 3x fund minimum
         required_exit = fund_size * 3

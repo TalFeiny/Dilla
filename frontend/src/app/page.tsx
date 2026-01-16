@@ -1,196 +1,585 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import PaywallModal from '@/components/PaywallModal';
-import { Sparkles, Brain, TrendingUp, Zap } from 'lucide-react';
+import { useState } from 'react';
+import Link from 'next/link';
+import {
+  ArrowRight,
+  Shield,
+  LineChart,
+  Users,
+  Sparkles,
+  CheckCircle2,
+  Target,
+  BarChart3
+} from 'lucide-react';
 
-export default function HomePage() {
-  const [prompt, setPrompt] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-  const [showPaywall, setShowPaywall] = useState(false);
-  const [hasUsedFreeGeneration, setHasUsedFreeGeneration] = useState(false);
-  const router = useRouter();
+const proofPoints = [
+  {
+    label: 'Deal Boards',
+    value: '18+',
+    description: 'Funds standardize their IC materials on Dilla.'
+  },
+  {
+    label: 'Faster Decisions',
+    value: '4x',
+    description: 'Reduction in time spent from intake to IC review.'
+  },
+  {
+    label: 'Sources Consolidated',
+    value: '40+',
+    description: 'Data providers, models, and war rooms unified.'
+  }
+];
 
-  useEffect(() => {
-    // Check if user has already used their free generation
-    const sessionId = localStorage.getItem('dilla_session_id');
-    if (!sessionId) {
-      // Create new session ID
-      const newSessionId = crypto.randomUUID();
-      localStorage.setItem('dilla_session_id', newSessionId);
-    } else {
-      // Check if free generation was used
-      const freeUsed = localStorage.getItem('dilla_free_used');
-      if (freeUsed === 'true') {
-        setHasUsedFreeGeneration(true);
-      }
-    }
-  }, []);
+const capabilityHighlights = [
+  {
+    title: 'Institutional Intelligence',
+    description: 'On-demand models, deal pacing, and custom diligence narratives driven by your playbook.',
+    icon: <LineChart className="w-6 h-6 text-primary" />
+  },
+  {
+    title: 'Operational OS',
+    description: 'Full-firm operating system across fund admin, LP reporting, portfolio monitoring, and audit.',
+    icon: <Shield className="w-6 h-6 text-primary" />
+  },
+  {
+    title: 'Collaboration Layer',
+    description: 'Single workspace for investment committee, finance, and platform teams to make decisions faster.',
+    icon: <Users className="w-6 h-6 text-primary" />
+  }
+];
 
-  const handleGenerate = async () => {
-    if (!prompt.trim()) return;
+const packages = [
+  {
+    id: 'solo',
+    label: 'Solo VC / Angel',
+    price: 'From $1,250 / month',
+    summary: 'Everything you need to run institutional-grade diligence with zero back office.',
+    bullets: [
+      'Unlimited memo generation and IC-ready packets',
+      'Automated market maps, pacing models, and cap table insights',
+      'Hands-on onboarding with a forward deployed engineer'
+    ]
+  },
+  {
+    id: 'mid',
+    label: 'Mid-Sized Shop',
+    price: 'From $3,800 / month',
+    summary: 'Purpose-built workflows for dedicated deal, finance, and platform teams.',
+    bullets: [
+      'Firm-wide workspace with role-based governance',
+      'Fund admin automation and LP reporting templates',
+      'Dedicated forward deployed engineer embedded with your team'
+    ],
+    badge: 'Most Popular'
+  },
+  {
+    id: 'mega',
+    label: 'Megafund / Financial Institution',
+    price: 'Custom Annual Engagements',
+    summary: 'Deep integration into legacy systems, data governance, and controls.',
+    bullets: [
+      'Signed SLAs, on-premise options, and advanced security',
+      'Custom modeling across funds, credit, and secondaries',
+      'Dedicated pod of forward deployed engineers + solutions lead'
+    ]
+  }
+];
 
-    // Check if free generation already used
-    if (hasUsedFreeGeneration) {
-      setShowPaywall(true);
-      return;
-    }
+const freeEmailDomains = new Set([
+  'gmail.com',
+  'yahoo.com',
+  'outlook.com',
+  'hotmail.com',
+  'aol.com',
+  'icloud.com',
+  'me.com',
+  'msn.com',
+  'live.com',
+  'hey.com',
+  'protonmail.com',
+  'pm.me',
+  'gmx.com',
+  'yandex.com',
+  'zoho.com'
+]);
 
-    setLoading(true);
-    try {
-      const sessionId = localStorage.getItem('dilla_session_id');
-      
-      const response = await fetch('/api/agent/free-generation', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt,
-          sessionId,
-        }),
-      });
+interface LeadFormState {
+  name: string;
+  email: string;
+  firmType: string;
+  notes: string;
+}
 
-      if (response.ok) {
-        const data = await response.json();
-        setResult(data.result);
-        
-        // Mark free generation as used
-        localStorage.setItem('dilla_free_used', 'true');
-        setHasUsedFreeGeneration(true);
-        
-        // Show paywall after 2 seconds to let user read result
-        setTimeout(() => {
-          setShowPaywall(true);
-        }, 2000);
-      } else if (response.status === 429) {
-        // Already used free generation
-        setShowPaywall(true);
-      }
-    } catch (error) {
-      console.error('Generation failed:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleGenerate();
-    }
-  };
-
+export default function LandingPage() {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50">
-      {/* Hero Section */}
-      <div className="max-w-4xl mx-auto px-6 pt-20 pb-12">
-        <div className="text-center mb-12">
-          <div className="inline-flex items-center justify-center p-3 bg-indigo-100 rounded-2xl mb-6">
-            <Brain className="w-10 h-10 text-indigo-600" />
-          </div>
-          <h1 className="text-5xl font-bold text-gray-900 mb-4">
-            VC Intelligence, <span className="text-indigo-600">Instantly</span>
-          </h1>
-          <p className="text-xl text-gray-600 max-w-2xl mx-auto">
-            Analyze companies, generate investment memos, and make data-driven decisions with AI
-          </p>
-        </div>
-
-        {/* Main Input Section */}
-        <div className="bg-white rounded-2xl shadow-xl p-8 mb-8">
-          <div className="mb-6">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              What would you like to analyze?
-            </label>
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder="e.g., 'Analyze @Stripe's business model and competitive advantages' or 'Compare @Ramp vs @Brex for Series B investment'"
-              className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
-              rows={3}
-              disabled={loading}
+    <div className="bg-white text-gray-900" data-theme="day">
+      <div className="bg-gradient-to-b from-white via-white to-gray-50">
+        <header className="marketing-container flex items-center justify-between py-6">
+          <Link href="/" className="flex items-center gap-3">
+            <img
+              src="/dilla-logo.svg"
+              alt="Dilla AI"
+              className="h-8 w-auto"
             />
-          </div>
-          
-          <button
-            onClick={handleGenerate}
-            disabled={loading || !prompt.trim()}
-            className="w-full py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+            <span className="sr-only">Dilla</span>
+          </Link>
+          <Link
+            href="/login"
+            className="rounded-full border border-gray-200 px-5 py-2 text-sm font-medium text-gray-900 transition-colors hover:bg-gray-100"
           >
-            {loading ? (
-              <>
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2" />
-                Analyzing...
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-5 h-5 mr-2" />
-                Generate Analysis {!hasUsedFreeGeneration && '(1 Free)'}
-              </>
-            )}
-          </button>
-          
-          {!hasUsedFreeGeneration && (
-            <p className="text-center text-sm text-gray-500 mt-3">
-              Try it free - no signup required for your first analysis
-            </p>
-          )}
-        </div>
-
-        {/* Result Section */}
-        {result && (
-          <div className="bg-white rounded-2xl shadow-xl p-8 mb-8 animate-fadeIn">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-              <Zap className="w-5 h-5 mr-2 text-yellow-500" />
-              Analysis Result
-            </h3>
-            <div className="prose prose-gray max-w-none">
-              <pre className="whitespace-pre-wrap font-sans text-gray-700">{result}</pre>
-            </div>
-          </div>
-        )}
-
-        {/* Features Section */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-12">
-          <FeatureCard
-            icon={<Brain className="w-6 h-6 text-indigo-600" />}
-            title="Deep Analysis"
-            description="Institutional-grade research with financial metrics, market sizing, and competitive moats"
-          />
-          <FeatureCard
-            icon={<TrendingUp className="w-6 h-6 text-green-600" />}
-            title="Real-Time Data"
-            description="Live market data, funding rounds, and company metrics updated continuously"
-          />
-          <FeatureCard
-            icon={<Sparkles className="w-6 h-6 text-purple-600" />}
-            title="Multiple Models"
-            description="Access GPT-4, Claude 3.5, and specialized models based on your plan"
-          />
-        </div>
+            Login
+          </Link>
+        </header>
+        <HeroSection />
+        <ProofPoints />
+        <Capabilities />
+        <ForwardDeployedSection />
+        <PricingSection />
+        <FinalCTA />
       </div>
-
-      {/* Paywall Modal */}
-      <PaywallModal
-        isOpen={showPaywall}
-        onClose={() => setShowPaywall(false)}
-        prompt={prompt}
-        result={result}
-      />
     </div>
   );
 }
 
-function FeatureCard({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
+function HeroSection() {
   return (
-    <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
-      <div className="mb-3">{icon}</div>
-      <h3 className="font-semibold text-gray-900 mb-2">{title}</h3>
-      <p className="text-sm text-gray-600">{description}</p>
+    <section className="marketing-section pt-24 lg:pt-32">
+      <div className="marketing-container grid gap-12 lg:grid-cols-[1.2fr_1fr] items-center">
+        <div className="space-y-8">
+          <span className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-white/70 px-4 py-1 text-sm text-muted-foreground shadow-sm backdrop-blur">
+            <Sparkles className="h-4 w-4 text-primary" />
+            Institutional-grade venture automation
+          </span>
+          <h1 className="text-4xl font-semibold tracking-tight text-foreground sm:text-5xl lg:text-6xl">
+            The operating system for conviction-driven venture investors.
+          </h1>
+          <p className="max-w-xl text-lg leading-relaxed text-muted-foreground">
+            Dilla unifies your deal flow, diligence engine, fund operations, and LP communications into a
+            single monochrome workspace that firms can trust. No free runs, just the infrastructure you need
+            to compound edge.
+          </p>
+          <div className="flex flex-wrap gap-4">
+            <ActionButton />
+            <Link
+              href="#pricing"
+              className="inline-flex items-center gap-2 rounded-full border border-border px-6 py-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary/80"
+            >
+              View Pricing Overview
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
+        </div>
+        <div className="relative">
+          <div className="marketing-card p-8">
+            <div className="space-y-6">
+              <div>
+                <p className="text-sm uppercase tracking-[0.3em] text-muted-foreground">Modern IC Packet</p>
+                <h3 className="mt-2 text-2xl font-medium text-foreground">
+                  Every question answered before committee convenes.
+                </h3>
+              </div>
+              <ul className="space-y-3 text-sm text-muted-foreground">
+                <li className="flex items-start gap-3">
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary" />
+                  <span>Live company dossiers with financial, product, and talent signals.</span>
+                </li>
+                <li className="flex items-start gap-3">
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary" />
+                  <span>Scenario modeling and pacing controls aligned to mandate.</span>
+                </li>
+                <li className="flex items-start gap-3">
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary" />
+                  <span>Audit-ready archive covering LP updates, compliance, and risk.</span>
+                </li>
+              </ul>
+              <div className="rounded-2xl border border-border/60 bg-secondary/50 px-6 py-5 text-sm text-muted-foreground">
+                “We eliminated five tools and hit IC with the exact story we wanted. The forward deployed team
+                rewired our entire diligence flow in weeks.”
+              </div>
+            </div>
+          </div>
+          <div className="absolute -bottom-10 -right-10 hidden w-32 rounded-3xl border border-border/70 bg-white/80 p-4 text-xs tracking-wide text-muted-foreground shadow-lg lg:block">
+            Backed by teams investing from New York, London, Dubai, and Singapore.
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ProofPoints() {
+  return (
+    <section className="marketing-section pt-0">
+      <div className="marketing-container">
+        <div className="grid gap-6 rounded-3xl border border-border/70 bg-white/80 p-8 backdrop-blur-lg sm:grid-cols-3">
+          {proofPoints.map(point => (
+            <div key={point.label} className="space-y-2">
+              <p className="text-sm uppercase tracking-[0.35em] text-muted-foreground">{point.label}</p>
+              <p className="text-3xl font-semibold text-foreground">{point.value}</p>
+              <p className="text-sm text-muted-foreground">{point.description}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Capabilities() {
+  return (
+    <section className="marketing-section">
+      <div className="marketing-container space-y-12">
+        <div className="max-w-2xl">
+          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Capabilities</p>
+          <h2 className="mt-3 text-3xl font-semibold text-foreground sm:text-4xl">
+            A monochrome workspace built for consistent investment judgment.
+          </h2>
+          <p className="mt-4 text-base text-muted-foreground">
+            Dilla orchestrates models, narrative intelligence, compliance, and fund operations with controls that
+            satisfy your mandate and downstream partners.
+          </p>
+        </div>
+        <div className="grid gap-6 md:grid-cols-3">
+          {capabilityHighlights.map(capability => (
+            <div key={capability.title} className="marketing-card p-6">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-secondary">
+                {capability.icon}
+              </div>
+              <h3 className="mt-6 text-xl font-medium text-foreground">{capability.title}</h3>
+              <p className="mt-3 text-sm text-muted-foreground leading-relaxed">
+                {capability.description}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ForwardDeployedSection() {
+  return (
+    <section className="marketing-section">
+      <div className="marketing-container grid items-center gap-12 lg:grid-cols-[1fr_1.1fr]">
+        <div className="space-y-4">
+          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Forward Deployed Engineers</p>
+          <h2 className="text-3xl font-semibold text-foreground sm:text-4xl">
+            A team embedded directly into your firm.
+          </h2>
+          <p className="text-base text-muted-foreground">
+            We pair every engagement with forward deployed engineers who live inside your investment and
+            operations rhythms. They own instrumentation, workflow rewiring, and the integrations that make
+            the platform feel native.
+          </p>
+          <ul className="mt-6 space-y-3 text-sm text-muted-foreground">
+            <ListItem icon={<Target className="h-4 w-4 text-primary" />} text="Implementation roadmap aligned to fundraising, deployment, and reporting cycles." />
+            <ListItem icon={<BarChart3 className="h-4 w-4 text-primary" />} text="Custom data pipelines, model calibration, and bespoke dashboards per fund." />
+            <ListItem icon={<Shield className="h-4 w-4 text-primary" />} text="Security review, audits, and runbooks that satisfy LP, regulatory, and internal controls." />
+          </ul>
+        </div>
+        <div className="marketing-card p-8 space-y-6">
+          <div className="rounded-3xl border border-border/60 bg-white/70 p-6">
+            <h3 className="text-lg font-medium text-foreground">Embedded Partnership</h3>
+            <p className="mt-3 text-sm text-muted-foreground leading-relaxed">
+              Weekly working sessions, shared OKRs, and direct lines into product engineering ensure your edge
+              compounds. Our team ships in your Slack, Notion, and data warehouse.
+            </p>
+          </div>
+          <div className="rounded-3xl border border-border/60 bg-secondary/60 p-6">
+            <h4 className="text-sm font-semibold uppercase tracking-[0.3em] text-muted-foreground">What we ship</h4>
+            <ul className="mt-4 space-y-3 text-sm text-muted-foreground">
+              <li className="flex items-center gap-3">
+                <CheckCircle2 className="h-4 w-4 text-primary" />
+                <span>Analyst-grade ingestion of decks, datasites, and management reports.</span>
+              </li>
+              <li className="flex items-center gap-3">
+                <CheckCircle2 className="h-4 w-4 text-primary" />
+                <span>Firm-wide single source of truth for deal, finance, and platform data.</span>
+              </li>
+              <li className="flex items-center gap-3">
+                <CheckCircle2 className="h-4 w-4 text-primary" />
+                <span>Custom automations for LP questionnaires, compliance, and audit trails.</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PricingSection() {
+  return (
+    <section id="pricing" className="marketing-section pt-0">
+      <div className="marketing-container space-y-12">
+        <div className="max-w-2xl">
+          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Pricing Overview</p>
+          <h2 className="mt-3 text-3xl font-semibold text-foreground sm:text-4xl">
+            Three packages tuned to how your firm operates today.
+          </h2>
+          <p className="mt-4 text-base text-muted-foreground">
+            Every tier includes onboarding with a forward deployed engineer, secured workspace, and direct access to
+            the Dilla product roadmap. No card collection—talk to sales to activate.
+          </p>
+        </div>
+        <div className="grid gap-6 lg:grid-cols-3">
+          {packages.map(pkg => (
+            <div
+              key={pkg.id}
+              className={[
+                'marketing-card flex flex-col p-8',
+                pkg.badge ? 'border-2 border-primary/80 shadow-xl' : ''
+              ].join(' ')}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.3em] text-muted-foreground">{pkg.label}</p>
+                  <h3 className="mt-4 text-2xl font-semibold text-foreground">{pkg.price}</h3>
+                </div>
+                {pkg.badge && (
+                  <span className="rounded-full border border-border bg-secondary px-3 py-1 text-xs font-medium text-muted-foreground">
+                    {pkg.badge}
+                  </span>
+                )}
+              </div>
+              <p className="mt-4 text-sm text-muted-foreground leading-relaxed">{pkg.summary}</p>
+              <ul className="mt-6 space-y-3 text-sm text-muted-foreground">
+                {pkg.bullets.map(item => (
+                  <li key={item} className="flex items-start gap-3">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary" />
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-auto pt-6">
+                <a
+                  href="#talk-to-sales"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                >
+                  Talk to Sales
+                  <ArrowRight className="h-4 w-4" />
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function FinalCTA() {
+  return (
+    <section id="talk-to-sales" className="marketing-section pt-0">
+      <div className="marketing-container grid items-center gap-12 lg:grid-cols-[1.1fr_1fr]">
+        <div className="space-y-6">
+          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Talk To Sales</p>
+          <h2 className="text-3xl font-semibold text-foreground sm:text-4xl">
+            Share your name and work email, we’ll route the right forward deployed engineer.
+          </h2>
+          <p className="text-base text-muted-foreground">
+            Tell us which package fits your current stage. We’ll follow up within one business day with a tailored
+            walkthrough, sample outputs, and an integration checklist. Work emails only—we partner directly with funds.
+          </p>
+          <div className="flex flex-wrap gap-6 text-sm text-muted-foreground">
+            <ListItem icon={<Users className="h-4 w-4 text-primary" />} text="Built with security reviews cleared by global LPs." />
+            <ListItem icon={<Sparkles className="h-4 w-4 text-primary" />} text="Monochrome interface across every module." />
+          </div>
+        </div>
+        <LeadCaptureForm />
+      </div>
+    </section>
+  );
+}
+
+function ActionButton() {
+  const handleClick = () => {
+    const target = document.getElementById('talk-to-sales');
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  return (
+    <button
+      onClick={handleClick}
+      className="inline-flex items-center gap-2 rounded-full bg-primary px-6 py-3 text-sm font-medium text-primary-foreground shadow-sm transition-transform hover:translate-y-[-2px] hover:bg-primary/90"
+    >
+      Talk to Sales
+      <ArrowRight className="h-4 w-4" />
+    </button>
+  );
+}
+
+function LeadCaptureForm() {
+  const [form, setForm] = useState<LeadFormState>({
+    name: '',
+    email: '',
+    firmType: 'solo',
+    notes: ''
+  });
+  const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
+  const [error, setError] = useState<string | null>(null);
+
+  const handleChange = (field: keyof LeadFormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    setForm(prev => ({ ...prev, [field]: e.target.value }));
+  };
+
+  const validateWorkEmail = (email: string) => {
+    const domain = email.split('@')[1]?.toLowerCase();
+    if (!domain) return false;
+    return !freeEmailDomains.has(domain);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    if (!form.name.trim()) {
+      setError('Please share your name.');
+      return;
+    }
+
+    if (!form.email.trim() || !validateWorkEmail(form.email)) {
+      setError('Use your work email so we can route you correctly.');
+      return;
+    }
+
+    setStatus('submitting');
+    try {
+      const response = await fetch('/api/leads', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(form)
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        const message = payload?.error ?? 'Unable to submit right now. Please try again.';
+        throw new Error(message);
+      }
+
+      setStatus('success');
+      setForm({
+        name: '',
+        email: '',
+        firmType: form.firmType,
+        notes: ''
+      });
+    } catch (err) {
+      setStatus('error');
+      setError(err instanceof Error ? err.message : 'Submission failed.');
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="marketing-card space-y-6 p-8" aria-label="Talk to sales lead form">
+      <div>
+        <h3 className="text-xl font-semibold text-foreground">Route me to the right pod</h3>
+        <p className="mt-2 text-sm text-muted-foreground">
+          We’ll send a calendar link and sample outputs straight to your inbox.
+        </p>
+      </div>
+
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <label htmlFor="lead-name" className="text-sm font-medium text-foreground">
+            Name
+          </label>
+          <input
+            id="lead-name"
+            name="name"
+            value={form.name}
+            onChange={handleChange('name')}
+            placeholder="Alex, Partner @ Example Ventures"
+            className="w-full rounded-2xl border border-border bg-white/80 px-4 py-3 text-sm text-foreground shadow-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+            required
+          />
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="lead-email" className="text-sm font-medium text-foreground">
+            Work Email
+          </label>
+          <input
+            id="lead-email"
+            name="email"
+            type="email"
+            value={form.email}
+            onChange={handleChange('email')}
+            placeholder="alex@firm.com"
+            className="w-full rounded-2xl border border-border bg-white/80 px-4 py-3 text-sm text-foreground shadow-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+            required
+          />
+          <p className="text-xs text-muted-foreground">
+            Personal email domains are automatically filtered out.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="lead-firm-type" className="text-sm font-medium text-foreground">
+            Firm Profile
+          </label>
+          <select
+            id="lead-firm-type"
+            name="firmType"
+            value={form.firmType}
+            onChange={handleChange('firmType')}
+            className="w-full rounded-2xl border border-border bg-white/80 px-4 py-3 text-sm text-foreground shadow-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+          >
+            <option value="solo">Solo VC / Angel</option>
+            <option value="mid">Mid-Sized Shop</option>
+            <option value="mega">Megafund / Financial Institution</option>
+          </select>
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="lead-notes" className="text-sm font-medium text-foreground">
+            What do you want to see?
+          </label>
+          <textarea
+            id="lead-notes"
+            name="notes"
+            value={form.notes}
+            onChange={handleChange('notes')}
+            placeholder="Share focus areas, portfolio workflow gaps, or must-have integrations."
+            rows={4}
+            className="w-full rounded-2xl border border-border bg-white/80 px-4 py-3 text-sm text-foreground shadow-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+          />
+        </div>
+      </div>
+
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      {status === 'success' && (
+        <p className="rounded-2xl border border-primary/40 bg-secondary px-4 py-3 text-sm text-foreground">
+          Thanks—we’ll be in touch within one business day.
+        </p>
+      )}
+
+      <button
+        type="submit"
+        disabled={status === 'submitting'}
+        className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-medium text-primary-foreground transition-colors disabled:cursor-not-allowed disabled:opacity-70 hover:bg-primary/90"
+      >
+        {status === 'submitting' ? 'Sending…' : 'Submit'}
+      </button>
+      <p className="text-xs text-muted-foreground">
+        We’ll keep you off any marketing drips until you opt-in via Beehiiv.
+      </p>
+    </form>
+  );
+}
+
+function ListItem({ icon, text }: { icon: React.ReactNode; text: string }) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className="mt-1 flex h-7 w-7 items-center justify-center rounded-xl bg-secondary">
+        {icon}
+      </div>
+      <span>{text}</span>
     </div>
   );
 }

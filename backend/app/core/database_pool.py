@@ -50,11 +50,19 @@ class DatabasePool:
                 
                 # Initialize Supabase client (this is stateless, so one instance is fine)
                 if settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY:
-                    self.supabase_client = create_client(
-                        settings.SUPABASE_URL,
-                        settings.SUPABASE_SERVICE_KEY
-                    )
-                    logger.info("Supabase client initialized")
+                    try:
+                        self.supabase_client = create_client(
+                            settings.SUPABASE_URL,
+                            settings.SUPABASE_SERVICE_KEY
+                        )
+                        logger.info("Supabase client initialized")
+                    except Exception as e:
+                        logger.error(f"Failed to initialize Supabase client in pool: {e}")
+                        logger.error(f"Error type: {type(e).__name__}")
+                        import traceback
+                        logger.error(f"Traceback: {traceback.format_exc()}")
+                        # Don't raise - allow backend to start without Supabase
+                        self.supabase_client = None
                     
             except Exception as e:
                 logger.error(f"Failed to initialize database pool: {e}")
@@ -100,10 +108,14 @@ class DatabasePool:
     def get_supabase_client(self) -> Optional[Client]:
         """Get the Supabase client instance"""
         if self.supabase_client is None and settings.SUPABASE_URL:
-            self.supabase_client = create_client(
-                settings.SUPABASE_URL,
-                settings.SUPABASE_SERVICE_KEY or settings.SUPABASE_ANON_KEY
-            )
+            try:
+                self.supabase_client = create_client(
+                    settings.SUPABASE_URL,
+                    settings.SUPABASE_SERVICE_KEY or settings.SUPABASE_ANON_KEY
+                )
+            except Exception as e:
+                logger.error(f"Failed to create Supabase client: {e}")
+                return None
         return self.supabase_client
     
     async def health_check(self) -> bool:

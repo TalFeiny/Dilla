@@ -5,14 +5,37 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+export interface SaveResult {
+  success: boolean;
+  error?: string;
+  details?: any;
+}
+
 export async function saveToSupabase(
   sessionId: string,
   prompt: string,
   result: any,
   format: string,
   metadata?: any
-) {
+): Promise<SaveResult> {
   try {
+    // Validate inputs
+    if (!sessionId) {
+      return {
+        success: false,
+        error: 'Session ID is required',
+        details: { sessionId, format }
+      };
+    }
+
+    if (!result) {
+      return {
+        success: false,
+        error: 'Result data is required',
+        details: { sessionId, format }
+      };
+    }
+
     // Save to model_corrections table (existing RL table)
     const { data, error } = await supabase
       .from('model_corrections')
@@ -37,16 +60,31 @@ export async function saveToSupabase(
     
     if (error) {
       console.error('Supabase save error:', error);
-      return false;
+      return {
+        success: false,
+        error: error.message || 'Failed to save to Supabase',
+        details: {
+          code: error.code,
+          hint: error.hint,
+          details: error.details
+        }
+      };
     }
     
     // All outputs are saved to model_corrections for unified RL learning
     // The learning_patterns field contains the full result data
     console.log(`✅ Saved ${format} output to model_corrections for RL learning`);
     
-    return true;
+    return {
+      success: true,
+      details: { data }
+    };
   } catch (error) {
     console.error('Error saving to Supabase:', error);
-    return false;
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error occurred',
+      details: { originalError: error }
+    };
   }
 }

@@ -46,6 +46,10 @@ export interface Company {
     has_pwerm_model?: boolean;
     latest_pwerm_run_at?: string;
     pwerm_scenarios_count?: number;
+    gross_margin?: number;
+    category?: string;
+    ai_first?: boolean;
+    business_model?: string;
   }
 
 export interface PortfolioCompany {

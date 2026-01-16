@@ -70,21 +70,19 @@ class PromptDecomposer:
         self.task_counter = 0
         # Import here to avoid circular dependency
         try:
-            import anthropic
-            from app.utils.rate_limiter import create_rate_limited_claude_client
-            self.claude_client = create_rate_limited_claude_client(
-                api_key=settings.ANTHROPIC_API_KEY or settings.CLAUDE_API_KEY
-            )
+            from app.services.model_router import get_model_router, ModelCapability
+            self.model_router = get_model_router()
+            self.model_capability = ModelCapability.ANALYSIS
         except:
-            logger.warning("Claude client not available for PromptDecomposer")
-            self.claude_client = None
+            logger.warning("Model router not available for PromptDecomposer")
+            self.model_router = None
     
     async def decompose(self, prompt: str, context: Optional[Dict] = None) -> ExecutionPlan:
         """
         Decompose a prompt into an execution plan using Claude
         This creates the skill chain that coordinates everything
         """
-        if not self.claude_client:
+        if not self.model_router:
             # Fallback to basic decomposition
             return self._basic_decompose(prompt, context)
         
@@ -123,17 +121,15 @@ Focus on getting:
 """
         
         try:
-            # Use Claude to decompose
-            message = await self.claude_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+            # Use model router to decompose
+            result = await self.model_router.get_completion(
+                prompt=decomposition_prompt,
+                capability=self.model_capability,
                 max_tokens=2000,
                 temperature=0.3,
-                messages=[
-                    {"role": "user", "content": decomposition_prompt}
-                ]
+                preferred_models=["claude-sonnet-4-5"]  # Prefer Claude but allow fallback
             )
-            
-            response_text = message.content[0].text
+            response_text = result["response"]
             
             # Parse JSON from response
             import json
@@ -231,19 +227,18 @@ class StructuredDataExtractor:
     
     def __init__(self):
         try:
-            from app.utils.rate_limiter import create_rate_limited_claude_client
-            self.claude_client = create_rate_limited_claude_client(
-                api_key=settings.ANTHROPIC_API_KEY or settings.CLAUDE_API_KEY
-            )
+            from app.services.model_router import get_model_router, ModelCapability
+            self.model_router = get_model_router()
+            self.model_capability = ModelCapability.ANALYSIS
         except:
-            logger.warning("Claude client not available for extraction")
-            self.claude_client = None
+            logger.warning("Model router not available for extraction")
+            self.model_router = None
     
     async def extract_structured_data_from_parsed(self, parsed_data: Dict, company_name: str) -> Dict[str, Any]:
         """
         Structure pre-parsed data using Claude - much more accurate
         """
-        if not self.claude_client:
+        if not self.model_router:
             return {}
         
         extraction_prompt = f"""Structure this ACTUAL extracted data for {company_name}:
@@ -339,7 +334,7 @@ Return structured data for IntelligentGapFiller. Format EXACTLY as:
     "lowest_tier": numeric or 0,
     "model": "per-seat" or "usage" or "enterprise"
   }},
-  "business_model": "Specific description like 'AI-powered legal document automation for enterprise' or 'Vertical SaaS for restaurant inventory'",
+  "business_model": "Describe EXACTLY what they do: 'Automates legal document review using LLMs' or 'Manages restaurant inventory with predictive ordering'",
   "category": "ai_first" or "ai_saas" or "saas" or "marketplace" or "services" or "rollup" or "hardware",
   "vertical": "Healthcare" or "Legal Tech" or "FinTech" or "Developer Tools" or other specific industry,
   "compute_intensity": "high" or "medium" or "low",
@@ -347,14 +342,13 @@ Return structured data for IntelligentGapFiller. Format EXACTLY as:
 }}"""
         
         try:
-            response = await self.claude_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+            result = await self.model_router.get_completion(
+                prompt=extraction_prompt,
+                capability=self.model_capability,
                 max_tokens=2000,
-                messages=[{"role": "user", "content": extraction_prompt}]
+                preferred_models=["claude-sonnet-4-5"]  # Prefer Claude but allow fallback
             )
-            
-            # Parse response
-            response_text = response.content[0].text if response.content else ""
+            response_text = result["response"]
             
             # Extract JSON from response
             import json
@@ -374,7 +368,7 @@ Return structured data for IntelligentGapFiller. Format EXACTLY as:
         Extract comprehensive structured data from raw HTML using Claude
         This connects Tavily searches to IntelligentGapFiller requirements
         """
-        if not self.claude_client or not raw_html:
+        if not self.model_router or not raw_html:
             return {}
         
         extraction_prompt = f"""Extract structured data for {company_name} from this HTML content.
@@ -562,16 +556,14 @@ Return ONLY a JSON object where funding.rounds EXACTLY matches this format for I
 Extract ONLY verifiable information from the HTML. Use null for missing fields."""
         
         try:
-            message = await self.claude_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+            result = await self.model_router.get_completion(
+                prompt=extraction_prompt,
+                capability=self.model_capability,
                 max_tokens=4000,
                 temperature=0.1,  # Low temperature for accuracy
-                messages=[
-                    {"role": "user", "content": extraction_prompt}
-                ]
+                preferred_models=["claude-sonnet-4-5"]  # Prefer Claude but allow fallback
             )
-            
-            response_text = message.content[0].text
+            response_text = result["response"]
             
             # Parse JSON from response
             import json
@@ -621,17 +613,20 @@ class MCPToolExecutor:
     Executes MCP tool calls - Tavily and Firecrawl APIs
     This is the core class that makes actual API calls
     """
-    
+
+    _firecrawl_warning_emitted = False
+
     def __init__(self):
         self.session: Optional[aiohttp.ClientSession] = None
         # Strip any whitespace from API keys
         self.tavily_api_key = settings.TAVILY_API_KEY.strip() if settings.TAVILY_API_KEY else None
         self.firecrawl_api_key = settings.FIRECRAWL_API_KEY.strip() if settings.FIRECRAWL_API_KEY else None
-        
+
         if not self.tavily_api_key:
             logger.warning("TAVILY_API_KEY not set in environment")
-        if not self.firecrawl_api_key:
-            logger.warning("FIRECRAWL_API_KEY not set in environment")
+        if not self.firecrawl_api_key and not MCPToolExecutor._firecrawl_warning_emitted:
+            logger.debug("FIRECRAWL_API_KEY not set; Firecrawl tasks will be skipped")
+            MCPToolExecutor._firecrawl_warning_emitted = True
     
     async def __aenter__(self):
         """Async context manager entry"""

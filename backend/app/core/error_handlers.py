@@ -3,11 +3,12 @@ Global error handlers for the FastAPI application
 """
 
 from fastapi import Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
 from typing import Union
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -16,30 +17,30 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     """Handle HTTP exceptions"""
     logger.error(f"HTTP error on {request.url.path}: {exc.detail}")
     
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": "HTTP_ERROR",
-            "message": exc.detail,
-            "status_code": exc.status_code,
-            "path": str(request.url.path)
-        }
-    )
+    # Pre-serialize to avoid numpy issues
+    content = {
+        "error": "HTTP_ERROR",
+        "message": str(exc.detail),  # Ensure string conversion
+        "status_code": int(exc.status_code),  # Ensure int
+        "path": str(request.url.path)
+    }
+    json_string = json.dumps(content)
+    return Response(content=json_string, media_type="application/json", status_code=exc.status_code)
 
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Handle validation errors"""
     logger.error(f"Validation error on {request.url.path}: {exc.errors()}")
     
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={
-            "error": "VALIDATION_ERROR",
-            "message": "Request validation failed",
-            "details": exc.errors(),
-            "path": str(request.url.path)
-        }
-    )
+    # Pre-serialize to avoid numpy issues
+    content = {
+        "error": "VALIDATION_ERROR",
+        "message": "Request validation failed",
+        "details": exc.errors(),
+        "path": str(request.url.path)
+    }
+    json_string = json.dumps(content)
+    return Response(content=json_string, media_type="application/json", status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
 
 async def general_exception_handler(request: Request, exc: Exception):
@@ -52,14 +53,14 @@ async def general_exception_handler(request: Request, exc: Exception):
     else:
         message = str(exc)
     
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "error": "INTERNAL_SERVER_ERROR",
-            "message": message,
-            "path": str(request.url.path)
-        }
-    )
+    # Pre-serialize to avoid numpy issues
+    content = {
+        "error": "INTERNAL_SERVER_ERROR",
+        "message": str(message),
+        "path": str(request.url.path)
+    }
+    json_string = json.dumps(content)
+    return Response(content=json_string, media_type="application/json", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class APIError(Exception):
@@ -140,11 +141,11 @@ async def api_error_handler(request: Request, exc: APIError):
     """Handle custom API errors"""
     logger.error(f"API error on {request.url.path}: {exc.message}")
     
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": exc.error_code,
-            "message": exc.message,
-            "path": str(request.url.path)
-        }
-    )
+    # Pre-serialize to avoid numpy issues
+    content = {
+        "error": exc.error_code,
+        "message": str(exc.message),
+        "path": str(request.url.path)
+    }
+    json_string = json.dumps(content)
+    return Response(content=json_string, media_type="application/json", status_code=exc.status_code)

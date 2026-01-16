@@ -1,9 +1,11 @@
 /**
  * Unified Chart Generator for Agents
- * Provides chart generation capabilities for all agents
+ * NOW USES UNIFIED DESIGN SYSTEM - matches PDF output
  */
 
 import { ChartConfiguration } from 'chart.js';
+import { getUnifiedChartOptions, getChartColor, calculateMaxValue } from './chart-config';
+import { DECK_DESIGN_TOKENS } from '@/styles/deck-design-tokens';
 
 export interface ChartData {
   labels: string[];
@@ -14,6 +16,7 @@ export interface ChartData {
     borderColor?: string | string[];
     borderWidth?: number;
     fill?: boolean;
+    tension?: number;
   }[];
 }
 
@@ -28,11 +31,8 @@ export interface ChartGenerationOptions {
 }
 
 export class ChartGenerator {
-  private static colors = {
-    primary: ['#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899'],
-    secondary: ['#60A5FA', '#F87171', '#34D399', '#FCD34D', '#A78BFA', '#F9A8D4'],
-    professional: ['#1E40AF', '#991B1B', '#065F46', '#92400E', '#5B21B6', '#831843']
-  };
+  // MONOCHROME COLORS - matching design system
+  private static colors = DECK_DESIGN_TOKENS.colors.chart;
 
   /**
    * Generate chart configuration from raw data
@@ -50,38 +50,46 @@ export class ChartGenerator {
     // Process data based on chart type
     const chartData = this.processDataForChart(data, type, xField, yField, groupBy);
     
-    // Generate color scheme
-    const colors = this.getColorScheme(options.theme || 'professional', chartData.datasets.length);
-    
-    // Apply colors to datasets
+    // Apply monochrome colors to datasets
     chartData.datasets = chartData.datasets.map((dataset, i) => ({
       ...dataset,
-      backgroundColor: colors.background[i],
-      borderColor: colors.border[i],
-      borderWidth: 2
+      backgroundColor: getChartColor(i),
+      borderColor: getChartColor(i),
+      borderWidth: 2,
+      tension: type === 'line' || type === 'area' ? 0.4 : undefined, // Smooth curves
     }));
+
+    // Calculate max value for proper Y-axis formatting
+    const maxValue = calculateMaxValue(chartData.datasets);
+
+    // Get unified options from config
+    const unifiedOptions = getUnifiedChartOptions(maxValue, {
+      yAxisLabel: 'Value',
+      showLegend: chartData.datasets.length > 1 || type === 'pie' || type === 'doughnut',
+      chartType: type,
+    });
 
     return {
       type: type as any,
       data: chartData,
       options: {
-        responsive: true,
-        maintainAspectRatio: false,
+        ...unifiedOptions,
         animation: options.animate ? {
           duration: 1000
         } : false,
         plugins: {
+          ...unifiedOptions.plugins,
           title: {
             display: !!title,
-            text: title
+            text: title,
+            font: {
+              family: DECK_DESIGN_TOKENS.fonts.primary,
+              size: 16,
+              weight: '600',
+            },
+            color: DECK_DESIGN_TOKENS.colors.foreground,
           },
-          legend: {
-            display: chartData.datasets.length > 1 || type === 'pie' || type === 'doughnut'
-          },
-          tooltip: {
-            enabled: options.interactive !== false
-          }
-        }
+        },
       }
     };
   }
@@ -187,38 +195,8 @@ export class ChartGenerator {
     return { labels, datasets };
   }
 
-  /**
-   * Get color scheme for charts
-   */
-  private static getColorScheme(theme: string, count: number) {
-    const baseColors = theme === 'professional' 
-      ? this.colors.professional 
-      : this.colors.primary;
-    
-    // Extend colors if needed
-    const colors = [];
-    for (let i = 0; i < count; i++) {
-      colors.push(baseColors[i % baseColors.length]);
-    }
-
-    // Generate background colors (with transparency)
-    const backgroundColors = colors.map(c => this.hexToRgba(c, 0.8));
-    
-    return {
-      background: backgroundColors,
-      border: colors
-    };
-  }
-
-  /**
-   * Convert hex to rgba
-   */
-  private static hexToRgba(hex: string, alpha: number): string {
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-  }
+  // REMOVED: Old getColorScheme and hexToRgba methods
+  // Now using unified design tokens and getChartColor() from chart-config.ts
 
   /**
    * Generate chart HTML for embedding

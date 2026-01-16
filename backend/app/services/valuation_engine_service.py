@@ -13,12 +13,18 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 import math
+import yfinance as yf
+import requests
+import time
 
 from app.core.database import supabase_service
+from app.services.pwerm_comprehensive import ComprehensivePWERM, ComprehensivePWERMScenario
+from app.utils.numpy_converter import convert_numpy_to_native
 
 logger = logging.getLogger(__name__)
 
 class Stage(str, Enum):
+    PRE_SEED = "pre_seed"
     SEED = "seed"
     SERIES_A = "series_a"
     SERIES_B = "series_b"
@@ -30,7 +36,6 @@ class Stage(str, Enum):
 class ValuationMethod(str, Enum):
     AUTO = "auto"
     PWERM = "pwerm"
-    COMPARABLES = "comparables"
     DCF = "dcf"
     OPM = "opm"
     WATERFALL = "waterfall"
@@ -38,7 +43,7 @@ class ValuationMethod(str, Enum):
     COST_METHOD = "cost_method"
     MILESTONE = "milestone"
 
-@dataclass
+@dataclass(frozen=True, eq=True)
 class ValuationRequest:
     """Valuation request parameters"""
     company_name: str
@@ -46,24 +51,39 @@ class ValuationRequest:
     revenue: Optional[float] = None
     growth_rate: Optional[float] = None
     last_round_valuation: Optional[float] = None
+    inferred_valuation: Optional[float] = None  # Inferred valuation from IntelligentGapFiller
     last_round_date: Optional[str] = None
     total_raised: Optional[float] = None
     preferred_shares_outstanding: Optional[int] = None
     common_shares_outstanding: Optional[int] = None
-    liquidation_preferences: List[Dict] = field(default_factory=list)
+    liquidation_preferences: Optional[tuple] = None  # Changed to tuple for hashability
     method: ValuationMethod = ValuationMethod.AUTO
     business_model: Optional[str] = None  # CRITICAL: For correct multiples
     industry: Optional[str] = None  # Fallback if business_model not provided
+    category: Optional[str] = None  # For rollup, SaaS, AI detection
+    ai_component_percentage: Optional[float] = None  # Percentage of AI in the business
 
 @dataclass
 class PWERMScenario:
-    """PWERM scenario parameters"""
+    """PWERM scenario parameters with qualitative descriptors"""
     scenario: str
     probability: float
     exit_value: float
     time_to_exit: float
-    present_value: float
-    moic: float
+    funding_path: str = ""  # e.g., "Pre-seed→seed→A→B→C"
+    exit_type: str = ""  # e.g., "Megacap Buyout", "NYSE IPO", "Strategic Acquisition"
+    # New fields for cap table evolution tracking
+    cap_table_evolution: List[Dict] = field(default_factory=list)
+    final_ownership: float = 0.0  # Our final ownership after all dilution
+    final_liq_pref: float = 0.0  # Total liquidation preference at exit
+    breakpoints: Dict[str, float] = field(default_factory=dict)  # Key breakpoint values
+    return_curve: Dict[str, Any] = field(default_factory=dict)  # Return at different exit values
+    present_value: float = field(init=False, default=0.0)
+    moic: float = 0.0  # Calculated later by valuation engine logic
+
+    def __post_init__(self):
+        # Normalize legacy kwargs that may provide moic; engine always recalculates it.
+        self.moic = 0.0
 
 @dataclass
 class ComparableCompany:
@@ -118,6 +138,11 @@ class ValuationEngineService:
         
         # Stage-specific parameters
         self.stage_parameters = {
+            Stage.PRE_SEED: {
+                'discount_rate': 0.6,  # 60% for very high risk
+                'dlom': 0.5,  # 50% discount for lack of marketability
+                'preferred_methods': ['pwerm']
+            },
             Stage.SEED: {
                 'discount_rate': 0.5,  # 50% for high risk
                 'dlom': 0.4,  # 40% discount for lack of marketability
@@ -149,6 +174,130 @@ class ValuationEngineService:
                 'preferred_methods': ['dcf', 'opm']
             }
         }
+        
+        # Initialize comprehensive PWERM system
+        self.comprehensive_pwerm = ComprehensivePWERM()
+    
+    def _sanitize_valuation_result(self, result: ValuationResult) -> ValuationResult:
+        """
+        Sanitize ValuationResult by converting all numpy types to native Python types.
+        This prevents JSON serialization errors.
+        """
+        # Convert scenarios (the main source of numpy types)
+        sanitized_scenarios = []
+        for scenario in result.scenarios:
+            # Create new PWERMScenario with converted values
+            from copy import copy
+            sanitized_scenario = copy(scenario)
+            sanitized_scenario.probability = convert_numpy_to_native(scenario.probability)
+            sanitized_scenario.exit_value = convert_numpy_to_native(scenario.exit_value)
+            sanitized_scenario.time_to_exit = convert_numpy_to_native(scenario.time_to_exit)
+            sanitized_scenario.present_value = convert_numpy_to_native(getattr(scenario, 'present_value', 0))
+            sanitized_scenario.moic = convert_numpy_to_native(getattr(scenario, 'moic', 0))
+            
+            # Convert cap_table_evolution if it exists
+            if hasattr(scenario, 'cap_table_evolution'):
+                sanitized_scenario.cap_table_evolution = convert_numpy_to_native(scenario.cap_table_evolution)
+            
+            # Convert breakpoints if they exist
+            if hasattr(scenario, 'breakpoints'):
+                sanitized_scenario.breakpoints = convert_numpy_to_native(scenario.breakpoints)
+            
+            # Convert return_curve if it exists
+            if hasattr(scenario, 'return_curve'):
+                sanitized_scenario.return_curve = convert_numpy_to_native(scenario.return_curve)
+            
+            sanitized_scenarios.append(sanitized_scenario)
+        
+        # Convert assumptions dict
+        sanitized_assumptions = convert_numpy_to_native(result.assumptions) if result.assumptions else {}
+        
+        # Create sanitized result
+        return ValuationResult(
+            method_used=result.method_used,
+            fair_value=convert_numpy_to_native(result.fair_value),
+            common_stock_value=convert_numpy_to_native(result.common_stock_value),
+            preferred_value=convert_numpy_to_native(result.preferred_value),
+            dlom_discount=convert_numpy_to_native(result.dlom_discount),
+            assumptions=sanitized_assumptions,
+            scenarios=sanitized_scenarios,
+            comparables=convert_numpy_to_native(result.comparables) if result.comparables else [],
+            waterfall=convert_numpy_to_native(result.waterfall) if result.waterfall else [],
+            confidence=convert_numpy_to_native(result.confidence),
+            explanation=result.explanation
+        )
+    
+    def _convert_request_to_company_data(self, request: ValuationRequest) -> Dict[str, Any]:
+        """
+        Convert ValuationRequest to company_data format expected by ComprehensivePWERM
+        """
+        # Map stage to string format expected by ComprehensivePWERM
+        stage_mapping = {
+            Stage.PRE_SEED: "pre_seed",
+            Stage.SEED: "seed", 
+            Stage.SERIES_A: "series_a",
+            Stage.SERIES_B: "series_b",
+            Stage.SERIES_C: "series_c",
+            Stage.GROWTH: "growth",
+            Stage.LATE: "late"
+        }
+        
+        # Create funding history from total_raised
+        funding_rounds = []
+        if request.total_raised and request.total_raised > 0:
+            # Estimate funding rounds based on stage and total raised
+            if request.stage == Stage.PRE_SEED:
+                funding_rounds = [{"round": "pre_seed", "amount": request.total_raised}]
+            elif request.stage == Stage.SEED:
+                funding_rounds = [
+                    {"round": "pre_seed", "amount": request.total_raised * 0.3},
+                    {"round": "seed", "amount": request.total_raised * 0.7}
+                ]
+            elif request.stage == Stage.SERIES_A:
+                funding_rounds = [
+                    {"round": "pre_seed", "amount": request.total_raised * 0.1},
+                    {"round": "seed", "amount": request.total_raised * 0.2},
+                    {"round": "series_a", "amount": request.total_raised * 0.7}
+                ]
+            # Add more stages as needed
+        
+        return {
+            "company": request.company_name,
+            "stage": stage_mapping.get(request.stage, "seed"),
+            "revenue": request.revenue or 0,
+            "growth_rate": request.growth_rate or 0,
+            "burn_rate": 0,  # Not available in ValuationRequest
+            "runway_months": 0,  # Not available in ValuationRequest
+            "funding_rounds": funding_rounds,
+            "total_raised": request.total_raised or 0,
+            "last_round_valuation": request.last_round_valuation or 0,
+            "valuation": request.last_round_valuation or 0,
+            "inferred_valuation": getattr(request, 'inferred_valuation', request.last_round_valuation or 0)
+        }
+    
+    def _convert_comprehensive_to_pwerm_scenarios(
+        self, 
+        comprehensive_scenarios: List[ComprehensivePWERMScenario]
+    ) -> List[PWERMScenario]:
+        """
+        Convert ComprehensivePWERMScenario objects to PWERMScenario objects
+        """
+        pwerm_scenarios = []
+        
+        for comp_scenario in comprehensive_scenarios:
+            pwerm_scenario = PWERMScenario(
+                scenario=comp_scenario.scenario_type,
+                probability=comp_scenario.probability,
+                exit_value=comp_scenario.exit_value,
+                time_to_exit=comp_scenario.time_to_exit,
+                funding_path=comp_scenario.funding_path,
+                exit_type=comp_scenario.scenario_type
+            )
+            # Set present_value after initialization since it's a calculated field
+            pwerm_scenario.present_value = comp_scenario.present_value
+            pwerm_scenarios.append(pwerm_scenario)
+        
+        return pwerm_scenarios
     
     def generate_simple_scenarios(self, request: ValuationRequest) -> Dict[str, Any]:
         """Generate simplified bear/base/bull scenarios for quick display"""
@@ -287,6 +436,15 @@ class ValuationEngineService:
         }
         
         # Add funding path scenarios
+        # Convert request to dict for funding path calculation
+        company_data = {
+            'name': request.company_name,
+            'stage': request.stage.value if request.stage else 'SERIES_A',
+            'revenue': request.revenue,
+            'growth_rate': request.growth_rate,
+            'last_round_valuation': request.last_round_valuation,
+            'total_raised': request.total_raised
+        }
         funding_paths = self._calculate_funding_path_scenarios(
             company_data, 
             investment, 
@@ -305,35 +463,68 @@ class ValuationEngineService:
         initial_ownership: float,
         time_to_exit: float
     ) -> Dict[str, Any]:
-        """Calculate ownership evolution through different funding paths"""
+        """Calculate ownership evolution through different funding paths with actual dates"""
+        
+        from datetime import datetime, timedelta
         
         current_valuation = company_data.get("valuation", 100_000_000)
         current_stage = company_data.get("stage", "Series A")
         
-        # Define typical funding paths
+        # Get company's last funding date from actual data
+        last_funding_date = company_data.get("last_funding_date")
+        if last_funding_date:
+            if isinstance(last_funding_date, str):
+                try:
+                    # Try to parse various date formats
+                    from dateutil import parser
+                    last_funding_date = parser.parse(last_funding_date)
+                except:
+                    last_funding_date = datetime.now() - timedelta(days=180)  # Assume 6 months ago if can't parse
+        else:
+            # Estimate based on stage if no date available
+            stage_to_months_ago = {
+                "Seed": 6,
+                "Series A": 9,
+                "Series B": 12,
+                "Series C": 15,
+                "Series D": 18
+            }
+            months_ago = stage_to_months_ago.get(current_stage, 6)
+            last_funding_date = datetime.now() - timedelta(days=months_ago * 30)
+        
+        # Define typical funding paths with actual dates
         paths = {
             "conservative": {
                 "description": "Slow, steady growth with minimal dilution",
                 "rounds": [
-                    {"name": "Series B", "raise": 30_000_000, "valuation_step_up": 2.5, "year": 1.5},
-                    {"name": "Series C", "raise": 50_000_000, "valuation_step_up": 2.0, "year": 3.0},
-                    {"name": "Exit", "year": time_to_exit}
+                    {"name": "Series B", "raise": 30_000_000, "valuation_step_up": 2.5, 
+                     "date": last_funding_date + timedelta(days=548), "year": 1.5},  # ~18 months
+                    {"name": "Series C", "raise": 50_000_000, "valuation_step_up": 2.0, 
+                     "date": last_funding_date + timedelta(days=1095), "year": 3.0},  # ~3 years
+                    {"name": "Exit", "date": last_funding_date + timedelta(days=int(time_to_exit*365)), 
+                     "year": time_to_exit}
                 ]
             },
             "aggressive": {
                 "description": "Rapid scaling with heavy dilution",
                 "rounds": [
-                    {"name": "Series B", "raise": 50_000_000, "valuation_step_up": 2.0, "year": 1.0},
-                    {"name": "Series C", "raise": 100_000_000, "valuation_step_up": 1.8, "year": 2.0},
-                    {"name": "Series D", "raise": 150_000_000, "valuation_step_up": 1.5, "year": 3.5},
-                    {"name": "Exit", "year": time_to_exit}
+                    {"name": "Series B", "raise": 50_000_000, "valuation_step_up": 2.0, 
+                     "date": last_funding_date + timedelta(days=365), "year": 1.0},  # 12 months
+                    {"name": "Series C", "raise": 100_000_000, "valuation_step_up": 1.8, 
+                     "date": last_funding_date + timedelta(days=730), "year": 2.0},  # 24 months
+                    {"name": "Series D", "raise": 150_000_000, "valuation_step_up": 1.5, 
+                     "date": last_funding_date + timedelta(days=1278), "year": 3.5},  # 42 months
+                    {"name": "Exit", "date": last_funding_date + timedelta(days=int(time_to_exit*365)), 
+                     "year": time_to_exit}
                 ]
             },
             "bootstrapped": {
                 "description": "Minimal external funding, founder-friendly",
                 "rounds": [
-                    {"name": "Series B", "raise": 20_000_000, "valuation_step_up": 3.0, "year": 2.0},
-                    {"name": "Exit", "year": time_to_exit}
+                    {"name": "Series B", "raise": 20_000_000, "valuation_step_up": 3.0, 
+                     "date": last_funding_date + timedelta(days=730), "year": 2.0},  # 24 months
+                    {"name": "Exit", "date": last_funding_date + timedelta(days=int(time_to_exit*365)), 
+                     "year": time_to_exit}
                 ]
             }
         }
@@ -365,6 +556,8 @@ class ValuationEngineService:
                 dilution_events.append({
                     "round": round_data["name"],
                     "year": round_data["year"],
+                    "date": round_data.get("date", last_funding_date + timedelta(days=int(round_data["year"]*365))),
+                    "date_str": round_data.get("date", last_funding_date + timedelta(days=int(round_data["year"]*365))).strftime("%b %Y"),
                     "pre_money": pre_money,
                     "post_money": post_money,
                     "ownership_before": current_ownership,
@@ -453,8 +646,6 @@ class ValuationEngineService:
                 return await self._calculate_milestone(request)
             elif method == ValuationMethod.PWERM:
                 return await self._calculate_pwerm(request)
-            elif method == ValuationMethod.COMPARABLES:
-                return await self._calculate_comparables(request)
             elif method == ValuationMethod.DCF:
                 return await self._calculate_dcf(request)
             elif method == ValuationMethod.OPM:
@@ -470,25 +661,26 @@ class ValuationEngineService:
                 
         except Exception as e:
             logger.error(f"Valuation calculation failed: {e}")
-            return ValuationResult(
+            result = ValuationResult(
                 method_used="error",
                 fair_value=0,
                 explanation=f"Valuation failed: {str(e)}",
                 confidence=0
             )
+            return self._sanitize_valuation_result(result)
     
     def _select_method(self, request: ValuationRequest) -> ValuationMethod:
         """Select appropriate valuation method based on company stage"""
         stage = request.stage
         revenue = request.revenue or 0
         
-        # Early stage (Seed, Series A) - use PWERM
-        if stage in [Stage.SEED, Stage.SERIES_A]:
+        # Early stage (Pre-Seed, Seed, Series A) - use PWERM
+        if stage in [Stage.PRE_SEED, Stage.SEED, Stage.SERIES_A]:
             return ValuationMethod.PWERM
         
-        # Growth stage (Series B/C) - use Comparables with DLOM
+        # Growth stage (Series B/C) - use PWERM
         if stage in [Stage.SERIES_B, Stage.SERIES_C]:
-            return ValuationMethod.COMPARABLES
+            return ValuationMethod.PWERM
         
         # Late stage with significant revenue - use DCF
         if stage in [Stage.GROWTH, Stage.LATE] and revenue > 50_000_000:
@@ -501,27 +693,70 @@ class ValuationEngineService:
         # Default to PWERM for uncertainty
         return ValuationMethod.PWERM
     
+    def annotate_scenarios_with_returns(
+        self,
+        scenarios: List[PWERMScenario],
+        request: ValuationRequest,
+        *,
+        discount_rate: Optional[float] = None,
+    ) -> List[PWERMScenario]:
+        """Populate present value and MOIC for generated scenarios."""
+        if discount_rate is None:
+            discount_rate = self.stage_parameters[request.stage]['discount_rate']
+
+        investment = 10_000_000  # Standard check size assumption
+        # Check explicitly for None (not just falsy) since 0 might be a valid value
+        base_valuation = None
+        if request.last_round_valuation is not None and request.last_round_valuation > 0:
+            base_valuation = request.last_round_valuation
+        elif request.inferred_valuation is not None and request.inferred_valuation > 0:
+            base_valuation = request.inferred_valuation
+        elif request.total_raised and request.total_raised > 0:
+            base_valuation = request.total_raised * 3
+        else:
+            base_valuation = 100_000_000  # Default $100M if all else fails
+        
+        if base_valuation <= 0 or base_valuation is None:
+            base_valuation = 100_000_000
+        ownership_pct = investment / base_valuation
+
+        for scenario in scenarios:
+            pv_factor = 1 / ((1 + discount_rate) ** scenario.time_to_exit)
+            scenario.present_value = scenario.exit_value * pv_factor
+            scenario.moic = (scenario.exit_value * ownership_pct) / investment
+        return scenarios
+
     async def _calculate_pwerm(self, request: ValuationRequest) -> ValuationResult:
         """
         Probability-Weighted Expected Return Method
         """
-        logger.info("Calculating PWERM valuation")
+        logger.info(f"Calculating PWERM valuation for {request.company_name}")
         
-        # Generate exit scenarios
+        # Ensure we have a valid valuation
+        # CRITICAL FIX: Cannot modify frozen dataclass - create new instance instead
+        # Use inferred_valuation as fallback before defaulting to $100M
+        # Check explicitly for None (not just falsy) since 0 might be a valid value
+        base_valuation = None
+        if request.last_round_valuation is not None and request.last_round_valuation > 0:
+            base_valuation = request.last_round_valuation
+        elif request.inferred_valuation is not None and request.inferred_valuation > 0:
+            base_valuation = request.inferred_valuation
+        elif request.total_raised and request.total_raised > 0:
+            base_valuation = request.total_raised * 3
+        else:
+            base_valuation = 100_000_000  # Only default if all are missing
+        
+        if base_valuation == 0 or base_valuation is None:
+            base_valuation = 100_000_000  # Final fallback
+        
+        if not request.last_round_valuation or request.last_round_valuation == 0:
+            logger.warning(f"PWERM: No valuation provided for {request.company_name}, using ${base_valuation:,.0f}")
+            from dataclasses import replace
+            request = replace(request, last_round_valuation=base_valuation)
+        
+        # Generate exit scenarios and annotate returns
         scenarios = self._generate_exit_scenarios(request)
-        
-        # Calculate present values
         discount_rate = self.stage_parameters[request.stage]['discount_rate']
-        
-        # Calculate ownership and investment for MOIC calculation
-        investment = 10_000_000  # Standard $10M investment assumption
-        ownership_pct = investment / (request.last_round_valuation or 100_000_000)
-        
-        for scenario in scenarios:
-            pv_factor = 1 / ((1 + discount_rate) ** scenario.time_to_exit)
-            scenario.present_value = scenario.exit_value * pv_factor
-            # Calculate MOIC: (exit value * ownership) / investment
-            scenario.moic = (scenario.exit_value * ownership_pct) / investment
         
         # Calculate probability-weighted value
         total_value = sum(s.probability * s.present_value for s in scenarios)
@@ -535,7 +770,7 @@ class ValuationEngineService:
         if request.common_shares_outstanding:
             common_value = fair_value / request.common_shares_outstanding
         
-        return ValuationResult(
+        result = ValuationResult(
             method_used="PWERM",
             fair_value=fair_value,
             common_stock_value=common_value,
@@ -549,85 +784,9 @@ class ValuationEngineService:
             confidence=0.75,
             explanation=f"PWERM analysis with {len(scenarios)} scenarios, {dlom*100:.0f}% DLOM discount applied"
         )
-    
-    async def _calculate_comparables(self, request: ValuationRequest) -> ValuationResult:
-        """
-        Enhanced Market Comparables Method
-        Includes both public comparables AND recent M&A transactions
-        """
-        logger.info("Calculating comparables valuation with M&A transactions")
         
-        # Get comparable companies AND recent M&A deals
-        comparables = await self._find_comparable_companies(request)
-        ma_transactions = await self._find_recent_ma_transactions(request)
-        
-        # Combine both data sources
-        all_comparables = []
-        
-        # Add public comparables
-        if comparables:
-            all_comparables.extend(comparables)
-        
-        # Add M&A comparables with higher weight (more relevant)
-        if ma_transactions:
-            for transaction in ma_transactions:
-                # M&A transactions get 1.5x weight as they're actual exit values
-                transaction.similarity_score *= 1.5
-                all_comparables.append(transaction)
-        
-        if not all_comparables:
-            # Fallback to industry averages
-            return await self._calculate_industry_multiple_valuation(request)
-        
-        # Calculate weighted average multiple
-        total_weight = sum(c.similarity_score for c in all_comparables)
-        weighted_multiple = sum(c.revenue_multiple * c.similarity_score for c in all_comparables) / total_weight
-        
-        # Apply growth premium/discount
-        avg_growth = sum(c.growth_rate for c in all_comparables) / len(all_comparables)
-        company_growth = request.growth_rate or avg_growth
-        
-        growth_adjustment = 1 + (company_growth - avg_growth) * 0.5
-        adjusted_multiple = weighted_multiple * growth_adjustment
-        
-        # Calculate value
-        revenue = request.revenue or 1_000_000  # Default $1M if no revenue
-        enterprise_value = revenue * adjusted_multiple
-        
-        # Apply DLOM - reduced if recent M&A activity in sector
-        base_dlom = self.stage_parameters[request.stage]['dlom']
-        if ma_transactions and len(ma_transactions) >= 3:
-            # Active M&A market reduces DLOM
-            dlom = base_dlom * 0.7  # 30% reduction in DLOM
-        else:
-            dlom = base_dlom
-        
-        fair_value = enterprise_value * (1 - dlom)
-        
-        # Determine confidence based on data quality
-        if len(all_comparables) >= 5 and ma_transactions:
-            confidence = 0.90  # High confidence with both public and M&A data
-        elif len(all_comparables) >= 3:
-            confidence = 0.75  # Good confidence
-        else:
-            confidence = 0.60  # Limited data
-        
-        return ValuationResult(
-            method_used="Market Comparables (Enhanced with M&A)",
-            fair_value=fair_value,
-            dlom_discount=dlom,
-            comparables=all_comparables,
-            assumptions={
-                'public_comparables': len([c for c in all_comparables if not hasattr(c, 'is_ma_transaction')]),
-                'ma_transactions': len(ma_transactions) if ma_transactions else 0,
-                'weighted_multiple': adjusted_multiple,
-                'growth_adjustment': growth_adjustment,
-                'dlom': dlom,
-                'revenue_used': revenue
-            },
-            confidence=0.8,
-            explanation=f"Market comparables analysis using {len(comparables)} companies, {adjusted_multiple:.1f}x revenue multiple"
-        )
+        # Convert any numpy types to native Python types
+        return self._sanitize_valuation_result(result)
     
     async def _calculate_dcf(self, request: ValuationRequest) -> ValuationResult:
         """
@@ -682,7 +841,7 @@ class ValuationEngineService:
         # Assuming no net debt for simplicity
         equity_value = enterprise_value
         
-        return ValuationResult(
+        result = ValuationResult(
             method_used="DCF",
             fair_value=equity_value,
             assumptions={
@@ -695,6 +854,8 @@ class ValuationEngineService:
             confidence=0.7,
             explanation=f"DCF analysis with {len(projections)}-year projections, {terminal_growth*100:.1f}% terminal growth"
         )
+        
+        return self._sanitize_valuation_result(result)
     
     async def _calculate_opm(self, request: ValuationRequest) -> ValuationResult:
         """
@@ -712,7 +873,7 @@ class ValuationEngineService:
         # This is a simplified version
         option_value = enterprise_value * 0.3  # Simplified calculation
         
-        return ValuationResult(
+        result = ValuationResult(
             method_used="Option Pricing Model",
             fair_value=option_value,
             assumptions={
@@ -723,6 +884,8 @@ class ValuationEngineService:
             confidence=0.6,
             explanation="Simplified OPM treating common stock as call option on enterprise value"
         )
+        
+        return self._sanitize_valuation_result(result)
     
     async def _calculate_waterfall(self, request: ValuationRequest) -> ValuationResult:
         """
@@ -816,7 +979,7 @@ class ValuationEngineService:
             'impact': 'Attractive returns for investors'
         })
         
-        return ValuationResult(
+        result = ValuationResult(
             method_used="Liquidation Waterfall with Scenarios",
             fair_value=scenario_results['base']['common_value'],
             waterfall=waterfall_tiers,
@@ -828,31 +991,44 @@ class ValuationEngineService:
             confidence=0.75,
             explanation=f"Waterfall analysis with bear/base/bull scenarios. Base case common value: ${scenario_results['base']['common_value']:,.0f}"
         )
+        
+        return self._sanitize_valuation_result(result)
     
     def _generate_exit_scenarios(self, request: ValuationRequest) -> List[PWERMScenario]:
-        """Generate dynamic exit scenarios based on company stage and metrics"""
-        base_value = request.last_round_valuation or 100_000_000
+        """Generate dynamic exit scenarios using comprehensive PWERM system"""
+        # Convert ValuationRequest to company_data format
+        company_data = self._convert_request_to_company_data(request)
         
-        # Stage-specific scenario generation with industry benchmarks
-        if request.stage in [Stage.SEED, Stage.SERIES_A]:
-            # Early stage: Higher variance, more scenarios
-            scenarios = self._generate_early_stage_scenarios(base_value, request)
-        elif request.stage in [Stage.SERIES_B, Stage.SERIES_C]:
-            # Growth stage: Balanced scenarios
-            scenarios = self._generate_growth_stage_scenarios(base_value, request)
-        else:
-            # Late stage: Lower variance, clearer paths
-            scenarios = self._generate_late_stage_scenarios(base_value, request)
+        # Calculate valuation using comprehensive PWERM
+        pwerm_result = self.comprehensive_pwerm.calculate_valuation(
+            company_data=company_data,
+            discount_rate=0.25,  # Standard VC discount rate
+            dlom=0.30  # Standard DLOM for private companies
+        )
         
-        # Adjust probabilities based on company metrics
-        scenarios = self._adjust_scenario_probabilities(scenarios, request)
+        # Convert comprehensive scenarios to PWERM scenarios
+        # Get all scenarios from the comprehensive PWERM - we need to call the internal method
+        # to get the full distribution, not just the grouped/top scenarios
         
-        # Ensure probabilities sum to 1.0
-        total_prob = sum(s.probability for s in scenarios)
-        for s in scenarios:
-            s.probability = s.probability / total_prob
+        # Parse funding path and get all relevant scenarios
+        funding_path = pwerm_result.get('funding_path', 'Pre-seed only')
+        all_relevant_scenarios = self.comprehensive_pwerm._filter_scenarios_by_path(funding_path)
         
-        return scenarios
+        # Adjust probabilities based on company data
+        company_data = self._convert_request_to_company_data(request)
+        adjusted_scenarios = self.comprehensive_pwerm._adjust_probabilities(all_relevant_scenarios, company_data)
+        
+        # Calculate present values for all scenarios
+        discount_rate = 0.25
+        for scenario in adjusted_scenarios:
+            pv_factor = 1 / ((1 + discount_rate) ** scenario.time_to_exit)
+            scenario.present_value = scenario.exit_value * pv_factor
+        
+        # Convert all scenarios to PWERM format
+        pwerm_scenarios = self._convert_comprehensive_to_pwerm_scenarios(adjusted_scenarios)
+        
+        # Annotate with returns and finalize
+        return self.annotate_scenarios_with_returns(pwerm_scenarios, request)
     
     def _generate_early_stage_scenarios(self, base_value: float, request: ValuationRequest) -> List[PWERMScenario]:
         """Generate scenarios for early stage companies (Seed/Series A)"""
@@ -860,96 +1036,96 @@ class ValuationEngineService:
         scenarios = [
             # IPO scenarios (rare but high value)
             PWERMScenario(
-                scenario="Blockbuster IPO (Uber/Airbnb trajectory)",
+                scenario="NYSE Blockbuster IPO",
+                funding_path="Pre-seed→seed→A→B→C→D→E→F",
+                exit_type="IPO (Uber/Airbnb trajectory)",
                 probability=0.02,  # 2% - Carta: <2% of seed stage reach IPO
                 exit_value=base_value * 50,
-                time_to_exit=8.0,  # PitchBook: 8-10 years median
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
+                time_to_exit=8.0  # PitchBook: 8-10 years median
             ),
             PWERMScenario(
-                scenario="Strong IPO (>$1B valuation)",
+                scenario="Upper Midcap IPO",
+                funding_path="Pre-seed→seed→A→B→C→D",
+                exit_type="Small Cap Buyout/Crown Jewel Asset",
                 probability=0.03,  # 3% - Additional IPO candidates
                 exit_value=base_value * 20,
-                time_to_exit=7.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
+                time_to_exit=7.0
             ),
             
             # Strategic acquisition scenarios
             PWERMScenario(
                 scenario="Strategic Premium Acquisition (competitive bidding)",
+                funding_path="seed→A→B→C→D",
+                exit_type="M&A - Strategic (Premium)",
                 probability=0.08,  # 8% - Best outcomes
                 exit_value=base_value * 15,
-                time_to_exit=5.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
+                time_to_exit=5.0
             ),
             PWERMScenario(
                 scenario="Strategic Acquisition (strong fit)",
+                funding_path="seed→A→B→C",
+                exit_type="M&A - Strategic",
                 probability=0.12,  # 12% - Good strategic fit
                 exit_value=base_value * 8,
-                time_to_exit=4.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
+                time_to_exit=4.0
             ),
             PWERMScenario(
                 scenario="Quick Strategic Exit (talent/tech acquisition)",
+                funding_path="seed→A",
+                exit_type="M&A - Acquihire",
                 probability=0.15,  # 15% - Common for seed stage
                 exit_value=base_value * 4,
-                time_to_exit=2.5,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
+                time_to_exit=2.5
             ),
             
             # Growth/PE scenarios
             PWERMScenario(
                 scenario="Growth Equity Recap",
+                funding_path="seed→A→B→Growth",
+                exit_type="PE - Growth Equity",
                 probability=0.10,  # 10% - Secondary opportunity
                 exit_value=base_value * 3,
-                time_to_exit=3.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
+                time_to_exit=3.0
             ),
             
             # Modest exits
             PWERMScenario(
                 scenario="Modest M&A Exit",
+                funding_path="seed→A→B",
+                exit_type="M&A - Modest",
                 probability=0.20,  # 20% - Break-even to small return
                 exit_value=base_value * 1.5,
-                time_to_exit=3.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
+                time_to_exit=3.0
             ),
             PWERMScenario(
                 scenario="Acquihire/Small Exit",
+                funding_path="seed",
+                exit_type="M&A - Acquihire",
                 probability=0.15,  # 15% - Team acquisition
                 exit_value=base_value * 0.8,
-                time_to_exit=2.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
+                time_to_exit=2.0
             ),
             
             # Negative scenarios
             PWERMScenario(
                 scenario="Distressed Sale/Wind Down",
+                funding_path="seed",
+                exit_type="Distressed Sale",
                 probability=0.10,  # 10% - Fire sale
                 exit_value=base_value * 0.3,
-                time_to_exit=1.5,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
+                time_to_exit=1.5
             ),
             PWERMScenario(
                 scenario="Complete Write-off",
+                funding_path="",
+                exit_type="Write-off",
                 probability=0.05,  # 5% - Total loss (Carta: 20-30% fail rate but not all are zeros)
                 exit_value=0,
-                time_to_exit=2.0,
-                present_value=0,
-                moic=0.0  # Total loss
+                time_to_exit=2.0
             )
         ]
         
-        return scenarios
+        return self.annotate_scenarios_with_returns(scenarios, request)
     
     def _generate_growth_stage_scenarios(self, base_value: float, request: ValuationRequest) -> List[PWERMScenario]:
         """Generate scenarios for growth stage companies (Series B/C)"""
@@ -958,79 +1134,79 @@ class ValuationEngineService:
             # IPO scenarios (more likely at this stage)
             PWERMScenario(
                 scenario="Strong IPO (Unicorn status)",
+                funding_path="B→C→D→E",
+                exit_type="IPO - NYSE/NASDAQ",
                 probability=0.10,  # 10% - Carta: Series B+ have better IPO odds
                 exit_value=base_value * 10,
                 time_to_exit=5.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
             ),
             PWERMScenario(
                 scenario="Standard IPO/SPAC",
+                funding_path="B→C→D",
+                exit_type="IPO - SPAC",
                 probability=0.05,  # 5% - Alternative public paths
                 exit_value=base_value * 5,
                 time_to_exit=4.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
             ),
             
             # Strategic acquisitions (primary exit path)
             PWERMScenario(
                 scenario="Premium Strategic Acquisition",
+                funding_path="B→C→D",
+                exit_type="M&A - Strategic (Premium)",
                 probability=0.20,  # 20% - Strong strategic value
                 exit_value=base_value * 6,
                 time_to_exit=3.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
             ),
             PWERMScenario(
                 scenario="Strategic Acquisition (market consolidation)",
+                funding_path="B→C",
+                exit_type="M&A - Strategic",
                 probability=0.25,  # 25% - Most common good outcome
                 exit_value=base_value * 3.5,
                 time_to_exit=2.5,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
             ),
             
             # PE acquisitions
             PWERMScenario(
                 scenario="PE Buyout (platform play)",
+                funding_path="B→C",
+                exit_type="PE - Buyout",
                 probability=0.15,  # 15% - PE interest in proven models
                 exit_value=base_value * 2.5,
                 time_to_exit=2.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
             ),
             
             # Modest outcomes
             PWERMScenario(
                 scenario="Modest Exit (1-2x return)",
+                funding_path="B",
+                exit_type="M&A - Modest",
                 probability=0.15,  # 15% - Break-even to small gain
                 exit_value=base_value * 1.3,
                 time_to_exit=2.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
             ),
             
             # Negative scenarios (lower probability at this stage)
             PWERMScenario(
-                scenario="Down Round/Recap",
+                scenario="Down Round/Distressed M&A",
+                funding_path="B",
+                exit_type="M&A - Distressed",
                 probability=0.07,  # 7% - Restructuring
                 exit_value=base_value * 0.5,
                 time_to_exit=1.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
             ),
             PWERMScenario(
                 scenario="Distressed Sale",
+                funding_path="",
+                exit_type="Distressed Sale",
                 probability=0.03,  # 3% - Lower failure rate
                 exit_value=base_value * 0.2,
                 time_to_exit=1.0,
-                present_value=0,
-                moic=0.0  # Will be calculated
             )
         ]
         
-        return scenarios
+        return self.annotate_scenarios_with_returns(scenarios, request)
     
     def _generate_late_stage_scenarios(self, base_value: float, request: ValuationRequest) -> List[PWERMScenario]:
         """Generate scenarios for late stage companies (Growth/Late)"""
@@ -1039,60 +1215,78 @@ class ValuationEngineService:
             # IPO scenarios (highest probability at this stage)
             PWERMScenario(
                 scenario="Successful IPO",
+                funding_path="Late→IPO",
+                exit_type="IPO - NYSE/NASDAQ",
                 probability=0.25,  # 25% - Much higher for late stage
                 exit_value=base_value * 3,
                 time_to_exit=2.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
             ),
             PWERMScenario(
                 scenario="Direct Listing/SPAC",
+                funding_path="Late",
+                exit_type="IPO - Direct Listing",
                 probability=0.10,  # 10% - Alternative public paths
                 exit_value=base_value * 2.2,
                 time_to_exit=1.5,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
             ),
             
             # M&A scenarios
             PWERMScenario(
                 scenario="Strategic Premium Acquisition",
+                funding_path="Late",
+                exit_type="M&A - Strategic (Premium)",
                 probability=0.30,  # 30% - Primary alternative to IPO
                 exit_value=base_value * 2.5,
                 time_to_exit=1.5,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
             ),
             PWERMScenario(
                 scenario="PE Buyout",
+                funding_path="Late",
+                exit_type="PE - Buyout",
                 probability=0.20,  # 20% - Common for mature companies
                 exit_value=base_value * 1.8,
                 time_to_exit=1.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
             ),
             
             # Continuation scenarios
             PWERMScenario(
-                scenario="Secondary Sale/Continuation",
+                scenario="Secondary Sale",
+                funding_path="Late",
+                exit_type="Secondary Sale",
                 probability=0.10,  # 10% - Liquidity without full exit
                 exit_value=base_value * 1.3,
                 time_to_exit=1.0,
-                present_value=0,
-                moic=0.0  # Will be calculated in PWERM calculation
             ),
             
             # Downside (minimal at this stage)
             PWERMScenario(
                 scenario="Flat/Down Exit",
+                funding_path="Late",
+                exit_type="M&A - Flat",
                 probability=0.05,  # 5% - Rare but possible
                 exit_value=base_value * 0.8,
                 time_to_exit=1.0,
-                present_value=0
             )
         ]
         
-        return scenarios
+        return self.annotate_scenarios_with_returns(scenarios, request)
+    
+    def _get_funding_path_for_stage(self, stage: Stage, rounds_to_exit: int = 3) -> str:
+        """Generate funding path from current stage to exit"""
+        progressions = {
+            Stage.PRE_SEED: ["pre-seed", "seed", "A", "B", "C", "D"],
+            Stage.SEED: ["seed", "A", "B", "C", "D", "E"],
+            Stage.SERIES_A: ["A", "B", "C", "D", "E"],
+            Stage.SERIES_B: ["B", "C", "D", "E"],
+            Stage.SERIES_C: ["C", "D", "E"],
+            Stage.GROWTH: ["Growth", "Late"],
+            Stage.LATE: ["Late"]
+        }
+        
+        path = progressions.get(stage, ["A", "B", "C"])
+        # Take minimum of requested rounds and available path length
+        actual_rounds = min(rounds_to_exit, len(path))
+        return "→".join(path[:actual_rounds]) if actual_rounds > 0 else ""
     
     def _adjust_scenario_probabilities(self, scenarios: List[PWERMScenario], request: ValuationRequest) -> List[PWERMScenario]:
         """Adjust scenario probabilities based on company-specific metrics"""
@@ -1112,196 +1306,342 @@ class ValuationEngineService:
             elif "Distressed" in scenario.scenario or "Write-off" in scenario.scenario:
                 scenario.probability *= (2.0 - growth_adjustment)  # Inverse adjustment
         
-        return scenarios
+        return self.annotate_scenarios_with_returns(scenarios, request)
     
-    async def _find_recent_ma_transactions(self, request: ValuationRequest) -> List[ComparableCompany]:
+    def model_cap_table_evolution(self, scenario: PWERMScenario, company_data: Dict[str, Any], 
+                                  our_investment: Dict[str, float]) -> None:
         """
-        Find recent M&A transactions in the same sector
-        This would connect to M&A databases or scrape recent deals
+        Model cap table evolution for a specific PWERM scenario.
+        NOW WITH TAM/SAM/SOM VALIDATION
+        Updates the scenario object with cap table evolution, final ownership, and breakpoints.
         """
-        logger.info(f"Finding recent M&A transactions for {request.industry or 'SaaS'}")
+        # Parse funding path
+        rounds = [r.strip() for r in scenario.funding_path.split('→') if r.strip()]
         
-        # Recent notable M&A transactions (would be dynamically fetched)
-        recent_transactions = {
-            "hr_tech": [
-                {"company": "Sana", "acquirer": "Workday", "date": "2024-01", "revenue": 50_000_000, 
-                 "price": 1_450_000_000, "multiple": 29.0, "growth": 1.0},  # Sana → Workday
-                {"company": "HiBob", "acquirer": "Private", "date": "2023-10", "revenue": 100_000_000,
-                 "price": 2_450_000_000, "multiple": 24.5, "growth": 0.8},
-            ],
-            "ai_search": [
-                {"company": "Neeva", "acquirer": "Snowflake", "date": "2023-05", "revenue": 10_000_000,
-                 "price": 185_000_000, "multiple": 18.5, "growth": 2.0},
-                {"company": "AlphaSense", "acquirer": "Private", "date": "2023-06", "revenue": 100_000_000,
-                 "price": 2_500_000_000, "multiple": 25.0, "growth": 0.7},
-            ],
-            "dev_tools": [
-                {"company": "Fig", "acquirer": "AWS", "date": "2023-08", "revenue": 5_000_000,
-                 "price": 100_000_000, "multiple": 20.0, "growth": 3.0},
-                {"company": "Gitpod", "acquirer": "Private", "date": "2023-09", "revenue": 20_000_000,
-                 "price": 300_000_000, "multiple": 15.0, "growth": 1.5},
-            ],
-            "data_infra": [
-                {"company": "Cribl", "acquirer": "Private", "date": "2024-02", "revenue": 100_000_000,
-                 "price": 2_750_000_000, "multiple": 27.5, "growth": 1.2},
-                {"company": "Airbyte", "acquirer": "Private", "date": "2023-12", "revenue": 30_000_000,
-                 "price": 500_000_000, "multiple": 16.7, "growth": 2.5},
-            ],
-            "security": [
-                {"company": "Vanta", "acquirer": "Private", "date": "2024-01", "revenue": 80_000_000,
-                 "price": 2_450_000_000, "multiple": 30.6, "growth": 1.5},
-                {"company": "Wiz", "acquirer": "Google (attempted)", "date": "2024-07", "revenue": 500_000_000,
-                 "price": 23_000_000_000, "multiple": 46.0, "growth": 2.0},  # Failed but shows valuation
-            ],
-            "fintech": [
-                {"company": "Ramp", "acquirer": "Private", "date": "2024-01", "revenue": 300_000_000,
-                 "price": 7_650_000_000, "multiple": 25.5, "growth": 1.0},
-                {"company": "Mercury", "acquirer": "Private", "date": "2023-12", "revenue": 100_000_000,
-                 "price": 1_620_000_000, "multiple": 16.2, "growth": 1.5},
-            ]
+        # Start with current state
+        current_liq_pref = company_data.get('total_funding', 0)
+        our_ownership = our_investment.get('ownership', 0.10)
+        
+        # NEW: Get market size analysis (from intelligent_gap_filler)
+        market_analysis = company_data.get('market_size', {})
+        tam = market_analysis.get('tam', 0)
+        sam = market_analysis.get('sam', 0)
+        som = market_analysis.get('som', 0)
+        
+        # Track cap table evolution
+        cap_table_evolution = []
+        
+        # Dilution benchmarks (from intelligent_gap_filler)
+        ROUND_DILUTION = {
+            "seed": 0.15, "Seed": 0.15,
+            "A": 0.20, "Series A": 0.20,
+            "B": 0.15, "Series B": 0.15, 
+            "C": 0.12, "Series C": 0.12,
+            "D": 0.10, "Series D": 0.10,
+            "E": 0.08, "Series E": 0.08,
+            "F": 0.08, "Series F": 0.08
         }
         
-        # Determine sector
-        sector = "general"
-        if request.industry:
-            industry_lower = request.industry.lower()
-            if any(term in industry_lower for term in ["hr", "human", "talent", "recruiting"]):
-                sector = "hr_tech"
-            elif any(term in industry_lower for term in ["search", "discovery", "knowledge"]):
-                sector = "ai_search"
-            elif any(term in industry_lower for term in ["dev", "developer", "code", "git"]):
-                sector = "dev_tools"
-            elif any(term in industry_lower for term in ["data", "analytics", "pipeline", "etl"]):
-                sector = "data_infra"
-            elif any(term in industry_lower for term in ["security", "compliance", "cyber"]):
-                sector = "security"
-            elif any(term in industry_lower for term in ["fintech", "payments", "banking"]):
-                sector = "fintech"
+        # ESOP expansion per round
+        ESOP_EXPANSION = {
+            "seed": 0.05, "Seed": 0.05,
+            "A": 0.05, "Series A": 0.05,
+            "B": 0.03, "Series B": 0.03,
+            "C": 0.02, "Series C": 0.02,
+            "D": 0.02, "Series D": 0.02,
+            "E": 0.01, "Series E": 0.01,
+            "F": 0.01, "Series F": 0.01
+        }
         
-        # Get relevant transactions
-        relevant_deals = recent_transactions.get(sector, [])
+        # Round sizes (approximate)
+        ROUND_SIZES = {
+            "seed": 3_000_000, "Seed": 3_000_000,
+            "A": 15_000_000, "Series A": 15_000_000,
+            "B": 50_000_000, "Series B": 50_000_000,
+            "C": 100_000_000, "Series C": 100_000_000,
+            "D": 200_000_000, "Series D": 200_000_000,
+            "E": 300_000_000, "Series E": 300_000_000,
+            "F": 500_000_000, "Series F": 500_000_000
+        }
         
-        # Also add cross-sector mega deals for context
-        mega_deals = [
-            {"company": "Figma", "acquirer": "Adobe (blocked)", "date": "2022-09", "revenue": 400_000_000,
-             "price": 20_000_000_000, "multiple": 50.0, "growth": 1.0},
-            {"company": "Slack", "acquirer": "Salesforce", "date": "2021-07", "revenue": 900_000_000,
-             "price": 27_700_000_000, "multiple": 30.8, "growth": 0.5},
-            {"company": "GitHub", "acquirer": "Microsoft", "date": "2018-06", "revenue": 300_000_000,
-             "price": 7_500_000_000, "multiple": 25.0, "growth": 0.6},
-        ]
+        for round_name in rounds:
+            # Get base dilution
+            base_dilution = ROUND_DILUTION.get(round_name, 0.15)
+            esop_expansion = ESOP_EXPANSION.get(round_name, 0.03)
+            round_size = ROUND_SIZES.get(round_name, 50_000_000)
+            
+            # Adjust dilution based on scenario quality
+            if "NYSE Blockbuster" in scenario.scenario or "Strong IPO" in scenario.scenario:
+                # Premium path - Tier 1 investors, less dilution
+                quality_mult = 0.85
+                liq_pref_multiple = 1.0
+            elif "Strategic Premium" in scenario.scenario:
+                # Good path - Tier 2 investors
+                quality_mult = 1.0
+                liq_pref_multiple = 1.0
+            elif "Distressed" in scenario.scenario or "Acquihire" in scenario.scenario:
+                # Difficult path - worse terms
+                quality_mult = 1.25
+                liq_pref_multiple = 1.5 if "C" in round_name or "D" in round_name else 1.0
+            else:
+                # Standard terms
+                quality_mult = 1.0
+                liq_pref_multiple = 1.0
+            
+            # Apply geography adjustment (if SF/NYC, less dilution)
+            geo_mult = 0.95 if company_data.get('geography', '') in ['SF', 'San Francisco', 'NYC', 'New York'] else 1.0
+            
+            # Calculate actual dilution
+            actual_dilution = base_dilution * quality_mult * geo_mult
+            total_dilution = actual_dilution + esop_expansion
+            
+            # Update ownership
+            our_ownership *= (1 - total_dilution)
+            
+            # Update liquidation preference
+            current_liq_pref += round_size * liq_pref_multiple
+            
+            # NEW: Calculate implied revenue needed to justify valuation
+            post_money = current_liq_pref / actual_dilution  # Rough valuation
+            
+            # NEW: TAM/SAM/SOM sanity check
+            market_capture_needed = 0
+            tam_feasibility = "unknown"
+            if tam > 0:
+                # At exit, assume company captures 1-5% of TAM
+                market_capture_needed = (scenario.exit_value / tam) * 100
+                if market_capture_needed < 1:
+                    tam_feasibility = "highly achievable"
+                elif market_capture_needed < 5:
+                    tam_feasibility = "achievable"
+                elif market_capture_needed < 15:
+                    tam_feasibility = "aggressive"
+                else:
+                    tam_feasibility = "unrealistic"
+            
+            # Calculate breakpoints at this stage
+            breakpoints = {
+                'liquidation_satisfied': current_liq_pref,
+                'conversion_point': current_liq_pref * 1.5,  # Typical conversion threshold
+                'our_breakeven': our_investment['amount'] / our_ownership if our_ownership > 0 else float('inf'),
+                'our_3x': (our_investment['amount'] * 3) / our_ownership if our_ownership > 0 else float('inf'),
+                'common_meaningful': current_liq_pref + 10_000_000  # Common gets >$10M
+            }
+            
+            cap_table_evolution.append({
+                'round': round_name,
+                'dilution': actual_dilution,
+                'esop_expansion': esop_expansion,
+                'our_ownership': our_ownership,
+                'total_liq_pref': current_liq_pref,
+                'breakpoints': breakpoints.copy(),
+                # NEW MARKET SIZE FIELDS
+                'market_capture_pct': market_capture_needed,
+                'tam_feasibility': tam_feasibility,
+            })
         
-        # Convert to ComparableCompany format
-        comparables = []
-        for deal in relevant_deals[:5]:  # Top 5 most relevant
-            comparables.append(ComparableCompany(
-                name=f"{deal['company']} → {deal['acquirer']}",
-                revenue_multiple=deal['multiple'],
-                growth_rate=deal['growth'],
-                similarity_score=0.9  # High similarity for same-sector deals
-            ))
+        # Update scenario with evolution
+        scenario.cap_table_evolution = cap_table_evolution
+        scenario.final_ownership = our_ownership
+        scenario.final_liq_pref = current_liq_pref
         
-        # Add mega deals with lower weight
-        for deal in mega_deals[:2]:  # Add 2 mega deals for context
-            comparables.append(ComparableCompany(
-                name=f"{deal['company']} → {deal['acquirer']}",
-                revenue_multiple=deal['multiple'],
-                growth_rate=deal['growth'],
-                similarity_score=0.5  # Lower weight for cross-sector
-            ))
+        # NEW: Add market sizing to scenario
+        scenario.market_analysis = {
+            'tam': tam,
+            'sam': sam,
+            'som': som,
+            'exit_market_capture': (scenario.exit_value / tam * 100) if tam > 0 else 0,
+            'citations': market_analysis.get('citations', [])
+        }
         
-        return comparables
+        # Set final breakpoints
+        if cap_table_evolution:
+            scenario.breakpoints = cap_table_evolution[-1]['breakpoints']
+        else:
+            # No future rounds - use current state
+            scenario.breakpoints = {
+                'liquidation_satisfied': current_liq_pref,
+                'conversion_point': current_liq_pref * 1.5,
+                'our_breakeven': our_investment['amount'] / our_ownership if our_ownership > 0 else float('inf'),
+                'our_3x': (our_investment['amount'] * 3) / our_ownership if our_ownership > 0 else float('inf'),
+                'common_meaningful': current_liq_pref + 10_000_000
+            }
+        
+        # Calculate MOIC based on exit value and final ownership
+        if scenario.exit_value and our_investment['amount'] > 0:
+            # Simple calculation: our proceeds / our investment
+            our_proceeds = scenario.exit_value * scenario.final_ownership
+            scenario.moic = our_proceeds / our_investment['amount']
+        else:
+            scenario.moic = 0.0
     
-    async def _find_comparable_companies(self, request: ValuationRequest) -> List[ComparableCompany]:
-        """Find comparable companies based on business model"""
-        # Use business model to determine appropriate comparables
-        business_model = request.business_model or request.industry or 'saas'
+    def calculate_breakpoint_distributions(self, scenarios: List[PWERMScenario]) -> Dict[str, Dict[str, float]]:
+        """
+        Calculate probability distributions for breakpoints across all scenarios.
+        Returns percentiles and expected values for each breakpoint type.
+        Handles both PWERMScenario objects and dictionaries.
+        """
+        import numpy as np
         
-        # Business model specific comparables
-        model_comparables = {
-            'ai_first': [
-                ComparableCompany(name="OpenAI", revenue_multiple=25.0, growth_rate=4.0, similarity_score=0.9),
-                ComparableCompany(name="Anthropic", revenue_multiple=20.0, growth_rate=3.5, similarity_score=0.85),
-                ComparableCompany(name="Cohere", revenue_multiple=18.0, growth_rate=3.0, similarity_score=0.8),
-            ],
-            'ai_saas': [
-                ComparableCompany(name="Jasper", revenue_multiple=15.0, growth_rate=2.5, similarity_score=0.9),
-                ComparableCompany(name="Copy.ai", revenue_multiple=12.0, growth_rate=2.0, similarity_score=0.85),
-                ComparableCompany(name="Notion AI", revenue_multiple=14.0, growth_rate=2.3, similarity_score=0.8),
-            ],
-            'rollup': [
-                ComparableCompany(name="Thrasio", revenue_multiple=4.0, growth_rate=1.2, similarity_score=0.9),
-                ComparableCompany(name="Razor Group", revenue_multiple=3.5, growth_rate=1.1, similarity_score=0.85),
-                ComparableCompany(name="Perch", revenue_multiple=4.5, growth_rate=1.3, similarity_score=0.8),
-            ],
-            'services': [
-                ComparableCompany(name="Accenture", revenue_multiple=2.0, growth_rate=1.1, similarity_score=0.9),
-                ComparableCompany(name="EPAM", revenue_multiple=2.5, growth_rate=1.2, similarity_score=0.85),
-                ComparableCompany(name="Cognizant", revenue_multiple=1.8, growth_rate=1.0, similarity_score=0.8),
-            ],
-            'marketplace': [
-                ComparableCompany(name="Airbnb", revenue_multiple=6.0, growth_rate=1.5, similarity_score=0.9),
-                ComparableCompany(name="DoorDash", revenue_multiple=5.0, growth_rate=1.4, similarity_score=0.85),
-                ComparableCompany(name="Uber", revenue_multiple=5.5, growth_rate=1.3, similarity_score=0.8),
-            ],
-            'saas': [
-                ComparableCompany(name="Salesforce", revenue_multiple=8.5, growth_rate=1.5, similarity_score=0.9),
-                ComparableCompany(name="ServiceNow", revenue_multiple=10.0, growth_rate=1.8, similarity_score=0.85),
-                ComparableCompany(name="Workday", revenue_multiple=9.0, growth_rate=1.6, similarity_score=0.8),
-            ],
+        # Collect breakpoints by type with their probabilities
+        breakpoint_collections = {
+            'liquidation_satisfied': [],
+            'conversion_point': [],
+            'our_breakeven': [],
+            'our_3x': [],
+            'common_meaningful': []
         }
         
-        # Default to SaaS comparables if model not found
-        comparables = model_comparables.get(business_model, model_comparables['saas'])
+        for scenario in scenarios:
+            # Handle both PWERMScenario objects and dictionaries
+            # Use defensive checks: try dict-like access first, then attribute access
+            try:
+                # Try dict-like access first (handles dict, OrderedDict, custom mappings)
+                if hasattr(scenario, 'get') and callable(scenario.get):
+                    weight = scenario.get('probability', 0)
+                    exit_type = scenario.get('exit_type', '')
+                    breakpoints = scenario.get('breakpoints', {})
+                else:
+                    # Try attribute access (PWERMScenario object)
+                    weight = getattr(scenario, 'probability', 0)
+                    exit_type = getattr(scenario, 'exit_type', '')
+                    breakpoints = getattr(scenario, 'breakpoints', {})
+            except (AttributeError, TypeError) as e:
+                logger.warning(f"Skipping malformed scenario: {e}")
+                continue
+            
+            # Skip scenarios with zero probability
+            if weight == 0:
+                continue
+                
+            # For IPO scenarios, some breakpoints don't apply
+            if "IPO" in exit_type:
+                # In IPO, all convert to common - no liquidation preference
+                # But we still track ownership-based breakpoints
+                if breakpoints:
+                    if isinstance(breakpoints, dict):
+                        breakpoint_collections['our_breakeven'].append({
+                            'value': breakpoints.get('our_breakeven', 0),
+                            'weight': weight
+                        })
+                        breakpoint_collections['our_3x'].append({
+                            'value': breakpoints.get('our_3x', 0),
+                            'weight': weight
+                        })
+            else:
+                # M&A scenarios - all breakpoints matter
+                if breakpoints:
+                    for bp_type in breakpoint_collections.keys():
+                        value = breakpoints.get(bp_type, 0) if isinstance(breakpoints, dict) else 0
+                        if value > 0 and value != float('inf'):
+                            breakpoint_collections[bp_type].append({
+                                'value': value,
+                                'weight': weight
+                            })
         
-        return comparables
+        # Calculate distributions
+        distributions = {}
+        for bp_type, points in breakpoint_collections.items():
+            if not points:
+                continue
+                
+            # Extract values and weights
+            values = np.array([p['value'] for p in points])
+            weights = np.array([p['weight'] for p in points])
+            
+            # Normalize weights
+            total_weight = weights.sum()
+            if total_weight == 0:
+                continue
+            weights = weights / total_weight
+            
+            # Sort by value for percentile calculation
+            sorted_indices = np.argsort(values)
+            sorted_values = values[sorted_indices]
+            sorted_weights = weights[sorted_indices]
+            
+            # Calculate cumulative probability
+            cumulative = np.cumsum(sorted_weights)
+            
+            # Calculate percentiles
+            def weighted_percentile(perc):
+                target = perc / 100.0
+                idx = np.searchsorted(cumulative, target)
+                if idx >= len(sorted_values):
+                    return sorted_values[-1]
+                return sorted_values[idx]
+            
+            # Calculate expected value
+            expected = np.sum(values * weights)
+            
+            distributions[bp_type] = {
+                'p10': weighted_percentile(10),
+                'p25': weighted_percentile(25),
+                'median': weighted_percentile(50),
+                'p75': weighted_percentile(75),
+                'p90': weighted_percentile(90),
+                'expected': expected,
+                'min': values.min(),
+                'max': values.max()
+            }
+        
+        return distributions
     
-    async def _calculate_industry_multiple_valuation(self, request: ValuationRequest) -> ValuationResult:
-        """Fallback to industry average multiples"""
-        # Use business_model or industry from request, default to saas
-        industry = request.business_model or request.industry or 'saas'
+    def generate_return_curves(self, scenarios: List[PWERMScenario], our_investment: Dict[str, float]) -> None:
+        """
+        Generate return curves for each scenario across a range of exit values.
+        Updates each scenario with its return curve data.
+        """
+        import numpy as np
         
-        # Map business models to industry categories
-        model_to_industry = {
-            'ai_first': 'saas',  # Use SaaS with growth premium
-            'ai_saas': 'saas',
-            'rollup': 'marketplace',  # Lower multiples for roll-ups
-            'services': 'consumer',  # People-heavy, lower multiples
-            'ai_enhanced_rollup': 'fintech',  # Hybrid model
-        }
+        # Exit value range from $10M to $10B (log scale)
+        exit_values = np.logspace(7, 10, 100)  # 100 points from 10M to 10B
         
-        # Convert business model to industry if needed
-        if industry not in self.industry_multiples:
-            industry = model_to_industry.get(industry, 'saas')
-        
-        multiples = self.industry_multiples[industry]
-        
-        revenue = request.revenue or 0
-        growth_rate = request.growth_rate or 1.0
-        
-        # Apply growth premium
-        growth_premium = multiples['growth_premium'] if growth_rate > 1.5 else 1.0
-        adjusted_multiple = multiples['revenue'] * growth_premium
-        
-        enterprise_value = revenue * adjusted_multiple
-        
-        # Apply DLOM
-        dlom = self.stage_parameters[request.stage]['dlom']
-        fair_value = enterprise_value * (1 - dlom)
-        
-        return ValuationResult(
-            method_used="Industry Multiples",
-            fair_value=fair_value,
-            dlom_discount=dlom,
-            assumptions={
-                'industry': industry,
-                'revenue_multiple': adjusted_multiple,
-                'growth_premium': growth_premium,
-                'dlom': dlom
-            },
-            confidence=0.6,
-            explanation=f"Industry average {industry} multiples: {adjusted_multiple:.1f}x revenue"
-        )
+        for scenario in scenarios:
+            returns = []
+            
+            for exit_value in exit_values:
+                if scenario.exit_type and "IPO" in scenario.exit_type:
+                    # IPO: Simple ownership-based return (all convert to common)
+                    our_proceeds = exit_value * scenario.final_ownership
+                else:
+                    # M&A: Need to calculate waterfall
+                    # Simplified waterfall calculation
+                    if exit_value <= scenario.final_liq_pref:
+                        # Below liquidation preference - we might get nothing
+                        our_proceeds = 0  # Simplified - would need full waterfall
+                    elif exit_value <= scenario.breakpoints.get('conversion_point', scenario.final_liq_pref * 1.5):
+                        # Between liq pref and conversion - liquidation preference applies
+                        remaining = exit_value - scenario.final_liq_pref
+                        our_proceeds = remaining * scenario.final_ownership
+                    else:
+                        # Above conversion - everyone converts to common
+                        our_proceeds = exit_value * scenario.final_ownership
+                
+                # Calculate return multiple
+                return_multiple = our_proceeds / our_investment['amount'] if our_investment['amount'] > 0 else 0
+                returns.append(return_multiple)
+            
+            # Store return curve
+            scenario.return_curve = {
+                'exit_values': exit_values.tolist(),
+                'return_multiples': returns,
+                'color': self._get_scenario_color(scenario),
+                'opacity': min(scenario.probability * 3, 0.9)  # Higher probability = more opaque
+            }
+    
+    def _get_scenario_color(self, scenario: PWERMScenario) -> str:
+        """Get color based on scenario quality."""
+        if "NYSE Blockbuster" in scenario.scenario or "Strong IPO" in scenario.scenario:
+            return "#22c55e"  # Green - best outcomes
+        elif "Strategic Premium" in scenario.scenario:
+            return "#3b82f6"  # Blue - good outcomes
+        elif "Modest" in scenario.scenario or "Growth Equity" in scenario.scenario:
+            return "#f59e0b"  # Orange - moderate outcomes
+        elif "Distressed" in scenario.scenario or "Write-off" in scenario.scenario:
+            return "#ef4444"  # Red - poor outcomes
+        else:
+            return "#9ca3af"  # Gray - neutral
     
     def _build_cash_flow_projections(self, request: ValuationRequest) -> List[Dict[str, float]]:
         """Build 5-year cash flow projections with realistic growth decay"""
@@ -1365,6 +1705,79 @@ class ValuationEngineService:
             })
         
         return projections
+    
+    def calculate_fund_dpi_impact(
+        self,
+        investment_amount: float,
+        entry_stage: str,
+        exit_value: float,
+        total_preferences_ahead: float,
+        our_ownership_pct: float = None,  # CALCULATE THIS, DON'T HARDCODE
+        fund_size: float = 260_000_000,
+        fund_dpi: float = 0.0
+    ) -> Dict[str, Any]:
+        """
+        Calculate how a $150M exit impacts a 0 DPI fund
+        Most fund managers are average - they need these exits
+        
+        Args:
+            our_ownership_pct: Our actual ownership % (e.g., 0.12 for 12%). 
+                              If not provided, estimates from investment amount and stage.
+        """
+        # Simple waterfall - preferences get paid first
+        remaining_after_prefs = max(0, exit_value - total_preferences_ahead)
+        
+        # CALCULATE ownership from investment, don't hardcode!
+        if our_ownership_pct is None:
+            # Estimate from stage benchmarks and investment size
+            # Typical valuations by stage
+            typical_valuations = {
+                'Seed': 10_000_000,
+                'Series A': 40_000_000,
+                'Series B': 120_000_000,
+                'Series C': 400_000_000,
+            }
+            typical_valuation = typical_valuations.get(entry_stage, 100_000_000)
+            # Calculate ownership as: investment / (pre-money + investment)
+            our_ownership_pct = investment_amount / (typical_valuation + investment_amount)
+            
+        our_return = remaining_after_prefs * our_ownership_pct
+        
+        # The brutal math
+        dpi_contribution = our_return / fund_size
+        moic = our_return / investment_amount if investment_amount > 0 else 0
+        
+        # For a 0 DPI fund, every dollar matters
+        result = {
+            'exit_value': exit_value,
+            'preferences_ahead': total_preferences_ahead,
+            'remaining_for_common': remaining_after_prefs,
+            'our_return': our_return,
+            'our_investment': investment_amount,
+            'moic': moic,
+            'dpi_contribution': dpi_contribution * 100,  # As percentage
+            'new_fund_dpi': (fund_dpi + dpi_contribution) * 100
+        }
+        
+        # The harsh reality check
+        if exit_value == 150_000_000:
+            if our_return == 0:
+                result['reality_check'] = "THE $150M PROBLEM: Decent exit, we get ZERO"
+            elif moic < 1:
+                result['reality_check'] = f"Lost ${(investment_amount - our_return)/1e6:.1f}M on a $150M exit"
+            elif dpi_contribution < 0.01:
+                result['reality_check'] = "Moved DPI by <1% - need 100 of these to return fund"
+            else:
+                result['reality_check'] = f"Rare win - actually got {moic:.1f}x on $150M exit"
+        
+        # What we actually need
+        if fund_dpi == 0:
+            # For 0 DPI fund, calculate exits needed to get to 1x
+            exits_needed_for_1x = fund_size / our_return if our_return > 0 else float('inf')
+            result['exits_needed_for_1x_dpi'] = exits_needed_for_1x
+            result['years_to_1x_at_this_rate'] = exits_needed_for_1x / 2  # Assume 2 exits per year
+        
+        return result
     
     def _build_liquidation_waterfall(self, request: ValuationRequest) -> List[WaterfallTier]:
         """Build liquidation waterfall from preferences"""

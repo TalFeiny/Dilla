@@ -1,0 +1,281 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Investment Analysis Report</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        .slide {
+            width: 1024px;
+            min-height: 768px;
+            page-break-after: always;
+            page-break-inside: avoid;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        @media print {
+            .slide {
+                page-break-after: always;
+                page-break-inside: avoid;
+            }
+        }
+        .chart-container {
+            position: relative;
+            height: 400px;
+            width: 100%;
+        }
+        /* Professional gradient backgrounds */
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .gradient-subtle {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    
+<div class="slide gradient-bg flex items-center justify-center">
+    <div class="text-center text-white px-16">
+        <h1 class="text-6xl font-bold mb-8">Investment Analysis Report</h1>
+        <p class="text-2xl opacity-90 mb-4">AI Infrastructure Portfolio Review</p>
+        <p class="text-xl opacity-80">September 2025</p>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Executive Summary</h2>
+    <ul class="list-disc list-inside text-lg"><li class="mb-3 text-gray-700">Analyzing 2 high-growth AI infrastructure companies for Series B investment</li><li class="mb-3 text-gray-700">Combined portfolio value potential: $2.5B by 2028 (15x MOIC)</li><li class="mb-3 text-gray-700">Focus on GPU compute and AI voice automation sectors</li><li class="mb-3 text-gray-700">Both companies showing 200%+ YoY growth with strong unit economics</li></ul>
+    
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-8 text-center">Company Comparison</h2>
+    <div class="flex gap-8">
+        <div class="flex-1"><h3 class="text-xl font-bold text-gray-900 mb-4 text-center">Vocca AI</h3><div class="bg-gray-50 rounded-lg p-4 mb-4"><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Valuation:</span><span class="text-sm font-semibold">$150M</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Revenue:</span><span class="text-sm font-semibold">$8M ARR</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Growth:</span><span class="text-sm font-semibold">250% YoY</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Gross Margin:</span><span class="text-sm font-semibold">75%</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Burn Multiple:</span><span class="text-sm font-semibold">0.8x</span></div></div><ul class="list-disc list-inside text-sm space-y-1"><li class="text-gray-700">AI voice agents for healthcare</li><li class="text-gray-700">30% of calls fully automated</li><li class="text-gray-700">$2M monthly burn rate</li><li class="text-gray-700">18 months runway</li></ul></div>
+        <div class="flex-1"><h3 class="text-xl font-bold text-gray-900 mb-4 text-center">OffDeal</h3><div class="bg-gray-50 rounded-lg p-4 mb-4"><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Valuation:</span><span class="text-sm font-semibold">$200M</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Revenue:</span><span class="text-sm font-semibold">$12M ARR</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Growth:</span><span class="text-sm font-semibold">180% YoY</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Gross Margin:</span><span class="text-sm font-semibold">82%</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Burn Multiple:</span><span class="text-sm font-semibold">0.6x</span></div></div><ul class="list-disc list-inside text-sm space-y-1"><li class="text-gray-700">M&A document automation</li><li class="text-gray-700">Serves 50+ PE firms</li><li class="text-gray-700">$1.5M monthly burn</li><li class="text-gray-700">24 months runway</li></ul></div>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Revenue Growth Trajectory</h2>
+    <div class="chart-container">
+        <canvas id="chart-3"></canvas>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-8 text-center">Cap Table Evolution</h2>
+    <div class="flex gap-8">
+        
+            <div class="flex-1">
+                <h3 class="text-xl font-bold text-gray-900 mb-4 text-center">Vocca AI</h3>
+                <div class="bg-gray-50 rounded-lg p-4">
+                    <table class="w-full">
+                        <thead>
+                            <tr class="border-b border-gray-200">
+                                <th class="text-left px-4 py-2 text-sm font-semibold">Round</th>
+                                <th class="text-right px-4 py-2 text-sm font-semibold">Founders</th>
+                                <th class="text-right px-4 py-2 text-sm font-semibold">Investors</th>
+                                <th class="text-right px-4 py-2 text-sm font-semibold">Employees</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            
+                <tr>
+                    <td class="px-4 py-2 text-sm">Founding</td>
+                    <td class="px-4 py-2 text-sm text-right">100.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">0.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">0.0%</td>
+                </tr>
+                
+                <tr>
+                    <td class="px-4 py-2 text-sm">Seed</td>
+                    <td class="px-4 py-2 text-sm text-right">75.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">20.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">5.0%</td>
+                </tr>
+                
+                <tr>
+                    <td class="px-4 py-2 text-sm">Series A</td>
+                    <td class="px-4 py-2 text-sm text-right">55.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">35.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">10.0%</td>
+                </tr>
+                
+                <tr>
+                    <td class="px-4 py-2 text-sm">Series B (Proposed)</td>
+                    <td class="px-4 py-2 text-sm text-right">42.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">46.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">12.0%</td>
+                </tr>
+                
+                        </tbody>
+                    </table>
+                </div>
+                <div class="mt-4 space-y-2">
+                    <p class="text-sm text-gray-600">• Strong founder retention at 42%</p><p class="text-sm text-gray-600">• Employee pool growing steadily</p><p class="text-sm text-gray-600">• Our investment: 12% for $18M</p>
+                </div>
+            </div>
+            
+            <div class="flex-1">
+                <h3 class="text-xl font-bold text-gray-900 mb-4 text-center">OffDeal</h3>
+                <div class="bg-gray-50 rounded-lg p-4">
+                    <table class="w-full">
+                        <thead>
+                            <tr class="border-b border-gray-200">
+                                <th class="text-left px-4 py-2 text-sm font-semibold">Round</th>
+                                <th class="text-right px-4 py-2 text-sm font-semibold">Founders</th>
+                                <th class="text-right px-4 py-2 text-sm font-semibold">Investors</th>
+                                <th class="text-right px-4 py-2 text-sm font-semibold">Employees</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            
+                <tr>
+                    <td class="px-4 py-2 text-sm">Founding</td>
+                    <td class="px-4 py-2 text-sm text-right">100.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">0.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">0.0%</td>
+                </tr>
+                
+                <tr>
+                    <td class="px-4 py-2 text-sm">Seed</td>
+                    <td class="px-4 py-2 text-sm text-right">70.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">25.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">5.0%</td>
+                </tr>
+                
+                <tr>
+                    <td class="px-4 py-2 text-sm">Series A</td>
+                    <td class="px-4 py-2 text-sm text-right">48.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">42.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">10.0%</td>
+                </tr>
+                
+                <tr>
+                    <td class="px-4 py-2 text-sm">Series B (Proposed)</td>
+                    <td class="px-4 py-2 text-sm text-right">35.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">52.0%</td>
+                    <td class="px-4 py-2 text-sm text-right">13.0%</td>
+                </tr>
+                
+                        </tbody>
+                    </table>
+                </div>
+                <div class="mt-4 space-y-2">
+                    <p class="text-sm text-gray-600">• Founders at 35% post-Series B</p><p class="text-sm text-gray-600">• Strong investor interest</p><p class="text-sm text-gray-600">• Our investment: 10% for $20M</p>
+                </div>
+            </div>
+            
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Market Opportunity (TAM Analysis)</h2>
+    <div class="chart-container">
+        <canvas id="chart-5"></canvas>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Valuation Analysis</h2>
+    <div class="chart-container">
+        <canvas id="chart-6"></canvas>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-8 text-center">Exit Scenario Analysis</h2>
+    <div class="flex gap-8">
+        <div class="flex-1"><h3 class="text-xl font-bold text-gray-900 mb-4 text-center">Vocca AI Returns</h3><div class="chart-container mb-4"><canvas id="chart-7-0"></canvas></div><div class="bg-gray-50 rounded-lg p-4 mb-4"><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Investment:</span><span class="text-sm font-semibold">$18M</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Bear Return:</span><span class="text-sm font-semibold">$54M</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Base Return:</span><span class="text-sm font-semibold">$180M</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Bull Return:</span><span class="text-sm font-semibold">$450M</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">IRR Range:</span><span class="text-sm font-semibold">25-65%</span></div></div></div>
+        <div class="flex-1"><h3 class="text-xl font-bold text-gray-900 mb-4 text-center">OffDeal Returns</h3><div class="chart-container mb-4"><canvas id="chart-7-1"></canvas></div><div class="bg-gray-50 rounded-lg p-4 mb-4"><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Investment:</span><span class="text-sm font-semibold">$20M</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Bear Return:</span><span class="text-sm font-semibold">$50M</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Base Return:</span><span class="text-sm font-semibold">$160M</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">Bull Return:</span><span class="text-sm font-semibold">$400M</span></div><div class="flex justify-between py-1"><span class="text-sm text-gray-600">IRR Range:</span><span class="text-sm font-semibold">20-55%</span></div></div></div>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Investment Recommendation</h2>
+    <ul class="list-disc list-inside text-lg text-gray-700 mb-8"><li class="mb-3">Both companies demonstrate strong product-market fit with 200%+ growth</li><li class="mb-3">Labor budget arbitrage thesis validated: replacing $2-3 of labor with $1 of AI</li><li class="mb-3">Vertical SaaS approach (healthcare, M&A) provides defensibility</li><li class="mb-3">GPU cost ratios improving: Vocca at 35%, OffDeal at 7.5% of revenue</li><li class="mb-3">Strong founder teams with domain expertise and high retention</li></ul>
+    <div class="grid grid-cols-3 gap-4">
+            <div class="bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg p-4 border border-blue-100">
+                <p class="text-sm text-gray-600 mb-1">Total Investment</p>
+                <p class="text-xl font-bold text-gray-900">$38M</p>
+            </div>
+            
+            <div class="bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg p-4 border border-blue-100">
+                <p class="text-sm text-gray-600 mb-1">Blended Ownership</p>
+                <p class="text-xl font-bold text-gray-900">11%</p>
+            </div>
+            
+            <div class="bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg p-4 border border-blue-100">
+                <p class="text-sm text-gray-600 mb-1">Expected MOIC</p>
+                <p class="text-xl font-bold text-gray-900">9x (Base Case)</p>
+            </div>
+            
+            <div class="bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg p-4 border border-blue-100">
+                <p class="text-sm text-gray-600 mb-1">Target Exit</p>
+                <p class="text-xl font-bold text-gray-900">2028-2030</p>
+            </div>
+            
+            <div class="bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg p-4 border border-blue-100">
+                <p class="text-sm text-gray-600 mb-1">Portfolio IRR</p>
+                <p class="text-xl font-bold text-gray-900">45%+</p>
+            </div>
+            </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Next Steps & Timeline</h2>
+    <ul class="list-disc list-inside text-lg"><li class="mb-3 text-gray-700">Week 1-2: Complete technical due diligence on both companies</li><li class="mb-3 text-gray-700">Week 3: Negotiate term sheets with target valuations</li><li class="mb-3 text-gray-700">Week 4-5: Legal due diligence and documentation</li><li class="mb-3 text-gray-700">Week 6: Investment committee approval</li><li class="mb-3 text-gray-700">Week 7-8: Close investments and board seat negotiations</li><li class="mb-3 text-gray-700">Ongoing: Monthly board meetings and quarterly portfolio reviews</li></ul>
+    
+</div>
+        
+    <script>
+        // Initialize all charts after DOM is loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            
+                        var ctx3 = document.getElementById('chart-3');
+                        if (ctx3) {
+                            new Chart(ctx3.getContext('2d'), {"type": "line", "data": {"labels": ["Q1 2023", "Q2 2023", "Q3 2023", "Q4 2023", "Q1 2024", "Q2 2024", "Q3 2024", "Q4 2024E"], "datasets": [{"label": "Vocca AI", "data": [0.5, 0.8, 1.2, 1.8, 2.5, 3.5, 5.0, 8.0], "borderColor": "rgb(99, 102, 241)", "backgroundColor": "rgba(99, 102, 241, 0.1)", "tension": 0.4, "fill": false, "borderWidth": 2}, {"label": "OffDeal", "data": [1.0, 1.5, 2.2, 3.0, 4.2, 5.8, 8.0, 12.0], "borderColor": "rgb(236, 72, 153)", "backgroundColor": "rgba(236, 72, 153, 0.1)", "tension": 0.4, "fill": false, "borderWidth": 2}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 20, "font": {"size": 12, "family": "'Inter', sans-serif"}}}, "title": {"display": false, "text": "", "font": {"size": 16, "family": "'Inter', sans-serif", "weight": "600"}, "padding": {"bottom": 20}}}, "scales": {"y": {"beginAtZero": true, "grid": {"color": "rgba(0, 0, 0, 0.05)", "drawBorder": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}, "x": {"grid": {"display": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}}}});
+                        }
+                    
+
+                        var ctx5 = document.getElementById('chart-5');
+                        if (ctx5) {
+                            new Chart(ctx5.getContext('2d'), {"type": "bar", "data": {"labels": ["Traditional TAM", "Labor TAM", "Serviceable (SAM)", "Obtainable (SOM)"], "datasets": [{"label": "Vocca AI - Healthcare Voice", "data": [10000, 30000, 4500, 450], "backgroundColor": "rgba(99, 102, 241, 0.8)", "borderColor": "rgba(99, 102, 241, 1)", "borderWidth": 2}, {"label": "OffDeal - M&A Automation", "data": [20000, 50000, 7000, 700], "backgroundColor": "rgba(236, 72, 153, 0.8)", "borderColor": "rgba(236, 72, 153, 1)", "borderWidth": 2}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 20, "font": {"size": 12, "family": "'Inter', sans-serif"}}}, "title": {"display": false, "text": "", "font": {"size": 16, "family": "'Inter', sans-serif", "weight": "600"}, "padding": {"bottom": 20}}}, "scales": {"y": {"beginAtZero": true, "grid": {"color": "rgba(0, 0, 0, 0.05)", "drawBorder": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}, "x": {"grid": {"display": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}}}});
+                        }
+                    
+
+                        var ctx6 = document.getElementById('chart-6');
+                        if (ctx6) {
+                            new Chart(ctx6.getContext('2d'), {"type": "bar", "data": {"labels": ["Current Multiple", "Industry Avg", "Top Quartile", "Our Target"], "datasets": [{"label": "Vocca AI (x ARR)", "data": [18.75, 15.0, 25.0, 22.0], "backgroundColor": "rgba(99, 102, 241, 0.8)", "borderColor": "rgba(99, 102, 241, 1)", "borderWidth": 2}, {"label": "OffDeal (x ARR)", "data": [16.67, 12.0, 20.0, 18.0], "backgroundColor": "rgba(236, 72, 153, 0.8)", "borderColor": "rgba(236, 72, 153, 1)", "borderWidth": 2}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 20, "font": {"size": 12, "family": "'Inter', sans-serif"}}}, "title": {"display": false, "text": "", "font": {"size": 16, "family": "'Inter', sans-serif", "weight": "600"}, "padding": {"bottom": 20}}}, "scales": {"y": {"beginAtZero": true, "grid": {"color": "rgba(0, 0, 0, 0.05)", "drawBorder": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}, "x": {"grid": {"display": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}}}});
+                        }
+                    
+
+                            var ctx7_0 = document.getElementById('chart-7-0');
+                            if (ctx7_0) {
+                                new Chart(ctx7_0.getContext('2d'), {"type": "bar", "data": {"labels": ["Bear (3x)", "Base (10x)", "Bull (25x)"], "datasets": [{"label": "MOIC", "data": [3, 10, 25], "backgroundColor": ["rgba(239, 68, 68, 0.8)", "rgba(99, 102, 241, 0.8)", "rgba(34, 197, 94, 0.8)"], "borderColor": ["rgba(239, 68, 68, 1)", "rgba(99, 102, 241, 1)", "rgba(34, 197, 94, 1)"], "borderWidth": 2}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 20, "font": {"size": 12, "family": "'Inter', sans-serif"}}}, "title": {"display": false, "text": "", "font": {"size": 16, "family": "'Inter', sans-serif", "weight": "600"}, "padding": {"bottom": 20}}}, "scales": {"y": {"beginAtZero": true, "grid": {"color": "rgba(0, 0, 0, 0.05)", "drawBorder": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}, "x": {"grid": {"display": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}}}});
+                            }
+                        
+
+                            var ctx7_1 = document.getElementById('chart-7-1');
+                            if (ctx7_1) {
+                                new Chart(ctx7_1.getContext('2d'), {"type": "bar", "data": {"labels": ["Bear (2.5x)", "Base (8x)", "Bull (20x)"], "datasets": [{"label": "MOIC", "data": [2.5, 8, 20], "backgroundColor": ["rgba(239, 68, 68, 0.8)", "rgba(236, 72, 153, 0.8)", "rgba(34, 197, 94, 0.8)"], "borderColor": ["rgba(239, 68, 68, 1)", "rgba(236, 72, 153, 1)", "rgba(34, 197, 94, 1)"], "borderWidth": 2}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 20, "font": {"size": 12, "family": "'Inter', sans-serif"}}}, "title": {"display": false, "text": "", "font": {"size": 16, "family": "'Inter', sans-serif", "weight": "600"}, "padding": {"bottom": 20}}}, "scales": {"y": {"beginAtZero": true, "grid": {"color": "rgba(0, 0, 0, 0.05)", "drawBorder": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}, "x": {"grid": {"display": false}, "ticks": {"font": {"family": "'Inter', sans-serif"}}}}}});
+                            }
+                        
+        });
+    </script>
+</body>
+</html>
+        

@@ -71,19 +71,20 @@ const PYTHON_API_ROUTES = [
   '/api/brain/',           // Agent brain
   '/api/investment/',      // Investment analysis
   '/api/analyst/',         // Analyst endpoints
+  '/api/health',           // Health check endpoint
 ]
 
 // Routes that should be handled by Next.js (not proxied)
 const NEXTJS_ONLY_ROUTES = [
   '/api/agent/spreadsheet-direct',
   '/api/agent/spreadsheet-stream',  // New streaming endpoint
-  '/api/agent/unified-brain',  // Single endpoint (always streams)
   '/api/agent/cim-generator',  // CIM generator
   '/api/agent/company-cim',  // Company CIM
   '/api/agent/dynamic-data-v2',
   '/api/agent/dynamic-data',
   '/api/agent/test-orchestration',  // Add our test endpoint
   '/api/agent/tools/',
+  '/api/agent/unified-brain',  // Unified brain has its own Next.js route handler
 ]
 
 // Performance-optimized middleware with API gateway functionality and security

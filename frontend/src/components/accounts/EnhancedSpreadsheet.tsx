@@ -178,6 +178,8 @@ export default function EnhancedSpreadsheet({ commands, onCommandsExecuted }: En
       if (value.match(/^\d{4}-\d{2}-\d{2}/)) return 'date';
       if (value.match(/^\$[\d,]+\.?\d*/)) return 'currency';
       if (value.match(/^\d+\.?\d*%$/)) return 'percentage';
+      // Check if it's a pure number string (including decimals and negatives)
+      if (value.match(/^-?\d+\.?\d*$/)) return 'number';
     }
     return 'text';
   }, []);
@@ -581,6 +583,15 @@ export default function EnhancedSpreadsheet({ commands, onCommandsExecuted }: En
 
   // Update cell value with optimized state updates
   const updateCell = useCallback((cellRef: string, value: any, formula?: string) => {
+    // Parse numeric strings to numbers for proper Excel-like behavior
+    let parsedValue = value;
+    if (!formula && typeof value === 'string' && value.match(/^-?\d+\.?\d*$/)) {
+      const num = parseFloat(value);
+      if (!isNaN(num)) {
+        parsedValue = num;
+      }
+    }
+    
     // Update the data and capture previous state for undo
     setData(prev => {
       // Save previous state for undo - but don't trigger another state update
@@ -591,9 +602,9 @@ export default function EnhancedSpreadsheet({ commands, onCommandsExecuted }: En
       } else {
         newCells[cellRef] = {
           ...newCells[cellRef],
-          value: formula ? evaluateFormula(formula, cellRef) : value,
+          value: formula ? evaluateFormula(formula, cellRef) : parsedValue,
           formula: formula,
-          type: detectCellType(value),
+          type: detectCellType(parsedValue),
           history: [
             ...(newCells[cellRef]?.history || []).slice(-5), // Limit history per cell to 5 items
             { value: newCells[cellRef]?.value, timestamp: new Date().toISOString() }

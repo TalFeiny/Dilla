@@ -77,6 +77,19 @@ class Company:
     
     # Market metrics
     tam: Optional[float] = None
+    sam: Optional[float] = None
+    som: Optional[float] = None
+    market_definition: str = ""
+    market_segments: List[str] = field(default_factory=list)
+    customer_segments: List[str] = field(default_factory=list)
+    competitive_landscape: List[str] = field(default_factory=list)
+    searchable_terms: List[str] = field(default_factory=list)
+    tam_search_queries: List[str] = field(default_factory=list)
+    tam_sources: List[str] = field(default_factory=list)
+    tam_confidence: Optional[float] = None
+    tam_calculation_method: str = ""
+    tam_year: Optional[int] = None
+    tam_growth_rate: Optional[float] = None
     market_share: Optional[float] = None
     competitors: List[str] = field(default_factory=list)
     

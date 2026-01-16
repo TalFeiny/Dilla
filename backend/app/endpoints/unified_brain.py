@@ -8,10 +8,10 @@ from typing import Dict, List, Optional, Any
 import uuid
 from datetime import datetime
 
-from ..services.unified_orchestrator import UnifiedOrchestratorService
+from ..services.unified_mcp_orchestrator import UnifiedMCPOrchestrator
 
 # Initialize the orchestrator service
-orchestrator_service = UnifiedOrchestratorService()
+orchestrator_service = UnifiedMCPOrchestrator()
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -40,13 +40,27 @@ async def unified_brain(request: UnifiedRequest, background_tasks: BackgroundTas
     task_id = str(uuid.uuid4())
     
     try:
-        # Convert request to dict
-        request_dict = request.dict()
+        # Execute task using the UnifiedMCPOrchestrator
+        result = await orchestrator_service.process_request(
+            prompt=request.prompt,
+            output_format=request.format or "analysis",
+            context=request.context
+        )
         
-        # Execute task
-        result = await orchestrator_service.execute_task(task_id, request_dict)
+        # Handle case where result is None or doesn't have expected structure
+        if result is None:
+            return UnifiedResponse(
+                success=False,
+                task_id=task_id,
+                error="No result returned from orchestrator"
+            )
         
-        return UnifiedResponse(**result)
+        return UnifiedResponse(
+            success=result.get("success", False),
+            task_id=task_id,
+            data=result.get("result"),
+            error=result.get("error")
+        )
         
     except Exception as e:
         return UnifiedResponse(
@@ -58,35 +72,25 @@ async def unified_brain(request: UnifiedRequest, background_tasks: BackgroundTas
 @router.get("/task/{task_id}/status")
 async def get_task_status(task_id: str):
     """Get status of a running task"""
-    if task_id in orchestrator_service.active_tasks:
-        task = orchestrator_service.active_tasks[task_id]
-        return {
-            "status": task["status"],
-            "started_at": task["started_at"],
-            "progress": task.get("progress", 0)
-        }
-    else:
-        return {"status": "not_found"}
+    # UnifiedMCPOrchestrator doesn't track active tasks, return not found
+    return {"status": "not_found"}
 
 @router.post("/task/{task_id}/cancel")
 async def cancel_task(task_id: str):
     """Cancel a running task"""
-    if task_id in orchestrator_service.active_tasks:
-        orchestrator_service.active_tasks[task_id]["status"] = "cancelled"
-        return {"success": True, "message": "Task cancelled"}
-    else:
-        raise HTTPException(status_code=404, detail="Task not found")
+    # UnifiedMCPOrchestrator doesn't track active tasks
+    raise HTTPException(status_code=404, detail="Task not found")
 
 @router.get("/skills")
 async def list_skills():
     """List all available skills"""
     skills = []
-    for name, skill in orchestrator_service.skill_registry.items():
+    for name, skill in orchestrator_service.skills.items():
         skills.append({
             "name": name,
             "category": skill["category"].value,
             "description": skill["description"],
-            "timeout": skill["timeout"],
+            "timeout": skill.get("timeout", 30000),
             "requires_computer_use": skill.get("requires_computer_use", False)
         })
     return {"skills": skills}
@@ -94,10 +98,10 @@ async def list_skills():
 @router.post("/skills/{skill_name}/execute")
 async def execute_skill(skill_name: str, inputs: Dict):
     """Execute a specific skill directly"""
-    if skill_name not in orchestrator_service.skill_registry:
+    if skill_name not in orchestrator_service.skills:
         raise HTTPException(status_code=404, detail=f"Skill {skill_name} not found")
     
-    skill = orchestrator_service.skill_registry[skill_name]
+    skill = orchestrator_service.skills[skill_name]
     try:
         result = await skill["handler"](inputs)
         return {"success": True, "data": result}

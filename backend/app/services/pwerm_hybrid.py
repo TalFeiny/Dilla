@@ -3,10 +3,10 @@ Hybrid PWERM: Simple Bear/Base/Bull with Deep Analysis Capability
 Combines quick 3-scenario display with full matrix for detailed analysis
 """
 
-import numpy as np
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 

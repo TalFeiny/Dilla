@@ -43,6 +43,8 @@ class Company(CompanyBase):
     employee_count: Optional[int] = None
     churn_rate: Optional[float] = None
     gross_margin: Optional[float] = None
+    category: Optional[str] = None
+    ai_first: Optional[bool] = None
     ltv_cac_ratio: Optional[float] = None
     nps_score: Optional[int] = None
     competitive_position: Optional[str] = None

@@ -4,13 +4,13 @@ import { MCPOrchestrator } from '@/components/MCPOrchestrator';
 
 export default function MCPPage() {
   return (
-    <div className="min-h-screen bg-gray-50 py-8">
+    <div className="min-h-screen bg-secondary py-8">
       <div className="container mx-auto px-4">
         <div className="mb-8 text-center">
-          <h1 className="text-4xl font-bold text-gray-900 mb-4">
+          <h1 className="text-4xl font-bold text-foreground mb-4">
             MCP Tool Orchestration
           </h1>
-          <p className="text-lg text-gray-600 max-w-3xl mx-auto">
+          <p className="text-lg text-muted-foreground max-w-3xl mx-auto">
             Intelligent task decomposition and execution using Tavily and Firecrawl.
             Enter complex prompts and watch as they're broken down into actionable tasks
             and executed in parallel.
@@ -26,7 +26,7 @@ export default function MCPPage() {
         <div className="mt-12 grid md:grid-cols-3 gap-6 max-w-6xl mx-auto">
           <div className="bg-white p-6 rounded-lg shadow">
             <h3 className="font-semibold text-lg mb-2">🔍 Tavily Search</h3>
-            <p className="text-gray-600 text-sm">
+            <p className="text-muted-foreground text-sm">
               Advanced web search with semantic understanding. Finds relevant
               information, answers questions, and provides context.
             </p>
@@ -34,7 +34,7 @@ export default function MCPPage() {
           
           <div className="bg-white p-6 rounded-lg shadow">
             <h3 className="font-semibold text-lg mb-2">🌐 Firecrawl Scraping</h3>
-            <p className="text-gray-600 text-sm">
+            <p className="text-muted-foreground text-sm">
               Deep website analysis and content extraction. Scrapes structured
               data, extracts key information, and processes documents.
             </p>
@@ -42,7 +42,7 @@ export default function MCPPage() {
           
           <div className="bg-white p-6 rounded-lg shadow">
             <h3 className="font-semibold text-lg mb-2">🎯 Hybrid Mode</h3>
-            <p className="text-gray-600 text-sm">
+            <p className="text-muted-foreground text-sm">
               Combines both tools for comprehensive analysis. Search for information
               then scrape top results for deeper insights.
             </p>

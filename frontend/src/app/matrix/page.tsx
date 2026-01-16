@@ -102,7 +102,7 @@ export default function MatrixPage() {
             requireStructuredData: true,
             generateFormulas: true
           },
-          stream: true  // Enable streaming
+          stream: false  // Disable streaming
         })
       });
 
@@ -110,172 +110,104 @@ export default function MatrixPage() {
         throw new Error(`Request failed: ${response.status}`);
       }
 
-      // Handle streaming response with error recovery
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let matrixResult: any = null;
-      let streamError: Error | null = null;
-
-      try {
-        while (reader) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n');
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const dataStr = line.slice(6);
-              if (dataStr === '[DONE]') continue;
+      // Handle JSON response
+      const data = await response.json();
+      
+      if (data.success) {
+        console.log('Received matrix data:', data);
+        let matrixResult = data;
+        
+        // Handle unified format where format: 'matrix' is present
+        if (data.format === 'matrix') {
+          console.log('Processing unified matrix format');
+          matrixResult = data;
+        }
+        
+        // Extract citations and charts from the result
+        if (data.citations) {
+          setCitations(data.citations);
+        }
+        if (data.charts) {
+          setCharts(data.charts);
+        }
+        setProgressMessage('✅ Matrix generation complete');
+        setExecutionSteps(prev => [...prev, '✅ Analysis complete']);
+        
+        // Process the matrix data
+        if (matrixResult.matrix) {
+          const data = matrixResult;
+          
+          console.log('Processing matrix data:', data);
+          
+          // Check if this is a fallback response (when JSON parsing failed)
+          if (data.content && data.format === 'matrix') {
+            console.log('Received fallback response, raw content:', data.content);
+            setError(`Matrix generation failed: ${data.error || 'Invalid JSON format'}`);
+            // Try to show the raw content for debugging
+            console.error('Raw AI response was:', data.content);
+          } else if (data.columns && data.rows) {
+            // dynamic-data-v2 returns properly formatted matrix data
+            console.log('Found columns:', data.columns);
+            console.log('Found rows:', data.rows);
+        
+            // Safely transform rows with type guards
+            const transformedRows = data.rows.map((row: any) => {
+              const flatRow: any = {};
               
-              try {
-                const streamData = JSON.parse(dataStr);
+              // Handle both old format (direct values) and new format (cells object)
+              const rowData = row.cells || row;
+              
+              Object.keys(rowData).forEach(key => {
+                const cellData = rowData[key];
                 
-                switch (streamData.type) {
-                  case 'progress':
-                    setProgressMessage(streamData.message);
-                    setExecutionSteps(prev => [...prev, streamData.message]);
-                    break;
-                    
-                  case 'status':
-                    setProgressMessage(streamData.message);
-                    break;
-                    
-                  case 'complete':
-                    console.log('Received complete data:', streamData);
-                    matrixResult = streamData.result;
-                    
-                    // Handle unified format where format: 'matrix' is present
-                    if (streamData.result?.format === 'matrix') {
-                      console.log('Processing unified matrix format');
-                      // All matrix data is at top level
-                      matrixResult = streamData.result;
+                // Type guard: Check if this is an object with value property
+                if (cellData && typeof cellData === 'object' && !Array.isArray(cellData)) {
+                  // New format with {value, source, href} or {value, displayValue}
+                  if ('value' in cellData) {
+                    flatRow[key] = cellData.value;
+                    // Store metadata for citations if available
+                    if (cellData.source) {
+                      flatRow[`${key}_source`] = cellData.source;
                     }
-                    
-                    // Extract citations and charts from the result
-                    if (streamData.result?.citations) {
-                      setCitations(streamData.result.citations);
+                    if (cellData.href) {
+                      flatRow[`${key}_href`] = cellData.href;
                     }
-                    if (streamData.result?.charts) {
-                      setCharts(streamData.result.charts);
+                    if (cellData.displayValue) {
+                      flatRow[`${key}_display`] = cellData.displayValue;
                     }
-                    setProgressMessage('✅ Matrix generation complete');
-                    setExecutionSteps(prev => [...prev, '✅ Analysis complete']);
-                    break;
-                    
-                  case 'error':
-                    streamError = new Error(streamData.message);
-                    setError(streamData.message);
-                    setProgressMessage('');
-                    // Don't throw immediately, let cleanup happen
-                    break;
+                  } else {
+                    // Unknown object format, store as-is
+                    flatRow[key] = cellData;
+                  }
+                } else {
+                  // Direct value (old format) or primitive
+                  flatRow[key] = cellData;
                 }
-              } catch (e) {
-                console.warn('Could not parse streaming data:', e);
-                // Continue processing other lines
-              }
-            }
-          }
-          
-          // If we got an error, stop processing
-          if (streamError) break;
-        }
-      } catch (streamErr) {
-        console.error('Stream reading error:', streamErr);
-        streamError = streamErr as Error;
-      } finally {
-        // Always clean up the reader
-        try {
-          reader?.releaseLock();
-        } catch (e) {
-          console.warn('Reader already released');
-        }
-      }
-      
-      // Handle any stream errors after cleanup
-      if (streamError) {
-        setError(streamError.message);
-        setProgressMessage('');
-        return;
-      }
-
-      // Make sure we have valid data
-      if (!matrixResult) {
-        setError('No data received from server');
-        return;
-      }
-      
-      const data = matrixResult;
-      
-      console.log('Processing matrix data:', data);
-      
-      // Check if this is a fallback response (when JSON parsing failed)
-      if (data.content && data.format === 'matrix') {
-        console.log('Received fallback response, raw content:', data.content);
-        setError(`Matrix generation failed: ${data.error || 'Invalid JSON format'}`);
-        // Try to show the raw content for debugging
-        console.error('Raw AI response was:', data.content);
-      } else if (data.columns && data.rows) {
-        // dynamic-data-v2 returns properly formatted matrix data
-        console.log('Found columns:', data.columns);
-        console.log('Found rows:', data.rows);
-        
-        // Safely transform rows with type guards
-        const transformedRows = data.rows.map((row: any) => {
-          const flatRow: any = {};
-          
-          // Handle both old format (direct values) and new format (cells object)
-          const rowData = row.cells || row;
-          
-          Object.keys(rowData).forEach(key => {
-            const cellData = rowData[key];
+              });
+              return flatRow;
+            });
             
-            // Type guard: Check if this is an object with value property
-            if (cellData && typeof cellData === 'object' && !Array.isArray(cellData)) {
-              // New format with {value, source, href} or {value, displayValue}
-              if ('value' in cellData) {
-                flatRow[key] = cellData.value;
-                // Store metadata for citations if available
-                if (cellData.source) {
-                  flatRow[`${key}_source`] = cellData.source;
-                }
-                if (cellData.href) {
-                  flatRow[`${key}_href`] = cellData.href;
-                }
-                if (cellData.displayValue) {
-                  flatRow[`${key}_display`] = cellData.displayValue;
-                }
-              } else {
-                // Unknown object format, store as-is
-                flatRow[key] = cellData;
-              }
-            } else {
-              // Direct value (old format) or primitive
-              flatRow[key] = cellData;
-            }
-          });
-          return flatRow;
-        });
-        
-        setMatrixData({
-          columns: data.columns,
-          rows: transformedRows,
-          formulas: data.formulas || {},
-          metadata: data.metadata || {}
-        });
-        setProgressMessage('');
-        setError(null);
-        
-        // Show feedback after successful generation
-        setTimeout(() => {
-          setShowFeedback(true);
-        }, 1000);
-      } else if (data.error) {
-        setError(data.error);
+            setMatrixData({
+              columns: data.columns,
+              rows: transformedRows,
+              formulas: data.formulas || {},
+              metadata: data.metadata || {}
+            });
+            setProgressMessage('');
+            setError(null);
+            
+            // Show feedback after successful generation
+            setTimeout(() => {
+              setShowFeedback(true);
+            }, 1000);
+          } else {
+            setError('Invalid matrix data format received');
+          }
+        } else {
+          setError('No matrix data received from server');
+        }
       } else {
-        console.error('Unexpected data format:', data);
-        setError('Invalid response format from server');
+        setError(data.error || 'Request failed');
       }
     } catch (err) {
       console.error('Matrix query error:', err);
@@ -708,7 +640,7 @@ export default function MatrixPage() {
               </div>
               
               <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border dark:border-gray-700">
-                <Brain className="w-8 h-8 text-purple-600 dark:text-purple-400 mb-2" />
+                <Brain className="w-8 h-8 text-primary dark:text-purple-400 mb-2" />
                 <h4 className="font-medium text-gray-900 dark:text-white">AI Analysis</h4>
                 <p className="text-sm text-gray-500 dark:text-gray-400">
                   Smart comparisons

@@ -82,6 +82,17 @@ export default function Dashboard() {
       )
     },
     {
+      title: 'Deck Agent',
+      description: 'AI-powered presentation deck creation',
+      href: '/deck-agent',
+      count: null,
+      icon: (
+        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      )
+    },
+    {
       title: 'PWERM Analysis',
       description: 'Run probability-weighted valuations',
       href: '/pwerm',
@@ -119,18 +130,19 @@ export default function Dashboard() {
   ];
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white border-b border-gray-200">
+    <div className="min-h-screen bg-background">
+      <nav className="bg-card border-b border-[color:var(--border)]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <div className="flex items-center">
-              <span className="text-xl font-bold text-black">Dilla AI</span>
+              <img src="/dilla-logo.svg" alt="Dilla AI" className="h-8 w-auto mr-2" />
+              <span className="text-xl font-bold text-foreground">Dilla AI</span>
             </div>
             <div className="flex items-center space-x-4">
-              <span className="text-sm text-gray-600">{user?.email}</span>
+              <span className="text-sm text-muted-foreground">{user?.email}</span>
               <button
                 onClick={handleSignOut}
-                className="text-sm text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md hover:bg-gray-100"
+                className="text-sm text-muted-foreground hover:text-foreground px-3 py-2 rounded-md hover:bg-secondary"
               >
                 Sign Out
               </button>
@@ -141,8 +153,8 @@ export default function Dashboard() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-gray-600 mt-2">Welcome back to Dilla AI</p>
+          <h1 className="text-3xl font-bold text-foreground">Dashboard</h1>
+          <p className="text-muted-foreground mt-2">Welcome back to Dilla AI</p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -150,48 +162,48 @@ export default function Dashboard() {
             <Link
               key={card.href}
               href={card.href}
-              className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow"
+              className="bg-card p-6 rounded-xl shadow-sm border border-[color:var(--border)] hover:shadow-md transition-shadow surface-3d hover:bg-secondary/20"
             >
               <div className="flex items-start justify-between mb-4">
-                <div className="p-2 bg-purple-100 rounded-lg text-purple-600">
+                <div className="p-2 bg-primary/10 rounded-lg text-primary">
                   {card.icon}
                 </div>
                 {card.count !== null && (
                   <div className="text-right">
-                    <div className="text-2xl font-bold text-gray-900">{card.count}</div>
-                    <div className="text-xs text-gray-500">{card.countLabel}</div>
+                    <div className="text-2xl font-bold text-foreground">{card.count}</div>
+                    <div className="text-xs text-muted-foreground">{card.countLabel}</div>
                   </div>
                 )}
               </div>
-              <h3 className="font-semibold text-gray-900 mb-1">{card.title}</h3>
-              <p className="text-sm text-gray-600">{card.description}</p>
+              <h3 className="font-semibold text-foreground mb-1">{card.title}</h3>
+              <p className="text-sm text-muted-foreground">{card.description}</p>
             </Link>
           ))}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h2>
+          <div className="bg-card rounded-xl shadow-sm border border-[color:var(--border)] p-6 surface-3d">
+            <h2 className="text-lg font-semibold text-foreground mb-4">Quick Actions</h2>
             <div className="space-y-3">
-              <Link href="/documents" className="block w-full text-left px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors">
+              <Link href="/documents" className="block w-full text-left px-4 py-3 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors">
                 Upload New Document
               </Link>
-              <Link href="/pwerm" className="block w-full text-left px-4 py-3 bg-gray-100 text-gray-900 rounded-lg hover:bg-gray-200 transition-colors">
+              <Link href="/pwerm" className="block w-full text-left px-4 py-3 bg-secondary text-secondary-foreground rounded-lg hover:bg-secondary/80 transition-colors">
                 Run PWERM Analysis
               </Link>
-              <Link href="/companies" className="block w-full text-left px-4 py-3 bg-gray-100 text-gray-900 rounded-lg hover:bg-gray-200 transition-colors">
+              <Link href="/companies" className="block w-full text-left px-4 py-3 bg-secondary text-secondary-foreground rounded-lg hover:bg-secondary/80 transition-colors">
                 Add Portfolio Company
               </Link>
             </div>
           </div>
 
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Recent Activity</h2>
+          <div className="bg-card rounded-xl shadow-sm border border-[color:var(--border)] p-6 surface-3d">
+            <h2 className="text-lg font-semibold text-foreground mb-4">Recent Activity</h2>
             <div className="space-y-3">
-              <div className="text-sm text-gray-600">
+              <div className="text-sm text-muted-foreground">
                 <div className="flex items-center justify-between py-2">
                   <span>No recent activity</span>
-                  <span className="text-xs text-gray-400">Start by uploading documents</span>
+                  <span className="text-xs text-muted-foreground/60">Start by uploading documents</span>
                 </div>
               </div>
             </div>

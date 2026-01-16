@@ -13,8 +13,18 @@ import logging
 logger = logging.getLogger(__name__)
 import numpy as np
 
-# Set precision for financial calculations
-getcontext().prec = 10
+from app.services.data_validator import ensure_numeric
+
+# Set precision for financial calculations with large numbers
+# Increase limits to handle billion/trillion dollar valuations
+from decimal import Context
+context = Context(
+    prec=28,  # Precision for calculations
+    Emax=999999999,  # Max exponent for very large numbers (trillions)
+    Emin=-999999999,  # Min exponent for very small numbers
+    rounding=ROUND_HALF_UP
+)
+decimal.setcontext(context)
 
 @dataclass
 class CapTableSnapshot:
@@ -266,9 +276,19 @@ class PrePostCapTable:
                 
             round_name = round_data.get("round", f"Round {i+1}")
             
+            # Safely convert amount to Decimal with normalization fallbacks
+            raw_amount = round_data.get("amount")
+            if not raw_amount:
+                for alt_key in ("round_size", "size"):
+                    alt_value = round_data.get(alt_key)
+                    if alt_value not in (None, "", 0):
+                        raw_amount = alt_value
+                        break
+
             # Safely convert amount to Decimal
             try:
-                amount = Decimal(str(round_data.get("amount", 0)))
+                normalized_amount = ensure_numeric(raw_amount, 0) if raw_amount not in (None, "", 0) else 0
+                amount = Decimal(str(normalized_amount))
                 if amount <= 0:
                     continue  # Skip rounds with no or negative amount
             except (decimal.InvalidOperation, ValueError, TypeError):
@@ -283,31 +303,66 @@ class PrePostCapTable:
             # If no pre-money, estimate from amount and typical dilution
             if pre_money == 0:
                 try:
-                    dilution_value = self._get_typical_dilution(round_name)
-                    logger.info(f"Round {round_name}: _get_typical_dilution returned {dilution_value} (type: {type(dilution_value)})")
-                    typical_dilution = Decimal(str(dilution_value))
-                    logger.info(f"Round {round_name}: No pre_money provided, using typical dilution {typical_dilution:.2%}")
-                    logger.info(f"Round {round_name}: Amount value = {amount}, type = {type(amount)}")
+                    # Ensure round_name is always a string to avoid NoneType errors
+                    safe_round_name = str(round_name) if round_name is not None else f"Round {i+1}"
+                    dilution_value = self._get_typical_dilution(safe_round_name)
+                    logger.info(f"Round {safe_round_name}: _get_typical_dilution returned {dilution_value} (type: {type(dilution_value)})")
                     
-                    if typical_dilution > 0 and amount > 0:
+                    # Safely convert dilution to Decimal
+                    if dilution_value is not None:
+                        typical_dilution = Decimal(str(dilution_value))
+                    else:
+                        typical_dilution = Decimal('0.2')  # Default 20% dilution
+                        
+                    logger.info(f"Round {safe_round_name}: No pre_money provided, using typical dilution {typical_dilution:.2%}")
+                    logger.info(f"Round {safe_round_name}: Amount value = {amount}, type = {type(amount)}")
+                    
+                    if typical_dilution > 0 and typical_dilution < 1 and amount > 0:
                         # Calculate pre-money: If raising X at Y% dilution, pre = X/Y - X
                         # Ensure we're working with proper Decimal values
                         division_result = amount / typical_dilution
-                        logger.info(f"Round {round_name}: Division result = {division_result}")
-                        pre_money = division_result.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) - amount
+                        logger.info(f"Round {safe_round_name}: Division result = {division_result}")
+                        # Check if division_result is finite and valid before quantizing
+                        try:
+                            if division_result.is_finite() and not division_result.is_nan():
+                                # Use context to handle large numbers properly
+                                quantized_result = division_result.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP, context=context)
+                                pre_money = quantized_result - amount
+                                # Ensure pre_money is not negative
+                                if pre_money < 0:
+                                    pre_money = amount * Decimal('4')
+                            else:
+                                pre_money = amount * Decimal('4')  # Fallback for infinite/NaN results
+                        except (decimal.InvalidOperation, decimal.Overflow, decimal.Underflow) as quantize_error:
+                            logger.warning(f"Quantize failed for {safe_round_name}: {quantize_error}, using fallback")
+                            pre_money = amount * Decimal('4')
                         logger.info(f"Calculated pre_money = ${pre_money:,.0f} from amount=${amount:,.0f} at {typical_dilution:.2%} dilution")
                     else:
-                        # Default fallback if dilution is 0
+                        # Default fallback if dilution is invalid
                         pre_money = amount * Decimal('4')  # Assume 20% dilution (amount / 0.2 - amount)
                         logger.warning(f"Using fallback pre_money calculation: ${pre_money:,.0f}")
-                except (decimal.InvalidOperation, ZeroDivisionError, TypeError, ValueError) as e:
+                except (decimal.InvalidOperation, ZeroDivisionError, TypeError, ValueError, OverflowError) as e:
                     # Fallback to standard valuation multiple
                     logger.error(f"Error calculating pre_money: {type(e).__name__}: {e}, using fallback")
-                    pre_money = amount * Decimal('4')  # Assume 20% dilution
+                    try:
+                        pre_money = amount * Decimal('4')  # Assume 20% dilution
+                    except (decimal.InvalidOperation, OverflowError):
+                        # Ultimate fallback - use a simpler calculation
+                        pre_money = amount * Decimal('5')  # More conservative fallback
+                        if not pre_money.is_finite():
+                            pre_money = Decimal('0')  # Last resort
             
             # SAFE CONVERSION: Check if this is a priced round (Series A or later)
             # and convert any pending SAFEs
-            is_priced_round = any(stage in round_name for stage in ["Series", "Round B", "Round C"])
+            # Ensure round_name is always a string (never None)
+            raw_round_name = round_data.get("round")
+            if raw_round_name is None:
+                round_name = f"Round {i+1}"
+            else:
+                round_name = str(raw_round_name) or f"Round {i+1}"
+            
+            # Safe check for priced round - ensure round_name is iterable
+            is_priced_round = any(stage_str in round_name for stage_str in ["Series", "Round B", "Round C"]) if round_name else False
             safe_conversion_shares = Decimal('0')
             converted_safes = []
             
@@ -383,7 +438,17 @@ class PrePostCapTable:
                     logger.info(f"Added {investor_name} (SAFE) with {ownership_pct:.2f}% ownership")
             
             # Add new investors (only get the new round amount, not SAFE conversions)
-            investors = round_data.get("investors", [])
+            investors_raw = round_data.get("investors")
+            # Normalise investor payloads that sometimes arrive as None, string, or set
+            if investors_raw is None:
+                investors = []
+            elif isinstance(investors_raw, (list, tuple, set)):
+                investors = list(investors_raw)
+            elif isinstance(investors_raw, str):
+                investors = [investors_raw]
+            else:
+                logger.debug(f"Unexpected investors payload ({type(investors_raw)}); defaulting to empty")
+                investors = []
             lead_investor = round_data.get("lead_investor")
             # Round ownership is ONLY the new money, not SAFEs
             round_ownership = (amount / post_money) * Decimal('100')
@@ -430,7 +495,11 @@ class PrePostCapTable:
             
             # FIXED: Skip pro-rata for the first round (when only Founders exist)
             # Founders don't have pro-rata rights because they didn't invest cash
-            founders_only = all("Founder" in k or k == "Founders" for k in pre_money_cap_table.keys())
+            # Safely check for founders - ensure all keys are strings
+            founders_only = all(
+                (k is not None and ("Founder" in str(k) or k == "Founders"))
+                for k in pre_money_cap_table.keys()
+            ) if pre_money_cap_table else True
             is_first_round = len(cap_table_history) == 0 or founders_only
             
             if not is_first_round:
@@ -482,8 +551,13 @@ class PrePostCapTable:
                     dilution_factor = ownership_available_for_others / (Decimal('100') - (total_pro_rata_amount / post_money) * Decimal('100'))
                     
                     # Apply dilution to all non-participating existing shareholders
+                    # Ensure investors is a list (never None) for safe membership check
+                    safe_investors = investors if isinstance(investors, (list, tuple, set)) else []
                     for shareholder, current_ownership in list(post_money_cap_table.items()):
-                        if shareholder not in pro_rata_participants and shareholder not in investors and f"{shareholder} (Lead)" not in post_money_cap_table:
+                        # Ensure shareholder is a string for safe string operations
+                        if shareholder is None:
+                            continue
+                        if shareholder not in pro_rata_participants and shareholder not in safe_investors and f"{shareholder} (Lead)" not in post_money_cap_table:
                             # This shareholder gets diluted
                             if isinstance(current_ownership, dict):
                                 logger.error(f"ERROR: post_money_cap_table[{shareholder}] is a dict: {current_ownership}")
@@ -583,6 +657,8 @@ class PrePostCapTable:
                 )
                 break
         
+        ownership_summary = self._summarize_ownership(final_cap_table_float)
+        
         return {
             "history": cap_table_history,
             "current_cap_table": current_cap_table_float,
@@ -596,7 +672,8 @@ class PrePostCapTable:
             "total_pro_rata_deployed": total_pro_rata,
             "fund_performance_metrics": fund_metrics,
             "sankey_data": self._format_for_sankey(cap_table_history),
-            "waterfall_data": self._format_for_waterfall(cap_table_history)
+            "waterfall_data": self._format_for_waterfall(cap_table_history),
+            "ownership_summary": ownership_summary
         }
     
     def _apply_option_exercise(self, cap_table: Dict[str, Decimal]) -> Dict[str, float]:
@@ -798,6 +875,37 @@ class PrePostCapTable:
         })
         
         return waterfall_data
+    
+    def _summarize_ownership(self, final_cap_table: Dict[str, float]) -> Dict[str, Any]:
+        """
+        Create an ownership breakdown for investor charting.
+        Groups founders, employees, and investors while preserving detailed investor stakes.
+        """
+        founders_total = 0.0
+        employees_total = 0.0
+        investor_breakdown: List[Dict[str, Any]] = []
+        
+        for stakeholder, ownership in final_cap_table.items():
+            lower_name = stakeholder.lower()
+            if "founder" in lower_name:
+                founders_total += ownership
+            elif "employee" in lower_name or "option" in lower_name:
+                employees_total += ownership
+            else:
+                investor_breakdown.append({
+                    "name": stakeholder,
+                    "ownership": ownership
+                })
+        
+        investor_breakdown.sort(key=lambda x: x["ownership"], reverse=True)
+        investors_total = sum(item["ownership"] for item in investor_breakdown)
+        
+        return {
+            "founders_total": founders_total,
+            "employees_total": employees_total,
+            "investors_total": investors_total,
+            "investor_breakdown": investor_breakdown
+        }
     
     def calculate_our_entry_impact(
         self,

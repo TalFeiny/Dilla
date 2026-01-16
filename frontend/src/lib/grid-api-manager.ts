@@ -3,6 +3,8 @@
  * Prevents re-render loops by maintaining stable references
  */
 
+import React from 'react';
+
 type CellValue = string | number | boolean | null | undefined;
 
 interface CellStyle {

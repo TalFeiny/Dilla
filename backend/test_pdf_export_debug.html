@@ -1,0 +1,486 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Investment Analysis Report</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://unpkg.com/d3-sankey@0.12.3/dist/d3-sankey.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        /* Monochrome Design System - Landing Page Aesthetic */
+        :root {
+            --background: 220 20% 98%;
+            --foreground: 224 28% 12%;
+            --muted-foreground: 224 12% 38%;
+            --primary: 220 22% 20%;
+            --secondary: 220 15% 92%;
+            --border: 220 13% 88%;
+            --brand-gradient-start: #111827;
+            --brand-gradient-end: #1f2937;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            background: hsl(var(--background));
+            color: hsl(var(--foreground));
+            line-height: 1.6;
+        }
+        
+        .slide {
+            width: 1024px;
+            min-height: 768px;
+            padding: 3rem;
+            page-break-after: always;
+            page-break-inside: avoid;
+            background: #ffffff;
+            box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.08);
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+        
+        @media print {
+            .slide {
+                page-break-after: always;
+                page-break-inside: avoid;
+                border: none;
+            }
+        }
+        
+        /* Typography - Professional Hierarchy */
+        h1, h2, h3, h4, h5, h6 {
+            font-family: 'Inter', sans-serif;
+            color: hsl(220, 22%, 20%);
+            font-weight: 700;
+        }
+        
+        .slide-title {
+            font-size: 2.5rem;
+            font-weight: 600;
+            line-height: 1.2;
+            letter-spacing: -0.02em;
+            margin-bottom: 2rem;
+            color: hsl(224, 28%, 12%);
+        }
+        
+        .slide-subtitle {
+            font-size: 1.25rem;
+            font-weight: 500;
+            line-height: 1.4;
+            color: hsl(224, 12%, 38%);
+            margin-bottom: 1.5rem;
+        }
+        
+        .slide-body {
+            font-size: 1rem;
+            font-weight: 400;
+            line-height: 1.6;
+            color: hsl(224, 28%, 12%);
+        }
+        
+        .label-text {
+            font-size: 0.75rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.3em;
+            color: hsl(224, 12%, 38%);
+        }
+        
+        /* Chart Containers - Monochrome Style */
+        .chart-container {
+            position: relative;
+            width: 100%;
+            height: 400px;
+            padding: 1.5rem;
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.02) 0%, rgba(30, 41, 59, 0.03) 100%);
+            border-radius: 16px;
+            border: 1px solid hsl(var(--border));
+            box-shadow: 0 10px 30px -12px rgba(15, 23, 42, 0.15);
+        }
+        
+        /* Marketing Cards - Landing Page Style */
+        .metric-card, .marketing-card {
+            background: linear-gradient(145deg, rgba(255, 255, 255, 0.75), rgba(248, 250, 252, 0.95));
+            border-radius: 24px;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            box-shadow: 0 18px 55px -25px rgba(15, 23, 42, 0.25);
+            backdrop-filter: blur(14px);
+            padding: 1.5rem;
+            text-align: center;
+        }
+        
+        .metric-value {
+            font-family: 'Inter', sans-serif;
+            font-size: 2rem;
+            font-weight: 700;
+            color: hsl(220, 22%, 20%);
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.02em;
+        }
+        
+        .metric-label {
+            font-family: 'Inter', sans-serif;
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: hsl(224, 12%, 38%);
+            text-transform: uppercase;
+            letter-spacing: 0.3em;
+        }
+        
+        /* Tables - Clean Professional Style */
+        .professional-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+            margin: 1.5rem 0;
+        }
+        
+        .professional-table th {
+            background: hsl(220, 15%, 92%);
+            border: 1px solid hsl(220, 13%, 88%);
+            padding: 0.75rem;
+            text-align: left;
+            font-weight: 600;
+            color: hsl(224, 28%, 12%);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .professional-table td {
+            border: 1px solid hsl(220, 13%, 88%);
+            padding: 0.75rem;
+            color: hsl(224, 28%, 12%);
+        }
+        
+        .professional-table tr:nth-child(even) {
+            background: hsl(220, 20%, 98%);
+        }
+        
+        /* Title Slide - Brand Gradient */
+        .title-slide {
+            background: linear-gradient(120deg, var(--brand-gradient-start), var(--brand-gradient-end));
+            color: #f9fafb !important;
+            position: relative;
+        }
+        
+        .company-logo {
+            position: absolute;
+            top: 2rem;
+            right: 2rem;
+            width: 60px;
+            height: 60px;
+            background: white;
+            border-radius: 12px;
+            padding: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        
+        .title-slide * {
+            color: #ffffff !important;
+        }
+        
+        .title-slide h1, .title-slide h2, .title-slide h3,
+        .title-slide p, .title-slide .slide-title {
+            color: #ffffff !important;
+        }
+        
+        /* Content Slides */
+        .content-slide {
+            background: #ffffff;
+        }
+        
+        .section-slide {
+            background: linear-gradient(145deg, #ffffff, hsl(220, 20%, 98%));
+        }
+        
+        /* Professional Bullets */
+        .bullet-list {
+            list-style: none;
+            padding: 0;
+            margin: 1rem 0;
+        }
+        
+        .bullet-list li {
+            padding-left: 1.5rem;
+            margin-bottom: 0.75rem;
+            position: relative;
+            color: hsl(224, 28%, 12%);
+        }
+        
+        .bullet-list li:before {
+            content: "•";
+            position: absolute;
+            left: 0;
+            color: hsl(220, 22%, 20%);
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    
+<div class="slide title-slide flex items-center justify-center">
+    <div class="text-center px-16" style="width: 100%;">
+        <h1 class="text-5xl font-bold mb-6" style="color: #f9fafb;">PDF Export Test Suite</h1>
+        <p class="text-xl mb-6" style="color: #f9fafb; opacity: 0.9;">Testing All Fixed Features</p>
+        <p class="text-lg" style="color: #f9fafb; opacity: 0.8;">October 2025</p>
+        
+    </div>
+</div>
+        
+<div class="slide">
+    <h2 class="slide-title">Executive Summary</h2>
+    
+    <ul class="list-disc list-inside text-lg mt-6"><li class="mb-3" style="color: hsl(224, 20%, 25%);">Mercury: $1.65B post-money valuation, 12.5x revenue multiple</li><li class="mb-3" style="color: hsl(224, 20%, 25%);">Brex: $2.1B valuation, 15x revenue multiple</li><li class="mb-3" style="color: hsl(224, 20%, 25%);">Combined TAM opportunity: $450B across payments and expense management</li><li class="mb-3" style="color: hsl(224, 20%, 25%);">Fund owns 2.5% of Mercury, 1.8% of Brex from Series B</li></ul>
+    
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-8">Investment Recommendations</h2>
+    <div class="flex gap-8">
+        
+            <div class="flex-1 rounded-xl p-6" style="background: hsl(220, 20%, 98%); border: 1px solid hsl(220, 13%, 88%);">
+                <h3 class="text-2xl font-bold mb-4" style="color: hsl(220, 22%, 20%);">Mercury</h3>
+                <div class="space-y-3">
+                    <div><span style="color: hsl(224, 12%, 45%);">Valuation:</span> <span class="font-semibold" style="color: hsl(224, 28%, 12%);">$0</span></div>
+                    <div><span style="color: hsl(224, 12%, 45%);">Revenue:</span> <span class="font-semibold" style="color: hsl(224, 28%, 12%);">$0</span></div>
+                    <div><span style="color: hsl(224, 12%, 45%);">Stage:</span> <span class="font-semibold" style="color: hsl(224, 28%, 12%);">N/A</span></div>
+                </div>
+            </div>
+            
+            <div class="flex-1 rounded-xl p-6" style="background: hsl(220, 20%, 98%); border: 1px solid hsl(220, 13%, 88%);">
+                <h3 class="text-2xl font-bold mb-4" style="color: hsl(220, 22%, 20%);">Brex</h3>
+                <div class="space-y-3">
+                    <div><span style="color: hsl(224, 12%, 45%);">Valuation:</span> <span class="font-semibold" style="color: hsl(224, 28%, 12%);">$0</span></div>
+                    <div><span style="color: hsl(224, 12%, 45%);">Revenue:</span> <span class="font-semibold" style="color: hsl(224, 28%, 12%);">$0</span></div>
+                    <div><span style="color: hsl(224, 12%, 45%);">Stage:</span> <span class="font-semibold" style="color: hsl(224, 28%, 12%);">N/A</span></div>
+                </div>
+            </div>
+            
+    </div>
+</div>
+        
+<div class="slide">
+    <h2 class="slide-title">Path to $100M ARR</h2>
+    
+    <div class="chart-container">
+        <canvas id="chart-3"></canvas>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Business Model & TAM Analysis</h2>
+    
+    
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-6">Cap Table Evolution - Mercury</h2>
+    <div id="sankey-5" style="height: 500px; width: 100%;"></div>
+</div>
+        
+<div class="slide">
+    <h2 class="slide-title">Exit Scenario Analysis</h2>
+    
+    <div class="chart-container">
+        <canvas id="chart-6"></canvas>
+    </div>
+</div>
+        
+<div class="slide">
+    <h2 class="slide-title">Fund Return Impact Analysis</h2>
+    <p class="slide-subtitle">Portfolio Construction & DPI Contribution</p>
+    <div class="chart-container">
+        <canvas id="chart-7"></canvas>
+    </div>
+</div>
+        
+<div class="slide bg-white p-12">
+    <h2 class="text-3xl font-bold text-gray-900 mb-8">Sources & References</h2>
+    <div class="columns-2 gap-8">
+        
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">1.</span>
+                <span class="text-sm text-gray-700">Pitchbook Banking Market Report, Q3 2024</span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">2.</span>
+                <span class="text-sm text-gray-700">Gartner Expense Management Magic Quadrant, 2024</span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">3.</span>
+                <span class="text-sm text-gray-700">CB Insights Fintech Report, October 2024</span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">4.</span>
+                <span class="text-sm text-gray-700">Mercury SEC Form D Filing, Series C, June 2024</span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">5.</span>
+                <span class="text-sm text-gray-700">Brex Investor Presentation, Series D, September 2024</span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">6.</span>
+                <span class="text-sm text-gray-700">BLS Labor Statistics - Financial Services, 2024</span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">7.</span>
+                <span class="text-sm text-gray-700">IDC SaaS Market Forecast 2024-2028</span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">8.</span>
+                <span class="text-sm text-gray-700">TechCrunch Mercury Valuation Article, July 2024</span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">9.</span>
+                <span class="text-sm text-gray-700">Forbes Brex Profile, August 2024</span>
+            </div>
+            
+            <div class="flex gap-2 mb-2">
+                <span class="text-gray-500">10.</span>
+                <span class="text-sm text-gray-700">Company interviews and primary research, Q4 2024</span>
+            </div>
+            
+    </div>
+</div>
+        
+    <script>
+        // Initialize charts - wait for Chart.js to load
+        function initializeCharts() {
+            if (typeof Chart === 'undefined') {
+                console.log('Chart.js not loaded yet, waiting...');
+                setTimeout(initializeCharts, 100);
+                return;
+            }
+            
+            console.log('Chart.js loaded, initializing charts...');
+            try {
+                
+                        var ctx3 = document.getElementById('chart-3');
+                        if (ctx3) {
+                            new Chart(ctx3.getContext('2d'), {"type": "line", "data": {"labels": ["2023", "2024", "2025", "2026", "2027", "2028"], "datasets": [{"label": "Mercury", "data": [20, 45, 70, 85, 100, 120], "borderColor": "rgb(75, 192, 192)", "tension": 0.4, "backgroundColor": "rgba(99, 102, 241, 0.9)", "borderWidth": 2, "fill": false}, {"label": "Brex", "data": [25, 50, 75, 90, 105, 130], "borderColor": "rgb(255, 99, 132)", "tension": 0.4, "backgroundColor": "rgba(34, 197, 94, 0.9)", "borderWidth": 2, "fill": false}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 16, "font": {"size": 12, "family": "'Inter', sans-serif", "weight": "500"}, "color": "hsl(224, 12%, 38%)", "usePointStyle": true}}, "title": {"display": false, "text": "", "font": {"size": 16, "family": "'Inter', sans-serif", "weight": "600"}, "color": "hsl(224, 28%, 12%)", "padding": {"bottom": 20}}, "tooltip": {"backgroundColor": "hsl(224, 26%, 16%)", "titleFont": {"family": "'Inter', sans-serif", "size": 13, "weight": "600"}, "bodyFont": {"family": "'Inter', sans-serif", "size": 12}, "padding": 12, "cornerRadius": 6, "callbacks": {"label": function(context) { const value = context.parsed.y; \n                function formatValue(value) {\n                    return '$' + value.toFixed(0);\n                }\n             return context.dataset.label + \: \" + formatValue(value); }"}}}, "scales": {"y": {"beginAtZero": true, "grid": {"color": "hsl(220, 13%, 88%)", "drawBorder": false}, "ticks": {"font": {"family": "'Inter', sans-serif", "size": 11}, "color": "hsl(224, 12%, 38%)", "callback": function(value) { \n                function formatValue(value) {\n                    return '$' + value.toFixed(0);\n                }\n             return formatValue(value); }}, "title": {"display": true, "text": "Value", "font": {"family": "'Inter', sans-serif", "size": 12, "weight": "600"}, "color": "hsl(224, 28%, 12%)"}}, "x": {"grid": {"display": false}, "ticks": {"font": {"family": "'Inter', sans-serif", "size": 11}, "color": "hsl(224, 12%, 38%)"}}}}});
+                        }
+                    
+
+                        (function() {
+                            const container = document.getElementById('chart-5');
+                            if (!container || typeof d3 === 'undefined') {
+                                console.warn('D3.js not available, falling back to bar chart');
+                                // Fallback to bar chart if D3 not available
+                                var ctx = container;
+                                if (ctx) {
+                                    const fallbackChart = {"type": "bar", "data": {"labels": ["Seed", "Series A", "Current"], "datasets": [{"label": "Founders", "data": [80, 60, 40], "backgroundColor": "rgba(59, 130, 246, 0.8)", "borderColor": "rgba(59, 130, 246, 1)", "borderWidth": 1}, {"label": "Investors", "data": [15, 30, 45], "backgroundColor": "rgba(236, 72, 153, 0.8)", "borderColor": "rgba(236, 72, 153, 1)", "borderWidth": 1}, {"label": "Employees/ESOP", "data": [5, 10, 15], "backgroundColor": "rgba(34, 197, 94, 0.8)", "borderColor": "rgba(34, 197, 94, 1)", "borderWidth": 1}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 10, "font": {"size": 11}}}, "title": {"display": false}}, "scales": {"x": {"stacked": true, "grid": {"display": false}}, "y": {"stacked": true, "beginAtZero": true, "max": 100, "grid": {"color": "rgba(0, 0, 0, 0.05)"}}}}};
+                                    new Chart(ctx.getContext('2d'), fallbackChart);
+                                }
+                                return;
+                            }
+                            
+                            // Clear canvas and create SVG for D3
+                            container.style.display = 'block';
+                            const width = 800;
+                            const height = 400;
+                            
+                            // Create SVG
+                            const svg = d3.select(container.parentElement)
+                                .append('svg')
+                                .attr('width', width)
+                                .attr('height', height);
+                            
+                            // Hide canvas since we're using SVG
+                            container.style.display = 'none';
+                            
+                            // Render Sankey with D3
+                            const data = {"data": {"nodes": [{"id": 0, "name": "Founders"}, {"id": 1, "name": "Seed"}, {"id": 2, "name": "Series A"}, {"id": 3, "name": "Series B"}, {"id": 4, "name": "Final"}, {"id": 5, "name": "Employees"}, {"id": 6, "name": "Investors"}], "links": [{"source": 0, "target": 1, "value": 70}, {"source": 1, "target": 2, "value": 55}, {"source": 2, "target": 3, "value": 45}, {"source": 3, "target": 4, "value": 35}, {"source": 0, "target": 5, "value": 10}, {"source": 1, "target": 6, "value": 15}, {"source": 2, "target": 6, "value": 10}, {"source": 3, "target": 6, "value": 10}]}}.data;
+                            
+                            const sankey = d3.sankey()
+                                .nodeId(d => d.id)
+                                .nodeAlign(d3.sankeyJustify)
+                                .nodeWidth(15)
+                                .nodePadding(10)
+                                .extent([[10, 10], [width - 10, height - 10]]);
+                            
+                            const {nodes, links} = sankey(data);
+                            
+                            // Add links
+                            svg.append('g')
+                                .selectAll('path')
+                                .data(links)
+                                .join('path')
+                                .attr('d', d3.sankeyLinkHorizontal())
+                                .attr('stroke', d => d.color || '#999')
+                                .attr('stroke-width', d => d.width)
+                                .attr('fill', 'none')
+                                .attr('opacity', 0.5);
+                            
+                            // Add nodes
+                            svg.append('g')
+                                .selectAll('rect')
+                                .data(nodes)
+                                .join('rect')
+                                .attr('x', d => d.x0)
+                                .attr('y', d => d.y0)
+                                .attr('height', d => d.y1 - d.y0)
+                                .attr('width', d => d.x1 - d.x0)
+                                .attr('fill', d => d.color || '#69b3a2');
+                            
+                            // Add labels
+                            svg.append('g')
+                                .selectAll('text')
+                                .data(nodes)
+                                .join('text')
+                                .attr('x', d => d.x0 < width / 2 ? d.x1 + 6 : d.x0 - 6)
+                                .attr('y', d => (d.y1 + d.y0) / 2)
+                                .attr('dy', '0.35em')
+                                .attr('text-anchor', d => d.x0 < width / 2 ? 'start' : 'end')
+                                .text(d => d.name)
+                                .style('font-size', '11px');
+                        })();
+                    
+
+                        var ctx6 = document.getElementById('chart-6');
+                        if (ctx6) {
+                            new Chart(ctx6.getContext('2d'), {"type": "bar", "data": {"labels": ["No Data"], "datasets": [{"label": "No data available", "data": [0], "backgroundColor": "rgba(156, 163, 175, 0.3)", "borderColor": "rgba(156, 163, 175, 1)", "borderWidth": 1}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"title": {"display": true, "text": "Chart data not available", "font": {"size": 14, "family": "'Inter', sans-serif"}, "color": "#9ca3af"}, "legend": {"display": false}}}});
+                        }
+                    
+
+                        var ctx7 = document.getElementById('chart-7');
+                        if (ctx7) {
+                            new Chart(ctx7.getContext('2d'), {"type": "bar", "data": {"labels": ["Current DPI", "Mercury Exit", "Brex Exit", "Remaining Portfolio", "Target DPI"], "datasets": [{"label": "DPI Progress", "data": [1.2, 0.48, 0.31, 1.01, 3.0], "backgroundColor": ["#4CAF50", "#2196F3", "#00BCD4", "#FFC107", "#9C27B0"], "borderColor": "rgba(99, 102, 241, 0.9)", "borderWidth": 2}]}, "options": {"responsive": true, "maintainAspectRatio": false, "plugins": {"legend": {"position": "bottom", "labels": {"padding": 16, "font": {"size": 12, "family": "'Inter', sans-serif", "weight": "500"}, "color": "hsl(224, 12%, 38%)", "usePointStyle": true}}, "title": {"display": false, "text": "", "font": {"size": 16, "family": "'Inter', sans-serif", "weight": "600"}, "color": "hsl(224, 28%, 12%)", "padding": {"bottom": 20}}, "tooltip": {"backgroundColor": "hsl(224, 26%, 16%)", "titleFont": {"family": "'Inter', sans-serif", "size": 13, "weight": "600"}, "bodyFont": {"family": "'Inter', sans-serif", "size": 12}, "padding": 12, "cornerRadius": 6, "callbacks": {"label": function(context) { const value = context.parsed.y; \n                function formatValue(value) {\n                    return '$' + value.toFixed(0);\n                }\n             return context.dataset.label + \: \" + formatValue(value); }"}}}, "scales": {"y": {"beginAtZero": true, "grid": {"color": "hsl(220, 13%, 88%)", "drawBorder": false}, "ticks": {"font": {"family": "'Inter', sans-serif", "size": 11}, "color": "hsl(224, 12%, 38%)", "callback": function(value) { \n                function formatValue(value) {\n                    return '$' + value.toFixed(0);\n                }\n             return formatValue(value); }}, "title": {"display": true, "text": "Value", "font": {"family": "'Inter', sans-serif", "size": 12, "weight": "600"}, "color": "hsl(224, 28%, 12%)"}}, "x": {"grid": {"display": false}, "ticks": {"font": {"family": "'Inter', sans-serif", "size": 11}, "color": "hsl(224, 12%, 38%)"}}}}});
+                        }
+                    
+                console.log('All charts initialized successfully');
+            } catch(e) {
+                console.error('Error initializing charts:', e);
+            }
+        }
+        
+        // Start initialization when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initializeCharts);
+        } else {
+            initializeCharts();
+        }
+    </script>
+</body>
+</html>
+        

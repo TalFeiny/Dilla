@@ -11,6 +11,8 @@ from dataclasses import dataclass
 import json
 from datetime import datetime
 
+from app.utils.numpy_converter import convert_numpy_to_native
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,8 +70,13 @@ class CompanyScoringVisualizer:
         
         fund_fit = self.gap_filler.score_fund_fit(company_data, inferred_data)
         
-        # Get gross margin analysis
+        # Get gross margin analysis (includes ACV calculation data)
         gross_margin_analysis = self.gap_filler.calculate_adjusted_gross_margin(company_data)
+        
+        # Calculate ACV from revenue and customer count
+        revenue = company_data.get("revenue") or company_data.get("arr") or company_data.get("inferred_revenue") or 0
+        customer_count = gross_margin_analysis.get("customer_count", 0)
+        acv = revenue / customer_count if customer_count > 0 else 0
         
         # Extract actual investor names from funding data
         funding_rounds = company_data.get("funding_rounds", [])
@@ -142,8 +149,201 @@ class CompanyScoringVisualizer:
         entry_price_analysis: Dict[str, Any] = None
     ) -> Dict[str, Dict[str, Any]]:
         """
-        Generate base, bull, and bear case scenarios with growth deceleration
+        Generate base, bull, and bear case scenarios using real PWERM data when available.
+        Falls back to calculated scenarios only if PWERM data is not present.
         """
+        # FIRST: Try to use real PWERM scenarios from valuation engine if available
+        exit_scenarios = company_data.get("exit_scenarios")
+        if exit_scenarios and isinstance(exit_scenarios, dict):
+            # Use simplified scenarios from valuation engine (bear/base/bull format)
+            if "bear" in exit_scenarios and "base" in exit_scenarios and "bull" in exit_scenarios:
+                logger.info(f"Using real PWERM exit scenarios for {company_data.get('company', 'Unknown')}")
+                bear_scenario = exit_scenarios["bear"]
+                base_scenario = exit_scenarios["base"]
+                bull_scenario = exit_scenarios["bull"]
+                
+                # Convert to expected format
+                current_valuation = company_data.get("valuation") or company_data.get("inferred_valuation") or 50_000_000
+                current_revenue = company_data.get("revenue") or company_data.get("inferred_revenue") or 1_000_000
+                customer_count = gross_margin_analysis.get("customer_count", 0)
+                acv = current_revenue / customer_count if customer_count > 0 else 0
+                
+                raw_scenarios = {
+                    "base": {
+                        "revenue_5y": base_scenario.get("exit_value", current_valuation * 3) * 0.1,  # Rough estimate
+                        "valuation_5y": base_scenario.get("exit_value", current_valuation * 3),
+                        "exit_multiple": base_scenario.get("moic", 3.0),
+                        "entry_valuation": current_valuation,
+                        "current_ask": current_valuation,
+                        "deal_recommendation": "Based on PWERM analysis",
+                        "irr": base_scenario.get("irr", 0.25),
+                        "probability": base_scenario.get("probability", 0.50),
+                        "gross_margin": gross_margin_analysis.get("adjusted_gross_margin", 0.70),
+                        "acv": acv,
+                        "assumptions": [
+                            "Based on probability-weighted exit scenarios",
+                            f"Exit probability: {base_scenario.get('probability', 0.5):.0%}",
+                            f"Expected MOIC: {base_scenario.get('moic', 3.0):.1f}x"
+                        ]
+                    },
+                    "bull": {
+                        "revenue_5y": bull_scenario.get("exit_value", current_valuation * 10) * 0.1,
+                        "valuation_5y": bull_scenario.get("exit_value", current_valuation * 10),
+                        "exit_multiple": bull_scenario.get("moic", 10.0),
+                        "irr": bull_scenario.get("irr", 0.58),
+                        "probability": bull_scenario.get("probability", 0.20),
+                        "gross_margin": min(0.85, gross_margin_analysis.get("adjusted_gross_margin", 0.70) + 0.10),
+                        "acv": acv * 1.5,  # Bull case assumes higher ACV
+                        "assumptions": [
+                            "Best-case PWERM scenario",
+                            f"Exit probability: {bull_scenario.get('probability', 0.2):.0%}",
+                            f"Expected MOIC: {bull_scenario.get('moic', 10.0):.1f}x"
+                        ]
+                    },
+                    "bear": {
+                        "revenue_5y": bear_scenario.get("exit_value", current_valuation * 0.5) * 0.1,
+                        "valuation_5y": bear_scenario.get("exit_value", current_valuation * 0.5),
+                        "exit_multiple": bear_scenario.get("moic", 0.5),
+                        "irr": bear_scenario.get("irr", -0.05),
+                        "probability": bear_scenario.get("probability", 0.30),
+                        "gross_margin": max(0.40, gross_margin_analysis.get("adjusted_gross_margin", 0.70) - 0.15),
+                        "acv": acv * 0.7,  # Bear case assumes lower ACV
+                        "assumptions": [
+                            "Worst-case PWERM scenario",
+                            f"Exit probability: {bear_scenario.get('probability', 0.3):.0%}",
+                            f"Expected MOIC: {bear_scenario.get('moic', 0.5):.1f}x"
+                        ]
+                    }
+                }
+                return convert_numpy_to_native(raw_scenarios)
+        
+        # SECOND: Try to derive from full PWERM scenarios if available
+        pwerm_scenarios = company_data.get("pwerm_scenarios", [])
+        if pwerm_scenarios and len(pwerm_scenarios) > 0:
+            logger.info(f"Converting {len(pwerm_scenarios)} PWERM scenarios to bear/base/bull for {company_data.get('company', 'Unknown')}")
+            
+            # Extract scenario data (handle both dict and object formats)
+            scenarios_list = []
+            for s in pwerm_scenarios:
+                if hasattr(s, 'exit_value'):
+                    scenarios_list.append({
+                        "exit_value": s.exit_value,
+                        "probability": s.probability,
+                        "scenario": getattr(s, 'scenario', 'Unknown'),
+                        "moic": getattr(s, 'moic', 0),
+                        "irr": getattr(s, 'irr', 0),
+                        "time_to_exit": getattr(s, 'time_to_exit', 5)
+                    })
+                elif isinstance(s, dict):
+                    scenarios_list.append(s)
+            
+            if scenarios_list:
+                # Calculate weighted average exit value
+                weighted_exit = sum(s["exit_value"] * s["probability"] for s in scenarios_list)
+                
+                # Group scenarios into bear/base/bull
+                bear_scenarios = [s for s in scenarios_list if s["exit_value"] < weighted_exit * 0.7]
+                base_scenarios = [s for s in scenarios_list if weighted_exit * 0.7 <= s["exit_value"] <= weighted_exit * 1.3]
+                bull_scenarios = [s for s in scenarios_list if s["exit_value"] > weighted_exit * 1.3]
+                
+                current_valuation = company_data.get("valuation") or company_data.get("inferred_valuation") or 50_000_000
+                current_revenue = company_data.get("revenue") or company_data.get("inferred_revenue") or 1_000_000
+                customer_count = gross_margin_analysis.get("customer_count", 0)
+                acv = current_revenue / customer_count if customer_count > 0 else 0
+                
+                # Calculate weighted averages for each category
+                if bear_scenarios:
+                    bear_prob = sum(s["probability"] for s in bear_scenarios)
+                    bear_value = sum(s["exit_value"] * s["probability"] for s in bear_scenarios) / bear_prob if bear_prob > 0 else weighted_exit * 0.5
+                    bear_moic = sum(s.get("moic", 0) * s["probability"] for s in bear_scenarios) / bear_prob if bear_prob > 0 else 0.5
+                    bear_irr = sum(s.get("irr", 0) * s["probability"] for s in bear_scenarios) / bear_prob if bear_prob > 0 else -0.05
+                else:
+                    bear_prob = 0.25
+                    bear_value = weighted_exit * 0.5
+                    bear_moic = 0.5
+                    bear_irr = -0.05
+                
+                if base_scenarios:
+                    base_prob = sum(s["probability"] for s in base_scenarios)
+                    base_value = sum(s["exit_value"] * s["probability"] for s in base_scenarios) / base_prob if base_prob > 0 else weighted_exit
+                    base_moic = sum(s.get("moic", 0) * s["probability"] for s in base_scenarios) / base_prob if base_prob > 0 else 3.0
+                    base_irr = sum(s.get("irr", 0) * s["probability"] for s in base_scenarios) / base_prob if base_prob > 0 else 0.25
+                else:
+                    base_prob = 0.50
+                    base_value = weighted_exit
+                    base_moic = 3.0
+                    base_irr = 0.25
+                
+                if bull_scenarios:
+                    bull_prob = sum(s["probability"] for s in bull_scenarios)
+                    bull_value = sum(s["exit_value"] * s["probability"] for s in bull_scenarios) / bull_prob if bull_prob > 0 else weighted_exit * 2.0
+                    bull_moic = sum(s.get("moic", 0) * s["probability"] for s in bull_scenarios) / bull_prob if bull_prob > 0 else 10.0
+                    bull_irr = sum(s.get("irr", 0) * s["probability"] for s in bull_scenarios) / bull_prob if bull_prob > 0 else 0.58
+                else:
+                    bull_prob = 0.25
+                    bull_value = weighted_exit * 2.0
+                    bull_moic = 10.0
+                    bull_irr = 0.58
+                
+                # Normalize probabilities
+                total_prob = bear_prob + base_prob + bull_prob
+                if total_prob > 0:
+                    bear_prob /= total_prob
+                    base_prob /= total_prob
+                    bull_prob /= total_prob
+                
+                raw_scenarios = {
+                    "base": {
+                        "revenue_5y": base_value * 0.1,  # Rough estimate
+                        "valuation_5y": base_value,
+                        "exit_multiple": base_moic,
+                        "entry_valuation": current_valuation,
+                        "current_ask": current_valuation,
+                        "deal_recommendation": "Based on PWERM analysis",
+                        "irr": base_irr,
+                        "probability": base_prob,
+                        "gross_margin": gross_margin_analysis.get("adjusted_gross_margin", 0.70),
+                        "acv": acv,
+                        "assumptions": [
+                            f"Derived from {len(base_scenarios)} PWERM base scenarios",
+                            f"Probability-weighted exit value",
+                            f"Expected MOIC: {base_moic:.1f}x"
+                        ]
+                    },
+                    "bull": {
+                        "revenue_5y": bull_value * 0.1,
+                        "valuation_5y": bull_value,
+                        "exit_multiple": bull_moic,
+                        "irr": bull_irr,
+                        "probability": bull_prob,
+                        "gross_margin": min(0.85, gross_margin_analysis.get("adjusted_gross_margin", 0.70) + 0.10),
+                        "acv": acv * 1.5,  # Bull case assumes higher ACV
+                        "assumptions": [
+                            f"Derived from {len(bull_scenarios)} PWERM bull scenarios",
+                            f"Probability-weighted exit value",
+                            f"Expected MOIC: {bull_moic:.1f}x"
+                        ]
+                    },
+                    "bear": {
+                        "revenue_5y": bear_value * 0.1,
+                        "valuation_5y": bear_value,
+                        "exit_multiple": bear_moic,
+                        "irr": bear_irr,
+                        "probability": bear_prob,
+                        "gross_margin": max(0.40, gross_margin_analysis.get("adjusted_gross_margin", 0.70) - 0.15),
+                        "acv": acv * 0.7,  # Bear case assumes lower ACV
+                        "assumptions": [
+                            f"Derived from {len(bear_scenarios)} PWERM bear scenarios",
+                            f"Probability-weighted exit value",
+                            f"Expected MOIC: {bear_moic:.1f}x"
+                        ]
+                    }
+                }
+                return convert_numpy_to_native(raw_scenarios)
+        
+        # FALLBACK: Use calculated scenarios (should not happen if PWERM is working)
+        logger.warning(f"No PWERM scenarios found for {company_data.get('company', 'Unknown')}, using fallback calculations")
+        
         # CRITICAL: Ensure we never have None values for calculations
         # Use actual revenue first, then inferred revenue (which should ALWAYS exist)
         current_revenue = company_data.get("revenue") or company_data.get("arr") or company_data.get("inferred_revenue")
@@ -165,11 +365,11 @@ class CompanyScoringVisualizer:
             if current_revenue == 0:
                 current_revenue = 1_000_000  # Default $1M
         
-        current_valuation = company_data.get("valuation") or 50_000_000
+        current_valuation = company_data.get("valuation") or company_data.get("inferred_valuation") or 50_000_000
         if current_valuation is None:
             current_valuation = 50_000_000
             
-        current_growth_rate = company_data.get("growth_rate")
+        current_growth_rate = company_data.get("growth_rate") or company_data.get("inferred_growth_rate")
         if current_growth_rate is None:
             current_growth_rate = 1.0  # Default 100% growth
         
@@ -215,7 +415,8 @@ class CompanyScoringVisualizer:
         # Adjust for API dependency
         api_adjustment = gross_margin_analysis["valuation_multiple_adjustment"]
         
-        scenarios = {
+        # Create scenarios dict with native Python types
+        raw_scenarios = {
             "base": {
                 "revenue_5y": growth_projections[-1] if growth_projections else current_revenue * (1 + current_growth_rate) ** 5,
                 "valuation_5y": exit_valuation * api_adjustment * strategic_investor_bonus,
@@ -230,7 +431,8 @@ class CompanyScoringVisualizer:
                     f"Growth decelerates from {(current_growth_rate if current_growth_rate < 10 else current_growth_rate/100)*100:.0f}% as modeled",
                     f"Gross margins at {gross_margin_analysis['adjusted_gross_margin']:.0%}",
                     f"NRR stays at {nrr:.0%}",
-                    "Market conditions remain stable"
+                    "Market conditions remain stable",
+                    "WARNING: Using fallback calculations (PWERM scenarios not available)"
                 ]
             },
             "bull": {
@@ -244,7 +446,8 @@ class CompanyScoringVisualizer:
                     f"Accelerate to {current_growth_rate * 1.5:.0%} growth",
                     "Improve gross margins by 10%",
                     "Achieve market leadership",
-                    "Favorable exit environment"
+                    "Favorable exit environment",
+                    "WARNING: Using fallback calculations (PWERM scenarios not available)"
                 ]
             },
             "bear": {
@@ -258,19 +461,21 @@ class CompanyScoringVisualizer:
                     f"Growth slows to {current_growth_rate * 0.3:.0%}",
                     "Gross margins compress by 15%",
                     "Increased competition",
-                    "Difficult funding environment"
+                    "Difficult funding environment",
+                    "WARNING: Using fallback calculations (PWERM scenarios not available)"
                 ]
             }
         }
         
         # Adjust bear case more severely for heavy API dependency
         if gross_margin_analysis["api_dependency_level"] == "openai_heavy":
-            scenarios["bear"]["gross_margin"] = max(0.35, scenarios["bear"]["gross_margin"] - 0.10)
-            scenarios["bear"]["assumptions"].append("API costs increase significantly")
-            scenarios["bull"]["probability"] = 0.15  # Lower bull probability
-            scenarios["bear"]["probability"] = 0.35  # Higher bear probability
+            raw_scenarios["bear"]["gross_margin"] = max(0.35, raw_scenarios["bear"]["gross_margin"] - 0.10)
+            raw_scenarios["bear"]["assumptions"].append("API costs increase significantly")
+            raw_scenarios["bull"]["probability"] = 0.15  # Lower bull probability
+            raw_scenarios["bear"]["probability"] = 0.35  # Higher bear probability
         
-        return scenarios
+        # Convert all numpy types to native Python types
+        return convert_numpy_to_native(raw_scenarios)
     
     def _extract_investor_names(self, round_data: Dict[str, Any], round_name: str) -> List[str]:
         """
@@ -450,6 +655,20 @@ class CompanyScoringVisualizer:
         total = sum(cap_table.values())
         if total > 0:
             cap_table = {k: (v / total) * 100 for k, v in cap_table.items()}
+        
+        # VALIDATION: Ensure total is 100% (or close due to rounding)
+        final_total = sum(cap_table.values())
+        if abs(final_total - 100) > 0.1:  # Allow 0.1% rounding error
+            logger.warning(f"[CAP_TABLE] Total ownership is {final_total:.2f}%, normalizing to 100%")
+            # Force normalization
+            adjustment = 100 / final_total
+            cap_table = {k: v * adjustment for k, v in cap_table.items()}
+        
+        # Validate no single holder > 100%
+        for holder, pct in cap_table.items():
+            if pct > 100:
+                logger.error(f"[CAP_TABLE] ERROR: {holder} has {pct:.2f}% ownership (impossible!)")
+                cap_table[holder] = min(pct, 100)
         
         # Sort by ownership percentage
         return dict(sorted(cap_table.items(), key=lambda x: x[1], reverse=True))

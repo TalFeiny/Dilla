@@ -91,7 +91,7 @@ export default function AgentRunner() {
           company,
           previousCompany: currentCompany,
           gridState,  // Send current grid state for context
-          stream: true,  // Enable streaming
+          stream: false,  // Disable streaming - prevents partial data issues
           // Request formulas and citations
           includeFormulas: true,
           includeCitations: true

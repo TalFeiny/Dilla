@@ -20,11 +20,12 @@ export class DeckHandler implements IFormatHandler {
         }
       }
       
-      // Try multiple paths to find deck data
+      // The backend returns: { success: true, result: { format: "deck", slides: [...] } }
+      // So we need to look in parsedData.result.slides first
       const slides = 
+        parsedData?.result?.slides ||            // Backend unified-brain response format
         parsedData?.slides ||                    // Direct structure from skill
         parsedData?.deck?.slides ||             // Nested in deck (old format)
-        parsedData?.result?.slides ||           // In result
         parsedData?.results?.slides ||          // In results (streaming)
         parsedData?.result?.deck?.slides ||     // Nested in result.deck
         [];
@@ -32,6 +33,58 @@ export class DeckHandler implements IFormatHandler {
       // Check if we found slides
       if (slides && slides.length > 0) {
         console.log('[DeckHandler] Found', slides.length, 'slides in deck data');
+        
+        // Normalize slide structure to ensure devices are in content.devices
+        slides = slides.map((slide: any) => {
+          // Ensure slide has proper structure
+          if (!slide.content) {
+            // If content is at top level, move it to content
+            if (slide.title || slide.body || slide.bullets) {
+              slide.content = {
+                title: slide.title,
+                body: slide.body,
+                bullets: slide.bullets,
+                subtitle: slide.subtitle,
+                metrics: slide.metrics,
+                chart_data: slide.chart_data,
+                notes: slide.notes,
+                citations: slide.citations
+              };
+            } else {
+              slide.content = slide.content || {};
+            }
+          }
+          
+          // Normalize devices - check multiple possible locations
+          const devices = 
+            slide.content?.devices ||
+            slide.content?.visual_devices ||
+            slide.devices ||
+            slide.visual_devices ||
+            [];
+          
+          // If devices found in any location, ensure they're in content.devices
+          if (devices && devices.length > 0) {
+            slide.content.devices = devices;
+            console.log(`[DeckHandler] Normalized ${devices.length} devices for slide ${slide.id || slide.order || 'unknown'}`);
+          }
+          
+          // Also check if the slide itself is a device (textbox, matrix, etc.)
+          if (slide.type && ['textbox', 'matrix', 'timeline', 'comparison-table', 'process-flow', 'logo-grid', 'metric-cards', 'quote'].includes(slide.type)) {
+            if (!slide.content.devices) {
+              slide.content.devices = [];
+            }
+            // Add the slide itself as a device
+            slide.content.devices.push({
+              type: slide.type,
+              ...slide.content,
+              ...(slide.content.content ? { content: slide.content.content } : {})
+            });
+            console.log(`[DeckHandler] Converted slide type ${slide.type} to device`);
+          }
+          
+          return slide;
+        });
         
         // Extract exit modeling data if available
         const exitModeling = parsedData?.exit_modeling || 

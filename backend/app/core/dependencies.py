@@ -12,8 +12,7 @@ from app.services.intelligent_gap_filler import IntelligentGapFiller
 from app.services.pre_post_cap_table import PrePostCapTable
 from app.services.advanced_cap_table import CapTableCalculator
 from app.services.comprehensive_deal_analyzer import ComprehensiveDealAnalyzer
-from app.utils.rate_limiter import create_rate_limited_claude_client
-
+# ModelRouter is the single source of truth - no direct client creation
 logger = logging.getLogger(__name__)
 
 
@@ -28,15 +27,9 @@ class ServiceFactory:
         
         logger.info(f"Creating new orchestrator for request {request_id}")
         
-        # Create new Claude client instance (not shared)
-        claude_client = create_rate_limited_claude_client(
-            api_key=settings.ANTHROPIC_API_KEY or settings.CLAUDE_API_KEY
-        )
-        
-        # Create orchestrator with isolated state
+        # Create orchestrator - it uses ModelRouter internally (single source of truth)
         orchestrator = UnifiedMCPOrchestrator()
         orchestrator.request_id = request_id
-        orchestrator.claude_client = claude_client
         orchestrator.shared_data = {}  # Isolated data per request
         
         return orchestrator

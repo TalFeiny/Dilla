@@ -50,6 +50,13 @@ def search_market_intelligence(company_name: str, sector: str) -> Dict:
         f"{sector} market size growth rate trends 2024 2025",
         f"{sector} disruption challenges opportunities",
         
+        # Market sizing and analyst reports (NEW)
+        f"{sector} market size TAM SAM SOM Gartner Forrester IDC report 2024",
+        f"{sector} TAM market sizing analyst report McKinsey BCG Bain",
+        f"{company_name} Gartner Magic Quadrant position analyst coverage",
+        f"{sector} industry analysis market forecast CAGR growth projection 2025-2030",
+        f"{sector} market research report industry trends analyst firm",
+        
         # Specific company intel
         f"{company_name} revenue ARR growth rate employees",
         f"{company_name} valuation latest round funding"

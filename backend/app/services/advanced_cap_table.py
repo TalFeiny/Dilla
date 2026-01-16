@@ -258,6 +258,106 @@ class CapTableCalculator:
             }
         }
         
+    def calculate_breakeven_exit(
+        self,
+        our_round: str,
+        our_investment: float,
+        funding_rounds: List[Dict]
+    ) -> Dict[str, Any]:
+        """
+        Calculate the minimum exit value where we get our money back
+        This reveals the '$86M problem' - seemingly good exits where we get $0
+        """
+        # Binary search for breakeven exit value
+        min_exit = 0
+        max_exit = our_investment * 100  # Start with 100x assumption
+        
+        # Make sure we start with a high enough max
+        test_waterfall = self.calculate_liquidation_waterfall(max_exit, {}, None, funding_rounds)
+        test_return = sum(d.get('amount', 0) for d in test_waterfall.get('distributions', [])
+                         if our_round.lower() in d.get('round', '').lower())
+        if test_return < our_investment:
+            max_exit = our_investment * 1000  # Try 1000x if 100x isn't enough
+        
+        while max_exit - min_exit > 10000:  # $10K precision
+            test_exit = (min_exit + max_exit) / 2
+            waterfall = self.calculate_liquidation_waterfall(
+                test_exit, {}, None, funding_rounds
+            )
+            
+            # Find our distribution
+            our_return = 0
+            for dist in waterfall.get('distributions', []):
+                if our_round.lower() in dist.get('round', '').lower():
+                    our_return += dist.get('amount', 0)
+            
+            if our_return < our_investment:
+                min_exit = test_exit
+            else:
+                max_exit = test_exit
+        
+        # Calculate preference overhang at different exit values
+        test_exits = [50e6, 100e6, 250e6, 500e6, 1e9]
+        overhang_analysis = []
+        
+        for exit_val in test_exits:
+            waterfall = self.calculate_liquidation_waterfall(
+                exit_val, {}, None, funding_rounds
+            )
+            
+            # Calculate how much goes to senior preferences
+            senior_prefs = 0
+            our_return = 0
+            
+            for dist in waterfall.get('distributions', []):
+                round_name = dist.get('round', '')
+                # Find our round's seniority
+                our_seniority = 0
+                for r in funding_rounds:
+                    if our_round.lower() in r.get('round', '').lower():
+                        our_seniority = r.get('seniority', 0)
+                        break
+                
+                # Check if this round is senior to us
+                for r in funding_rounds:
+                    if r.get('round', '').lower() == round_name.lower():
+                        if r.get('seniority', 0) > our_seniority:
+                            senior_prefs += dist.get('amount', 0)
+                    if our_round.lower() in round_name.lower():
+                        our_return += dist.get('amount', 0)
+            
+            overhang_analysis.append({
+                'exit_value': exit_val,
+                'senior_preferences': senior_prefs,
+                'our_return': our_return,
+                'our_multiple': our_return / our_investment if our_investment > 0 else 0,
+                'senior_takes_pct': senior_prefs / exit_val * 100 if exit_val > 0 else 0
+            })
+        
+        return {
+            'breakeven_exit': max_exit,
+            'our_investment': our_investment,
+            'minimum_multiple_needed': max_exit / our_investment if our_investment > 0 else 0,
+            'preference_overhang': overhang_analysis,
+            'has_86m_problem': max_exit > 86e6,  # Flag if we need >$86M to break even
+            'risk_assessment': self._assess_preference_risk(max_exit, our_investment)
+        }
+    
+    def _assess_preference_risk(self, breakeven: float, investment: float) -> str:
+        """Assess the preference stack risk"""
+        multiple_needed = breakeven / investment if investment > 0 else float('inf')
+        
+        if multiple_needed > 10:
+            return "SEVERE: Need >10x exit to break even - toxic preference stack"
+        elif multiple_needed > 5:
+            return "HIGH: Need >5x exit to break even - dangerous preference overhang"  
+        elif multiple_needed > 3:
+            return "MEDIUM: Need >3x exit to break even - significant senior preferences"
+        elif multiple_needed > 1.5:
+            return "LOW: Need >1.5x exit to break even - manageable preferences"
+        else:
+            return "MINIMAL: Clean preference stack"
+    
     def calculate_liquidation_waterfall(
         self,
         exit_value: float,
@@ -275,10 +375,12 @@ class CapTableCalculator:
         
         # If we have existing share entries, use the detailed calculation
         if self.share_entries:
+            from app.utils.numpy_converter import convert_numpy_to_native
+            
             df_result = self.calculate_exit_waterfall(exit_value_decimal)
-            # Convert DataFrame to dict format
+            # Convert DataFrame to dict format and ensure all numpy types are native Python types
             return {
-                'distributions': df_result.to_dict('records'),
+                'distributions': convert_numpy_to_native(df_result.to_dict('records')),
                 'total_distributed': float(df_result['total'].sum()),
                 'escrow': float(exit_value_decimal * Decimal('0.1')),
                 'summary': {
@@ -293,40 +395,89 @@ class CapTableCalculator:
         total_distributed = 0
         remaining = exit_value
         
-        # Build liquidation stack from funding rounds (LIFO order)
+        # Build liquidation stack from funding rounds (sorted by seniority)
         liquidation_stack = []
+        convertible_stack = []  # SAFEs and convertible notes
+        debt_stack = []  # Venture debt and other debt
         
         if funding_rounds:
-            # Process rounds in REVERSE order (last round first)
-            for round_data in reversed(funding_rounds):
+            # Separate by instrument type
+            for round_data in funding_rounds:
                 round_name = round_data.get('round', 'Unknown')
                 amount_raised = round_data.get('amount', 0)
                 investors = round_data.get('investors', [])
                 lead_investor = round_data.get('lead_investor', '')
+                instrument_type = round_data.get('instrument_type', 'preferred_equity')
                 
-                # Default to 1x non-participating liquidation preference
+                # Get preference terms
                 liq_multiple = round_data.get('liquidation_multiple', 1.0)
                 participating = round_data.get('participating', False)
+                seniority = round_data.get('seniority', 5)
+                participation_cap = round_data.get('participation_cap', None)
                 
-                # Calculate preference amount (typically 1x the investment)
+                # Calculate preference amount
                 preference_amount = amount_raised * liq_multiple
                 
-                liquidation_stack.append({
+                # Add cumulative dividends if applicable
+                if round_data.get('cumulative_dividends'):
+                    years_held = 3  # Assume 3 years average hold
+                    dividend_rate = round_data.get('cumulative_dividends', 0)
+                    preference_amount *= (1 + dividend_rate * years_held)
+                
+                entry = {
                     'round': round_name,
                     'investors': investors,
                     'lead_investor': lead_investor,
                     'preference_amount': preference_amount,
                     'participating': participating,
-                    'amount_raised': amount_raised
-                })
+                    'participation_cap': participation_cap,
+                    'amount_raised': amount_raised,
+                    'seniority': seniority,
+                    'instrument_type': instrument_type
+                }
+                
+                # Sort into appropriate stack
+                if instrument_type == 'venture_debt':
+                    debt_stack.append(entry)
+                elif instrument_type in ['safe', 'convertible_note']:
+                    convertible_stack.append(entry)
+                else:
+                    liquidation_stack.append(entry)
+            
+            # Sort equity stack by seniority (higher = more senior)
+            liquidation_stack.sort(key=lambda x: x['seniority'], reverse=True)
         
-        # Step 1: Pay out liquidation preferences in LIFO order
+        # Step 0: Pay out debt first (most senior)
+        for debt_info in debt_stack:
+            if remaining <= 0:
+                break
+            
+            debt_amount = debt_info['preference_amount']
+            if remaining >= debt_amount:
+                amount_to_pay = debt_amount
+                remaining -= debt_amount
+            else:
+                amount_to_pay = remaining
+                remaining = 0
+            
+            distributions.append({
+                'shareholder': f"{debt_info['round']} Debt Holders",
+                'amount': amount_to_pay,
+                'type': 'debt_repayment',
+                'round': debt_info['round']
+            })
+            total_distributed += amount_to_pay
+        
+        # Step 1: Pay out liquidation preferences (by seniority)
+        participating_holders = []  # Track who gets to double-dip
+        
         for round_info in liquidation_stack:
             if remaining <= 0:
                 break
                 
             pref_amount = round_info['preference_amount']
             round_name = round_info['round']
+            participating = round_info['participating']
             
             # Determine how much this round gets
             if remaining >= pref_amount:
@@ -555,8 +706,8 @@ class CapTableCalculator:
             cumulative_ownership = base_ownership.copy()
             
             for round_num in range(1, num_rounds + 1):
-                # Apply dilution
-                cumulative_ownership['ownership_pct'] *= (Decimal('1') - Decimal(str(dilution_rate)))
+                # Apply dilution (dilution_rate is already a float)
+                cumulative_ownership['ownership_pct'] *= (1 - dilution_rate)
                 
                 scenarios.append({
                     'scenario': f'{dilution_rate*100:.0f}% dilution',
@@ -654,14 +805,16 @@ class CapTableCalculator:
                 })
             
             # Calculate actual distributions at this exit value
+            from app.utils.numpy_converter import convert_numpy_to_native
+            
             distributions = waterfall_df[waterfall_df['shareholder'] != 'TOTAL']
             
-            # Group by share class
-            by_class = distributions.groupby('share_class').agg({
+            # Group by share class and convert to native Python types
+            by_class = convert_numpy_to_native(distributions.groupby('share_class').agg({
                 'total': 'sum',
                 'liquidation_preference': 'sum',
                 'common_distribution': 'sum'
-            }).to_dict('index')
+            }).to_dict('index'))
             
             # Calculate return multiples for major investors
             investor_returns = {}

@@ -7,7 +7,14 @@ from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 import logging
 
-from app.services.advanced_debt_structures_service import AdvancedDebtStructures
+try:
+    from app.services.advanced_debt_structures_service import AdvancedDebtStructures
+except ImportError as exc:
+    AdvancedDebtStructures = None  # Degraded mode
+    logger = logging.getLogger(__name__)
+    logger.warning(
+        "AdvancedDebtStructures service unavailable: %s", exc
+    )
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -42,6 +49,9 @@ class ConvertibleDebtRequest(BaseModel):
 @router.post("/analyze-structure")
 async def analyze_debt_structure(request: DebtAnalysisRequest):
     """Analyze any debt structure type"""
+    if not AdvancedDebtStructures:
+        raise HTTPException(status_code=503, detail="Advanced debt module unavailable")
+
     try:
         debt_engine = AdvancedDebtStructures()
         
@@ -68,6 +78,9 @@ async def analyze_debt_structure(request: DebtAnalysisRequest):
 @router.post("/venture-debt")
 async def venture_debt_analysis(request: VentureDebtRequest):
     """Analyze venture debt terms and impact"""
+    if not AdvancedDebtStructures:
+        raise HTTPException(status_code=503, detail="Advanced debt module unavailable")
+
     try:
         debt_engine = AdvancedDebtStructures()
         
@@ -111,6 +124,9 @@ async def venture_debt_analysis(request: VentureDebtRequest):
 @router.post("/convertible-debt")
 async def convertible_debt_analysis(request: ConvertibleDebtRequest):
     """Analyze convertible debt terms and conversion scenarios"""
+    if not AdvancedDebtStructures:
+        raise HTTPException(status_code=503, detail="Advanced debt module unavailable")
+
     try:
         debt_engine = AdvancedDebtStructures()
         

@@ -11,20 +11,21 @@ from dotenv import load_dotenv
 from pathlib import Path
 import os
 
-env_path = Path('.env.local')
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-else:
-    load_dotenv()
+# Load environment variables (.env.local takes precedence)
+load_dotenv('.env')  # Load .env first (baseline)
+load_dotenv('.env.local', override=True)  # Then override with .env.local if it exists
 
 from app.api.router_fixed import api_router
+from app.routers.deck_storage import router as deck_storage_router
 # from app.api.websocket import manager, websocket_service
 # from app.api.stripe_subscriptions import router as stripe_router
 # from app.routers.deal_sourcing import router as deal_sourcing_router
 # from app.api.endpoints.grpo import router as grpo_router
 # from app.api.intelligent_orchestration import router as orchestration_router
 from app.core.config import settings
-from app.core.database import supabase_service
+# Enhanced logging configuration
+from app.core.logging_config import logger, setup_logging
+# Lazy import to prevent startup errors
 from app.core.error_handlers import (
     http_exception_handler,
     validation_exception_handler,
@@ -33,8 +34,13 @@ from app.core.error_handlers import (
     api_error_handler
 )
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configure enhanced logging with rotation
+if not logging.getLogger().handlers:
+    setup_logging(
+        level="INFO",
+        enable_json=False,
+        enable_console=True
+    )
 
 
 @asynccontextmanager
@@ -89,6 +95,7 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(api_router, prefix="/api")
+app.include_router(deck_storage_router)
 # app.include_router(stripe_router)
 # app.include_router(deal_sourcing_router)
 # app.include_router(grpo_router, prefix="/api")
@@ -121,11 +128,18 @@ async def websocket_info():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    try:
+        from app.core.database import supabase_service
+        db_status = "connected" if supabase_service.get_client() else "disconnected"
+    except Exception as e:
+        logger.error(f"Supabase health check failed: {e}")
+        db_status = "error"
+    
     return {
         "status": "healthy",
         "environment": settings.ENVIRONMENT,
         "services": {
-            "database": "connected" if supabase_service.get_client() else "disconnected",
+            "database": db_status,
             "websocket": "available",
             "api": "running"
         }

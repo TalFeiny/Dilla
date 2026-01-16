@@ -10,6 +10,13 @@ import numpy as np
 from typing import Any, Dict, Set
 import logging
 
+# Try to import pandas if available
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,12 +65,21 @@ class SafeJSONEncoder(json.JSONEncoder):
                 return obj.decode('utf-8', errors='ignore')
             elif isinstance(obj, np.ndarray):
                 return obj.tolist()
-            elif isinstance(obj, np.integer):
+            # Handle numpy integer types (int64, int32, etc.)
+            elif isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
                 return int(obj)
-            elif isinstance(obj, np.floating):
+            elif isinstance(obj, (np.floating, np.float64, np.float32, np.float16)):
                 return float(obj)
             elif isinstance(obj, np.bool_):
                 return bool(obj)
+            # Handle numpy number base class
+            elif isinstance(obj, np.number):
+                if np.issubdtype(obj.dtype, np.integer):
+                    return int(obj)
+                elif np.issubdtype(obj.dtype, np.floating):
+                    return float(obj)
+                elif np.issubdtype(obj.dtype, np.bool_):
+                    return bool(obj)
             elif hasattr(obj, '__dict__'):
                 # Handle custom objects with __dict__
                 return {
@@ -134,7 +150,37 @@ def clean_for_json(obj: Any, max_depth: int = 10, _depth: int = 0, _visited: Set
     if _depth > max_depth:
         return f"<Max depth {max_depth} exceeded>"
     
-    # Check for circular references
+    # CRITICAL: Check numpy types BEFORE circular reference checks
+    # numpy types don't have __dict__ and aren't iterable, so checking them late causes errors
+    try:
+        # Fast path: check if it's a numpy type by module
+        if hasattr(obj, '__class__') and hasattr(type(obj), '__module__'):
+            if type(obj).__module__ == 'numpy':
+                # It's a numpy type - convert immediately
+                if isinstance(obj, np.ndarray):
+                    return clean_for_json(obj.tolist(), max_depth, _depth + 1, _visited)
+                elif isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+                    return int(obj)
+                elif isinstance(obj, (np.floating, np.float64, np.float32, np.float16)):
+                    return float(obj)
+                elif isinstance(obj, np.bool_):
+                    return bool(obj)
+                elif isinstance(obj, np.number):
+                    if np.issubdtype(type(obj), np.integer):
+                        return int(obj)
+                    elif np.issubdtype(type(obj), np.floating):
+                        return float(obj)
+                    elif np.issubdtype(type(obj), np.bool_):
+                        return bool(obj)
+                elif hasattr(obj, 'item'):
+                    return clean_for_json(obj.item(), max_depth, _depth + 1, _visited)
+                else:
+                    # Final fallback
+                    return int(obj) if np.issubdtype(type(obj), np.integer) else (float(obj) if np.issubdtype(type(obj), np.floating) else str(obj))
+    except (AttributeError, TypeError, ValueError):
+        pass
+    
+    # Check for circular references (only for complex types)
     obj_id = id(obj)
     if isinstance(obj, (dict, list)) and obj_id in _visited:
         return "<Circular Reference>"
@@ -143,8 +189,27 @@ def clean_for_json(obj: Any, max_depth: int = 10, _depth: int = 0, _visited: Set
     if obj is None:
         return None
     
-    # Handle primitives
-    if isinstance(obj, (str, int, float, bool)):
+    # Handle pandas DataFrame and Series BEFORE primitives
+    if PANDAS_AVAILABLE:
+        if isinstance(obj, pd.DataFrame):
+            # Convert DataFrame to dict
+            return clean_for_json(obj.to_dict(orient='records'), max_depth, _depth + 1, _visited)
+        elif isinstance(obj, pd.Series):
+            # Convert Series to dict
+            return clean_for_json(obj.to_dict(), max_depth, _depth + 1, _visited)
+    
+    # Handle primitives (but ONLY after numpy checks)
+    if isinstance(obj, (str, int, bool)):
+        return obj
+    
+    # Handle float with infinity/nan check
+    if isinstance(obj, float):
+        if obj != obj:  # NaN check
+            return 0
+        elif obj == float('inf'):
+            return 999999999  # Large positive number
+        elif obj == float('-inf'):
+            return -999999999  # Large negative number
         return obj
     
     # Handle special numeric types
@@ -154,12 +219,6 @@ def clean_for_json(obj: Any, max_depth: int = 10, _depth: int = 0, _visited: Set
     # Handle datetime
     if isinstance(obj, (datetime.datetime, datetime.date)):
         return obj.isoformat()
-    
-    # Handle numpy types
-    if hasattr(obj, 'tolist'):  # numpy array
-        return obj.tolist()
-    if hasattr(obj, 'item'):  # numpy scalar
-        return obj.item()
     
     # Track this object
     if isinstance(obj, (dict, list)):
@@ -186,12 +245,36 @@ def clean_for_json(obj: Any, max_depth: int = 10, _depth: int = 0, _visited: Set
         if hasattr(obj, 'to_dict'):
             return clean_for_json(obj.to_dict(), max_depth, _depth + 1, _visited)
         
-        # Handle objects with __dict__
+        # Handle objects with __dict__ (but NOT numpy types which have special __dict__)
+        # numpy types must be handled BEFORE this point
         if hasattr(obj, '__dict__'):
-            return clean_for_json({
-                '_type': obj.__class__.__name__,
-                '_data': obj.__dict__
-            }, max_depth, _depth + 1, _visited)
+            # CRITICAL: Explicit check for numpy types BEFORE trying vars()
+            if hasattr(type(obj), '__module__') and type(obj).__module__ == 'numpy':
+                # numpy types shouldn't get here, but if they do, convert properly
+                try:
+                    if isinstance(obj, np.integer):
+                        return int(obj)
+                    elif isinstance(obj, np.floating):
+                        return float(obj)
+                    elif isinstance(obj, np.bool_):
+                        return bool(obj)
+                    elif hasattr(obj, 'item'):
+                        return clean_for_json(obj.item(), max_depth, _depth + 1, _visited)
+                    else:
+                        return str(obj)
+                except:
+                    return str(obj)
+            
+            try:
+                # Try to access __dict__ safely
+                return clean_for_json({
+                    '_type': obj.__class__.__name__,
+                    '_data': vars(obj)
+                }, max_depth, _depth + 1, _visited)
+            except (TypeError, ValueError) as e:
+                # If vars() fails, just stringify
+                logger.warning(f"vars() failed on {type(obj).__name__}: {e}")
+                return str(obj)
         
         # Fallback to string
         return str(obj)

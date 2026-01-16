@@ -58,31 +58,20 @@ async def process_prompt(request: MCPRequest):
         if request.context:
             output_format = request.context.get("output_format", "analysis")
         
-        if request.stream:
-            # Return streaming response
-            async def generate():
-                async for result in single_agent.execute_as_single_agent(
-                    prompt=request.prompt,
-                    context=request.context,
-                    output_format=output_format,
-                    stream=True
-                ):
-                    yield f"data: {json.dumps(result)}\n\n"
-            
-            return StreamingResponse(
-                generate(),
-                media_type="text/event-stream"
-            )
-        else:
-            # Execute with single agent
-            result = await single_agent.execute_as_single_agent(
-                prompt=request.prompt,
-                context=request.context,
-                output_format=output_format,
-                stream=False
-            )
-            
-            return result
+        # STREAMING DISABLED - Always use non-streaming response
+        # if request.stream:
+        #     # Streaming functionality has been disabled
+        #     # Fall through to non-streaming response
+        
+        # Execute with single agent (non-streaming)
+        result = await single_agent.execute_as_single_agent(
+            prompt=request.prompt,
+            context=request.context,
+            output_format=output_format,
+            stream=False
+        )
+        
+        return result
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

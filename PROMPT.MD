@@ -13,3 +13,8 @@ Compare @Simbie with @Vogent for my 198m seed-b fund, with 80m to deploy with 1.
 
 ## Fleetzero vs Quilt Test Prompt
 "Compare @Fleetzero and @Quilt for my 145m fund in yr 2 with 101m to deploy. 1.7 tvpi, 0 dpi"
+Compare @Wexler with @Zally for my Series A fund of 201m fund with 0.5 dpi from 2 exits out of 3 failures, 1 secondary and 4 still active, we have 99.4m to deploy in year 3 q2, which is the returneCompare @lovable and @N8n for my 1.6b family office, with 700m in space x shares
+r@Virtru and @VicAI for my 234m fund, with 0.4 dpi, 4.5 tvpi, with 2 unicorns, 2 small M&A, 3 raised further round which we followed on, 3 failures and 109m left to deploy
+
+Compare @BuiltAI and @Palindrome for my series A fund, 234m with 0.4 dpi and 3.1 tvpi in year 2, recycled
+compare @Gauss and @BankBio for my 89m seed fund with 48m to deploy 0 dpi, 3.1 dpi

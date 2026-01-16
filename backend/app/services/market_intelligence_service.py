@@ -324,7 +324,16 @@ class MarketIntelligenceService:
                 # Add variant with "companies" 
                 queries.append(base_query.replace("startup", "companies"))
         
-        return queries[:6]  # Limit total queries
+        # Add analyst report and market sizing queries
+        for sector_term in sector_terms[:1]:  # Limit to top sector term
+            queries.extend([
+                f"{sector_term} market size TAM SAM SOM Gartner Forrester IDC report 2024",
+                f"{sector_term} TAM market sizing analyst report McKinsey BCG Bain",
+                f"{sector_term} industry analysis market forecast CAGR growth projection 2025-2030",
+                f"{sector_term} market research report industry trends analyst firm"
+            ])
+        
+        return queries[:10]  # Increased limit to accommodate new queries
 
     async def _execute_tavily_search(self, query: str) -> Dict[str, Any]:
         """Execute Tavily search with error handling"""

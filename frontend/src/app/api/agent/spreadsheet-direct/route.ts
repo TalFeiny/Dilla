@@ -1059,18 +1059,12 @@ export async function POST(request: NextRequest) {
     
     // Check if we should use the orchestrator for multi-step tasks
     if (useOrchestrator && prompt.toLowerCase().includes('then')) {
-      // Orchestrator not available
-      // const { orchestrator } = await import('@/lib/agent-orchestrator');
-      
-      // Plan and execute with minimal context per skill
-      const plan = await orchestrator.planTask(prompt, gridState);
-      const result = await orchestrator.executePlan(plan);
-      
+      console.warn('[spreadsheet-direct] Orchestrator requested but disabled');
       return NextResponse.json({
-        success: true,
-        commands: result.commands || [],
-        explanation: `Executed ${plan.steps.length} specialized skills`,
-        modelUsed: 'orchestrator'
+        success: false,
+        commands: [],
+        explanation: 'Multi-step spreadsheet orchestrator is temporarily unavailable',
+        modelUsed: 'direct-mode'
       });
     }
     

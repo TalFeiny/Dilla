@@ -537,12 +537,12 @@ export default function FundAdminPage() {
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
               <div className="flex items-center justify-between mb-2">
                 <p className="text-sm font-medium text-gray-600">FX Exposure</p>
-                <Globe className="h-5 w-5 text-purple-600" />
+                <Globe className="h-5 w-5 text-primary" />
               </div>
               <p className="text-2xl font-bold text-gray-900">
                 {formatCurrency(fundData.fx_hedging?.total_fx_exposure || 0)}
               </p>
-              <p className="text-xs text-purple-600 mt-1">
+              <p className="text-xs text-primary mt-1">
                 {formatPercentage(fundData.fx_hedging?.hedged_percentage || 0)} hedged
               </p>
             </div>
@@ -917,8 +917,8 @@ export default function FundAdminPage() {
                       
                       {/* FX Summary Cards */}
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                        <div className="bg-purple-50 rounded-lg p-4">
-                          <p className="text-sm text-purple-600">Total FX Exposure</p>
+                        <div className="bg-secondary rounded-lg p-4">
+                          <p className="text-sm text-primary">Total FX Exposure</p>
                           <p className="text-xl font-bold text-purple-900">
                             {formatCurrency(fundData.fx_hedging.total_fx_exposure)}
                           </p>
@@ -1006,8 +1006,8 @@ export default function FundAdminPage() {
                           {formatCurrency(fundData.custody.cash_balance)}
                         </p>
                       </div>
-                      <div className="bg-purple-50 rounded-lg p-4">
-                        <p className="text-sm text-purple-600">Securities</p>
+                      <div className="bg-secondary rounded-lg p-4">
+                        <p className="text-sm text-primary">Securities</p>
                         <p className="text-xl font-bold text-purple-900">
                           {formatCurrency(fundData.custody.securities_value)}
                         </p>
@@ -1235,7 +1235,7 @@ export default function FundAdminPage() {
                           <div className="text-xs text-gray-500 mt-1">SEC Filing</div>
                         </div>
                         <div className="bg-white rounded-lg p-4 border border-purple-100">
-                          <div className="text-xs text-purple-600 font-medium">Form PF</div>
+                          <div className="text-xs text-primary font-medium">Form PF</div>
                           <div className="text-lg font-bold text-gray-900 mt-1">Quarterly</div>
                           <div className="text-xs text-gray-500 mt-1">60 days after quarter</div>
                         </div>
@@ -1245,7 +1245,7 @@ export default function FundAdminPage() {
                           <div className="text-xs text-gray-500 mt-1">45 days after Q4</div>
                         </div>
                         <div className="bg-white rounded-lg p-4 border border-purple-100">
-                          <div className="text-xs text-purple-600 font-medium">K-1 Distribution</div>
+                          <div className="text-xs text-primary font-medium">K-1 Distribution</div>
                           <div className="text-lg font-bold text-gray-900 mt-1">March 15</div>
                           <div className="text-xs text-gray-500 mt-1">IRS Filing</div>
                         </div>

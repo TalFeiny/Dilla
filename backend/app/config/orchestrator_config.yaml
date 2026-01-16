@@ -1,0 +1,262 @@
+# UnifiedMCPOrchestrator Configuration
+# All previously hardcoded values extracted to configuration
+
+# Exit value calculations
+exit:
+  default_exit_valuation: 1_000_000_000  # Default exit valuation if not provided
+  exit_multiple_range:
+    min: 3
+    max: 10
+    default: 5
+
+# Check size configuration
+investment:
+  check_size:
+    # Stage-based multipliers for check size calculation
+    stage_multipliers:
+      pre_seed: 0.5
+      seed: 1.0
+      series_a: 2.0
+      series_b: 3.0
+      series_c: 4.0
+      series_d_plus: 5.0
+    
+    # Default check sizes by stage (in USD)
+    default_by_stage:
+      pre_seed: 500_000
+      seed: 1_000_000
+      series_a: 2_000_000
+      series_b: 5_000_000
+      series_c: 10_000_000
+      series_d_plus: 15_000_000
+    
+    # Min/max constraints
+    minimum: 250_000
+    maximum: 50_000_000
+
+# Fund allocation configuration
+fund:
+  # Fund size for different fund types
+  fund_sizes:
+    small: 50_000_000
+    medium: 250_000_000
+    large: 500_000_000
+    mega: 1_000_000_000
+  
+  # Allocation percentages
+  allocation:
+    max_single_investment_pct: 0.10  # Max 10% of fund in single investment
+    reserve_ratio: 2.0  # 2x reserves for follow-ons
+    management_fee_pct: 0.02  # 2% annual management fee
+    carry_pct: 0.20  # 20% carry
+  
+  # Portfolio construction
+  portfolio:
+    target_companies: 25
+    winner_concentration_pct: 0.80  # 80% of returns from top 20% of companies
+    loss_ratio: 0.40  # 40% expected to return less than invested
+
+# Ownership and dilution configuration
+ownership:
+  # Target ownership by stage
+  target_by_stage:
+    pre_seed: 0.10  # 10%
+    seed: 0.15  # 15%
+    series_a: 0.20  # 20%
+    series_b: 0.15  # 15%
+    series_c: 0.10  # 10%
+    series_d_plus: 0.07  # 7%
+  
+  # Dilution per round
+  dilution_per_round:
+    default: 0.20  # 20% dilution per round
+    minimum: 0.10  # 10% minimum dilution
+    maximum: 0.35  # 35% maximum dilution
+    
+    # Stage-specific dilution
+    by_stage:
+      seed_to_a: 0.25
+      a_to_b: 0.20
+      b_to_c: 0.18
+      c_to_d: 0.15
+      d_plus: 0.12
+
+# Proceeds and returns configuration
+returns:
+  # Default proceeds if not calculated
+  default_proceeds: 10_000_000
+  
+  # DPI (Distributed to Paid-In) targets
+  dpi:
+    target: 3.0
+    good: 2.5
+    acceptable: 2.0
+    minimum: 1.5
+  
+  # TVPI (Total Value to Paid-In) targets
+  tvpi:
+    target: 4.0
+    good: 3.0
+    acceptable: 2.5
+    minimum: 2.0
+  
+  # IRR targets by fund stage
+  irr_targets:
+    seed: 0.35  # 35% IRR
+    early_stage: 0.30  # 30% IRR
+    growth: 0.25  # 25% IRR
+    late_stage: 0.20  # 20% IRR
+
+# Future round funding amounts (by stage)
+future_rounds:
+  # Typical round sizes in USD
+  round_sizes:
+    seed:
+      min: 500_000
+      typical: 2_000_000
+      max: 5_000_000
+    
+    series_a:
+      min: 3_000_000
+      typical: 10_000_000
+      max: 25_000_000
+    
+    series_b:
+      min: 15_000_000
+      typical: 30_000_000
+      max: 60_000_000
+    
+    series_c:
+      min: 40_000_000
+      typical: 75_000_000
+      max: 150_000_000
+    
+    series_d_plus:
+      min: 75_000_000
+      typical: 150_000_000
+      max: 500_000_000
+  
+  # Time between rounds (months)
+  time_between_rounds:
+    seed_to_a: 18
+    a_to_b: 18
+    b_to_c: 24
+    c_to_d: 24
+    d_to_exit: 36
+
+# Liquidation waterfall configuration
+waterfall:
+  # Liquidation preference thresholds
+  preferences:
+    non_participating_1x: 1.0
+    participating_1x: 1.0
+    participating_2x: 2.0
+    participating_3x: 3.0
+  
+  # Common waterfall scenarios
+  scenarios:
+    standard:
+      threshold_multiplier: 1.0
+      participating_cap: 3.0
+    
+    investor_friendly:
+      threshold_multiplier: 1.5
+      participating_cap: null  # No cap
+    
+    founder_friendly:
+      threshold_multiplier: 1.0
+      participating_cap: 1.0
+
+# Valuation multiple adjustments
+valuation_multiples:
+  # Base multiples by business model
+  base_multiples:
+    ai_first: 25
+    vertical_saas: 15
+    horizontal_saas: 10
+    marketplace: 8
+    services: 2
+    hardware: 3
+  
+  # Adjustment factors
+  adjustments:
+    # Quality adjustments
+    quality:
+      tier_1_investors: 1.2
+      tier_2_investors: 1.1
+      tier_3_investors: 1.0
+      
+      # Team quality
+      second_time_founders: 1.3
+      ex_faang: 1.2
+      technical_founders: 1.1
+    
+    # Growth adjustments  
+    growth:
+      triple_triple: 1.5  # 3x growth for 2 years
+      t2d3: 1.4  # Triple, triple, double, double, double
+      high_growth: 1.2  # >100% YoY
+      moderate_growth: 1.0  # 50-100% YoY
+      low_growth: 0.8  # <50% YoY
+    
+    # Market adjustments
+    market:
+      hot_market: 1.3
+      normal_market: 1.0
+      cold_market: 0.7
+    
+    # Efficiency adjustments
+    efficiency:
+      rule_of_40_plus: 1.2  # Growth rate + profit margin > 40%
+      efficient: 1.0
+      inefficient: 0.8
+
+# Scoring and ranking configuration
+scoring:
+  # Weights for different factors
+  weights:
+    valuation: 0.25
+    team: 0.20
+    market: 0.20
+    product: 0.15
+    traction: 0.15
+    investors: 0.05
+  
+  # Score thresholds
+  thresholds:
+    excellent: 0.80
+    good: 0.60
+    acceptable: 0.40
+    poor: 0.20
+
+# Default values for missing data
+defaults:
+  # Revenue defaults by stage (if no data available)
+  revenue_by_stage:
+    pre_seed: 0
+    seed: 100_000
+    series_a: 1_000_000
+    series_b: 5_000_000
+    series_c: 15_000_000
+    series_d_plus: 50_000_000
+  
+  # Burn rate defaults by stage
+  burn_by_stage:
+    pre_seed: 50_000
+    seed: 150_000
+    series_a: 500_000
+    series_b: 1_500_000
+    series_c: 3_000_000
+    series_d_plus: 5_000_000
+  
+  # Runway months target
+  runway_months: 18
+  
+  # Employee count by stage
+  employees_by_stage:
+    pre_seed: 3
+    seed: 8
+    series_a: 25
+    series_b: 75
+    series_c: 200
+    series_d_plus: 500

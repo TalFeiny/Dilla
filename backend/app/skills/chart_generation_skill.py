@@ -167,10 +167,19 @@ def process_cap_table(data):
         ownership.update(data['cap_table'])
     
     # Estimate ownership from valuation and funding
-    if 'valuation' in data and 'total_raised' in data:
+    total_raised = data.get('total_raised')
+    if total_raised is None:
+        # Normalise legacy naming so downstream code does not KeyError
+        total_raised = data.get('total_funding')
+        if total_raised is not None:
+            data['total_raised'] = total_raised
+
+    valuation = data.get('valuation')
+    if valuation is None:
+        valuation = data.get('inferred_valuation')
+
+    if valuation is not None and total_raised is not None:
         # Estimate dilution
-        total_raised = data['total_raised']
-        valuation = data['valuation']
         investor_ownership = min(total_raised / valuation, 0.7)  # Max 70% dilution
         
         if not ownership:

@@ -4,12 +4,9 @@ Main routing endpoint for all agent capabilities
 """
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse
 from typing import Dict, Any, Optional
 from pydantic import BaseModel
 import logging
-import json
-import asyncio
 
 # from app.services.orchestrator_service import orchestrator, AgentMode, AGENT_CAPABILITIES
 from app.services.mcp_orchestrator import SingleAgentOrchestrator as MCPOrchestrator
@@ -27,13 +24,6 @@ class OrchestratorRequest(BaseModel):
     parameters: Optional[Dict[str, Any]] = None
     context: Optional[Dict[str, Any]] = None
     auto_select: bool = True
-    stream: bool = False
-
-
-class StreamRequest(BaseModel):
-    message: str
-    parameters: Optional[Dict[str, Any]] = None
-    context: Optional[Dict[str, Any]] = None
 
 
 @router.post("/route")
@@ -55,66 +45,6 @@ async def route_request(request: OrchestratorRequest):
     except Exception as e:
         logger.error(f"Orchestrator error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/stream")
-async def stream_request(request: StreamRequest):
-    """
-    Streaming endpoint for real-time agent responses
-    """
-    async def generate():
-        try:
-            # Initial response
-            yield json.dumps({
-                "type": "start",
-                "message": "Processing request...",
-                "timestamp": datetime.now().isoformat()
-            }) + "\n"
-            
-            # Route the request
-            routing_result = await orchestrator.router.analyze_prompt(
-                request.message,
-                request.context
-            )
-            
-            yield json.dumps({
-                "type": "routing",
-                "mode": routing_result['mode'].value,
-                "confidence": routing_result['confidence'],
-                "reasoning": routing_result['reasoning']
-            }) + "\n"
-            
-            # Simulate streaming execution
-            for i in range(5):
-                await asyncio.sleep(1)
-                yield json.dumps({
-                    "type": "progress",
-                    "progress": (i + 1) * 20,
-                    "message": f"Processing step {i + 1}/5..."
-                }) + "\n"
-            
-            # Final result
-            result = await orchestrator.route_request(
-                message=request.message,
-                parameters=request.parameters,
-                context=request.context
-            )
-            
-            yield json.dumps({
-                "type": "complete",
-                "result": result
-            }) + "\n"
-            
-        except Exception as e:
-            yield json.dumps({
-                "type": "error",
-                "error": str(e)
-            }) + "\n"
-    
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream"
-    )
 
 
 @router.get("/modes")
@@ -275,5 +205,3 @@ async def execute_socratic(request: Dict[str, Any]):
         request.get('context', {})
     )
 
-
-from datetime import datetime

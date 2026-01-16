@@ -5,17 +5,92 @@
 
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { ChartGenerator } from '@/lib/chart-generator';
+// Register Chart.js components
+import '@/lib/chart-setup';
+import { ensureChartJSRegistered } from '@/lib/chart-setup';
 
-// Dynamic imports for chart libraries
-const Line = dynamic(() => import('react-chartjs-2').then(mod => mod.Line), { ssr: false });
-const Bar = dynamic(() => import('react-chartjs-2').then(mod => mod.Bar), { ssr: false });
-const Doughnut = dynamic(() => import('react-chartjs-2').then(mod => mod.Doughnut), { ssr: false });
-const Scatter = dynamic(() => import('react-chartjs-2').then(mod => mod.Scatter), { ssr: false });
-const Pie = dynamic(() => import('react-chartjs-2').then(mod => mod.Pie), { ssr: false });
-const Radar = dynamic(() => import('react-chartjs-2').then(mod => mod.Radar), { ssr: false });
+// Dynamic imports for chart libraries with error handling
+// Ensure Chart.js is registered before importing components
+const Line = dynamic(
+  () => {
+    if (typeof window !== 'undefined') {
+      ensureChartJSRegistered();
+    }
+    return import('react-chartjs-2').then(mod => mod.Line).catch((err) => {
+      console.error('[AgentChart] Failed to load Line chart:', err);
+      return null;
+    });
+  },
+  { ssr: false }
+);
+
+const Bar = dynamic(
+  () => {
+    if (typeof window !== 'undefined') {
+      ensureChartJSRegistered();
+    }
+    return import('react-chartjs-2').then(mod => mod.Bar).catch((err) => {
+      console.error('[AgentChart] Failed to load Bar chart:', err);
+      return null;
+    });
+  },
+  { ssr: false }
+);
+
+const Doughnut = dynamic(
+  () => {
+    if (typeof window !== 'undefined') {
+      ensureChartJSRegistered();
+    }
+    return import('react-chartjs-2').then(mod => mod.Doughnut).catch((err) => {
+      console.error('[AgentChart] Failed to load Doughnut chart:', err);
+      return null;
+    });
+  },
+  { ssr: false }
+);
+
+const Scatter = dynamic(
+  () => {
+    if (typeof window !== 'undefined') {
+      ensureChartJSRegistered();
+    }
+    return import('react-chartjs-2').then(mod => mod.Scatter).catch((err) => {
+      console.error('[AgentChart] Failed to load Scatter chart:', err);
+      return null;
+    });
+  },
+  { ssr: false }
+);
+
+const Pie = dynamic(
+  () => {
+    if (typeof window !== 'undefined') {
+      ensureChartJSRegistered();
+    }
+    return import('react-chartjs-2').then(mod => mod.Pie).catch((err) => {
+      console.error('[AgentChart] Failed to load Pie chart:', err);
+      return null;
+    });
+  },
+  { ssr: false }
+);
+
+const Radar = dynamic(
+  () => {
+    if (typeof window !== 'undefined') {
+      ensureChartJSRegistered();
+    }
+    return import('react-chartjs-2').then(mod => mod.Radar).catch((err) => {
+      console.error('[AgentChart] Failed to load Radar chart:', err);
+      return null;
+    });
+  },
+  { ssr: false }
+);
 
 interface AgentChartProps {
   data: any[];
@@ -30,6 +105,18 @@ interface AgentChartProps {
   interactive?: boolean;
 }
 
+// Fallback component for when chart libraries fail to load
+const ChartFallback = ({ title }: { title?: string }) => (
+  <div className="flex items-center justify-center p-8 border border-gray-200 rounded-lg bg-gray-50">
+    <div className="text-center">
+      <div className="text-gray-500 mb-2">📊</div>
+      <p className="text-sm text-gray-600">
+        {title || 'Chart'} - Loading...
+      </p>
+    </div>
+  </div>
+);
+
 export function AgentChart({
   data,
   type = 'bar',
@@ -43,22 +130,132 @@ export function AgentChart({
   interactive = true
 }: AgentChartProps) {
   const [chartConfig, setChartConfig] = useState<any>(null);
+  const [chartError, setChartError] = useState<string | null>(null);
+  const [isClient, setIsClient] = useState(false);
+  const [chartReady, setChartReady] = useState(false);
+  const chartContainerRef = React.useRef<HTMLDivElement>(null);
+
+  // Ensure we're on the client side
+  useEffect(() => {
+    setIsClient(true);
+    if (typeof window !== 'undefined') {
+      ensureChartJSRegistered();
+    }
+  }, []);
 
   useEffect(() => {
-    if (!data || data.length === 0) return;
+    if (!isClient) return;
+    if (!data || data.length === 0) {
+      setChartError('No data provided');
+      return;
+    }
 
-    const config = ChartGenerator.generateChartConfig(data, {
-      type,
-      title,
-      xField,
-      yField,
-      groupBy,
-      theme,
-      interactive
+    try {
+      const config = ChartGenerator.generateChartConfig(data, {
+        type,
+        title,
+        xField,
+        yField,
+        groupBy,
+        theme,
+        interactive
+      });
+
+      setChartConfig(config);
+      setChartError(null);
+    } catch (error) {
+      console.error('[AgentChart] Error generating chart config:', error);
+      setChartError(error instanceof Error ? error.message : 'Failed to generate chart');
+    }
+  }, [data, type, xField, yField, groupBy, title, theme, interactive, isClient]);
+
+  // Mark chart as ready when it's rendered (for PDF detection)
+  useEffect(() => {
+    if (!isClient || !chartConfig || !chartContainerRef.current) {
+      setChartReady(false);
+      return;
+    }
+
+    // Chart.js renders to canvas, so we need to check for canvas content
+    const checkInterval = setInterval(() => {
+      if (chartContainerRef.current) {
+        const canvas = chartContainerRef.current.querySelector('canvas');
+        if (canvas) {
+          try {
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              const imageData = ctx.getImageData(0, 0, Math.min(canvas.width, 10), Math.min(canvas.height, 10));
+              const data = imageData.data;
+              // Check if any pixels are non-transparent
+              for (let i = 3; i < data.length; i += 4) {
+                if (data[i] > 0) {
+                  setChartReady(true);
+                  chartContainerRef.current.setAttribute('data-chart-ready', 'true');
+                  clearInterval(checkInterval);
+                  return;
+                }
+              }
+            }
+          } catch (e) {
+            // Security error - assume rendered if canvas exists
+            setChartReady(true);
+            if (chartContainerRef.current) {
+              chartContainerRef.current.setAttribute('data-chart-ready', 'true');
+            }
+            clearInterval(checkInterval);
+          }
+        }
+      }
+    }, 100); // Check every 100ms
+
+    // Also check after a short delay using requestAnimationFrame
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (chartContainerRef.current) {
+          const canvas = chartContainerRef.current.querySelector('canvas');
+          if (canvas) {
+            setChartReady(true);
+            chartContainerRef.current.setAttribute('data-chart-ready', 'true');
+            clearInterval(checkInterval);
+          }
+        }
+      });
     });
 
-    setChartConfig(config);
-  }, [data, type, xField, yField, groupBy, title, theme, interactive]);
+    // Timeout after 5 seconds
+    const timeout = setTimeout(() => {
+      clearInterval(checkInterval);
+      // Even if content check fails, mark as ready after timeout to avoid blocking PDF generation
+      if (chartContainerRef.current) {
+        setChartReady(true);
+        chartContainerRef.current.setAttribute('data-chart-ready', 'true');
+      }
+    }, 5000);
+
+    return () => {
+      clearInterval(checkInterval);
+      clearTimeout(timeout);
+    };
+  }, [isClient, chartConfig, type]);
+
+  if (!isClient) {
+    return (
+      <div className="flex items-center justify-center p-8 bg-gray-50 dark:bg-gray-800 rounded-lg">
+        <p className="text-gray-500 dark:text-gray-400">Loading chart...</p>
+      </div>
+    );
+  }
+
+  if (chartError) {
+    return (
+      <div className="flex items-center justify-center p-8 bg-red-50 dark:bg-red-900/20 rounded-lg">
+        <div className="text-center">
+          <p className="text-red-600 dark:text-red-400 font-semibold">Chart Error</p>
+          <p className="text-red-500 dark:text-red-500 text-sm mt-1">{chartError}</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!chartConfig) {
     return (
@@ -78,11 +275,21 @@ export function AgentChart({
     area: Line
   }[type] || Bar;
 
+  // If ChartComponent is null (failed to load), show fallback
+  if (!ChartComponent) {
+    console.warn(`[AgentChart] Chart component for type "${type}" failed to load`);
+    return <ChartFallback title={title} />;
+  }
+
   return (
     <div 
+      ref={chartContainerRef}
       className="chart-container bg-white dark:bg-gray-900 p-4 rounded-lg shadow-lg"
       style={{ width: `${width}px`, height: `${height}px` }}
+      data-chart-type={type}
+      data-chart-ready={chartReady ? 'true' : 'false'}
     >
+      {title && <h3 className="text-lg font-semibold mb-2">{title}</h3>}
       <ChartComponent data={chartConfig.data} options={chartConfig.options} />
     </div>
   );

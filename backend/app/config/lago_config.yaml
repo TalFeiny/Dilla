@@ -1,0 +1,142 @@
+# Lago Billing Configuration
+# Manages usage-based billing without Stripe dependencies
+
+lago:
+  # Deployment options
+  deployment: "self_hosted"  # Options: "cloud" or "self_hosted"
+  
+  # API Configuration
+  api:
+    # For Lago Cloud
+    cloud_url: "https://api.getlago.com/api/v1"
+    
+    # For Self-Hosted (Docker)
+    self_hosted_url: "http://localhost:3000/api/v1"
+    
+  # Billable Metrics
+  metrics:
+    - code: "credit_usage"
+      name: "API Credits"
+      aggregation_type: "sum"
+      field_name: "credits"
+      
+    - code: "model_cost"
+      name: "Model Costs (Internal)"
+      aggregation_type: "sum"
+      field_name: "cost_usd"
+  
+  # Pricing Plans
+  plans:
+    free_trial:
+      name: "Free Trial"
+      amount_cents: 0
+      currency: "USD"
+      interval: "monthly"
+      charges:
+        - billable_metric_code: "credit_usage"
+          charge_model: "package"
+          package_size: 5
+          free_units: 5
+    
+    starter:
+      name: "Starter"
+      amount_cents: 1900  # $19
+      currency: "USD"
+      interval: "monthly"
+      charges:
+        - billable_metric_code: "credit_usage"
+          charge_model: "package"
+          package_size: 20
+          free_units: 20
+          amount_cents: 150  # $1.50 per overage credit
+    
+    growth:
+      name: "Growth"
+      amount_cents: 4900  # $49
+      currency: "USD"
+      interval: "monthly"
+      charges:
+        - billable_metric_code: "credit_usage"
+          charge_model: "package"
+          package_size: 100
+          free_units: 100
+          amount_cents: 75  # $0.75 per overage credit
+    
+    scale:
+      name: "Scale"
+      amount_cents: 9900  # $99
+      currency: "USD"
+      interval: "monthly"
+      charges:
+        - billable_metric_code: "credit_usage"
+          charge_model: "package"
+          package_size: 300
+          free_units: 300
+          amount_cents: 50  # $0.50 per overage credit
+    
+    enterprise:
+      name: "Enterprise"
+      amount_cents: 29900  # $299
+      currency: "USD"
+      interval: "monthly"
+      charges:
+        - billable_metric_code: "credit_usage"
+          charge_model: "standard"  # Unlimited usage
+
+# Credit Costs per Operation
+credit_costs:
+  company_analysis: 2
+  deck_generation: 4
+  valuation_report: 3
+  scenario_analysis: 1
+  market_research: 2
+  
+# Webhook Events
+webhooks:
+  enabled: true
+  secret_key: "${LAGO_WEBHOOK_SECRET}"
+  events:
+    - "invoice.generated"
+    - "invoice.payment_status_updated"
+    - "subscription.started"
+    - "subscription.terminated"
+    - "credit_note.created"
+    - "customer.payment_provider_created"
+
+# Docker Compose Setup (for self-hosted)
+docker_setup:
+  postgres:
+    image: "postgres:14-alpine"
+    environment:
+      POSTGRES_DB: "lago"
+      POSTGRES_USER: "lago"
+      POSTGRES_PASSWORD: "${LAGO_DB_PASSWORD}"
+    
+  redis:
+    image: "redis:6-alpine"
+    
+  lago_api:
+    image: "getlago/api:latest"
+    environment:
+      DATABASE_URL: "postgresql://lago:${LAGO_DB_PASSWORD}@postgres:5432/lago"
+      REDIS_URL: "redis://redis:6379"
+      SECRET_KEY_BASE: "${LAGO_SECRET_KEY}"
+      RSA_PRIVATE_KEY: "${LAGO_RSA_PRIVATE_KEY}"
+      LAGO_OAUTH_PROXY_URL: "https://oauth.getlago.com"
+      LAGO_PDF_URL: "http://lago-pdf:3000"
+      
+  lago_worker:
+    image: "getlago/api:latest"
+    command: ["bundle", "exec", "sidekiq"]
+    
+  lago_clock:
+    image: "getlago/api:latest"
+    command: ["bundle", "exec", "clockwork", "clock.rb"]
+    
+  lago_pdf:
+    image: "getlago/pdf:latest"
+    
+  lago_front:
+    image: "getlago/front:latest"
+    environment:
+      API_URL: "http://lago-api:3000"

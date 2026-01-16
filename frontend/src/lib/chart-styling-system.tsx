@@ -70,12 +70,12 @@ export class ChartStylingSystem {
       name: 'professional',
       colors: {
         primary: [
-          '#0ea5e9', // Sky blue
-          '#3b82f6', // Blue
-          '#6366f1', // Indigo
-          '#8b5cf6', // Purple
-          '#a855f7', // Purple
-          '#ec4899', // Pink
+          '#000000',  // Pure black
+          '#2D2D2D',  // Dark charcoal
+          '#4A4A4A',  // Medium charcoal
+          '#6B6B6B',  // Steel gray
+          '#8A8A8A',  // Light steel
+          '#B0B0B0'   // Silver
         ],
         secondary: [
           '#10b981', // Emerald
@@ -130,16 +130,16 @@ export class ChartStylingSystem {
             x2: '0%',
             y2: '100%',
             stops: [
-              { offset: '0%', color: '#3b82f6', opacity: 0.6 },
-              { offset: '50%', color: '#3b82f6', opacity: 0.3 },
-              { offset: '100%', color: '#3b82f6', opacity: 0.05 }
+              { offset: '0%', color: '#000000', opacity: 0.8 },
+              { offset: '50%', color: '#333333', opacity: 0.3 },
+              { offset: '100%', color: '#666666', opacity: 0.05 }
             ]
           }
         ],
         text: {
-          primary: '#1e293b',
-          secondary: '#475569',
-          muted: '#94a3b8'
+          primary: '#000000',
+          secondary: '#333333',
+          muted: '#666666'
         },
         grid: '#e2e8f0',
         background: '#ffffff'

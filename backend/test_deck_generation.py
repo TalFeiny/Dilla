@@ -1,81 +1,109 @@
 #!/usr/bin/env python3
-"""Test deck generation with real skills execution"""
+"""Test deck generation with new slides"""
 
 import asyncio
 import json
-from app.services.unified_mcp_orchestrator import get_unified_orchestrator
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+from app.services.unified_mcp_orchestrator import UnifiedMCPOrchestrator
 
 async def test_deck_generation():
-    """Test deck generation with valuation and cap table"""
-    orchestrator = get_unified_orchestrator()
+    """Test the deck generation with Path to $100M ARR and Business Analysis slides"""
     
-    # Test prompt for deck generation
-    prompt = "Create a pitch deck comparing @Deel and @Ramp with valuation analysis"
+    # Initialize the orchestrator
+    orchestrator = UnifiedMCPOrchestrator()
     
-    print(f"Testing prompt: {prompt}")
+    # Test prompt requesting deck format
+    prompt = "Compare @Mercury and @Deel for investment with deck format"
+    
+    print(f"Testing deck generation with prompt: {prompt}")
     print("-" * 50)
     
     try:
-        # Clear cache for fresh results
-        orchestrator._tavily_cache.clear()
-        
-        # Process request with deck format
+        # Process the request
         result = await orchestrator.process_request(
             prompt=prompt,
-            output_format='deck',
-            context={
-                'deckType': 'pitch',
-                'includeValuation': True,
-                'includeCapTable': True
-            }
+            output_format="deck",
+            context={}
         )
         
-        # Check the nested structure - slides should be in results
-        actual_result = result.get('results', result)
-        
-        # Check if we have slides
-        if 'slides' in actual_result:
-            print(f"✅ Generated {len(actual_result['slides'])} slides")
+        # Check if deck was generated
+        if result.get("success") and result.get("results", {}).get("format") == "deck":
+            slides = result["results"].get("slides", [])
+            print(f"✅ Generated {len(slides)} slides")
             
             # Check for specific slide types
-            slide_types = set()
-            for slide in actual_result['slides']:
-                template = slide.get('template', 'unknown')
-                slide_types.add(template)
-                if template == 'valuation':
-                    print(f"  ✅ Found valuation slide: {slide['content']['title']}")
-                elif template == 'cap_table':
-                    print(f"  ✅ Found cap table slide: {slide['content']['title']}")
-                elif template == 'waterfall':
-                    print(f"  ✅ Found waterfall slide: {slide['content']['title']}")
+            slide_types = [s.get("type") for s in slides]
             
-            print(f"\nSlide types found: {slide_types}")
+            # Check for our new slide types
+            has_path_to_100m = any("path_to_100m" in t for t in slide_types)
+            has_business_analysis = any("business_analysis" in t for t in slide_types)
+            has_cap_table = any("cap_table" in t for t in slide_types)
             
-            # Check skills used
-            if 'metadata' in result and 'skills_used' in result['metadata']:
-                print(f"\nSkills executed: {result['metadata']['skills_used']}")
+            print(f"\nSlide Types Found:")
+            for i, slide in enumerate(slides, 1):
+                slide_type = slide.get("type", "unknown")
+                title = slide.get("content", {}).get("title", "No title")
+                print(f"  Slide {i}: {slide_type} - {title}")
             
-            # Check for valuation data
-            if 'valuation' in result:
-                print(f"\n✅ Valuation data included")
-                if 'pwerm_valuation' in result['valuation']:
-                    print(f"  - PWERM: ${result['valuation']['pwerm_valuation']/1e6:.1f}M")
-                if 'dcf_valuation' in result['valuation']:
-                    print(f"  - DCF: ${result['valuation']['dcf_valuation']/1e6:.1f}M")
+            print(f"\n✅ Path to $100M ARR slide: {'Found' if has_path_to_100m else 'MISSING'}")
+            print(f"✅ Business Analysis slide: {'Found' if has_business_analysis else 'MISSING'}")
+            print(f"✅ Cap Table slide: {'Found' if has_cap_table else 'MISSING'}")
             
-            # Save result for inspection
-            with open('deck_test_result.json', 'w') as f:
-                json.dump(result, f, indent=2, default=str)
-            print("\n✅ Full result saved to deck_test_result.json")
+            # Look at a specific slide in detail
+            for slide in slides:
+                if slide.get("type") == "path_to_100m":
+                    print(f"\n📊 Path to $100M ARR Details:")
+                    content = slide.get("content", {})
+                    print(f"  Current ARR: ${content.get('current_arr', 0):,.0f}")
+                    print(f"  Years to $100M: {content.get('years_to_target', 'N/A')}")
+                    print(f"  Growth Rate: {content.get('growth_rate', 'N/A')}")
+                    print(f"  Milestones: {content.get('milestones', [])}")
+                    break
+            
+            # Check for charts
+            charts = result["results"].get("charts", [])
+            print(f"\n📈 Charts: {len(charts)} generated")
+            
+            # Save output for inspection
+            with open("test_deck_output.json", "w") as f:
+                # Convert dataclasses and datetime to dicts for JSON serialization
+                import dataclasses
+                from datetime import datetime, date
+                
+                def convert_to_dict(obj):
+                    if dataclasses.is_dataclass(obj):
+                        return dataclasses.asdict(obj)
+                    elif isinstance(obj, (datetime, date)):
+                        return obj.isoformat()
+                    elif isinstance(obj, dict):
+                        return {k: convert_to_dict(v) for k, v in obj.items()}
+                    elif isinstance(obj, list):
+                        return [convert_to_dict(item) for item in obj]
+                    else:
+                        return obj
+                
+                serializable_results = convert_to_dict(result["results"])
+                json.dump(serializable_results, f, indent=2)
+            print(f"\n💾 Full deck saved to test_deck_output.json")
+            
+            return True
             
         else:
-            print("❌ No slides in result")
-            print(f"Result keys: {result.keys()}")
+            format_result = result.get("results", {}).get("format") if result.get("success") else None
+            print(f"❌ Deck generation failed - got format: {format_result}")
+            print(f"Error: {result.get('error', 'Unknown error')}")
+            return False
             
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Error during deck generation: {e}")
         import traceback
         traceback.print_exc()
+        return False
 
 if __name__ == "__main__":
-    asyncio.run(test_deck_generation())
+    success = asyncio.run(test_deck_generation())
+    exit(0 if success else 1)

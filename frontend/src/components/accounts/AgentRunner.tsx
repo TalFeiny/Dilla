@@ -110,12 +110,6 @@ export default function AgentRunner() {
   const learningApplied = false;
   const learningSummary = '';
   
-  
-  // Debug state changes - REMOVED to prevent potential re-render issues
-  // useEffect(() => {
-  //   console.log('lastCommands updated:', lastCommands);
-  //   console.log('lastCommands.length:', lastCommands.length);
-  // }, [lastCommands]);
 
   const runAgent = async () => {
     if (!prompt.trim()) return;
@@ -177,44 +171,6 @@ export default function AgentRunner() {
       // Show what we're doing
       setExecutionSteps(prev => [...prev, '📝 Parsing request...']);
       
-      // Initialize RL system for this prompt if enabled
-      // COMMENTED OUT: Missing imports for detectModelType and SpreadsheetRLSystem
-      // if (useRL) {
-      //   if (!rlSystemRef.current) {
-      //     const modelType = detectModelType(prompt);
-      //     rlSystemRef.current = new SpreadsheetRLSystem({
-      //       modelType,
-      //       company,
-      //       epsilon: 0.1,
-      //       temperature: 1.0,
-      //       autoLearn: true
-      //     });
-      //     try {
-      //       await rlSystemRef.current.initialize();
-      //     } catch (error) {
-      //       console.error('Failed to initialize RL in runAgent:', error);
-      //       // Continue without RL
-      //     }
-      //   }
-      //   
-      //   // Get RL suggestion for the prompt
-      //   try {
-      //     if (gridApi && gridApi.getState) {
-      //       const currentGrid = gridApi.getState();
-      //       const suggestion = await rlSystemRef.current.getSuggestion(currentGrid, prompt);
-      //       console.log('RL Suggestion:', suggestion);
-      //     }
-      //   } catch (error) {
-      //     console.error('Failed to get RL suggestion:', error);
-      //     // Continue without RL suggestion
-      //   }
-      //   
-      //   if (!sessionId) {
-      //     const newSessionId = crypto.randomUUID();
-      //     setSessionId(newSessionId);
-      //   }
-      // }
-      
       // Use unified-brain endpoint with our architecture
       const endpoint = '/api/agent/unified-brain';
       
@@ -238,7 +194,7 @@ export default function AgentRunner() {
           company,
           previousCompany: currentCompany,
           gridState,  // Send current grid state for context
-          stream: true,  // Enable streaming
+          stream: false,  // Disable streaming - prevents partial data issues
           // Request formulas and citations
           includeFormulas: true,
           includeCitations: true
@@ -247,483 +203,47 @@ export default function AgentRunner() {
 
       if (!response.ok) throw new Error('Failed to get agent response');
       
-      // Handle streaming response with proper UTF-8 decoding
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder('utf-8', { fatal: false }); // Don't throw on invalid UTF-8
-      let allCommands: string[] = [];
-      let streamComplete = false;
+      // Handle JSON response
+      const data = await response.json();
       
-      if (reader) {
-        let buffer = '';  // Buffer for incomplete chunks
+      if (data.success) {
+        console.log('[AgentRunner] Received response:', data);
         
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            console.log('[AgentRunner] Stream reading complete');
-            streamComplete = true;
-            break;
-          }
-          
-          const chunk = decoder.decode(value, { stream: true });
-          console.log('[AgentRunner] Raw chunk received:', chunk.substring(0, 500));
-          
-          // DEBUG: Check for corrupted data
-          if (chunk.includes('tacxn') || chunk.includes('\\u')) {
-            console.error('[AgentRunner] WARNING: Corrupted data detected in chunk!');
-            console.log('[AgentRunner] Full corrupted chunk:', chunk);
-          }
-          
-          // Add chunk to buffer
-          buffer += chunk;
-          
-          // Process complete lines
-          const lines = buffer.split('\n');
-          // Keep the last incomplete line in the buffer
-          buffer = lines.pop() || '';
-          
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6).trim();
-              if (data === '[DONE]') {
-                console.log('[AgentRunner] Stream complete signal received');
-                continue;
-              }
-              
-              try {
-                console.log('[AgentRunner] Parsing SSE data:', data.substring(0, 200));
-                const parsed = JSON.parse(data);
-                console.log('[AgentRunner] Parsed type:', parsed.type);
-                
-                // LOG: Check if Traxn.com is in the data
-                if (JSON.stringify(parsed).includes('Traxn') || JSON.stringify(parsed).includes('traxn')) {
-                  console.error('[AgentRunner] WARNING: Traxn.com detected in response - backend is using wrong data source!');
-                  console.log('[AgentRunner] Full parsed data with Traxn:', JSON.stringify(parsed, null, 2));
-                }
-                
-                if (parsed.type === 'skill_chain') {
-                  // Show skill chain decomposition in the stream - batch updates to prevent re-renders
-                  const newSteps = [`📋 Decomposed into ${parsed.total_count} skills:`];
-                  parsed.skills?.forEach((skill: any, i: number) => {
-                    newSteps.push(`  ${i+1}. ${skill.name}: ${skill.purpose}`);
-                  });
-                  setExecutionSteps(prev => [...prev, ...newSteps]);
-                  // Also log to console
-                  // Skill chain decomposed
-                } else if (parsed.type === 'skill_start') {
-                  // Show skill start in the stream
-                  setExecutionSteps(prev => [...prev, `⏳ [${parsed.phase}] Starting: ${parsed.skill}`]);
-                  // Skill starting
-                } else if (parsed.type === 'skill_complete') {
-                  // Show skill completion in the stream
-                  const timing = parsed.timing ? ` (${parsed.timing.toFixed(2)}s)` : '';
-                  setExecutionSteps(prev => [...prev, `✅ ${parsed.skill} complete${timing}`]);
-                  // Skill complete
-                } else if (parsed.type === 'skill_error') {
-                  // Show skill error in the stream
-                  setExecutionSteps(prev => [...prev, `❌ ${parsed.skill} failed: ${parsed.error}`]);
-                  console.error(`❌ [Skill Error] ${parsed.skill}: ${parsed.error}`);
-                } else if (parsed.type === 'progress') {
-                  setProgressMessage(parsed.message);
-                } else if (parsed.type === 'commands') {
-                  // Accumulate commands
-                  allCommands.push(...parsed.commands);
-                  
-                  // Update progress
-                  if (parsed.progress) {
-                    setExecutionSteps(prev => [
-                      ...prev.slice(0, -1),
-                      `⚡ Processing... ${parsed.progress}%`
-                    ]);
-                  }
-                } else if (parsed.type === 'complete') {
-                  console.log('[AgentRunner] COMPLETE MESSAGE:', parsed);
-                  setProgressMessage(parsed.message);
-                  // Also log the skills that were used from metadata
-                  if (parsed.metadata?.skills_used) {
-                    console.log('[AgentRunner] Skills used:', parsed.metadata.skills_used);
-                  }
-                  
-                  // Check if the complete message includes formatted result
-                  if (parsed.result) {
-                    console.log('[AgentRunner] Complete message received with result:', JSON.stringify(parsed.result, null, 2));
-                    console.log('[AgentRunner] Result type:', typeof parsed.result);
-                    console.log('[AgentRunner] Result keys:', Object.keys(parsed.result));
-                    
-                    // DEBUG: Log what we're actually getting
-                    console.log('[AgentRunner] Checking for commands in result...');
-                    console.log('  - parsed.result.commands exists?', !!parsed.result.commands);
-                    console.log('  - parsed.result.commands is array?', Array.isArray(parsed.result.commands));
-                    console.log('  - parsed.result.grid exists?', !!parsed.result.grid);
-                    console.log('  - parsed.result.grid.data exists?', !!parsed.result.grid?.data);
-                    
-                    // Extract citations and integrate them with the data
-                    if (parsed.result.citations && parsed.result.citations.length > 0) {
-                      setCitations(parsed.result.citations);
-                      
-                      // Look for citation references in the data and add them as inline references
-                      // This assumes the backend has marked cells with [1], [2] etc
-                      // We'll add the citation info as metadata/tooltips to those cells
-                      
-                      if (parsed.result.data && Array.isArray(parsed.result.data)) {
-                        parsed.result.data.forEach((row, rowIndex) => {
-                          row.forEach((cell, colIndex) => {
-                            if (typeof cell === 'string') {
-                              // Check if this cell contains citation references like [1], [2]
-                              const citationPattern = /\[(\d+)\]/g;
-                              const matches = cell.match(citationPattern);
-                              
-                              if (matches) {
-                                // This cell has citations - add them as source metadata
-                                const cellAddress = String.fromCharCode(65 + colIndex) + (rowIndex + 1);
-                                const citationNumbers = matches.map(m => parseInt(m.replace(/[\[\]]/g, '')));
-                                
-                                // Find the corresponding citations
-                                const relevantCitations = parsed.result.citations.filter(c => 
-                                  citationNumbers.includes(c.number)
-                                );
-                                
-                                if (relevantCitations.length > 0) {
-                                  // Create a source string with all relevant citations
-                                  const sourceText = relevantCitations.map(c => 
-                                    `[${c.number}] ${c.source} - ${c.title}`
-                                  ).join('; ');
-                                  
-                                  // Add the citation URL if there's a primary citation
-                                  const primaryCitation = relevantCitations[0];
-                                  if (primaryCitation.url) {
-                                    // Add as a linked cell with source metadata
-                                    const writeCommand = allCommands.find(cmd => 
-                                      cmd.includes(`grid.write("${cellAddress}"`)
-                                    );
-                                    if (writeCommand) {
-                                      // Update the write command to include source metadata
-                                      const updatedCommand = writeCommand.replace(
-                                        /\)$/,
-                                        `, { source: "${sourceText.replace(/"/g, '\\"')}", sourceUrl: "${primaryCitation.url.replace(/"/g, '\\"')}" })`
-                                      );
-                                      const cmdIndex = allCommands.indexOf(writeCommand);
-                                      if (cmdIndex !== -1) {
-                                        allCommands[cmdIndex] = updatedCommand;
-                                      }
-                                    }
-                                  }
-                                }
-                              }
-                            }
-                          });
-                        });
-                      }
-                    }
-                    
-                    // Extract charts if available
-                    if (parsed.result.charts) {
-                      setCharts(parsed.result.charts);
-                    }
-                    
-                    // IMPORTANT: Backend sends commands directly for spreadsheet format
-                    // Check for commands first (spreadsheet format)
-                    if (parsed.result.commands && Array.isArray(parsed.result.commands)) {
-                      console.log('[AgentRunner] Found commands in result:', parsed.result.commands.length);
-                      console.log('[AgentRunner] Commands sample:', parsed.result.commands.slice(0, 3));
-                      allCommands.push(...parsed.result.commands);
-                      console.log('[AgentRunner] allCommands now has:', allCommands.length);
-                    }
-                    // Fallback: If result has grid data, convert to commands
-                    else if (parsed.result.grid && parsed.result.grid.data) {
-                      console.log('[AgentRunner] Converting grid data to commands');
-                      const gridCommands = convertGridDataToCommands(parsed.result.grid);
-                      allCommands.push(...gridCommands);
-                    }
-                    // Also check if commands are at the root level of parsed (some streaming variations)
-                    else if (parsed.commands && Array.isArray(parsed.commands)) {
-                      console.log('[AgentRunner] Found commands at root level:', parsed.commands.length);
-                      allCommands.push(...parsed.commands);
-                    }
-                    // FALLBACK: If result is a string, it might be JSON that needs parsing
-                    else if (typeof parsed.result === 'string') {
-                      console.log('[AgentRunner] Result is a string, attempting to parse as JSON...');
-                      try {
-                        const resultData = JSON.parse(parsed.result);
-                        if (resultData.commands && Array.isArray(resultData.commands)) {
-                          console.log('[AgentRunner] Found commands after parsing string:', resultData.commands.length);
-                          allCommands.push(...resultData.commands);
-                        } else if (resultData.grid?.data) {
-                          console.log('[AgentRunner] Found grid data after parsing string');
-                          const gridCommands = convertGridDataToCommands(resultData.grid);
-                          allCommands.push(...gridCommands);
-                        }
-                      } catch (parseError) {
-                        console.error('[AgentRunner] Failed to parse result string as JSON:', parseError);
-                        console.log('[AgentRunner] Raw result string:', parsed.result.substring(0, 200));
-                      }
-                    }
-                    // FINAL FALLBACK: Check if there's data array directly
-                    else if (parsed.result.data && Array.isArray(parsed.result.data)) {
-                      console.log('[AgentRunner] Found data array directly, converting to grid commands');
-                      const gridCommands = convertGridDataToCommands({ data: parsed.result.data });
-                      allCommands.push(...gridCommands);
-                    }
-                  }
-                } else if (parsed.type === 'error') {
-                  throw new Error(parsed.message);
-                }
-              } catch (e) {
-                console.error('Error parsing SSE data:', e);
-              }
-            }
-          }
+        // Extract commands from the response
+        let commands: string[] = [];
+        
+        if (data.commands && Array.isArray(data.commands)) {
+          commands = data.commands;
+        } else if (data.result?.commands && Array.isArray(data.result.commands)) {
+          commands = data.result.commands;
+        } else if (data.results?.commands && Array.isArray(data.results.commands)) {
+          commands = data.results.commands;
         }
         
-        // Process any remaining buffer
-        if (buffer.trim()) {
-          console.log('[AgentRunner] Processing remaining buffer:', buffer);
-        }
-      }
-      
-      // Process the accumulated commands
-      const data = { commands: allCommands };
-      console.log('[AgentRunner] Total commands to process:', allCommands.length);
-      console.log('[AgentRunner] First 5 commands:', allCommands.slice(0, 5));
-      
-      // If no commands were found, create a default message
-      if (!allCommands || allCommands.length === 0) {
-        console.error('[AgentRunner] WARNING: No commands were extracted from the response!');
-        console.log('[AgentRunner] This likely means the backend response format is unexpected.');
+        console.log('[AgentRunner] Extracted commands:', commands.length);
         
-        // Add a default command to show something is working
-        allCommands.push('grid.write("A1", "No data received - check backend response format")');
-        allCommands.push('grid.write("A2", "The backend may not be returning data in the expected format")');
-        allCommands.push('grid.write("A3", "Check the browser console for detailed logs")');
-        data.commands = allCommands;
-      } else {
-        // Validate commands to check for corruption
-        console.log('[AgentRunner] Validating commands for corruption...');
-        const corruptedCommands = allCommands.filter(cmd => 
-          cmd.includes('tacxn') || 
-          cmd.includes('\\u0000') || 
-          !cmd.includes('grid.') ||
-          cmd.includes('undefined') ||
-          cmd.includes('null')
-        );
-        
-        if (corruptedCommands.length > 0) {
-          console.error('[AgentRunner] CORRUPTED COMMANDS DETECTED:', corruptedCommands);
-          console.log('[AgentRunner] This indicates the backend is sending malformed data');
+        if (commands.length > 0) {
+          setLastCommands(commands);
+          setProgressMessage('✅ Commands generated successfully');
+          setExecutionSteps(prev => [...prev, `✅ Generated ${commands.length} commands`]);
           
-          // Replace corrupted commands with error message
-          allCommands = [
-            'grid.write("A1", "ERROR: Backend sent corrupted data")',
-            'grid.write("A2", "Corrupted commands detected - check console")',
-            `grid.write("A3", "Example corruption: ${corruptedCommands[0]?.substring(0, 50)}")`
-          ];
-          data.commands = allCommands;
-        }
-      }
-      
-      if (data.commands && Array.isArray(data.commands) && data.commands.length > 0) {
-        console.log('[AgentRunner] Processing commands:', data.commands.length);
-        console.log('[AgentRunner] Sample command:', data.commands[0]);
-        
-        // Wait for Grid API to be available - Improved logic
-        let gridReady = false;
-        let attemptCount = 0;
-        const maxAttempts = 40; // Increased attempts for slower initialization
-        
-        setProgressMessage('🔄 Waiting for spreadsheet to initialize...');
-        
-        while (!gridReady && attemptCount < maxAttempts) {
-          attemptCount++;
-          
-          // First check if executeCommand is available (from context)
-          if (executeCommand) {
-            // Try a test command to verify grid is actually ready
-            try {
-              const testResult = await executeCommand('grid.selectCell("A1")');
-              console.log(`[AgentRunner] Test command result (attempt ${attemptCount}):`, testResult);
-              
-              // Check if grid is ready
-              if (!testResult || (typeof testResult === 'string')) {
-                // If result is a string or null, grid is ready
-                gridReady = true;
-                console.log(`[AgentRunner] Grid API verified ready after ${attemptCount} attempts`);
-                break;
-              } else if (typeof testResult === 'object' && 'error' in testResult) {
-                // Check for error in object result
-                if (testResult.error === 'Grid API not available' || testResult.error === 'Grid context not available') {
-                  console.log(`[AgentRunner] Grid not ready yet (attempt ${attemptCount}/${maxAttempts})`);
-                } else {
-                  // Some other error - grid might be ready but command failed
-                  console.log(`[AgentRunner] Grid might be ready, test failed with:`, testResult.error);
-                  gridReady = true; // Try to proceed anyway
-                  break;
-                }
-              }
-            } catch (e) {
-              console.log(`[AgentRunner] Test command exception (attempt ${attemptCount}):`, e);
-            }
+          // Execute commands in the grid
+          try {
+            await executeBatch(commands);
+            setProgressMessage('✅ Commands executed successfully');
+            setExecutionSteps(prev => [...prev, '✅ All commands executed']);
+          } catch (execError) {
+            console.error('[AgentRunner] Command execution error:', execError);
+            setProgressMessage('❌ Command execution failed');
+            setExecutionSteps(prev => [...prev, `❌ Execution error: ${execError}`]);
           }
-          
-          // Also check direct APIs as fallback
-          if (!gridReady && (typeof window !== 'undefined' && (window as any).grid)) {
-            console.log('[AgentRunner] Direct grid API found as fallback');
-            gridReady = true;
-            break;
-          }
-          
-          // Longer wait initially to allow grid to render
-          const waitTime = attemptCount <= 5 ? 1000 : 500;
-          console.log(`[AgentRunner] Waiting ${waitTime}ms before next attempt...`);
-          await new Promise(resolve => setTimeout(resolve, waitTime));
-        }
-        
-        // Proceed even if grid not fully ready - executeCommand will handle retries
-        if (!gridReady) {
-          console.warn('[AgentRunner] Grid initialization timed out, but proceeding with command execution');
-          setProgressMessage('⚠️ Grid initialization slow - commands will execute with retry logic...');
         } else {
-          setProgressMessage('✅ Spreadsheet ready - executing commands...');
+          setProgressMessage('⚠️ No commands generated');
+          setExecutionSteps(prev => [...prev, '⚠️ No commands found in response']);
         }
-        
-        // Save current grid state before executing new commands
-        if (typeof window !== 'undefined' && (window as any).grid) {
-          const currentState = (window as any).grid.getState ? (window as any).grid.getState() : null;
-          setPreviousGridState(currentState);
-          console.log('[AgentRunner] Saved grid state for undo');
-        }
-        
-        setLastCommands(data.commands);
-        console.log('[AgentRunner] Commands state updated')
-        
-        // Record each action for RL if enabled (disabled for now)
-        // if (useRL && sessionId) {
-        //   for (const command of data.commands) {
-        //     const writeMatch = command.match(/grid\.write\("([^"]+)",\s*(.+?)\)/);
-        //     if (writeMatch) {
-        //       await rlSystem.recordAction({
-        //         command,
-        //         cell: writeMatch[1],
-        //         value: writeMatch[2]
-        //       });
-        //     }
-        //   }
-        // }
-        
-        // Update progress for execution
-        setProgressMessage('⚡ Executing commands...');
-        
-        // PARALLEL PROCESSING: Group commands by type for batch execution
-        const writeCommands = data.commands.filter(cmd => cmd.includes('write('));
-        const formulaCommands = data.commands.filter(cmd => cmd.includes('formula('));
-        const styleCommands = data.commands.filter(cmd => cmd.includes('style('));
-        const chartCommands = data.commands.filter(cmd => 
-          cmd.includes('createChart(') || cmd.includes('createChartBatch(')
-        );
-        
-        setExecutionSteps(prev => [...prev, `📊 Processing ${data.commands.length} commands in parallel...`]);
-        
-        // Helper function to execute a single command securely with retry logic
-        const executeCommandSecure = async (command: string, retries = 3) => {
-          for (let attempt = 1; attempt <= retries; attempt++) {
-            try {
-              console.log(`[ExecuteCommand] Attempt ${attempt} for: ${command.substring(0, 50)}...`);
-              
-              // Try to execute the command even if gridApi is not directly available
-              // The executeCommand function from context should handle this
-              const result = await executeCommand(command);
-              
-              // Log the result for debugging
-              if (result && typeof result === 'object' && 'error' in result) {
-                console.log(`[ExecuteCommand] Command returned error:`, result.error);
-              } else {
-                console.log(`[ExecuteCommand] Command executed successfully`);
-              }
-              
-              // Check if result indicates grid not available
-              if (result && typeof result === 'object' && result.error) {
-                if (result.error === 'Grid context not available' || result.error === 'Grid API not available') {
-                  console.warn(`[ExecuteCommand] Grid not ready (attempt ${attempt}/${retries}): ${result.error}`);
-                  if (attempt < retries) {
-                    await new Promise(resolve => setTimeout(resolve, 500 * attempt));
-                    continue;
-                  }
-                  return { success: false, error: result.error };
-                }
-                // Other errors - don't retry
-                console.error('[ExecuteCommand] Command failed:', result.error);
-                return { success: false, error: result.error };
-              }
-              
-              console.log(`[ExecuteCommand] Success on attempt ${attempt}`);
-              return { success: true, result };
-            } catch (error) {
-              console.error(`[ExecuteCommand] Error on attempt ${attempt}:`, error);
-              if (attempt === retries) {
-                return { success: false, error: error.message };
-              }
-              await new Promise(resolve => setTimeout(resolve, 500 * attempt));
-            }
-          }
-          return { success: false, error: 'Max retries exceeded' };
-        };
-        
-        // PARALLEL EXECUTION BY COMMAND TYPE
-        const executionPromises = [];
-        
-        // Execute write commands in parallel (they don't depend on each other)
-        if (writeCommands.length > 0) {
-          setExecutionSteps(prev => [...prev, `✏️ Writing ${writeCommands.length} data cells in parallel...`]);
-          const writePromises = writeCommands.map(cmd => executeCommandSecure(cmd));
-          executionPromises.push(Promise.all(writePromises));
-        }
-        
-        // Execute formulas after writes complete (they may depend on written data)
-        if (formulaCommands.length > 0) {
-          executionPromises.push(
-            Promise.all(writeCommands.map(cmd => executeCommandSecure(cmd))).then(() => {
-              setExecutionSteps(prev => [...prev, `📈 Adding ${formulaCommands.length} formulas...`]);
-              return Promise.all(formulaCommands.map(cmd => executeCommandSecure(cmd)));
-            })
-          );
-        }
-        
-        // Execute styles in parallel (independent)
-        if (styleCommands.length > 0) {
-          setExecutionSteps(prev => [...prev, `🎨 Applying ${styleCommands.length} styles...`]);
-          const stylePromises = styleCommands.map(cmd => executeCommandSecure(cmd));
-          executionPromises.push(Promise.all(stylePromises));
-        }
-        
-        // Execute charts last (they depend on data)
-        if (chartCommands.length > 0) {
-          // Special handling for batch charts
-          const batchCommand = chartCommands.find(cmd => cmd.includes('createChartBatch'));
-          if (batchCommand) {
-            setExecutionSteps(prev => [...prev, `📊 Creating chart batch...`]);
-            executionPromises.push(executeCommandSecure(batchCommand));
-          } else {
-            executionPromises.push(
-              Promise.all([...writeCommands, ...formulaCommands].map(cmd => executeCommandSecure(cmd))).then(() => {
-                setExecutionSteps(prev => [...prev, `📊 Creating ${chartCommands.length} charts...`]);
-                return Promise.all(chartCommands.map(cmd => executeCommandSecure(cmd)));
-              })
-            );
-          }
-        }
-        
-        // Wait for all parallel executions to complete
-        const results = await Promise.allSettled(executionPromises);
-        
-        // Log results for debugging
-        console.log(`[AgentRunner] Execution complete. ${results.filter(r => r.status === 'fulfilled').length} successful, ${results.filter(r => r.status === 'rejected').length} failed`);
-        // Parallel execution complete
-        
-        // Removed RL stats update
-        
-        // Show completion
-        setProgressMessage('✅ Complete!');
-        setExecutionSteps(prev => [...prev, '🎉 Spreadsheet ready!']);
       } else {
-        setProgressMessage('⚠️ No commands received');
+        setProgressMessage('❌ Request failed');
+        setExecutionSteps(prev => [...prev, `❌ Error: ${data.error || 'Unknown error'}`]);
       }
     } catch (error) {
       console.error('Agent error:', error);
@@ -780,19 +300,14 @@ export default function AgentRunner() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sessionId: sessionId || crypto.randomUUID(),
-          company: currentCompany,
-          modelType: 'unified-brain',  // Fixed model type
-          correction: value || type,
-          feedbackType: type,
-          timestamp: new Date(),
-          commands: lastCommands
-        })
+          type,
+          value,
+          sessionId,
+          timestamp: new Date().toISOString(),
+        }),
       });
 
       if (response.ok) {
-        setFeedbackSent(true);
-        setTimeout(() => setFeedbackSent(false), 2000);
         if (type === 'semantic') {
           setSemanticFeedback('');
         }
@@ -802,7 +317,6 @@ export default function AgentRunner() {
       console.error('Failed to send feedback:', error);
     }
   };
-
 
 
   return (
@@ -842,66 +356,6 @@ export default function AgentRunner() {
           )}
         </div>
       )}
-
-      {/* Test Button - Using GridContext */}
-      <div className="flex gap-2 mb-2">
-        <button
-          onClick={() => {
-            console.log('=== TESTING GRID API (via Context) ===');
-            console.log('grid exists?', !!(window as any).grid);
-            console.log('grid methods:', (window as any).grid ? Object.keys((window as any).grid) : []);
-            
-            if ((window as any).grid) {
-              try {
-                console.log('Writing to A1...');
-                (window as any).grid.write("A1", "Test Value", { href: "https://example.com", source: "Test Source" });
-                console.log('Writing to B1...');
-                (window as any).grid.write("B1", 123);
-                console.log('Setting formula in C1...');
-                (window as any).grid.formula("C1", "=A1+B1");
-                console.log('✅ Test commands executed successfully!');
-                
-                // Check if data was actually written
-                setTimeout(() => {
-                  const state = (window as any).grid.getState ? (window as any).grid.getState() : {};
-                  console.log('Grid state after test:', state);
-                }, 500);
-              } catch (error) {
-                console.error('❌ Test failed:', error);
-              }
-            } else {
-              console.error('❌ Grid API not available in context!');
-            }
-          }}
-          className="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs"
-        >
-          Test Grid API
-        </button>
-        <button
-          onClick={() => {
-            const testCommands = [
-              'grid.write("A1", "Company", {style: {fontWeight: "bold"}})',
-              'grid.write("B1", "Revenue", {style: {fontWeight: "bold"}})',
-              'grid.write("A2", "Stripe")',
-              'grid.write("B2", 14000000000)',
-              'grid.formula("B3", "=B2*1.5")'
-            ];
-            testCommands.forEach((cmd, i) => {
-              setTimeout(() => {
-                console.log('Executing:', cmd);
-                try {
-                  eval(cmd);
-                } catch (e) {
-                  console.error('Failed:', e);
-                }
-              }, i * 100);
-            });
-          }}
-          className="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs"
-        >
-          Test Commands
-        </button>
-      </div>
 
       {/* Input */}
       <div className="flex gap-2">

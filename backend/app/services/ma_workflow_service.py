@@ -567,8 +567,8 @@ class MAWorkflowService:
             valuation_result = await self.valuation_engine.calculate_valuation(valuation_data)
             
             # Return primary valuation or market cap if available
-            if valuation_result.get("dcf_value"):
-                return valuation_result["dcf_value"]
+            if hasattr(valuation_result, 'fair_value') and valuation_result.fair_value:
+                return valuation_result.fair_value
             elif company_data.market_cap > 0:
                 return company_data.market_cap
             else:

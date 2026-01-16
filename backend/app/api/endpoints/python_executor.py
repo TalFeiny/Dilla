@@ -172,3 +172,4 @@ async def analyze_funding_data(data: Dict):
     except Exception as e:
         logger.error(f"Funding analysis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+

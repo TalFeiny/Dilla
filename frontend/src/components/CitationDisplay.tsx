@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { ExternalLink, ChevronDown, ChevronUp, FileText, Calendar, Link2 } from 'lucide-react';
 
-interface Citation {
+export interface Citation {
   id: number;
   number: number;
   source: string;

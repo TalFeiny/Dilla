@@ -124,13 +124,13 @@ backend:
 	@echo "$(BLUE)Starting backend...$(NC)"
 	@cd $(BACKEND_DIR) && \
 		. venv/bin/activate && \
-		uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+		uvicorn app.main:app --reload --host 0.0.0.0 --port $(or $(BACKEND_PORT),$(PORT),8000)
 
 # Run backend in dev mode
 backend-dev:
 	@cd $(BACKEND_DIR) && \
 		. venv/bin/activate && \
-		uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+		uvicorn app.main:app --reload --host 0.0.0.0 --port $(or $(BACKEND_PORT),$(PORT),8000)
 
 # Run frontend
 frontend:

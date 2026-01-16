@@ -11,8 +11,23 @@ logger = logging.getLogger(__name__)
 class WebsiteIdentifier:
     """Quick website identification from search results"""
     
-    def __init__(self, claude_client=None):
-        self.claude_client = claude_client
+    def __init__(self, model_router=None):
+        self.model_router = model_router
+    
+    def _ensure_string(self, value: Any, default: str = "") -> str:
+        """Convert any value to a string safely"""
+        if value is None:
+            return default
+        if isinstance(value, dict):
+            # Try common dict fields that might contain the actual string
+            for field in ['text', 'value', 'content', 'description', 'name', 'title', 'url']:
+                if field in value:
+                    return str(value[field])
+            # If no common fields, return default
+            return default
+        if isinstance(value, (list, tuple)):
+            return ' '.join(str(item) for item in value)
+        return str(value)
     
     async def identify_company_website(
         self, 
@@ -44,7 +59,10 @@ class WebsiteIdentifier:
             if not results and search_results['general'].get('data'):
                 results = search_results['general']['data'].get('results', [])
             for result in results[:3]:
-                text_snippets.append(f"Title: {result.get('title', '')}\nURL: {result.get('url', '')}\nContent: {result.get('content', '')[:200]}")
+                title = self._ensure_string(result.get('title', ''))
+                url = self._ensure_string(result.get('url', ''))
+                content = self._ensure_string(result.get('content', ''))[:200]
+                text_snippets.append(f"Title: {title}\nURL: {url}\nContent: {content}")
         
         # Add funding search results
         if 'funding' in search_results:
@@ -52,7 +70,9 @@ class WebsiteIdentifier:
             if not results and search_results['funding'].get('data'):
                 results = search_results['funding']['data'].get('results', [])
             for result in results[:2]:
-                text_snippets.append(f"Funding news: {result.get('title', '')}\nContent: {result.get('content', '')[:200]}")
+                title = self._ensure_string(result.get('title', ''))
+                content = self._ensure_string(result.get('content', ''))[:200]
+                text_snippets.append(f"Funding news: {title}\nContent: {content}")
         
         # Add website search results
         if 'website' in search_results:
@@ -60,7 +80,10 @@ class WebsiteIdentifier:
             if not results and search_results['website'].get('data'):
                 results = search_results['website']['data'].get('results', [])
             for result in results[:3]:
-                text_snippets.append(f"Website search: {result.get('title', '')}\nURL: {result.get('url', '')}\nContent: {result.get('content', '')[:200]}")
+                title = self._ensure_string(result.get('title', ''))
+                url = self._ensure_string(result.get('url', ''))
+                content = self._ensure_string(result.get('content', ''))[:200]
+                text_snippets.append(f"Website search: {title}\nURL: {url}\nContent: {content}")
         
         combined_text = "\n\n---\n\n".join(text_snippets)
         
@@ -87,6 +110,12 @@ class WebsiteIdentifier:
 {f"LinkedIn identifier: {context.get('linkedin_identifier')}" if isinstance(context, dict) and context.get('linkedin_identifier') else ""}
 {websites_hint}
 
+SELECTION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
+1) If there are multiple similarly named entities, pick the single most likely company based on the request context and the fund profile (stage focus, typical check size, sector thesis, geography). Do not list multiple; select exactly one and proceed.
+2) LinkedIn company/organization pages are a very strong disambiguation signal. Prefer entities that have a matching LinkedIn org page. Deprioritize OS features (e.g., Samsung DeX) or crypto exchanges unless the context clearly indicates those.
+3) If confidence < 0.6, ask ONE brief clarification question; otherwise continue silently.
+4) Only extract and return information about the selected company. Ignore similarly named products or platforms.
+
 Search results:
 {combined_text}
 
@@ -108,26 +137,20 @@ Example format:
 CRITICAL: Return ONLY the JSON object. No explanations, no markdown, just pure JSON."""
 
         try:
-            if self.claude_client:
-                logger.info(f"Using Claude for quick website identification of {company_name}")
+            if self.model_router:
+                logger.info(f"Using model router for quick website identification of {company_name}")
                 
-                import asyncio
-                response = await asyncio.wait_for(
-                    self.claude_client.messages.create(
-                        model="claude-3-5-sonnet-20241022",
-                        max_tokens=500,  # Much smaller response needed
-                        temperature=0,
-                        messages=[
-                            {"role": "user", "content": identification_prompt}
-                        ]
-                    ),
-                    timeout=5.0  # Quick 5 second timeout for identification
+                from app.services.model_router import ModelCapability
+                result = await self.model_router.get_completion(
+                    prompt=identification_prompt,
+                    capability=ModelCapability.ANALYSIS,
+                    max_tokens=500,  # Much smaller response needed
+                    temperature=0,
+                    preferred_models=["claude-sonnet-4-5"]  # Prefer Claude but allow fallback
                 )
+                response_text = result["response"]
                 
-                import json
-                response_text = response.content[0].text if response.content else "{}"
-                
-                logger.info(f"Raw Claude response for website ID: {response_text[:500]}")
+                logger.info(f"Raw model router response for website ID: {response_text[:500]}")
                 
                 # Clean up response
                 response_text = response_text.strip()
@@ -139,7 +162,7 @@ CRITICAL: Return ONLY the JSON object. No explanations, no markdown, just pure J
                 # Additional cleanup for common Claude response patterns
                 response_text = response_text.strip()
                 if not response_text:
-                    logger.warning("Empty response from Claude for website identification")
+                    logger.warning("Empty response from model router for website identification")
                     return self._fallback_identify(search_results, company_clean, context)
                 
                 try:
@@ -191,14 +214,15 @@ CRITICAL: Return ONLY the JSON object. No explanations, no markdown, just pure J
             if result_type in search_results and search_results[result_type].get('results'):
                 for result in search_results[result_type]['results']:
                     # Check URL
-                    url = result.get('url', '')
-                    if re.search(website_pattern, url, re.IGNORECASE):
+                    url = self._ensure_string(result.get('url', ''))
+                    if url and re.search(website_pattern, url, re.IGNORECASE):
                         return (url, None, 0.7)  # Let extraction determine business model
                     
                     # Check content
-                    content = result.get('content', '')
-                    matches = re.findall(website_pattern, content, re.IGNORECASE)
-                    if matches:
-                        return (f"https://{matches[0]}", None, 0.6)  # Let extraction determine business model
+                    content = self._ensure_string(result.get('content', ''))
+                    if content:
+                        matches = re.findall(website_pattern, content, re.IGNORECASE)
+                        if matches:
+                            return (f"https://{matches[0]}", None, 0.6)  # Let extraction determine business model
         
         return ('', None, 0.0)

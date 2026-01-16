@@ -654,7 +654,7 @@ export default function DocsPage() {
         {/* AI Generation Bar */}
         <Card className="mb-6 p-4">
           <div className="flex items-center space-x-2">
-            <Sparkles className="w-5 h-5 text-purple-600" />
+            <Sparkles className="w-5 h-5 text-primary" />
             <Input
               value={aiPrompt}
               onChange={(e) => setAiPrompt(e.target.value)}

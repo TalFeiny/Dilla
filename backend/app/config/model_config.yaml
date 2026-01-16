@@ -1,0 +1,80 @@
+# Model Routing Configuration
+# Production-ready multi-model setup with automatic failover
+
+# Primary models for production use
+primary_models:
+  structured_extraction:
+    - claude-sonnet-4-5  # Fast and accurate for JSON
+    - gpt-5          # Fallback with good structured output
+    
+  analysis:
+    - claude-sonnet-4-5  # Great for complex analysis
+    - gpt-5          # Strong fallback
+    
+  fast_response:
+    - gpt-5          # Fast and reliable
+    - claude-sonnet-4-5  # Fast Claude
+    - gpt-5          # Reliable fallback
+
+# Rate limits per model (requests per minute)
+rate_limits:
+  claude-sonnet-4-5: 30
+  gpt-4o: 60
+  gpt-4o-mini: 200
+  mixtral-8x7b: 100
+  llama2-70b: 100
+
+# Circuit breaker settings
+circuit_breaker:
+  error_threshold: 3  # Errors before opening circuit
+  timeout_minutes: 5   # How long to keep circuit open
+  half_open_requests: 1  # Test requests in half-open state
+
+# Cost optimization settings
+cost_optimization:
+  max_cost_per_request: 0.50  # Maximum $ per request
+  prefer_cheaper_models: true
+  cache_duration_minutes: 60
+
+# Retry settings
+retry_policy:
+  max_retries: 3
+  initial_delay_ms: 1000
+  max_delay_ms: 10000
+  exponential_base: 2
+
+# Environment-specific overrides
+environments:
+  development:
+    # Use cheaper models in dev
+    primary_models:
+      structured_extraction:
+        - gpt-4o-mini
+        - gpt-4o
+        - ollama-mixtral  # Local model
+    
+  staging:
+    # Balance between cost and quality
+    primary_models:
+      structured_extraction:
+        - claude-sonnet-4-5
+        - gpt-4o-mini
+        - gpt-4o
+    
+  production:
+    # Use best models with full fallback chain
+    enable_all_providers: true
+    aggressive_fallback: true
+    
+# Provider health checks
+health_checks:
+  enabled: true
+  interval_seconds: 60
+  timeout_seconds: 5
+
+# Monitoring and alerting
+monitoring:
+  track_costs: true
+  track_latency: true
+  alert_on_provider_failure: true
+  metrics_endpoint: "/metrics/models"

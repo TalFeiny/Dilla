@@ -1,56 +1,71 @@
-"""
-Main API Router - Properly wired with all services
-"""
-from fastapi import APIRouter
-from app.api.endpoints.unified_brain import router as unified_brain_router
+"""Main API Router - robust loading of available endpoints."""
 
-# Import all existing routers
-from app.api.endpoints import mcp
-try:
-    from app.api.endpoints.python_executor import router as python_router
-    from app.api.endpoints.javascript_executor import router as javascript_router
-except ImportError as e:
-    print(f"Could not import executors: {e}")
-    python_router = None
-    javascript_router = None
-try:
-    from app.api.endpoints import (
-        companies, portfolio, agents, advanced_analytics, rl, deck_builder, pwerm,
-        scenarios, spreadsheet_formulas, valuation_engine, advanced_debt
-    )
-except ImportError as e:
-    print(f"Import error: {e}")
-    pass
+import importlib
+import logging
+from typing import Dict, Optional
+
+from fastapi import APIRouter
+
+from app.api.endpoints.unified_brain import router as unified_brain_router
+from app.api.endpoints.deck_export import router as deck_export_router
+
+logger = logging.getLogger(__name__)
+
+
+def _include_optional_router(
+    router: APIRouter,
+    module_path: str,
+    include_kwargs: Optional[Dict[str, object]] = None,
+) -> None:
+    """Import an optional router module if available and include it."""
+    include_kwargs = include_kwargs or {}
+    try:
+        module = importlib.import_module(module_path)
+    except ModuleNotFoundError:
+        logger.debug("Skipping router %s (module not found)", module_path)
+        return
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to import %s: %s", module_path, exc)
+        return
+
+    route_obj = getattr(module, "router", None)
+    if not isinstance(route_obj, APIRouter):
+        logger.debug("Module %s has no FastAPI router", module_path)
+        return
+
+    router.include_router(route_obj, **include_kwargs)
+
 
 api_router = APIRouter()
 
-# Include unified brain endpoint (already has /agent prefix)
+# Always-on routers
 api_router.include_router(unified_brain_router, tags=["unified"])
+api_router.include_router(deck_export_router, tags=["export"])
 
-# Include Python executor endpoint if available
-if python_router:
-    api_router.include_router(python_router, tags=["python"])
+# Optional routers that may rely on heavy service dependencies
+OPTIONAL_ROUTERS = {
+    "app.api.endpoints.model_router_test": {"tags": ["test"]},  # Debug test endpoint
+    "app.api.endpoints.python_executor": {"tags": ["python"]},
+    "app.api.endpoints.python_exec": {"prefix": "/python-scripts", "tags": ["python-scripts"]},
+    "app.api.endpoints.javascript_executor": {"tags": ["javascript"]},
+    "app.api.endpoints.mcp": {"tags": ["mcp"]},  # Already includes /mcp prefix internally
+    "app.api.endpoints.companies": {"prefix": "/companies", "tags": ["companies"]},
+    "app.api.endpoints.portfolio": {"prefix": "/portfolio", "tags": ["portfolio"]},
+    "app.api.endpoints.agents": {"prefix": "/agents", "tags": ["agents"]},
+    "app.api.endpoints.advanced_analytics": {"prefix": "/advanced-analytics", "tags": ["advanced-analytics"]},
+    "app.api.endpoints.rl": {"prefix": "/rl", "tags": ["rl"]},
+    "app.api.endpoints.deck_builder": {"prefix": "/deck-builder", "tags": ["deck"]},
+    "app.api.endpoints.pwerm": {"prefix": "/pwerm", "tags": ["pwerm"]},
+    "app.api.endpoints.scenarios": {"prefix": "/scenarios", "tags": ["scenarios"]},
+    "app.api.endpoints.spreadsheet_formulas": {"prefix": "/spreadsheet-formulas", "tags": ["formulas"]},
+    "app.api.endpoints.valuation_engine": {"prefix": "/valuation", "tags": ["valuation"]},
+    "app.api.endpoints.advanced_debt": {"prefix": "/debt", "tags": ["debt"]},
+}
 
-# Include JavaScript executor endpoint if available
-if javascript_router:
-    api_router.include_router(javascript_router, tags=["javascript"])
-
-# Include existing endpoints if available
-try:
-    api_router.include_router(companies.router, prefix="/companies", tags=["companies"])
-    api_router.include_router(portfolio.router, prefix="/portfolio", tags=["portfolio"])
-    api_router.include_router(agents.router, prefix="/agents", tags=["agents"])
-    api_router.include_router(mcp.router, tags=["mcp"])  # MCP already has /mcp prefix
-    api_router.include_router(advanced_analytics.router, prefix="/advanced-analytics", tags=["advanced-analytics"])
-    api_router.include_router(rl.router, prefix="/rl", tags=["rl"])
-    api_router.include_router(deck_builder.router, prefix="/deck-builder", tags=["deck"])
-    api_router.include_router(pwerm.router, prefix="/pwerm", tags=["pwerm"])
-    api_router.include_router(scenarios.router, prefix="/scenarios", tags=["scenarios"])
-    api_router.include_router(spreadsheet_formulas.router, prefix="/spreadsheet-formulas", tags=["formulas"])
-    api_router.include_router(valuation_engine.router, prefix="/valuation", tags=["valuation"])
-    api_router.include_router(advanced_debt.router, prefix="/debt", tags=["debt"])
-except:
-    pass
+for module_path, kwargs in OPTIONAL_ROUTERS.items():
+    # Filter out None values so FastAPI defaults remain intact
+    include_kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    _include_optional_router(api_router, module_path, include_kwargs)
 
 # Health check
 @api_router.get("/health")
