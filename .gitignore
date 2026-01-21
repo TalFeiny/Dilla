@@ -203,3 +203,26 @@ docs/.doctrees/
 # Monitoring
 grafana/data/
 prometheus/data/
+
+# Test and debug files
+test_*.py
+debug_*.py
+export_*.py
+generate_*.py
+test_*.sh
+test_*.html
+test_*.pdf
+test_*.pptx
+*.plan.md
+*_INVESTIGATION.md
+*_ANALYSIS.md
+*_REVIEW.md
+*_PLAN.md
+*_AUDIT.md
+*_STATUS.md
+*_FIX.md
+*_BUGS.md
+CALCULATION_*.md
+CAP_TABLE_*.md
+DECK_*.md
+*_INVESTIGATION.md
