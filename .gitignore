@@ -171,6 +171,7 @@ backend/build/
 !tsconfig.json
 !next.config.mjs
 !config.toml
+!vercel.json
 data/
 datasets/
 
