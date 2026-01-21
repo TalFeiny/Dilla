@@ -59,10 +59,20 @@ NEXT_PUBLIC_BACKEND_URL=https://your-backend-project.vercel.app
 
 ## Current Setup (Backend Only)
 
-The files created:
-- ✅ `/api/index.py` - Root-level FastAPI entrypoint
-- ✅ `/vercel.json` - Routes `/api/*` to FastAPI
-- ✅ `/pyproject.toml` - Alternative entrypoint method
+The files configured:
+- ✅ `/index.py` - Root-level FastAPI entrypoint (Vercel auto-detects this)
+- ✅ `/vercel.json` - Modern configuration with Python 3.12 runtime
+- ✅ `/requirements.txt` - Root-level dependencies (copied from backend/)
+- ✅ `/pyproject.toml` - Entry point reference to `index:app`
+
+**Configuration Details:**
+- Uses Python 3.12 runtime (Vercel's current default)
+- Routes all requests to `index.py` at root
+- Excludes test files and frontend directory from bundle
+- Memory: 1024MB, Max Duration: 60 seconds
+- **Playwright excluded**: Root `requirements.txt` has Playwright commented out (browser binaries exceed 250MB limit)
+  - PDF export will use fallback Chart.js rendering (code has graceful fallbacks)
+  - For local dev with Playwright: use `backend/requirements.txt`
 
 **This setup will work for deploying the backend only.**
 
