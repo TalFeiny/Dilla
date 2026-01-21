@@ -5,4 +5,4 @@ description = "Dilla AI Backend API"
 requires-python = ">=3.9"
 
 [project.scripts]
-app = "backend.api.index:app"
+app = "index:app"

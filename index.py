@@ -1,16 +1,14 @@
 """
 Vercel FastAPI entrypoint at root level
-This file is required because Vercel builds from the root directory
-and looks for entrypoints in api/index.py, api/app.py, etc.
-
-This file sets up the Python path and imports the FastAPI app from backend.
+Vercel automatically detects index.py, app.py, or server.py at the root
+This file imports the FastAPI app from the backend directory.
 """
 import sys
 import os
 from pathlib import Path
 
 # Get the backend directory path
-ROOT_DIR = Path(__file__).parent.parent
+ROOT_DIR = Path(__file__).parent
 BACKEND_DIR = ROOT_DIR / "backend"
 
 # Add backend to Python path (required for backend's relative imports)
