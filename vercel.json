@@ -2,17 +2,18 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 3,
   "functions": {
-    "index.py": {
+    "api/**/*.py": {
       "runtime": "python3.12",
       "memory": 1024,
       "maxDuration": 60,
+      "includeFiles": "backend/**",
       "excludeFiles": "{tests/**,__tests__/**,**/*.test.py,**/test_*.py,fixtures/**,__fixtures__/**,static/**,assets/**,frontend/**}"
     }
   },
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "index.py"
+      "dest": "/api/index.py"
     }
   ]
 }

@@ -1,25 +1,34 @@
 """
 Vercel FastAPI entrypoint
 Vercel doesn't support lifespan events, so we create the app without it
-Uses the working pattern from backend/api/index.py with path setup for root-level location
+
+This file uses static imports that Vercel's bundler can detect.
+We add backend/ to sys.path but avoid os.chdir() which breaks static analysis.
 """
 import sys
 import os
 from pathlib import Path
 
-# Setup paths for root-level entrypoint
+# Calculate paths statically (Vercel can trace these)
 ROOT_DIR = Path(__file__).parent.parent
 BACKEND_DIR = ROOT_DIR / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
-os.chdir(str(BACKEND_DIR))
+
+# Add backend to Python path for app.* imports (static operation)
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
 # Set Vercel flag
 os.environ["VERCEL"] = "1"
 
-# Load environment variables
+# Load environment variables from backend directory (absolute paths)
 from dotenv import load_dotenv
-load_dotenv('.env')
-load_dotenv('.env.local', override=True)
+env_file = BACKEND_DIR / ".env"
+env_local_file = BACKEND_DIR / ".env.local"
+
+if env_file.exists():
+    load_dotenv(env_file, override=False)
+if env_local_file.exists():
+    load_dotenv(env_local_file, override=True)
 
 # Import after setting Vercel flag and path setup
 from fastapi import FastAPI
