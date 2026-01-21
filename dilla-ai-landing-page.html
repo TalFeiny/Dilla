@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dilla AI - The Palantir of Private Markets</title>
+    <style>
+        :root {
+            --primary: #1a1a2e;
+            --secondary: #0f3460;
+            --accent: #16213e;
+            --text: #e6e6e6;
+            --highlight: #4361ee;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Arial', sans-serif;
+        }
+        
+        body {
+            background-color: var(--primary);
+            color: var(--text);
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        
+        header {
+            padding: 20px 0;
+            background-color: rgba(0, 0, 0, 0.2);
+        }
+        
+        .navbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            font-size: 28px;
+            font-weight: bold;
+            color: var(--text);
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+        }
+        
+        .logo span {
+            color: var(--highlight);
+            margin-right: 5px;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 30px;
+        }
+        
+        .nav-links a {
+            color: var(--text);
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.3s;
+        }
+        
+        .nav-links a:hover {
+            color: var(--highlight);
+        }
+        
+        .hero {
+            height: 80vh;
+            display: flex;
+            align-items: center;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .hero::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at center, rgba(67, 97, 238, 0.1) 0%, rgba(15, 52, 96, 0.2) 50%, rgba(26, 26, 46, 0.5) 100%);
+            z-index: -1;
+        }
+        
+        .hero-content {
+            max-width: 700px;
+        }
+        
+        h1 {
+            font-size: 3.5rem;
+            margin-bottom: 20px;
+            line-height: 1.2;
+        }
+        
+        .tagline {
+            font-size: 1.5rem;
+            margin-bottom: 30px;
+            color: var(--highlight);
+        }
+        
+        .description {
+            font-size: 1.1rem;
+            margin-bottom: 40px;
+            opacity: 0.9;
+        }
+        
+        .cta-button {
+            display: inline-block;
+            background-color: var(--highlight);
+            color: white;
+            padding: 12px 30px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        
+        .cta-button:hover {
+            background-color: #2541b2;
+        }
+        
+        .features {
+            padding: 100px 0;
+            background-color: var(--accent);
+        }
+        
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 40px;
+        }
+        
+        .feature-card {
+            background-color: rgba(0, 0, 0, 0.2);
+            padding: 30px;
+            border-radius: 10px;
+            transition: transform 0.3s;
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-10px);
+        }
+        
+        .feature-card h3 {
+            font-size: 1.5rem;
+            margin-bottom: 15px;
+            color: var(--highlight);
+        }
+        
+        .section-title {
+            text-align: center;
+            font-size: 2.5rem;
+            margin-bottom: 60px;
+        }
+        
+        footer {
+            background-color: var(--secondary);
+            padding: 50px 0 20px;
+            text-align: center;
+        }
+        
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        
+        .footer-links a {
+            color: var(--text);
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+        
+        .footer-links a:hover {
+            color: var(--highlight);
+        }
+        
+        .copyright {
+            opacity: 0.7;
+            font-size: 0.9rem;
+        }
+        
+        /* Responsive design */
+        @media (max-width: 768px) {
+            .navbar {
+                flex-direction: column;
+                gap: 20px;
+            }
+            
+            .nav-links {
+                gap: 15px;
+            }
+            
+            h1 {
+                font-size: 2.5rem;
+            }
+            
+            .tagline {
+                font-size: 1.2rem;
+            }
+            
+            .hero {
+                height: auto;
+                padding: 100px 0;
+            }
+        }
+
+        /* Glowing orb animation */
+        .orb-container {
+            position: absolute;
+            top: 50%;
+            right: 10%;
+            transform: translateY(-50%);
+            width: 300px;
+            height: 300px;
+            z-index: -1;
+        }
+        
+        .orb {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(67, 97, 238, 0.8) 0%, rgba(15, 52, 96, 0.4) 50%, rgba(26, 26, 46, 0) 100%);
+            box-shadow: 0 0 60px rgba(67, 97, 238, 0.6);
+            animation: pulse 4s infinite alternate;
+        }
+        
+        @keyframes pulse {
+            0% {
+                transform: scale(0.8);
+                opacity: 0.7;
+            }
+            100% {
+                transform: scale(1.1);
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <nav class="navbar">
+                <a href="#" class="logo"><span>⦿</span> Dilla AI</a>
+                <div class="nav-links">
+                    <a href="#features">Features</a>
+                    <a href="#about">About</a>
+                    <a href="#contact">Contact</a>
+                </div>
+            </nav>
+        </div>
+    </header>
+
+    <section class="hero">
+        <div class="container">
+            <div class="hero-content">
+                <h1>Illuminating Private Markets</h1>
+                <p class="tagline">The Palantir of Private Markets</p>
+                <p class="description">Dilla AI provides unparalleled visibility into private market data, helping investors make informed decisions with powerful AI-driven analytics and insights.</p>
+                <a href="#contact" class="cta-button">Request Demo</a>
+            </div>
+            <div class="orb-container">
+                <div class="orb"></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="features" id="features">
+        <div class="container">
+            <h2 class="section-title">Our Capabilities</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <h3>Market Intelligence</h3>
+                    <p>Access comprehensive data on private companies, investors, and market trends with our advanced AI analysis.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Predictive Analytics</h3>
+                    <p>Leverage machine learning algorithms to forecast market movements and identify emerging opportunities.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Deal Flow Optimization</h3>
+                    <p>Streamline your investment pipeline with AI-powered deal sourcing and screening tools.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Risk Assessment</h3>
+                    <p>Evaluate potential investments with sophisticated risk models that analyze multiple factors.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Portfolio Insights</h3>
+                    <p>Monitor your investments with real-time performance tracking and comparative analysis.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Market Network</h3>
+                    <p>Connect with key players and identify strategic partnerships within the private market ecosystem.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="container" id="about" style="padding: 100px 0;">
+        <h2 class="section-title">About Dilla AI</h2>
+        <div style="max-width: 800px; margin: 0 auto; text-align: center;">
+            <p style="margin-bottom: 30px;">Dilla AI was founded with a mission to bring transparency to private markets. Our platform combines cutting-edge artificial intelligence with comprehensive data collection to provide investors with a clear view of opportunities that were previously hidden.</p>
+            <p>Just as the mythical Palantir allowed users to see beyond their immediate surroundings, Dilla AI grants you vision into the complex world of private investments, helping you navigate with confidence and precision.</p>
+        </div>
+    </section>
+
+    <footer id="contact">
+        <div class="container">
+            <h2 style="margin-bottom: 30px;">Get in Touch</h2>
+            <p style="max-width: 600px; margin: 0 auto 40px;">Ready to see the future of private market investing? Contact us to schedule a demo.</p>
+            <a href="mailto:info@dillaai.com" class="cta-button">Contact Us</a>
+            <div class="footer-links" style="margin-top: 60px;">
+                <a href="#">Privacy Policy</a>
+                <a href="#">Terms of Service</a>
+                <a href="#">About Us</a>
+            </div>
+            <p class="copyright">&copy; 2025 Dilla AI. All rights reserved.</p>
+        </div>
+    </footer>
+</body>
+</html>
