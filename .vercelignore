@@ -1,0 +1,9 @@
+# Ignore Python backend files when deploying frontend
+index.py
+api/
+backend/
+*.py
+requirements.txt
+requirements.vercel.txt
+pyproject.toml
+next.config.mjs
