@@ -19,11 +19,5 @@
       "source": "/api/backend/:path*",
       "destination": "/api/:path*"
     }
-  ],
-  "routes": [
-    {
-      "src": "/api/backend/(.*)",
-      "dest": "/api/$1.py"
-    }
   ]
 }
