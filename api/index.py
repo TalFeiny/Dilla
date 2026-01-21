@@ -13,31 +13,26 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent.parent
 BACKEND_DIR = ROOT_DIR / "backend"
 
-# Add backend to Python path
+# Add backend to Python path (don't change directory - more reliable in serverless)
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 # Set Vercel environment variable
 os.environ["VERCEL"] = "1"
 
-# Change to backend directory for .env loading and relative imports
-original_cwd = os.getcwd()
-os.chdir(str(BACKEND_DIR))
+# Load environment variables from backend directory
+from dotenv import load_dotenv
+env_file = BACKEND_DIR / ".env"
+env_local_file = BACKEND_DIR / ".env.local"
 
-try:
-    # Load environment variables
-    from dotenv import load_dotenv
-    load_dotenv('.env')
-    load_dotenv('.env.local', override=True)
-    
-    # Import the app from backend/api/index.py
-    # Since we're in backend/ directory now, we can import api.index
-    import api.index as backend_api
-    app = backend_api.app
-    
-finally:
-    # Restore original directory (Vercel may not care, but good practice)
-    os.chdir(original_cwd)
+if env_file.exists():
+    load_dotenv(env_file)
+if env_local_file.exists():
+    load_dotenv(env_local_file, override=True)
+
+# Import the app from backend/api/index.py
+# Using direct import path since backend is in sys.path
+from api.index import app
 
 # Vercel expects 'app' to be exported
 __all__ = ['app']
