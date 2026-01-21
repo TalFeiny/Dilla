@@ -1,43 +1,51 @@
 """
-Vercel FastAPI entrypoint at root level
-This file is required because Vercel builds from the root directory
-and looks for entrypoints in api/index.py, api/app.py, etc.
-
-This file sets up the Python path and imports the FastAPI app from backend.
+Vercel FastAPI entrypoint
+Vercel auto-detects Python files in api/ directory
 """
 import sys
 import os
 from pathlib import Path
 
-# Get the backend directory path
+# Setup paths
 ROOT_DIR = Path(__file__).parent.parent
 BACKEND_DIR = ROOT_DIR / "backend"
 
-# Add backend to Python path (required for backend's relative imports)
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
+# Add backend to Python path
+sys.path.insert(0, str(BACKEND_DIR))
 
-# Set Vercel environment variable
+# Change to backend directory for relative imports
+os.chdir(str(BACKEND_DIR))
+
+# Set Vercel flag
 os.environ["VERCEL"] = "1"
 
-# Load environment variables from backend directory
+# Load environment variables
 from dotenv import load_dotenv
-env_file = BACKEND_DIR / ".env"
-env_local_file = BACKEND_DIR / ".env.local"
+load_dotenv('.env')
+load_dotenv('.env.local', override=True)
 
-if env_file.exists():
-    load_dotenv(env_file)
-if env_local_file.exists():
-    load_dotenv(env_local_file, override=True)
+# Import app from main.py and create Vercel-compatible version without lifespan
+from app.main import app as main_app
+from fastapi import FastAPI
 
-# Import the app from backend/api/index.py using direct file import
-# This ensures all backend relative imports work correctly
-import importlib.util
-backend_api_index_path = BACKEND_DIR / "api" / "index.py"
-spec = importlib.util.spec_from_file_location("backend_api_index", backend_api_index_path)
-backend_api_index = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(backend_api_index)
-app = backend_api_index.app
+# Create new app instance without lifespan for Vercel
+app = FastAPI(
+    title=main_app.title,
+    description=main_app.description,
+    version=main_app.version,
+    docs_url=main_app.docs_url,
+    redoc_url=main_app.redoc_url
+)
 
-# Vercel expects 'app' to be exported
+# Copy all routes and middleware from main app
+for route in main_app.routes:
+    app.routes.append(route)
+
+for middleware in main_app.user_middleware:
+    app.user_middleware.append(middleware)
+
+# Copy exception handlers
+for exc_type, handler in main_app.exception_handlers.items():
+    app.exception_handlers[exc_type] = handler
+
 __all__ = ['app']
