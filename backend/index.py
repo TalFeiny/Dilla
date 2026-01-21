@@ -1,4 +1,4 @@
 """
 Vercel FastAPI entrypoint at root level
 """
-from app.main import app
+from api.index import app
