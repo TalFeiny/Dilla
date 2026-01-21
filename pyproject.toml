@@ -46,9 +46,9 @@ dependencies = [
     "yfinance==0.2.28",
     "python-pptx==1.0.2",
     "reportlab==4.2.5",
-    # playwright excluded for Vercel (browser binaries exceed 250MB limit)
-    # Code has graceful fallbacks to Chart.js rendering
 ]
+# Note: playwright excluded for Vercel (browser binaries exceed 250MB limit)
+# Code has graceful fallbacks to Chart.js rendering
 
 [project.scripts]
 app = "index:app"
