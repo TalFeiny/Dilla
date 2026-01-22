@@ -64,6 +64,7 @@ interface PwermResults {
     competitors?: Array<any>;
     market_conditions?: any;
     sector_analysis?: any;
+    openai_analysis?: any;
   };
   summary?: {
     expected_exit_value?: number;
@@ -537,7 +538,7 @@ export default function CompanyPwermPage() {
             <CardTitle className="flex items-center space-x-2">
               <Activity className="h-5 w-5" />
               <span>AI Market Research & Insights</span>
-              {pwermResults.market_research.openai_analysis ? (
+              {pwermResults.market_research?.openai_analysis ? (
                 <Badge variant="default" className="ml-2">
                   ✅ Real-time AI Analysis
                 </Badge>
