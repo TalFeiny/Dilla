@@ -1,267 +1,84 @@
 """
-Scenario Analysis and Modeling Endpoints
+Scenarios API Endpoints
+API for scenario analysis
 """
 
-from fastapi import APIRouter, HTTPException
-from typing import Dict, Any, List, Optional
-from pydantic import BaseModel
 import logging
+from fastapi import APIRouter, HTTPException
+from typing import Dict, List, Any, Optional
+from pydantic import BaseModel
 
-from app.services.valuation_engine_service import (
-    ValuationEngineService,
-    ValuationRequest,
-    Stage,
-)
+from app.services.scenario_analyzer import ScenarioAnalyzer, ScenarioType
 
-router = APIRouter()
 logger = logging.getLogger(__name__)
 
-valuation_engine = ValuationEngineService()
+router = APIRouter(prefix="/scenarios", tags=["scenarios"])
+
+# Initialize service
+scenario_analyzer = ScenarioAnalyzer()
 
 
-def _map_stage(stage_str: Optional[str]) -> Stage:
-    if not stage_str:
-        return Stage.SERIES_A
-    normalized = stage_str.strip().lower()
-    if "pre" in normalized and "seed" in normalized:
-        return Stage.SEED
-    if "seed" in normalized:
-        return Stage.SEED
-    if "series a" in normalized or normalized in {"a", "series_a"}:
-        return Stage.SERIES_A
-    if "series b" in normalized or normalized in {"b", "series_b"}:
-        return Stage.SERIES_B
-    if "series c" in normalized or normalized in {"c", "series_c"}:
-        return Stage.SERIES_C
-    if "series d" in normalized or normalized in {"d", "series_d"} or "growth" in normalized:
-        return Stage.GROWTH
-    if "late" in normalized:
-        return Stage.LATE
-    if "public" in normalized:
-        return Stage.PUBLIC
-    return Stage.SERIES_A
+class CreateScenarioRequest(BaseModel):
+    model_id: str
+    scenario_name: str
+    scenario_type: str
+    probability: float = 0.33
+    factor_overrides: Optional[Dict[str, Any]] = None
+    relationship_changes: Optional[Dict[str, Any]] = None
+    temporal_changes: Optional[Dict[str, Any]] = None
+    description: Optional[str] = None
 
 
-def _fallback_total_raised(stage: Stage) -> float:
-    return {
-        Stage.SEED: 5_000_000,
-        Stage.SERIES_A: 15_000_000,
-        Stage.SERIES_B: 40_000_000,
-        Stage.SERIES_C: 75_000_000,
-        Stage.GROWTH: 120_000_000,
-        Stage.LATE: 200_000_000,
-        Stage.PUBLIC: 250_000_000,
-    }.get(stage, 20_000_000)
-
-
-class ScenarioRequest(BaseModel):
-    company_id: str
-    company_data: Dict[str, Any]
-    num_scenarios: int = 100
-    include_downside: bool = True
-    include_upside: bool = True
-    time_horizon: int = 5  # years
-
-
-class LiquidationAnalysisRequest(BaseModel):
-    company_id: str
-    current_valuation: float
-    liquidation_preferences: List[Dict[str, Any]]
-    exit_value: Optional[float] = None
-
-
-@router.post("/run")
-async def run_scenarios(request: ScenarioRequest):
-    """Run scenario analysis"""
+@router.post("/create")
+async def create_scenario(request: CreateScenarioRequest):
+    """Create a scenario for a world model"""
     try:
-        company = request.company_data or {}
-
-        stage = _map_stage(
-            company.get("stage")
-            or company.get("funding_stage")
-            or company.get("stage_name")
+        scenario_type = ScenarioType(request.scenario_type)
+        
+        scenario = await scenario_analyzer.create_scenario(
+            model_id=request.model_id,
+            scenario_name=request.scenario_name,
+            scenario_type=scenario_type,
+            probability=request.probability,
+            factor_overrides=request.factor_overrides,
+            relationship_changes=request.relationship_changes,
+            temporal_changes=request.temporal_changes,
+            description=request.description
         )
-
-        revenue = company.get("revenue") or company.get("inferred_revenue")
-        try:
-            revenue = float(revenue) if revenue is not None else 10_000_000
-        except (TypeError, ValueError):
-            revenue = 10_000_000
-
-        growth_rate = (
-            company.get("growth_rate")
-            or company.get("revenue_growth")
-            or company.get("inferred_growth_rate")
-            or 0.5
-        )
-        try:
-            growth_rate = float(growth_rate)
-        except (TypeError, ValueError):
-            growth_rate = 0.5
-
-        valuation = (
-            company.get("valuation")
-            or company.get("current_valuation")
-            or company.get("inferred_valuation")
-            or 100_000_000
-        )
-        try:
-            valuation = float(valuation)
-        except (TypeError, ValueError):
-            valuation = 100_000_000
-
-        total_raised = (
-            company.get("total_funding")
-            or company.get("total_raised")
-            or company.get("inferred_total_funding")
-            or _fallback_total_raised(stage)
-        )
-        try:
-            total_raised = float(total_raised)
-        except (TypeError, ValueError):
-            total_raised = _fallback_total_raised(stage)
-
-        request_payload = ValuationRequest(
-            company_name=company.get("company") or request.company_id,
-            stage=stage,
-            revenue=revenue,
-            growth_rate=growth_rate,
-            last_round_valuation=valuation,
-            total_raised=total_raised,
-            business_model=company.get("business_model"),
-            industry=company.get("sector") or company.get("industry"),
-            category=company.get("category"),
-            ai_component_percentage=company.get("ai_component_percentage")
-            or company.get("ai_percentage"),
-        )
-
-        valuation_result = await valuation_engine.calculate_valuation(request_payload)
-        scenarios = valuation_result.scenarios or []
-        if not scenarios:
-            raise HTTPException(status_code=502, detail="No scenarios produced by valuation service")
-
-        scenarios_sorted = sorted(scenarios, key=lambda s: s.exit_value)
-        cumulative = 0.0
-        p10 = p50 = p90 = scenarios_sorted[-1].exit_value
-        for scenario in scenarios_sorted:
-            cumulative += scenario.probability
-            if cumulative >= 0.1 and p10 == scenarios_sorted[-1].exit_value:
-                p10 = scenario.exit_value
-            if cumulative >= 0.5 and p50 == scenarios_sorted[-1].exit_value:
-                p50 = scenario.exit_value
-            if cumulative >= 0.9:
-                p90 = scenario.exit_value
-                break
-
-        expected_exit = sum(s.exit_value * s.probability for s in scenarios)
-        expected_present_value = sum(s.present_value * s.probability for s in scenarios)
-
-        payload = [
-            {
-                "scenario": s.scenario,
-                "probability": s.probability,
-                "exit_value": s.exit_value,
-                "present_value": getattr(s, "present_value", None),
-                "moic": getattr(s, "moic", None),
-                "time_to_exit": s.time_to_exit,
-                "funding_path": s.funding_path,
-                "exit_type": s.exit_type,
-                "return_curve": getattr(s, "return_curve", {}),
-            }
-            for s in scenarios
-        ]
-
-        return {
-            "company_id": request.company_id,
-            "total_scenarios": len(payload),
-            "expected_exit": expected_exit,
-            "expected_present_value": expected_present_value,
-            "median_exit": p50,
-            "p10_exit": p10,
-            "p90_exit": p90,
-            "scenarios": payload[: request.num_scenarios],
-            "fair_value": valuation_result.fair_value,
-            "method": valuation_result.method_used,
-            "assumptions": valuation_result.assumptions,
-            "execution_result": {
-                "engine": "valuation-service",
-                "notes": "Scenarios generated via PWERM valuation engine",
-            },
-        }
-
+        return scenario
     except Exception as e:
-        logger.error(f"Scenario analysis error: {e}")
+        logger.error(f"Error creating scenario: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/liquidation-analysis")
-async def liquidation_analysis(request: LiquidationAnalysisRequest):
-    """Analyze liquidation preferences and waterfall"""
+@router.post("/{scenario_id}/execute")
+async def execute_scenario(scenario_id: str):
+    """Execute a scenario and calculate results"""
     try:
-        # Calculate liquidation waterfall
-        exit_value = request.exit_value or request.current_valuation * 1.5
-        
-        distributions = []
-        remaining = exit_value
-        
-        for pref in request.liquidation_preferences:
-            if remaining <= 0:
-                break
-            
-            amount = min(remaining, pref.get("amount", 0))
-            distributions.append({
-                "investor": pref.get("investor", "Unknown"),
-                "class": pref.get("class", "Common"),
-                "preference": pref.get("amount", 0),
-                "distribution": amount
-            })
-            remaining -= amount
-        
-        return {
-            "company_id": request.company_id,
-            "exit_value": exit_value,
-            "total_preferences": sum(p.get("amount", 0) for p in request.liquidation_preferences),
-            "distributions": distributions,
-            "common_pool": max(0, remaining),
-            "waterfall_complete": True
-        }
-        
+        results = await scenario_analyzer.execute_scenario(scenario_id)
+        return results
     except Exception as e:
-        logger.error(f"Liquidation analysis error: {e}")
+        logger.error(f"Error executing scenario: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/templates")
-async def get_scenario_templates():
-    """Get pre-defined scenario templates"""
-    return {
-        "templates": [
-            {
-                "name": "Conservative Growth",
-                "description": "Modest growth with limited downside",
-                "parameters": {
-                    "growth_range": [0.1, 0.3],
-                    "exit_multiple_range": [2, 4],
-                    "probability_of_success": 0.7
-                }
-            },
-            {
-                "name": "Aggressive Growth",
-                "description": "High growth with higher risk",
-                "parameters": {
-                    "growth_range": [0.5, 1.5],
-                    "exit_multiple_range": [5, 20],
-                    "probability_of_success": 0.4
-                }
-            },
-            {
-                "name": "Recession Case",
-                "description": "Downside scenario with market contraction",
-                "parameters": {
-                    "growth_range": [-0.2, 0.1],
-                    "exit_multiple_range": [0.5, 2],
-                    "probability_of_success": 0.3
-                }
-            }
-        ]
-    }
+@router.get("/model/{model_id}/compare")
+async def compare_scenarios(model_id: str):
+    """Compare all scenarios for a model"""
+    try:
+        comparison = await scenario_analyzer.compare_scenarios(model_id)
+        return comparison
+    except Exception as e:
+        logger.error(f"Error comparing scenarios: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/model/{model_id}/create-standard")
+async def create_standard_scenarios(model_id: str):
+    """Create standard base case, upside, and downside scenarios"""
+    try:
+        scenarios = await scenario_analyzer.create_standard_scenarios(model_id)
+        return scenarios
+    except Exception as e:
+        logger.error(f"Error creating standard scenarios: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

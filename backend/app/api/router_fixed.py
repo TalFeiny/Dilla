@@ -57,9 +57,15 @@ OPTIONAL_ROUTERS = {
     "app.api.endpoints.deck_builder": {"prefix": "/deck-builder", "tags": ["deck"]},
     "app.api.endpoints.pwerm": {"prefix": "/pwerm", "tags": ["pwerm"]},
     "app.api.endpoints.scenarios": {"prefix": "/scenarios", "tags": ["scenarios"]},
+    "app.api.endpoints.world_models": {"prefix": "/world-models", "tags": ["world-models"]},
+    "app.api.endpoints.stress_testing": {"prefix": "/stress-testing", "tags": ["stress-testing"]},
+    "app.api.endpoints.fund_modeling": {"prefix": "/fund-modeling", "tags": ["fund-modeling"]},
+    "app.api.endpoints.nl_scenarios": {"prefix": "/nl-scenarios", "tags": ["nl-scenarios"]},
     "app.api.endpoints.spreadsheet_formulas": {"prefix": "/spreadsheet-formulas", "tags": ["formulas"]},
     "app.api.endpoints.valuation_engine": {"prefix": "/valuation", "tags": ["valuation"]},
     "app.api.endpoints.advanced_debt": {"prefix": "/debt", "tags": ["debt"]},
+    "app.api.endpoints.cell_actions": {"tags": ["cell-actions"]},  # Already includes /cell-actions prefix internally
+    "app.api.endpoints.fpa_query": {"tags": ["fpa"]},  # Already includes /fpa prefix internally
 }
 
 for module_path, kwargs in OPTIONAL_ROUTERS.items():
