@@ -1,19 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import path from 'path';
-import fs from 'fs/promises';
+import { resolveScriptPath } from '@/lib/scripts-path';
 
 const execAsync = promisify(exec);
 
 export async function POST(request: NextRequest) {
   try {
+    const { path: scriptPath, tried } = resolveScriptPath('rl_inference.py');
+    if (!scriptPath) {
+      return NextResponse.json(
+        { error: `RL script not found. Tried: ${tried.join(', ')}. Set SCRIPTS_DIR or run from repo root.` },
+        { status: 500 }
+      );
+    }
     const { action, state, feedback } = await request.json();
 
     switch (action) {
       case 'predict': {
         // Get next action from trained model
-        const scriptPath = path.join(process.cwd(), 'scripts', 'rl_inference.py');
         const stateJson = JSON.stringify(state).replace(/'/g, '"');
         const { stdout } = await execAsync(
           `python3 "${scriptPath}" predict '${stateJson}'`
@@ -24,7 +29,6 @@ export async function POST(request: NextRequest) {
 
       case 'train': {
         // Add experience and trigger training
-        const scriptPath = path.join(process.cwd(), 'scripts', 'rl_inference.py');
         const experience = {
           state: state.before,
           action: state.action,
@@ -44,7 +48,6 @@ export async function POST(request: NextRequest) {
 
       case 'status': {
         // Get training status and metrics
-        const scriptPath = path.join(process.cwd(), 'scripts', 'rl_inference.py');
         const { stdout } = await execAsync(`python3 "${scriptPath}" status`);
         
         return NextResponse.json(JSON.parse(stdout));
@@ -52,7 +55,6 @@ export async function POST(request: NextRequest) {
 
       case 'reset': {
         // Reset agent for new episode
-        const scriptPath = path.join(process.cwd(), 'scripts', 'rl_inference.py');
         await execAsync(`python3 "${scriptPath}" reset`);
         
         return NextResponse.json({ success: true });

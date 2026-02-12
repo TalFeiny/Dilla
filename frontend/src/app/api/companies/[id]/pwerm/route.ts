@@ -3,6 +3,7 @@ import { supabaseService } from '@/lib/supabase';
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import { resolveScriptPath } from '@/lib/scripts-path';
 
 export async function POST(
   request: NextRequest,
@@ -31,28 +32,49 @@ export async function POST(
       return NextResponse.json({ error: 'Company not found' }, { status: 404 });
     }
 
-    // Get request body for assumptions
+    // Get request body for assumptions and optional document analysis (SERVICE_ALIGNED_FIELDS)
     const body = await request.json();
     const assumptions = body.assumptions || {};
+    const documentAnalysis = body.document_analysis || body.extracted_data;
+
+    // Merge document extraction into company when provided (aligns extraction → valuation)
+    let mergedCompany = { ...company };
+    if (documentAnalysis) {
+      const fi = documentAnalysis.financial_metrics ?? documentAnalysis;
+      const ci = documentAnalysis.company_info ?? documentAnalysis;
+      mergedCompany = {
+        ...mergedCompany,
+        current_arr_usd: mergedCompany.current_arr_usd ?? fi?.arr ?? fi?.revenue,
+        sector: mergedCompany.sector ?? ci?.sector ?? documentAnalysis.sector,
+        business_model: mergedCompany.business_model ?? ci?.business_model ?? documentAnalysis.business_model,
+        category: mergedCompany.category ?? ci?.category ?? documentAnalysis.category,
+        revenue_growth_annual_pct: mergedCompany.revenue_growth_annual_pct ?? (fi?.growth_rate != null ? fi.growth_rate * 100 : undefined),
+      };
+    }
 
     // Prepare data for PWERM analysis in the format expected by the Python script
     const pwermInput = {
-      company_name: company.name,
-      current_arr_usd: (company.current_arr_usd || 1000000) / 1000000, // Convert to millions if needed
-      growth_rate: (company.revenue_growth_annual_pct || 70) / 100, // Convert percentage to decimal
-      sector: company.sector || 'Technology',
+      company_name: mergedCompany.name || company.name,
+      current_arr_usd: (mergedCompany.current_arr_usd || 1000000) / 1000000, // Convert to millions if needed
+      growth_rate: (mergedCompany.revenue_growth_annual_pct || 70) / 100, // Convert percentage to decimal
+      sector: mergedCompany.sector || 'Technology',
       assumptions: {
         ...assumptions,
-        burn_rate_monthly_usd: company.burn_rate_monthly_usd,
-        runway_months: company.runway_months,
-        total_invested_usd: company.total_invested_usd || 0,
-        ownership_percentage: company.ownership_percentage || 0
+        burn_rate_monthly_usd: mergedCompany.burn_rate_monthly_usd ?? company.burn_rate_monthly_usd,
+        runway_months: mergedCompany.runway_months ?? company.runway_months,
+        total_invested_usd: (mergedCompany.total_invested_usd ?? company.total_invested_usd) || 0,
+        ownership_percentage: (mergedCompany.ownership_percentage ?? company.ownership_percentage) || 0
       }
     };
 
-    // Run PWERM analysis using the Python script
-    const scriptsDir = path.join(process.cwd(), 'scripts');
-    const scriptPath = path.join(scriptsDir, 'pwerm_analysis.py');
+    const { path: scriptPath, tried } = resolveScriptPath('pwerm_analysis.py');
+    if (!scriptPath) {
+      return NextResponse.json(
+        { error: `PWERM script not found. Tried: ${tried.join(', ')}. Set SCRIPTS_DIR or run from repo root.` },
+        { status: 500 }
+      );
+    }
+    const scriptsDir = path.dirname(scriptPath);
     
     console.log('PWERM Input Structure:', JSON.stringify(pwermInput, null, 2));
 

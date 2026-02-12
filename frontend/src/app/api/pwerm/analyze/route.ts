@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import { resolveScriptPath } from '@/lib/scripts-path';
 
 export async function POST(request: NextRequest) {
   try {
@@ -14,9 +15,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get the absolute path to the script
-    const scriptsDir = path.join(process.cwd(), 'scripts');
-    const scriptPath = path.join(scriptsDir, 'pwerm_analysis.py');
+    const { path: scriptPath, tried } = resolveScriptPath('pwerm_analysis.py');
+    if (!scriptPath) {
+      return NextResponse.json(
+        { error: `PWERM script not found. Tried: ${tried.join(', ')}. Set SCRIPTS_DIR or run from repo root.` },
+        { status: 500 }
+      );
+    }
+    const scriptsDir = path.dirname(scriptPath);
 
     // Create temporary input file
     const tempInputFile = path.join(scriptsDir, `temp_pwerm_input_${Date.now()}.json`);

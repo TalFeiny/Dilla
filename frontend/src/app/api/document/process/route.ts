@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { spawn } from 'child_process';
 import path from 'path';
+import { resolveScriptPath } from '@/lib/scripts-path';
 
 export async function POST(request: NextRequest) {
   try {
@@ -14,9 +15,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get the absolute path to the script
-    const scriptsDir = path.join(process.cwd(), 'scripts');
-    const scriptPath = path.join(scriptsDir, 'full_flow_no_comp.py');
+    const { path: scriptPath, tried } = resolveScriptPath('full_flow_no_comp.py');
+    if (!scriptPath) {
+      return NextResponse.json(
+        { error: `Document script not found. Tried: ${tried.join(', ')}. Set SCRIPTS_DIR or run from repo root.` },
+        { status: 500 }
+      );
+    }
+    const scriptsDir = path.dirname(scriptPath);
 
     // Run the Python script
     console.log('Running Python script with args:', {

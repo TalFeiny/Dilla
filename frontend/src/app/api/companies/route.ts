@@ -63,15 +63,51 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
+    const { name, sector, stage, funnel_status, ...otherFields } = body;
+
+    if (!name || name.trim() === '') {
+      return NextResponse.json({ 
+        error: 'Company name is required' 
+      }, { status: 400 });
+    }
+
+    // Prepare company data for insertion
+    // For sourcing companies (no fundId), don't require investmentAmount
+    const companyData: any = {
+      name: name.trim(),
+      sector: sector?.trim() || null,
+      funnel_status: funnel_status || stage || 'prospect', // Default to prospect for sourcing
+      status: 'active',
+    };
+
+    // Only include investment-related fields if provided (for portfolio companies)
+    if (otherFields.total_invested_usd !== undefined) {
+      companyData.total_invested_usd = otherFields.total_invested_usd;
+    }
+    if (otherFields.ownership_percentage !== undefined) {
+      companyData.ownership_percentage = otherFields.ownership_percentage;
+    }
+    if (otherFields.first_investment_date) {
+      companyData.first_investment_date = otherFields.first_investment_date;
+    }
+    if (otherFields.current_arr_usd !== undefined) {
+      companyData.current_arr_usd = otherFields.current_arr_usd;
+    }
+    if (otherFields.fund_id) {
+      companyData.fund_id = otherFields.fund_id;
+    }
 
     const { data, error } = await supabaseService
       .from('companies')
-      .insert([body])
+      .insert([companyData])
       .select();
 
     if (error) {
       console.error('Supabase error:', error);
-      return NextResponse.json({ error: 'Failed to create company' }, { status: 500 });
+      return NextResponse.json({ 
+        error: 'Failed to create company',
+        details: error.message 
+      }, { status: 500 });
     }
 
     return NextResponse.json(data?.[0] || {});

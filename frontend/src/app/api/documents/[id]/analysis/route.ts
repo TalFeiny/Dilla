@@ -21,8 +21,8 @@ function transformAnalysisData(dbData: any) {
   console.log('Extracted data:', extractedData);
   console.log('Issue analysis:', issueAnalysis);
 
-  // Extract company name from filename or business updates
-  let companyName = extractedData.company_info?.name || extractedData.name;
+  // Extract company name: nested (company_info.name) or flat (company_name, name)
+  let companyName = extractedData.company_info?.name ?? (extractedData.company_name as string) ?? extractedData.name;
   if (!companyName && dbData.storage_path) {
     const filename = dbData.storage_path.split('/').pop() || '';
     // Handle common filename patterns
@@ -39,8 +39,8 @@ function transformAnalysisData(dbData: any) {
     }
   }
 
-  // Extract sector from business updates, industry terms, or sector classification
-  let sector = extractedData.company_info?.sector || extractedData.sector;
+  // Extract sector: nested, flat, or classification
+  let sector = extractedData.company_info?.sector ?? (extractedData.sector as string);
   
   // Check for explicit sector classification first
   if (!sector && extractedData.sector_classification?.primary_sector) {
@@ -63,8 +63,8 @@ function transformAnalysisData(dbData: any) {
     }
   }
 
-  // Extract stage from business updates or document type
-  let stage = extractedData.company_info?.stage || extractedData.stage;
+  // Extract stage: nested, flat, or inferred from document type
+  let stage = extractedData.company_info?.stage ?? (extractedData.stage as string);
   if (!stage) {
     if (dbData.document_type === 'monthly_update') {
       stage = 'Growth Stage';
@@ -85,36 +85,42 @@ function transformAnalysisData(dbData: any) {
     },
     extracted_data: {
       financial_metrics: {
-        arr: extractedData.financial_metrics?.arr || extractedData.arr || null,
-        burn_rate: extractedData.financial_metrics?.burn_rate || extractedData.burn_rate || null,
-        runway_months: extractedData.financial_metrics?.runway_months || extractedData.runway_months || null,
-        growth_rate: extractedData.financial_metrics?.growth_rate || extractedData.growth_rate || null,
-        revenue: extractedData.financial_metrics?.revenue || null,
-        mrr: extractedData.financial_metrics?.mrr || null,
-        cash_balance: extractedData.financial_metrics?.cash_balance || null,
+        arr: extractedData.financial_metrics?.arr ?? extractedData.arr ?? null,
+        burn_rate: extractedData.financial_metrics?.burn_rate ?? extractedData.burn_rate ?? null,
+        runway_months: extractedData.financial_metrics?.runway_months ?? extractedData.runway_months ?? null,
+        growth_rate: extractedData.financial_metrics?.growth_rate ?? extractedData.growth_rate ?? null,
+        revenue: extractedData.financial_metrics?.revenue ?? extractedData.revenue ?? null,
+        mrr: extractedData.financial_metrics?.mrr ?? null,
+        cash_balance: extractedData.financial_metrics?.cash_balance ?? extractedData.cash_balance ?? null,
       },
+      market_size: extractedData.market_size ?? null,
+      red_flags: Array.isArray(extractedData.red_flags) ? extractedData.red_flags : [],
+      implications: Array.isArray(extractedData.implications) ? extractedData.implications : [],
       operational_metrics: {
-        headcount: extractedData.operational_metrics?.headcount || null,
-        new_hires: extractedData.operational_metrics?.new_hires || null,
-        customer_count: extractedData.operational_metrics?.customer_count || null,
-        churn_rate: extractedData.operational_metrics?.churn_rate || null,
-        cac: extractedData.operational_metrics?.cac || null,
-        ltv: extractedData.operational_metrics?.ltv || null,
+        headcount: extractedData.operational_metrics?.headcount ?? extractedData.headcount ?? null,
+        new_hires: extractedData.operational_metrics?.new_hires ?? null,
+        customer_count: extractedData.operational_metrics?.customer_count ?? null,
+        churn_rate: extractedData.operational_metrics?.churn_rate ?? null,
+        cac: extractedData.operational_metrics?.cac ?? null,
+        ltv: extractedData.operational_metrics?.ltv ?? null,
       },
       company_info: {
         name: companyName,
         sector: sector,
         stage: stage,
-        employees: extractedData.company_info?.employees || extractedData.employees || null,
-        founded_year: extractedData.company_info?.founded_year || extractedData.founded_year || null,
-        valuation: extractedData.company_info?.valuation || extractedData.valuation || null,
-        funding_raised: extractedData.company_info?.funding_raised || extractedData.funding_raised || null,
-        business_model: extractedData.business_updates?.product_updates?.join(', ') || null,
-        achievements: extractedData.business_updates?.achievements || [],
-        challenges: extractedData.business_updates?.challenges || [],
-        competitors: extractedData.extracted_entities?.competitors_mentioned || [],
-        industry_terms: extractedData.extracted_entities?.industry_terms || [],
-        partners_mentioned: extractedData.extracted_entities?.partners_mentioned || [],
+        category: extractedData.company_info?.category ?? extractedData.category ?? null,
+        employees: extractedData.company_info?.employees ?? extractedData.employees ?? null,
+        founded_year: extractedData.company_info?.founded_year ?? extractedData.founded_year ?? null,
+        valuation: extractedData.company_info?.valuation ?? extractedData.valuation ?? extractedData.valuation_pre_money ?? null,
+        funding_raised: extractedData.company_info?.funding_raised ?? extractedData.total_funding ?? extractedData.funding_raised ?? null,
+        business_model: extractedData.company_info?.business_model ?? (extractedData.business_model as string) ?? extractedData.business_updates?.product_updates?.join(', ') ?? null,
+        achievements: extractedData.business_updates?.achievements ?? [],
+        challenges: extractedData.business_updates?.challenges ?? [],
+        competitors: extractedData.extracted_entities?.competitors_mentioned ?? [],
+        industry_terms: extractedData.extracted_entities?.industry_terms ?? [],
+        partners_mentioned: extractedData.extracted_entities?.partners_mentioned ?? [],
+        summary: (extractedData.summary as string) ?? (extractedData.business_updates as { latest_update?: string })?.latest_update ?? null,
+        key_metrics: Array.isArray(extractedData.key_metrics) ? extractedData.key_metrics : (extractedData.business_updates?.product_updates ?? []),
       },
     },
     comparables_analysis: {
@@ -146,16 +152,22 @@ function transformAnalysisData(dbData: any) {
       analysis_summary: comparablesAnalysis.analysis_summary || {},
     },
     issue_analysis: {
-      red_flags: Array.isArray(issueAnalysis.red_flags) 
-        ? issueAnalysis.red_flags.map((flag: any) => ({
+      red_flags: [
+        ...(Array.isArray(extractedData.red_flags) ? extractedData.red_flags.map((flag: any) => ({
             severity: 'medium' as const,
             description: typeof flag === 'string' ? flag : 'Unknown issue',
+            category: 'extracted'
+          })) : []),
+        ...(Array.isArray(issueAnalysis.red_flags) ? issueAnalysis.red_flags.map((flag: any) => ({
+            severity: 'medium' as const,
+            description: typeof flag === 'string' ? flag : (flag?.description ?? 'Unknown issue'),
             category: 'general'
-          }))
-        : [],
+          })) : []),
+      ],
       overall_sentiment: issueAnalysis.overall_sentiment || 'neutral',
       confidence_level: issueAnalysis.confidence_level || 'medium',
       key_risks: Array.isArray(issueAnalysis.key_concerns) ? issueAnalysis.key_concerns : [],
+      key_concerns: Array.isArray(issueAnalysis.key_concerns) ? issueAnalysis.key_concerns : [], // Alias for backwards compatibility
       positive_indicators: Array.isArray(issueAnalysis.positive_indicators) ? issueAnalysis.positive_indicators : [],
       recommendations: Array.isArray(issueAnalysis.recommendations) ? issueAnalysis.recommendations : [],
       missing_metrics: Array.isArray(issueAnalysis.missing_metrics) ? issueAnalysis.missing_metrics : [],

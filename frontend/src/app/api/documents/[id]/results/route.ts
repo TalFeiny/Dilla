@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-const supabase = createClient(supabaseUrl, supabaseKey);
+import { supabaseService } from '@/lib/supabase';
 
 /**
  * @swagger
@@ -67,7 +62,11 @@ export async function GET(
   try {
     const { id } = await params;
 
-    const { data, error } = await supabase
+    if (!supabaseService) {
+      return NextResponse.json({ error: 'Database unavailable' }, { status: 503 });
+    }
+
+    const { data, error } = await supabaseService
       .from('processed_documents')
       .select('*')
       .eq('id', parseInt(id))

@@ -121,7 +121,7 @@ async function handleRequest(request: NextRequest) {
             },
           });
 
-          return new Response(stream, {
+          return new NextResponse(stream, {
             headers: {
               'Content-Type': 'text/event-stream',
               'Cache-Control': 'no-cache',

@@ -1,35 +1,32 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { supabaseService } from '@/lib/supabase';
 
 export async function GET() {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    
-    if (!supabaseUrl || !supabaseServiceKey) {
+    if (!supabaseService) {
       return NextResponse.json({ error: 'Database configuration error' }, { status: 500 });
     }
-    
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Use count queries instead of fetching all data
+    // Use actual schema: funds (not portfolio_companies), companies with fund_id
     const [
       { count: documentsCount },
       { count: companiesCount },
-      { count: portfoliosCount },
-      { count: lpsCount }
+      { count: portfoliosCount }
     ] = await Promise.all([
-      supabase.from('processed_documents').select('*', { count: 'exact', head: true }),
-      supabase.from('companies').select('*', { count: 'exact', head: true }),
-      supabase.from('portfolio_companies').select('*', { count: 'exact', head: true }),
-      supabase.from('limited_partners').select('*', { count: 'exact', head: true })
+      supabaseService.from('processed_documents').select('*', { count: 'exact', head: true }),
+      supabaseService.from('companies').select('*', { count: 'exact', head: true }),
+      supabaseService.from('funds').select('*', { count: 'exact', head: true })
     ]);
+
+    // Limited partners table doesn't exist yet - return 0 until schema is added
+    const lpsCount = 0;
 
     const stats = {
       documents: documentsCount || 0,
       companies: companiesCount || 0,
       portfolios: portfoliosCount || 0,
-      lps: lpsCount || 0
+      lps: lpsCount
     };
 
     // Cache for 5 minutes

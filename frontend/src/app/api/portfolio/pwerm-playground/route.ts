@@ -1,12 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { PWERMPlaygroundConfig, CreatePWERMAnalysisRequest } from '@/types/portfolio';
 import { spawn } from 'child_process';
-import path from 'path';
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
+import { resolveScriptPath } from '@/lib/scripts-path';
+import { supabaseService } from '@/lib/supabase';
 
 export async function POST(request: NextRequest) {
   try {
@@ -16,9 +12,11 @@ export async function POST(request: NextRequest) {
     if (!body.company_id || !body.base_assumptions) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
-    
+    if (!supabaseService) {
+      return NextResponse.json({ error: 'Database not configured' }, { status: 500 });
+    }
     // Get company data
-    const { data: company, error: companyError } = await supabase
+    const { data: company, error: companyError } = await supabaseService
       .from('companies')
       .select('*')
       .eq('id', body.company_id)
@@ -53,7 +51,7 @@ export async function POST(request: NextRequest) {
         scenarios: result.data.scenarios
       };
       
-      const { error: saveError } = await supabase
+      const { error: saveError } = await supabaseService
         .from('pwerm_analyses')
         .insert({
           portfolio_company_id: body.portfolio_company_id,
@@ -88,8 +86,11 @@ export async function POST(request: NextRequest) {
 }
 
 async function runPWERMScript(config: any): Promise<{ success: boolean; data?: any; error?: string }> {
+  const { path: scriptPath, tried } = resolveScriptPath('pwerm8_playground.py');
+  if (!scriptPath) {
+    return { success: false, error: `PWERM playground script not found. Tried: ${tried.join(', ')}. Set SCRIPTS_DIR or run from repo root.` };
+  }
   return new Promise((resolve) => {
-    const scriptPath = path.join(process.cwd(), 'scripts', 'pwerm8_playground.py');
     const configJson = JSON.stringify(config);
     
     const child = spawn('python3', [scriptPath, '--config', configJson], {

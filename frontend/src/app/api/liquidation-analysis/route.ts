@@ -1,23 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs/promises';
+import { supabaseService } from '@/lib/supabase';
+import { resolveScriptPath } from '@/lib/scripts-path';
 
 const execAsync = promisify(exec);
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 export async function POST(request: NextRequest) {
   try {
     const { companyId, scenarios } = await request.json();
 
     // Fetch funding history from database
-    const { data: fundingRounds, error: fundingError } = await supabase
+    if (!supabaseService) {
+      return NextResponse.json({ error: 'Database not configured' }, { status: 500 });
+    }
+    const { data: fundingRounds, error: fundingError } = await supabaseService
       .from('funding_rounds')
       .select('*')
       .eq('company_id', companyId)
@@ -32,7 +31,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Fetch company details
-    const { data: company, error: companyError } = await supabase
+    const { data: company, error: companyError } = await supabaseService
       .from('companies')
       .select('*')
       .eq('id', companyId)
@@ -67,7 +66,13 @@ export async function POST(request: NextRequest) {
     };
 
     // Run Python liquidation analysis
-    const scriptPath = path.join(process.cwd(), 'scripts', 'run_liquidation_analysis.py');
+    const { path: scriptPath, tried } = resolveScriptPath('run_liquidation_analysis.py');
+    if (!scriptPath) {
+      return NextResponse.json(
+        { error: `Liquidation script not found. Tried: ${tried.join(', ')}. Set SCRIPTS_DIR or run from repo root.` },
+        { status: 500 }
+      );
+    }
     const inputPath = path.join('/tmp', `liq_input_${Date.now()}.json`);
     const outputPath = path.join('/tmp', `liq_output_${Date.now()}.json`);
 
@@ -93,7 +98,7 @@ export async function POST(request: NextRequest) {
     await fs.unlink(outputPath).catch(() => {});
 
     // Save analysis results to database
-    const { error: saveError } = await supabase
+    const { error: saveError } = await supabaseService
       .from('liquidation_analyses')
       .insert({
         company_id: companyId,
@@ -135,8 +140,11 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    if (!supabaseService) {
+      return NextResponse.json({ error: 'Database not configured' }, { status: 500 });
+    }
     // Fetch latest liquidation analysis
-    const { data, error } = await supabase
+    const { data, error } = await supabaseService
       .from('liquidation_analyses')
       .select('*')
       .eq('company_id', companyId)

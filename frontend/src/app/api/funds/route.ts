@@ -60,14 +60,23 @@ export async function GET(request: NextRequest) {
       console.log('regulatory_filings table not found or error occurred');
     }
 
-    return NextResponse.json({
-      funds,
-      fundAccounts,
-      regulatoryFilings,
-      totalFunds: funds.length,
-      totalFundAccounts: fundAccounts.length,
-      totalRegulatoryFilings: regulatoryFilings.length
-    });
+    // Return funds array directly for backward compatibility
+    // Also support legacy format with nested structure
+    const format = searchParams.get('format') || 'array';
+    
+    if (format === 'legacy') {
+      return NextResponse.json({
+        funds,
+        fundAccounts,
+        regulatoryFilings,
+        totalFunds: funds.length,
+        totalFundAccounts: fundAccounts.length,
+        totalRegulatoryFilings: regulatoryFilings.length
+      });
+    }
+    
+    // Default: return funds array directly
+    return NextResponse.json(funds);
   } catch (error) {
     console.error('API error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

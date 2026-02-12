@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getBackendUrl } from '@/lib/backend-url';
 
 export async function GET(
   request: NextRequest,
@@ -17,8 +18,7 @@ export async function GET(
       );
     }
 
-    // Fetch deck data from backend storage service
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:8000';
+    const backendUrl = getBackendUrl();
     const backendEndpoint = `${backendUrl}/api/deck-storage/${deckId}`;
     
     console.log(`[DECK_DATA_API] Fetching from backend: ${backendEndpoint}`);
