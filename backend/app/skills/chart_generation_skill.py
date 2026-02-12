@@ -303,9 +303,38 @@ function renderCapTableSankey(containerId, ownership) {
         if not ownership_data:
             return None
         
+        # Detect dilution flow (round-to-round) vs ownership snapshot (percentages sum to 100)
+        has_dilution_flow = False
+        if isinstance(data, dict):
+            rounds = data.get("funding_rounds") or data.get("rounds") or []
+            has_dilution_flow = isinstance(rounds, list) and len(rounds) > 1
+        total_pct = sum(
+            float(v) if isinstance(v, (int, float)) else 0
+            for v in ownership_data.values()
+        )
+        is_snapshot = 85 <= total_pct <= 110 and not has_dilution_flow
+
+        if is_snapshot:
+            # Pie for ownership snapshot (Founders 60%, Investors 30%, ESOP 10%)
+            labels = list(ownership_data.keys())
+            values = [
+                float(v) if isinstance(v, (int, float)) else 0
+                for v in ownership_data.values()
+            ]
+            return {
+                "type": "pie",
+                "title": "Cap Table Ownership Snapshot",
+                "data": {
+                    "labels": labels,
+                    "datasets": [{"label": "Ownership %", "data": values}],
+                },
+                "renderType": "tableau",
+            }
+        
+        # Sankey for dilution-flow views (round-to-round)
         return {
             "type": "sankey",
-            "title": "Estimated Cap Table Structure",
+            "title": "Estimated Cap Table Structure (Dilution Flow)",
             "data": {
                 "ownership": ownership_data,
                 "nodes": self._create_sankey_nodes(ownership_data),
@@ -313,7 +342,8 @@ function renderCapTableSankey(containerId, ownership) {
             },
             "python_code": python_code,
             "javascript_code": javascript_code,
-            "rendering_engine": "d3.js"
+            "rendering_engine": "d3.js",
+            "renderType": "tableau",
         }
     
     async def _extract_ownership_data(self, data: Any) -> Optional[Dict]:

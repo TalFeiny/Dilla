@@ -16,6 +16,7 @@ import importlib
 import json
 import hashlib
 from collections import deque
+from dataclasses import dataclass, field
 
 # Import settings
 from app.core.config import settings
@@ -45,12 +46,71 @@ class ModelCapability(Enum):
     CHEAP = "cheap"
 
 
+@dataclass
+class IterationCost:
+    """Track cost for a single agent loop iteration."""
+    reason_tokens: int = 0
+    reason_cost: float = 0.0
+    reflect_tokens: int = 0
+    reflect_cost: float = 0.0
+
+
+class RequestBudget:
+    """Tracks cumulative token usage and cost for a single agent request."""
+
+    def __init__(self, max_cost: float = 2.0, max_tokens: int = 500_000):
+        self.max_cost = max_cost
+        self.max_tokens = max_tokens
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_cost = 0.0
+        self.calls: List[Dict[str, Any]] = []
+        self.iterations: List[IterationCost] = []
+
+    @property
+    def remaining_cost(self) -> float:
+        return max(0.0, self.max_cost - self.total_cost)
+
+    @property
+    def exhausted(self) -> bool:
+        return self.total_cost >= self.max_cost or (self.total_input_tokens + self.total_output_tokens) >= self.max_tokens
+
+    def record(self, input_tokens: int, output_tokens: int, cost: float, model: str):
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        self.total_cost += cost
+        self.calls.append({
+            "model": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost": cost,
+        })
+
+    def warn_if_expensive(self, caller: str) -> Optional[str]:
+        """Return warning string if budget is >60% consumed."""
+        pct = self.total_cost / self.max_cost if self.max_cost > 0 else 0
+        if pct > 0.6:
+            return f"Budget {pct:.0%} consumed (${self.total_cost:.3f}/${self.max_cost}). Caller: {caller}"
+        return None
+
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "total_cost": round(self.total_cost, 4),
+            "remaining_cost": round(self.remaining_cost, 4),
+            "num_calls": len(self.calls),
+            "exhausted": self.exhausted,
+            "iterations": len(self.iterations),
+        }
+
+
 class ModelRouter:
     """
     Routes requests to different models with fallback support
     Handles rate limiting, errors, and cost optimization
     """
-    
+
     def __init__(self):
         # Initialize API clients (lazy initialization - don't create async clients here)
         self.anthropic_client = None
@@ -59,7 +119,10 @@ class ModelRouter:
         self.session = None
         self._genai_module = None
         self._clients_initialized = False
-        
+
+        # Per-request budget (set externally before a chain runs)
+        self._active_budget: Optional[RequestBudget] = None
+
         # Core state objects used before any async initialization occurs
         self.rate_limits: Dict[str, Any] = {}
         self.last_request_time: Dict[str, float] = {}
@@ -70,6 +133,7 @@ class ModelRouter:
         self.max_concurrent_per_model: Dict[str, int] = {
             "claude-sonnet-4-5": 3,
             "gpt-5-mini": 5,
+            "gpt-5.2": 2,  # Lower concurrency for long-running compute model
             "gemini-pro": 5,
             "mixtral-8x7b": 10,
             "llama2-70b": 10,
@@ -158,6 +222,15 @@ class ModelRouter:
                     "cost_per_1k_input": 0.0005,
                     "cost_per_1k_output": 0.0015,
                     "priority": 2
+                },
+                "gpt-5.2": {
+                    "provider": ModelProvider.OPENAI,
+                    "model": "gpt-5.2",
+                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.CODE, ModelCapability.STRUCTURED],
+                    "max_tokens": 8192,  # Higher token limit for long-running compute
+                    "cost_per_1k_input": 0.01,  # Higher cost for advanced model
+                    "cost_per_1k_output": 0.03,
+                    "priority": 1  # High priority for complex analysis tasks
                 },
                 
                 # Google Models
@@ -359,6 +432,13 @@ class ModelRouter:
             Dict with response, model used, cost, and latency
         """
         
+        # Budget check — if a budget is active and exhausted, fail fast
+        if self._active_budget and self._active_budget.exhausted:
+            raise Exception(
+                f"Request budget exhausted (${self._active_budget.total_cost:.2f} / "
+                f"${self._active_budget.max_cost:.2f}). Returning partial results."
+            )
+
         # COMPREHENSIVE LOGGING: Log all get_completion calls with full context
         context_info = f" (called by: {caller_context})" if caller_context else ""
         prompt_length = len(prompt)
@@ -474,20 +554,30 @@ class ModelRouter:
                         logger.info(f"[MODEL_ROUTER] 📏 Response length: {response_length:,} chars | Retry count: {retry}")
                         logger.info(f"[MODEL_ROUTER] 📝 Response preview (first 200 chars): {response[:200]}...")
                         
+                        # Estimate tokens (4 chars ≈ 1 token)
+                        est_input_tokens = int((prompt_length + system_length) / 4)
+                        est_output_tokens = int(response_length / 4)
+
+                        # Record in active budget if set
+                        if self._active_budget:
+                            self._active_budget.record(est_input_tokens, est_output_tokens, cost, model_name)
+
                         result = {
                             "response": response,
                             "model": model_name,
                             "provider": model_config["provider"].value,
                             "cost": cost,
                             "latency": latency,
-                            "retry_count": retry
+                            "retry_count": retry,
+                            "input_tokens_est": est_input_tokens,
+                            "output_tokens_est": est_output_tokens,
                         }
-                        
+
                         # Cache result (only for non-json_mode to avoid stale structured data)
                         if not json_mode:
                             cache_key = self._get_request_cache_key(prompt, system_prompt, model_name, max_tokens, temperature)
                             self._cache_response(cache_key, result)
-                        
+
                         return result
                     
                     except Exception as e:
@@ -675,14 +765,18 @@ class ModelRouter:
         messages.append({"role": "user", "content": prompt})
         
         # Use JSON mode for structured extraction when specified (works for modern GPT models too)
+        # Some models (e.g. gpt-5-mini) only support the default temperature (1).
+        # For those models, omit the temperature parameter entirely.
+        no_custom_temp_models = ("gpt-5-mini", "o1", "o3")
+        model_lower = model.lower()
         kwargs = {
             "model": model,
             "messages": messages,
-            "temperature": temp,
         }
+        if not any(identifier in model_lower for identifier in no_custom_temp_models):
+            kwargs["temperature"] = temp
         
         # Use max_completion_tokens for newer OpenAI models (gpt-5 / gpt-4o / o1 variants)
-        model_lower = model.lower()
         modern_token_param_models = ("gpt-5", "gpt-4o", "o1")
         if any(identifier in model_lower for identifier in modern_token_param_models):
             kwargs["max_completion_tokens"] = max_tokens
@@ -860,10 +954,10 @@ class ModelRouter:
         # Sort by priority (lower is better)
         capable_models.sort(key=lambda x: self.model_configs[x]["priority"])
         
-        # If no preference specified, ensure default order: Claude 4.5 -> GPT-5-Mini -> others
+        # If no preference specified, ensure default order: Claude 4.5 -> GPT-5.2 -> GPT-5-Mini -> others
         if not preferred:
-            # Reorder to put claude-sonnet-4-5 first, gpt-5-mini second, then rest
-            default_order = ["claude-sonnet-4-5", "gpt-5-mini"]
+            # Reorder to put claude-sonnet-4-5 first, gpt-5.2 second (for long compute), gpt-5-mini third, then rest
+            default_order = ["claude-sonnet-4-5", "gpt-5.2", "gpt-5-mini"]
             preferred_available = [m for m in default_order if m in capable_models]
             other_models = [m for m in capable_models if m not in default_order]
             result = preferred_available + other_models
@@ -912,6 +1006,7 @@ class ModelRouter:
             min_delay = {
                 "claude-sonnet-4-5": 0.5,  # 2 requests per second
                 "gpt-5-mini": 0.1,          # 10 requests per second
+                "gpt-5.2": 1.0,            # 1 request per second (long-running compute model)
                 "gpt-4-turbo": 0.3,
                 "gpt-4": 0.5,
                 "gpt-3.5-turbo": 0.05,  # 20 requests per second
@@ -1056,6 +1151,29 @@ class ModelRouter:
             self.error_counts.clear()
             logger.info(f"[MODEL_ROUTER] ✅ Reset all circuit breakers")
     
+    # ------------------------------------------------------------------
+    # Budget helpers
+    # ------------------------------------------------------------------
+
+    def start_budget(self, max_cost: float = 2.0, max_tokens: int = 500_000) -> RequestBudget:
+        """Start a new per-request budget. Returns the budget object."""
+        self._active_budget = RequestBudget(max_cost=max_cost, max_tokens=max_tokens)
+        logger.info(f"[MODEL_ROUTER] Budget started: max_cost=${max_cost}, max_tokens={max_tokens}")
+        return self._active_budget
+
+    def end_budget(self) -> Optional[Dict[str, Any]]:
+        """End the active budget and return its summary."""
+        if not self._active_budget:
+            return None
+        summary = self._active_budget.summary()
+        logger.info(f"[MODEL_ROUTER] Budget ended: {summary}")
+        self._active_budget = None
+        return summary
+
+    @property
+    def budget(self) -> Optional[RequestBudget]:
+        return self._active_budget
+
     async def close(self):
         """Close any open sessions"""
         if self.session:

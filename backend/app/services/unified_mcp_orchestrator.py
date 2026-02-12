@@ -16,99 +16,152 @@ from enum import Enum
 from dataclasses import dataclass, field
 import math
 import os
+import re
+import random
 
 # Track guarded import errors so the module still loads even if dependencies fail
-DEPENDENCY_IMPORT_ERRORS: Dict[str, Exception] = {}
+# Critical = orchestrator cannot function; Non-critical = gracefully degrade
+CRITICAL_IMPORT_ERRORS: Dict[str, Exception] = {}
+NON_CRITICAL_IMPORT_ERRORS: Dict[str, Exception] = {}
 
 # All LLM calls go through ModelRouter - no direct imports
 from app.core.config import settings
 
+# --- Critical imports (orchestrator cannot function without these) ---
 try:
     from app.services.structured_data_extractor import StructuredDataExtractor
 except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["StructuredDataExtractor"] = exc
+    CRITICAL_IMPORT_ERRORS["StructuredDataExtractor"] = exc
     StructuredDataExtractor = None  # type: ignore[assignment]
 
 try:
     from app.services.intelligent_gap_filler import IntelligentGapFiller
 except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["IntelligentGapFiller"] = exc
+    CRITICAL_IMPORT_ERRORS["IntelligentGapFiller"] = exc
     IntelligentGapFiller = None  # type: ignore[assignment]
 
 try:
     from app.services import valuation_engine_service as valuation_module
 except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["valuation_engine_service"] = exc
+    CRITICAL_IMPORT_ERRORS["valuation_engine_service"] = exc
     valuation_module = None  # type: ignore[assignment]
 
 try:
     from app.services.valuation_engine_service import (
-        ValuationRequest, 
+        ValuationRequest,
         Stage,
         ValuationMethod
     )
 except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["valuation_engine_service_symbols"] = exc
+    CRITICAL_IMPORT_ERRORS["valuation_engine_service_symbols"] = exc
     ValuationRequest = Stage = ValuationMethod = None  # type: ignore[assignment]
 
 # Import centralized data validator
 try:
     from app.services.data_validator import (
-        ensure_numeric, safe_divide, safe_get_value, 
+        ensure_numeric, safe_divide, safe_get_value,
         safe_multiply, validate_company_data, safe_get
     )
 except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["data_validator"] = exc
+    CRITICAL_IMPORT_ERRORS["data_validator"] = exc
     ensure_numeric = safe_divide = safe_get_value = None  # type: ignore[assignment]
     safe_multiply = validate_company_data = safe_get = None  # type: ignore[assignment]
 
 try:
     from app.services.pre_post_cap_table import PrePostCapTable
 except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["PrePostCapTable"] = exc
+    CRITICAL_IMPORT_ERRORS["PrePostCapTable"] = exc
     PrePostCapTable = None  # type: ignore[assignment]
 
 try:
     from app.services.advanced_cap_table import CapTableCalculator
 except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["CapTableCalculator"] = exc
+    CRITICAL_IMPORT_ERRORS["CapTableCalculator"] = exc
     CapTableCalculator = None  # type: ignore[assignment]
 
 try:
     from app.services.citation_manager import CitationManager
 except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["CitationManager"] = exc
+    CRITICAL_IMPORT_ERRORS["CitationManager"] = exc
     CitationManager = None  # type: ignore[assignment]
-
-try:
-    from app.services.chart_renderer_service import chart_renderer
-except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["chart_renderer_service"] = exc
-    chart_renderer = None  # type: ignore[assignment]
 
 try:
     from app.services.ownership_return_analyzer import OwnershipReturnAnalyzer, InvestmentType
 except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["OwnershipReturnAnalyzer"] = exc
+    CRITICAL_IMPORT_ERRORS["OwnershipReturnAnalyzer"] = exc
     OwnershipReturnAnalyzer = InvestmentType = None  # type: ignore[assignment]
 
 try:
     from app.services.comprehensive_deal_analyzer import ComprehensiveDealAnalyzer
 except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["ComprehensiveDealAnalyzer"] = exc
+    CRITICAL_IMPORT_ERRORS["ComprehensiveDealAnalyzer"] = exc
     ComprehensiveDealAnalyzer = None  # type: ignore[assignment]
+
+try:
+    from app.core.error_handler import (
+        DillaErrorHandler, RetryConfig, RetryStrategy, with_retry, error_handler as global_error_handler
+    )
+except Exception as exc:  # pragma: no cover - defensive import guard
+    CRITICAL_IMPORT_ERRORS["DillaErrorHandler"] = exc
+    DillaErrorHandler = RetryConfig = RetryStrategy = with_retry = None  # type: ignore[assignment]
+    global_error_handler = None  # type: ignore[assignment]
+
+# --- Non-critical imports (gracefully degrade, log warning) ---
+try:
+    from app.services.matrix_query_orchestrator import MatrixQueryOrchestrator
+    MATRIX_QUERY_ORCHESTRATOR_AVAILABLE = True
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["MatrixQueryOrchestrator"] = exc
+    MatrixQueryOrchestrator = None  # type: ignore[assignment]
+    MATRIX_QUERY_ORCHESTRATOR_AVAILABLE = False
+
+try:
+    from app.services.chart_renderer_service import chart_renderer
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["chart_renderer_service"] = exc
+    chart_renderer = None  # type: ignore[assignment]
 
 try:
     from app.utils.formatters import DeckFormatter
 except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["DeckFormatter"] = exc
+    NON_CRITICAL_IMPORT_ERRORS["DeckFormatter"] = exc
     DeckFormatter = None  # type: ignore[assignment]
 
 try:
     from app.services.config_loader import ConfigLoader
 except Exception as exc:  # pragma: no cover - defensive import guard
-    DEPENDENCY_IMPORT_ERRORS["ConfigLoader"] = exc
+    NON_CRITICAL_IMPORT_ERRORS["ConfigLoader"] = exc
     ConfigLoader = None  # type: ignore[assignment]
+
+try:
+    from app.services.fund_modeling_service import FundModelingService
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["FundModelingService"] = exc
+    FundModelingService = None  # type: ignore[assignment]
+
+try:
+    from app.services.nl_scenario_composer import NLScenarioComposer
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["NLScenarioComposer"] = exc
+    NLScenarioComposer = None  # type: ignore[assignment]
+
+try:
+    from app.services.company_history_analysis_service import CompanyHistoryAnalysisService
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["CompanyHistoryAnalysisService"] = exc
+    CompanyHistoryAnalysisService = None  # type: ignore[assignment]
+
+try:
+    from app.services.fpa_regression_service import FPARegressionService
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["FPARegressionService"] = exc
+    FPARegressionService = None  # type: ignore[assignment]
+
+try:
+    from app.services.fpa_query_classifier import FPAQueryClassifier
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["FPAQueryClassifier"] = exc
+    FPAQueryClassifier = None  # type: ignore[assignment]
 
 MODEL_ROUTER_IMPORT_ERROR: Optional[Exception] = None
 try:
@@ -166,6 +219,379 @@ class SkillCategory(Enum):
     FORMATTING = "formatting"
 
 
+# Phase 6: Maps grid skill name -> (action_id from cell_action_registry, column_hint)
+# Covers all registry actions that can run per matrix row. Add new actions here.
+GRID_ACTION_MAP: Dict[str, Tuple[str, str]] = {
+    # Financial formulas
+    "grid-run-irr": ("financial.irr", "value"),
+    "grid-run-npv": ("financial.npv", "value"),
+    "grid-run-moic": ("financial.moic", "value"),
+    "grid-run-cagr": ("financial.cagr", "value"),
+    # Valuation
+    "grid-run-valuation": ("valuation_engine.auto", "valuation"),
+    "grid-run-pwerm": ("valuation_engine.pwerm", "valuation"),
+    "grid-run-dcf": ("valuation_engine.dcf", "valuation"),
+    "grid-run-opm": ("valuation_engine.opm", "valuation"),
+    "grid-run-waterfall-valuation": ("valuation_engine.waterfall", "valuation"),
+    "grid-run-recent-transaction": ("valuation_engine.recent_transaction", "valuation"),
+    "grid-run-cost-method": ("valuation_engine.cost_method", "valuation"),
+    "grid-run-milestone": ("valuation_engine.milestone", "valuation"),
+    # Revenue & charts
+    "grid-run-revenue-projection": ("revenue_projection.build", "revenue"),
+    "grid-run-chart": ("chart_intelligence.generate", "value"),
+    # NAV
+    "grid-run-nav": ("nav.calculate", "valuation"),
+    "grid-run-nav-company": ("nav.calculate_company", "valuation"),
+    "grid-run-nav-portfolio": ("nav.calculate_portfolio", "value"),
+    "grid-run-nav-timeseries": ("nav.timeseries_company", "valuation"),
+    # Fund & portfolio (fund-level)
+    "grid-run-fund-metrics": ("fund_metrics.calculate", "value"),
+    "grid-run-followon": ("followon_strategy.recommend", "value"),
+    "grid-run-portfolio-nav": ("portfolio.total_nav", "value"),
+    "grid-run-portfolio-invested": ("portfolio.total_invested", "value"),
+    "grid-run-dpi": ("portfolio.dpi", "value"),
+    "grid-run-tvpi": ("portfolio.tvpi", "value"),
+    "grid-run-dpi-sankey": ("portfolio.dpi_sankey", "value"),
+    "grid-run-portfolio-optimize": ("portfolio.optimize", "value"),
+    "grid-run-nav-timeseries-fund": ("nav.timeseries", "value"),
+    "grid-run-nav-forecast": ("nav.forecast", "value"),
+    # Market
+    "grid-find-comparables": ("market.find_comparables", "value"),
+    "grid-run-market-timing": ("market.timing_analysis", "value"),
+    "grid-run-investment-readiness": ("market.investment_readiness", "value"),
+    "grid-run-sector-landscape": ("market.sector_landscape", "value"),
+    # Document
+    "grid-run-document-extract": ("document.extract", "value"),
+    "grid-run-document-analyze": ("document.analyze", "value"),
+    # Waterfall & cap table
+    "grid-run-waterfall": ("waterfall.calculate", "valuation"),
+    "grid-run-waterfall-breakpoints": ("waterfall.breakpoints", "value"),
+    "grid-run-waterfall-exit": ("waterfall.exit_scenarios", "value"),
+    "grid-run-cap-table": ("cap_table.calculate", "value"),
+    "grid-run-cap-table-ownership": ("cap_table.ownership", "value"),
+    "grid-run-cap-table-dilution": ("cap_table.dilution", "value"),
+    # Ownership
+    "grid-run-ownership": ("ownership.analyze", "value"),
+    "grid-run-return-scenarios": ("ownership.return_scenarios", "value"),
+    # M&A
+    "grid-run-ma-acquisition": ("ma.model_acquisition", "value"),
+    "grid-run-ma-transactions": ("ma.transactions", "value"),
+    "grid-run-ma-synergy": ("ma.synergy", "value"),
+    # Skills (orchestrator)
+    "grid-fetch-company-data": ("skill.company_data_fetch", "valuation"),
+    "grid-run-funding-aggregation": ("skill.funding_aggregation", "value"),
+    "grid-run-market-research": ("skill.market_research", "value"),
+    "grid-run-competitive": ("skill.competitive_analysis", "value"),
+    "grid-run-skill-valuation": ("skill.valuation_engine", "valuation"),
+    "grid-run-skill-pwerm": ("skill.pwerm_calculator", "valuation"),
+    "grid-run-financial-analysis": ("skill.financial_analysis", "value"),
+    "grid-run-scenario-analysis": ("skill.scenario_analysis", "value"),
+    "grid-run-deal-comparison": ("skill.deal_comparison", "value"),
+    "grid-run-cap-table-gen": ("skill.cap_table_generation", "value"),
+    "grid-run-exit-modeling": ("skill.exit_modeling", "value"),
+    "grid-run-deck": ("skill.deck_storytelling", "value"),
+    "grid-run-excel": ("skill.excel_generation", "value"),
+    "grid-run-memo": ("skill.memo_generation", "value"),
+    "grid-run-skill-chart": ("skill.chart_generation", "value"),
+    "grid-run-portfolio-analysis": ("skill.portfolio_analysis", "value"),
+    "grid-run-fund-metrics-skill": ("skill.fund_metrics_calculator", "value"),
+    "grid-run-stage-analysis": ("skill.stage_analysis", "value"),
+    # Scoring & gap filler
+    "grid-run-scoring": ("scoring.score_company", "value"),
+    "grid-run-portfolio-dashboard": ("scoring.portfolio_dashboard", "value"),
+    "grid-run-gap-impact": ("gap_filler.ai_impact", "value"),
+    "grid-run-gap-filler": ("gap_filler.ai_valuation", "valuation"),
+    "grid-run-gap-market": ("gap_filler.market_opportunity", "value"),
+    "grid-run-gap-momentum": ("gap_filler.momentum", "value"),
+    "grid-run-gap-fund-fit": ("gap_filler.fund_fit", "value"),
+    # Scenario
+    "grid-run-scenario-compose": ("scenario.compose", "value"),
+    # Round modeling & report generation (delegated to orchestrator skills)
+    "grid-run-round-modeling": ("skill.round_modeler", "value"),
+    "grid-run-report": ("skill.report_generator", "value"),
+    # Portfolio scenario & health
+    "grid-run-portfolio-scenarios": ("skill.portfolio_scenario_modeler", "value"),
+    "grid-run-company-health": ("skill.company_health_dashboard", "value"),
+}
+
+# Trigger keywords for each grid skill (prompt substring match when matrix_context present)
+GRID_TRIGGER_MAP: Dict[str, List[str]] = {
+    "grid-run-irr": ["irr", "internal rate of return"],
+    "grid-run-npv": ["npv", "net present value"],
+    "grid-run-moic": ["moic", "multiple on invested"],
+    "grid-run-cagr": ["cagr", "compound annual growth"],
+    "grid-run-valuation": ["valuation", "run valuation", "auto valuation", "value", "value for", "value @", "value acme", "run valuation for"],
+    "grid-run-pwerm": ["pwerm", "run pwerm", "run pwerm for", "pwerm for"],
+    "grid-run-dcf": ["dcf", "run dcf", "discounted cash flow"],
+    "grid-run-opm": ["opm", "option pricing"],
+    "grid-run-waterfall-valuation": ["waterfall valuation"],
+    "grid-run-recent-transaction": ["recent transaction", "transaction valuation"],
+    "grid-run-cost-method": ["cost method"],
+    "grid-run-milestone": ["milestone valuation"],
+    "grid-run-revenue-projection": ["revenue projection", "project revenue"],
+    "grid-run-chart": ["generate chart", "chart from data"],
+    "grid-run-nav": ["nav", "calculate nav", "net asset value"],
+    "grid-run-nav-company": ["company nav"],
+    "grid-run-nav-portfolio": ["portfolio nav", "calculate portfolio nav"],
+    "grid-run-nav-timeseries": ["nav timeseries", "nav over time"],
+    "grid-run-fund-metrics": ["fund metrics", "dpi", "tvpi", "irr"],
+    "grid-run-followon": ["follow-on", "followon", "follow on strategy", "should we follow on", "extension", "sell", "pro rata", "pro-rata", "dilution"],
+    "grid-run-portfolio-nav": ["portfolio nav", "total nav"],
+    "grid-run-portfolio-invested": ["total invested", "invested capital"],
+    "grid-run-dpi": ["dpi", "distributed to paid"],
+    "grid-run-tvpi": ["tvpi", "total value to paid"],
+    "grid-run-dpi-sankey": ["dpi sankey", "sankey"],
+    "grid-run-portfolio-optimize": ["portfolio optimize", "optimize portfolio"],
+    "grid-run-nav-timeseries-fund": ["nav timeseries", "nav over time"],
+    "grid-run-nav-forecast": ["nav forecast"],
+    "grid-find-comparables": ["comparables", "comps", "find comps"],
+    "grid-run-market-timing": ["market timing", "timing analysis"],
+    "grid-run-investment-readiness": ["investment readiness"],
+    "grid-run-sector-landscape": ["sector landscape"],
+    "grid-run-document-extract": ["extract document", "extract document for", "parse document", "document extract"],
+    "grid-run-document-analyze": ["analyze document", "document analyze"],
+    "grid-run-waterfall": ["waterfall", "liquidation waterfall"],
+    "grid-run-waterfall-breakpoints": ["waterfall breakpoints", "breakpoints"],
+    "grid-run-waterfall-exit": ["exit scenario waterfall"],
+    "grid-run-cap-table": ["cap table", "calculate cap table"],
+    "grid-run-cap-table-ownership": ["ownership", "calculate ownership"],
+    "grid-run-cap-table-dilution": ["dilution path", "dilution"],
+    "grid-run-ownership": ["ownership analyze", "ownership scenarios"],
+    "grid-run-return-scenarios": ["return scenarios"],
+    "grid-run-ma-acquisition": ["ma acquisition", "model acquisition"],
+    "grid-run-ma-transactions": ["ma transactions", "ma search"],
+    "grid-run-ma-synergy": ["ma synergy", "synergy"],
+    "grid-fetch-company-data": ["enrich", "fetch data", "company data", "fetch company"],
+    "grid-run-funding-aggregation": ["funding aggregation", "funding history"],
+    "grid-run-market-research": ["market research", "tam", "sector research"],
+    "grid-run-competitive": ["competitive", "competitors", "competitor analysis"],
+    "grid-run-skill-valuation": ["skill valuation", "valuation engine"],
+    "grid-run-skill-pwerm": ["skill pwerm"],
+    "grid-run-financial-analysis": ["financial analysis", "financial metrics"],
+    "grid-run-scenario-analysis": ["scenario analysis", "monte carlo", "sensitivity"],
+    "grid-run-deal-comparison": ["deal comparison", "compare deals"],
+    "grid-run-cap-table-gen": ["cap table gen", "generate cap table"],
+    "grid-run-exit-modeling": ["exit modeling", "exit model"],
+    "grid-run-deck": ["generate deck", "deck", "presentation"],
+    "grid-run-excel": ["excel", "spreadsheet", "generate excel"],
+    "grid-run-memo": ["memo", "investment memo", "generate memo"],
+    "grid-run-skill-chart": ["skill chart", "chart generation"],
+    "grid-run-portfolio-analysis": ["portfolio analysis"],
+    "grid-run-fund-metrics-skill": ["fund metrics calculator"],
+    "grid-run-stage-analysis": ["stage analysis"],
+    "grid-run-scoring": ["score company", "score companies"],
+    "grid-run-portfolio-dashboard": ["portfolio dashboard", "dashboard"],
+    "grid-run-gap-impact": ["ai impact", "gap impact"],
+    "grid-run-gap-filler": ["gap fill", "infer", "fill gaps", "ai valuation"],
+    "grid-run-gap-market": ["market opportunity", "gap market"],
+    "grid-run-gap-momentum": ["momentum", "company momentum"],
+    "grid-run-gap-fund-fit": ["fund fit", "fund fit scoring"],
+    "grid-run-scenario-compose": ["scenario compose", "what if", "what happens", "stress test", "scenario"],
+    "grid-run-portfolio-scenarios": ["portfolio scenarios", "fund scenarios", "fund return scenarios", "what if portfolio"],
+    "grid-run-company-health": ["company health", "portfolio health", "health dashboard", "growth decay", "runway analysis"],
+    "grid-run-round-modeling": ["series d", "series c", "next round", "model round", "round modeling"],
+    "grid-run-report": ["generate report", "lp report", "follow-on memo", "gp deck", "quarterly report"],
+}
+
+
+# ---------------------------------------------------------------------------
+# Agent Tool Registry — wraps existing services as callable tools for the
+# ReAct agent loop.  Each tool has a handler (method name on the orchestrator),
+# a compact description for the LLM router, a cost tier, and a timeout.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AgentTool:
+    name: str
+    description: str        # ≤80 chars — shown to cheap routing LLM
+    handler: str            # method name on UnifiedMCPOrchestrator
+    input_schema: dict      # JSON-serializable hint for LLM
+    cost_tier: str = "free" # "free" (no LLM) | "cheap" | "expensive"
+    timeout_ms: int = 30_000
+
+
+AGENT_TOOLS: list[AgentTool] = [
+    AgentTool(
+        name="query_portfolio",
+        description="Filter/aggregate portfolio grid data by column, company, or metric.",
+        handler="_tool_query_portfolio",
+        input_schema={"query": "str", "filters": "dict?", "columns": "list[str]?"},
+    ),
+    AgentTool(
+        name="query_documents",
+        description="Search uploaded fund documents by keyword or metric.",
+        handler="_tool_query_documents",
+        input_schema={"query": "str", "company_id": "str?", "doc_type": "str?"},
+        cost_tier="free",
+    ),
+    AgentTool(
+        name="calculate_fund_metrics",
+        description="Calculate fund-level NAV, IRR, DPI, TVPI, pacing.",
+        handler="_tool_fund_metrics",
+        input_schema={"metrics": "list[str]", "fund_id": "str?"},
+    ),
+    AgentTool(
+        name="run_valuation",
+        description="Run PWERM/DCF/OPM/comparables valuation for a company.",
+        handler="_tool_valuation",
+        input_schema={"company_id": "str", "method": "str?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="run_scenario",
+        description="Model a what-if scenario on portfolio or company.",
+        handler="_tool_scenario",
+        input_schema={"scenario_description": "str", "affected_companies": "list[str]?"},
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
+    AgentTool(
+        name="generate_chart",
+        description="Generate chart config: bar, line, scatter, sankey, waterfall, probability_cloud, revenue_multiples_scatter.",
+        handler="_tool_chart",
+        input_schema={"chart_type": "str", "data_source": "str", "title": "str?"},
+    ),
+    AgentTool(
+        name="web_search",
+        description="Search web via Tavily for comparables, market data, currency rates, news.",
+        handler="_tool_web_search",
+        input_schema={"query": "str", "search_depth": "str?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="suggest_grid_edit",
+        description="Suggest a cell edit on the portfolio grid (accept/reject flow).",
+        handler="_tool_suggest_edit",
+        input_schema={"company": "str", "column": "str", "value": "any", "reasoning": "str"},
+    ),
+    AgentTool(
+        name="suggest_action",
+        description="Suggest an action item, warning, or insight.",
+        handler="_tool_suggest_action",
+        input_schema={"type": "str", "title": "str", "description": "str", "priority": "str?"},
+    ),
+    AgentTool(
+        name="write_to_memo",
+        description="Append sections to the working memo/LP report.",
+        handler="_tool_write_memo",
+        input_schema={"sections": "list[dict]"},
+    ),
+    AgentTool(
+        name="fetch_company_data",
+        description="Fetch company data from web (Tavily + extraction). Use for any company name — fetches funding, revenue, team, market data.",
+        handler="_tool_fetch_company",
+        input_schema={"company_name": "str"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="run_fpa",
+        description="Run FP&A: forecast, stress test, sensitivity, regression.",
+        handler="_tool_fpa",
+        input_schema={"query": "str", "type": "str?"},
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
+    AgentTool(
+        name="parse_accounts",
+        description="Parse raw financial accounts (P&L, balance sheet, cash flow) from text or doc.",
+        handler="_tool_parse_accounts",
+        input_schema={"text": "str?", "document_id": "str?", "format": "str?"},
+        cost_tier="expensive",
+        timeout_ms=45_000,
+    ),
+    AgentTool(
+        name="fx_check",
+        description="Check FX rates and compute currency impact on portfolio companies. Use when companies have non-USD revenue.",
+        handler="_tool_fx_check",
+        input_schema={"base_currency": "str?"},
+        cost_tier="cheap",
+        timeout_ms=10_000,
+    ),
+    AgentTool(
+        name="generate_deck",
+        description="Generate investment deck/presentation from company data already in shared_data. Call after fetching companies and running analyses.",
+        handler="_tool_generate_deck",
+        input_schema={"title": "str?"},
+        cost_tier="expensive",
+        timeout_ms=120_000,
+    ),
+    AgentTool(
+        name="generate_memo",
+        description="Generate investment memo or LP report from data already in shared_data. Supports memo types: investment, followon, lp_report, gp_strategy.",
+        handler="_tool_generate_memo",
+        input_schema={"memo_type": "str?", "prompt": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="run_skill",
+        description="Run a registered analysis skill by name. Available: valuation-engine, cap-table-generator, exit-modeler, scenario-generator, portfolio-analyzer, fund-metrics-calculator, followon-strategy, regression-analyzer, monte-carlo-simulator, sensitivity-analyzer, competitive-intelligence, market-sourcer.",
+        handler="_tool_run_skill",
+        input_schema={"skill": "str", "inputs": "dict?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    # ------------------------------------------------------------------
+    # Dedicated tools — surface key services directly for the LLM router
+    # so it doesn't need the run_skill indirection for common tasks.
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="run_portfolio_health",
+        description="Portfolio health dashboard: growth decay, burn/runway, funding trajectory, signals for every company.",
+        handler="_tool_portfolio_health",
+        input_schema={"fund_id": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="run_followon_strategy",
+        description="Analyze follow-on / pro-rata / extend-or-sell decisions for portfolio companies.",
+        handler="_tool_followon",
+        input_schema={"company": "str?", "fund_id": "str?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="run_round_modeling",
+        description="Model next funding round: dilution, waterfall, valuation step-up, capital required.",
+        handler="_tool_round_modeling",
+        input_schema={"company": "str", "round_type": "str?", "raise_amount": "float?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="run_exit_modeling",
+        description="Model exit scenarios with fund ownership impact: IPO, M&A, secondary at various multiples.",
+        handler="_tool_exit_modeling",
+        input_schema={"company": "str", "exit_values": "list[float]?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="run_regression",
+        description="Run regression, Monte Carlo, sensitivity, or time-series forecast. Set type param.",
+        handler="_tool_regression",
+        input_schema={"type": "str", "company": "str?", "metric": "str?", "inputs": "dict?"},
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
+    AgentTool(
+        name="run_report",
+        description="Generate LP quarterly report, follow-on investment memo, or GP strategy report.",
+        handler="_tool_report",
+        input_schema={"type": "str", "fund_id": "str?", "company": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+]
+
+# Quick lookup by name
+AGENT_TOOL_MAP: dict[str, AgentTool] = {t.name: t for t in AGENT_TOOLS}
+
+
 @dataclass
 class SkillChainNode:
     """Represents a single node in the skill execution chain"""
@@ -176,6 +602,7 @@ class SkillChainNode:
     depends_on: List[str] = field(default_factory=list)
     result: Optional[Dict[str, Any]] = None
     status: str = "pending"
+    required: bool = True  # If False, failure is non-fatal — chain continues
 
 
 class UnifiedMCPOrchestrator:
@@ -220,16 +647,25 @@ class UnifiedMCPOrchestrator:
             )
             raise
 
-        if DEPENDENCY_IMPORT_ERRORS:
+        if NON_CRITICAL_IMPORT_ERRORS:
+            nc_details = "; ".join(
+                f"{name}: {exc}" for name, exc in NON_CRITICAL_IMPORT_ERRORS.items()
+            )
+            logger.warning(
+                "[ORCHESTRATOR_INIT] ⚠️ Non-critical dependencies unavailable (degraded): %s",
+                nc_details,
+            )
+
+        if CRITICAL_IMPORT_ERRORS:
             error_details = "; ".join(
-                f"{name}: {exc}" for name, exc in DEPENDENCY_IMPORT_ERRORS.items()
+                f"{name}: {exc}" for name, exc in CRITICAL_IMPORT_ERRORS.items()
             )
             self._readiness_error = (
                 f"Critical orchestrator dependencies failed to import: {error_details}"
             )
             _update_readiness_state(False, self._readiness_error)
             logger.critical(
-                "[ORCHESTRATOR_INIT] ❌ Missing orchestrator dependencies.",
+                "[ORCHESTRATOR_INIT] ❌ Missing critical orchestrator dependencies.",
                 extra={"dependency_errors": error_details}
             )
             raise RuntimeError(self._readiness_error)
@@ -258,6 +694,26 @@ class UnifiedMCPOrchestrator:
         self.citation_manager = CitationManager()
         self.ownership_analyzer = OwnershipReturnAnalyzer()
         self.comprehensive_deal_analyzer = ComprehensiveDealAnalyzer()
+
+        # Fund modeling + scenario services
+        self.fund_modeling = FundModelingService() if FundModelingService else None
+        self.nl_scenario_composer = NLScenarioComposer() if NLScenarioComposer else None
+        self.company_history_service = CompanyHistoryAnalysisService() if CompanyHistoryAnalysisService else None
+
+        # Error handler for retry + circuit breaker
+        self.error_handler = global_error_handler
+
+        # Matrix Query Orchestrator for portfolio-aware document queries
+        if MATRIX_QUERY_ORCHESTRATOR_AVAILABLE and MatrixQueryOrchestrator:
+            try:
+                self.matrix_query_orchestrator = MatrixQueryOrchestrator()
+                logger.info("[ORCHESTRATOR_INIT] ✅ MatrixQueryOrchestrator initialized")
+            except Exception as e:
+                logger.warning(f"[ORCHESTRATOR_INIT] ⚠️ Failed to initialize MatrixQueryOrchestrator: {e}")
+                self.matrix_query_orchestrator = None
+        else:
+            self.matrix_query_orchestrator = None
+            logger.warning("[ORCHESTRATOR_INIT] ⚠️ MatrixQueryOrchestrator not available")
         
         # Skill Registry
         self.skills = self._initialize_skill_registry()
@@ -401,8 +857,188 @@ class UnifiedMCPOrchestrator:
                 "category": SkillCategory.ANALYSIS,
                 "handler": self._execute_exit_modeling,
                 "description": "Model exit scenarios and returns"
-            }
+            },
+            "followon-strategy": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_followon_strategy,
+                "description": "Analyze follow-on, extension, sell decisions for portfolio companies"
+            },
+            "round-modeler": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_round_modeling,
+                "description": "Model next round (Series D, etc.) with dilution and waterfall"
+            },
+            "report-generator": {
+                "category": SkillCategory.GENERATION,
+                "handler": self._execute_report_generation,
+                "description": "Generate LP quarterly, follow-on memo, or GP strategy reports"
+            },
+
+            # FPA / Modeling Skills - regression, forecast, Monte Carlo, sensitivity
+            "regression-analyzer": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_regression_analysis,
+                "description": "Linear regression, curve fitting, R-squared analysis"
+            },
+            "time-series-forecaster": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_time_series_forecast,
+                "description": "Time series forecast with confidence intervals"
+            },
+            "growth-decay-forecaster": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_growth_decay_forecast,
+                "description": "Exponential growth/decay modeling and half-life"
+            },
+            "monte-carlo-simulator": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_monte_carlo,
+                "description": "Monte Carlo simulation with probability distributions"
+            },
+            "sensitivity-analyzer": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_sensitivity_analysis,
+                "description": "Sensitivity/tornado analysis on key variables"
+            },
+            "fund-analyzer": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_fund_analysis,
+                "description": "Comprehensive fund analysis with follow-on strategy"
+            },
+            "portfolio-scenario-modeler": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_portfolio_scenario_modeling,
+                "description": "Model fund return scenarios: what if company A exits at 5x while company B bridges"
+            },
+            "company-health-dashboard": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_company_health_dashboard,
+                "description": "Portfolio health: growth decay, burn/runway, funding trajectory, signals"
+            },
+
+            # Phase 6: Grid skills - emit grid_commands for frontend to run via onRunService
+            # Generated from cell_action_registry - covers all registry action_ids
+            **self._build_grid_skill_registry()
         }
+    
+    def _build_grid_skill_registry(self) -> Dict[str, Dict[str, Any]]:
+        """Build grid-run-* skill registry from GRID_ACTION_MAP (cell_action_registry alignment)."""
+        registry = {}
+        for skill_name, (action_id, col_hint) in GRID_ACTION_MAP.items():
+            registry[skill_name] = {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._make_grid_run_handler(action_id, col_hint),
+                "description": f"Emit run {action_id} per company row"
+            }
+        return registry
+    
+    def _make_grid_run_handler(self, action_id: str, column_hint: str = "value"):
+        """Return async handler that emits grid_commands for given action_id."""
+        async def handler(inputs: Dict[str, Any]) -> Dict[str, Any]:
+            return self._emit_grid_run_commands(action_id, column_hint)
+        return handler
+    
+    def _emit_grid_run_commands(
+        self,
+        action_id: str,
+        column_hint: Optional[str] = None,
+        entities_override: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Build grid_commands for run actions. Used by grid-run-* skills."""
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        if not matrix_ctx or not (matrix_ctx.get("rowIds") or matrix_ctx.get("row_ids")):
+            return {"grid_commands": []}
+        entities = entities_override
+        if entities is None:
+            companies = self.shared_data.get("companies") or []
+            names = [c.get("company") or c.get("company_name") for c in companies if isinstance(c, dict)]
+            entities = {"companies": names} if names else {}
+        targets = self._get_target_row_ids(matrix_ctx, entities)
+        columns = matrix_ctx.get("columns") or []
+        col = self._column_id_for_field(matrix_ctx, column_hint or "value")
+        if not col and columns:
+            col = columns[0].get("id") or columns[0].get("columnId")
+        if not col:
+            col = "default"
+        commands = [
+            {"action": "run", "rowId": rid, "columnId": col, "actionId": action_id}
+            for rid, _ in targets
+        ]
+        return {"grid_commands": commands}
+    
+    async def _execute_grid_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analyze the grid: gaps, trends, outliers. Reads matrix_context/gridSnapshot,
+        calls LLM, returns gaps, outliers, suggested_actions (and optional grid_commands).
+        """
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or matrix_ctx.get("rows") or []
+        columns = matrix_ctx.get("columns") or []
+        row_ids = matrix_ctx.get("rowIds") or matrix_ctx.get("row_ids") or []
+        company_names = matrix_ctx.get("companyNames") or matrix_ctx.get("company_names") or []
+        if not grid_snapshot and not (row_ids and company_names):
+            return {
+                "grid_analysis": {
+                    "gaps": [],
+                    "outliers": [],
+                    "suggested_actions": [],
+                    "explanation": "No grid data in context. Send matrix context with rowIds, companyNames, and optionally gridSnapshot (rows with cells) to analyze the grid."
+                }
+            }
+        # Build a compact summary for the LLM (cap ~3KB)
+        rows_summary = []
+        if isinstance(grid_snapshot, list):
+            for r in grid_snapshot[:50]:
+                name = r.get("companyName") or r.get("company_name") or ""
+                cells = r.get("cells") or r.get("cellValues") or {}
+                rows_summary.append({"company": name, "cells": dict(list(cells.items())[:15])})
+        else:
+            for i in range(min(len(row_ids), len(company_names), 50)):
+                rows_summary.append({
+                    "rowId": row_ids[i] if i < len(row_ids) else "",
+                    "company": company_names[i] if i < len(company_names) else "",
+                    "cells": {}
+                })
+        col_names = [c.get("name") or c.get("id") or c.get("label") or "" for c in columns[:30]]
+        prompt = f"""Analyze this portfolio/spreadsheet grid and return a short JSON object.
+
+<grid_rows>
+{json.dumps(rows_summary, default=str)[:4000]}
+</grid_rows>
+
+<column_names>
+{json.dumps(col_names)}
+</column_names>
+
+Identify:
+1. gaps: missing or empty key fields (e.g. valuation, ARR, revenue) and for which companies.
+2. outliers: values that look unusually high/low compared to the rest (with company name).
+3. suggested_actions: 1-5 concrete actions the user could take (e.g. "Run valuation for Company X", "Fill gaps for rows missing ARR", "Run PWERM for @Mercury"). Use action_ids like valuation_engine.auto, valuation_engine.pwerm, skill.company_data_fetch, gap_filler.ai_valuation, scoring.score_company where relevant.
+
+Return ONLY valid JSON in this shape (no markdown):
+{{"gaps": [{{"company": "...", "field": "...", "suggestion": "..."}}], "outliers": [{{"company": "...", "field": "...", "value": "...", "note": "..."}}], "suggested_actions": ["...", "..."], "summary": "1-2 sentence summary"}}"""
+        try:
+            result = await self.model_router.get_completion(
+                prompt=prompt,
+                capability=ModelCapability.STRUCTURED,
+                max_tokens=1200,
+                temperature=0,
+                json_mode=True,
+                fallback_enabled=True
+            )
+            content = (result.get("response") or "").strip()
+            import re
+            match = re.search(r'\{[^{}]*"gaps"[^{}]*\}', content)
+            if not match:
+                match = re.search(r'\{.*\}', content, re.DOTALL)
+            if match:
+                analysis = json.loads(match.group(0))
+            else:
+                analysis = {"gaps": [], "outliers": [], "suggested_actions": [], "summary": content[:500]}
+        except Exception as e:
+            logger.warning(f"[GRID_ANALYZER] LLM analysis failed: {e}")
+            analysis = {"gaps": [], "outliers": [], "suggested_actions": [], "summary": str(e)}
+        return {"grid_analysis": analysis}
     
     async def process_request(
         self,
@@ -493,11 +1129,6 @@ class UnifiedMCPOrchestrator:
                         # Store in shared_data
                         async with self.shared_data_lock:
                             self.shared_data["companies"] = enriched_companies
-                            print("=" * 80)
-                            print(f"🟡 [ORCHESTRATOR] Stored {len(enriched_companies)} companies in shared_data")
-                            for i, c in enumerate(enriched_companies):
-                                print(f"🟡 [ORCHESTRATOR] Company {i}: {c.get('company', 'NO_NAME')}")
-                            print("=" * 80)
                             logger.critical(f"[ORCHESTRATOR] 🟡🟡🟡 Stored {len(enriched_companies)} companies in shared_data 🟡🟡🟡")
                             logger.info(f"[ORCHESTRATOR] Stored {len(enriched_companies)} companies in shared_data")
                         
@@ -650,7 +1281,7 @@ class UnifiedMCPOrchestrator:
                 slides = result.get('slides') or []
                 if not isinstance(slides, list):
                     slides = []
-                return {
+                resp = {
                     "success": True,
                     "format": "deck",
                     "slides": slides,
@@ -659,23 +1290,1352 @@ class UnifiedMCPOrchestrator:
                     "citations": result.get('citations', []),
                     "charts": result.get('charts', []),
                     "companies": result.get('companies', []),
+                    "warnings": result.get('warnings', []),
                     "result": result,  # Keep original for backward compatibility
                     "results": result
                 }
+                return resp
             else:
                 # For other formats, use the original structure
                 logger.info(f"[PROCESS_REQUEST] Non-deck format, using original structure")
-                return {"success": True, "result": result, "results": result}
+                resp = {"success": True, "result": result, "results": result}
+                if isinstance(result, dict) and result.get("warnings"):
+                    resp["warnings"] = result["warnings"]
+                return resp
         else:
             # Use the captured error message if available, otherwise fall back to generic message
             error = error_message or result.get('error') if result else 'No result generated'
             logger.error(f"[PROCESS_REQUEST] Returning error: {error}")
             return {"success": False, "error": error}
     
+    # ------------------------------------------------------------------
+    # Agent Loop: complexity classifier, tool executor, ReAct loop
+    # ------------------------------------------------------------------
+
+    def _assess_complexity(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """Rule-based complexity assessment. No LLM call.
+
+        Returns
+        -------
+        'simple'   – single metric / lookup, direct dispatch
+        'dealflow' – @company mentions → fetch new companies via skill chain
+        'complex'  – multi-step analysis, scenarios, LP reports → agent loop
+        """
+        lower = prompt.lower().strip()
+        has_at = "@" in prompt
+
+        # Simple: single metric questions
+        simple_patterns = [
+            r"^what('s| is) (our|the|my) (dpi|tvpi|irr|nav|fund size)",
+            r"^how many (companies|positions|investments)",
+            r"^(show|get|list) (portfolio|companies|fund)",
+            r"^what('s| is) .{0,20} (valuation|revenue|arr)",
+        ]
+        if any(re.match(p, lower) for p in simple_patterns):
+            return "simple"
+
+        # Dealflow: has @mentions (new company fetch) and no multi-step keywords
+        multi_step_keywords = [
+            "compare", "stress", "forecast", "scenario",
+            "analyze portfolio", "lp report", "full analysis",
+            "concentration risk", "revalue entire",
+        ]
+        if has_at and not any(w in lower for w in multi_step_keywords):
+            return "dealflow"
+
+        # Complex: anything else — agent loop handles portfolio queries,
+        # multi-step analysis, natural language company references, etc.
+        complex_keywords = [
+            "stress test", "scenario", "forecast", "lp report",
+            "analyze", "compare", "concentration", "sensitivity",
+            "what if", "revalue", "full analysis", "portfolio health",
+            "write a", "generate report", "memo",
+            "tell me about", "how is my portfolio", "portfolio overview",
+            "portfolio summary", "follow on", "follow-on", "pro rata",
+            "exit scenario", "round modeling", "model series", "model round",
+            "comparable", "comps for", "peers of", "benchmark",
+            "pacing", "deployment", "dry powder", "capital deployed",
+            "deep dive", "status of", "update on",
+        ]
+        if any(w in lower for w in complex_keywords):
+            return "complex"
+
+        # Default: dealflow if @mentions (new fetch), otherwise agent loop
+        return "dealflow" if has_at else "complex"
+
+    async def _direct_dispatch(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Handle simple queries with one tool call, no LLM routing."""
+        lower = prompt.lower()
+        fund_ctx = self.shared_data.get("fund_context", {})
+
+        if any(w in lower for w in ["dpi", "tvpi", "irr", "nav", "fund size", "fund metrics"]):
+            result = await self._tool_fund_metrics({
+                "metrics": ["nav", "irr", "dpi", "tvpi"],
+                "fund_id": fund_ctx.get("fundId"),
+            })
+            return {"content": self._format_fund_metrics_text(result), "format": "analysis"}
+
+        if any(w in lower for w in ["how many", "list", "show portfolio", "get portfolio"]):
+            result = await self._tool_query_portfolio({"query": prompt})
+            return {"content": result.get("summary", "No portfolio data available."), "format": "analysis"}
+
+        # Fallback: one LLM call to answer from context
+        return await self._single_shot_answer(prompt, context)
+
+    async def _single_shot_answer(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Single LLM call for simple queries that don't map to a specific tool."""
+        grid_snapshot = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
+        rows_summary = ""
+        if grid_snapshot:
+            rows = grid_snapshot.get("rows", [])
+            rows_summary = f"Portfolio has {len(rows)} companies."
+
+        memo_ctx = self.shared_data.get("agent_context", {}).get("memo_sections", [])
+        memo_text = self._serialize_memo_sections(memo_ctx, limit=10) if memo_ctx else ""
+
+        augmented = f"""Context: {rows_summary}
+{('Memo: ' + memo_text[:2000]) if memo_text else ''}
+
+Question: {prompt}"""
+
+        response = await self.model_router.get_completion(
+            prompt=augmented,
+            system_prompt="You are a portfolio CFO assistant. Answer concisely with specific numbers when available.",
+            capability=ModelCapability.ANALYSIS,
+            max_tokens=1000,
+            temperature=0.2,
+            caller_context="single_shot_answer",
+        )
+        content = response.get("response", "") if isinstance(response, dict) else str(response)
+        return {"content": content, "format": "analysis"}
+
+    def _format_fund_metrics_text(self, result: Dict[str, Any]) -> str:
+        """Format fund metrics into readable markdown."""
+        if "error" in result:
+            return f"Unable to calculate fund metrics: {result['error']}"
+        metrics = result.get("metrics", result)
+        lines = ["**Fund Metrics**\n"]
+        for key, val in metrics.items():
+            if isinstance(val, (int, float)):
+                if key in ("nav", "fund_size", "total_invested"):
+                    lines.append(f"- **{key.upper()}**: ${val/1e6:,.1f}M")
+                elif key in ("dpi", "tvpi", "irr"):
+                    lines.append(f"- **{key.upper()}**: {val:.2f}x" if key != "irr" else f"- **{key.upper()}**: {val:.1%}")
+                else:
+                    lines.append(f"- **{key}**: {val:,.2f}")
+            elif val is not None:
+                lines.append(f"- **{key}**: {val}")
+        return "\n".join(lines)
+
+    async def _execute_tool(self, tool_name: str, tool_input: dict, max_retries: int = 2) -> dict:
+        """Dispatch to tool handler by name with timeout, retry, and error wrapping."""
+        tool_def = AGENT_TOOL_MAP.get(tool_name)
+        if not tool_def:
+            return {"error": f"Unknown tool: {tool_name}"}
+        handler = getattr(self, tool_def.handler, None)
+        if not handler:
+            return {"error": f"Handler not found: {tool_def.handler}"}
+
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                result = await asyncio.wait_for(
+                    handler(tool_input),
+                    timeout=tool_def.timeout_ms / 1000,
+                )
+                return result
+            except asyncio.TimeoutError:
+                last_error = f"Timeout after {tool_def.timeout_ms}ms"
+            except Exception as e:
+                last_error = str(e)
+                if "rate_limit" in str(e).lower() or "429" in str(e):
+                    delay = (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning(f"[AGENT_TOOL] Rate limited on {tool_name}, retry in {delay:.1f}s")
+                    await asyncio.sleep(delay)
+                elif attempt < max_retries:
+                    await asyncio.sleep(0.5)
+                else:
+                    break
+
+        logger.error(f"[AGENT_TOOL] {tool_name} failed after {max_retries + 1} attempts: {last_error}")
+        return {"error": f"{tool_name} failed after {max_retries + 1} attempts: {last_error}"}
+
+    # ------------------------------------------------------------------
+    # Tool handler methods — thin adapters around existing services
+    # ------------------------------------------------------------------
+
+    def _extract_numeric(self, cells: dict, *keys: str) -> float:
+        """Pull a numeric value from grid cells (handles raw or {value:X} dicts)."""
+        for k in keys:
+            raw = cells.get(k)
+            if isinstance(raw, dict):
+                raw = raw.get("value")
+            if raw is not None:
+                try:
+                    return float(raw)
+                except (ValueError, TypeError):
+                    pass
+        return 0.0
+
+    def _extract_str(self, cells: dict, *keys: str) -> str:
+        """Pull a string value from grid cells (handles raw or {value:X} dicts)."""
+        for k in keys:
+            raw = cells.get(k)
+            if isinstance(raw, dict):
+                raw = raw.get("value")
+            if raw:
+                return str(raw)
+        return ""
+
+    async def _tool_query_portfolio(self, inputs: dict) -> dict:
+        """Query/filter the portfolio grid via MatrixQueryOrchestrator."""
+        try:
+            if not MATRIX_QUERY_ORCHESTRATOR_AVAILABLE or not self.matrix_query_orchestrator:
+                return {"summary": "Portfolio query service not available.", "rows": []}
+            mqo = self.matrix_query_orchestrator
+            fund_ctx = self.shared_data.get("fund_context", {})
+            grid_snapshot = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
+            result = await mqo.process_matrix_query(
+                inputs.get("query", ""),
+                fund_id=fund_ctx.get("fundId"),
+                context={"gridSnapshot": grid_snapshot, "filters": inputs.get("filters")},
+            )
+            return {"rows": result.get("rows", [])[:20], "summary": result.get("summary", "")}
+        except Exception as e:
+            logger.warning(f"[TOOL] query_portfolio failed: {e}")
+            return {"summary": f"Query failed: {e}", "rows": []}
+
+    async def _tool_query_documents(self, inputs: dict) -> dict:
+        """Search uploaded documents."""
+        try:
+            from app.services.document_query_service import DocumentQueryService
+            dqs = DocumentQueryService()
+            fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+            company_id = inputs.get("company_id")
+            query_text = inputs.get("query", "")
+
+            # Route via detect_query_type for best method
+            query_type = dqs.detect_query_type(query_text)
+            if str(query_type) in ("MatrixQueryType.METRIC", "metric", "financial"):
+                docs = dqs.query_by_metric(
+                    query_text,
+                    fund_id=fund_id,
+                    company_id=company_id,
+                )
+            else:
+                docs = dqs.query_portfolio_documents(
+                    fund_id=fund_id,
+                    company_ids=[company_id] if company_id else None,
+                    document_types=None,
+                )
+            doc_list = docs if isinstance(docs, list) else docs.get("results", docs.get("documents", []))
+            return {"documents": doc_list[:10], "count": len(doc_list)}
+        except Exception as e:
+            logger.warning(f"[TOOL] query_documents failed: {e}")
+            return {"documents": [], "count": 0, "error": str(e)}
+
+    async def _tool_fund_metrics(self, inputs: dict) -> dict:
+        """Calculate fund-level metrics via FundModelingService."""
+        try:
+            if not self.fund_modeling:
+                return {"error": "FundModelingService not available"}
+            fms = self.fund_modeling
+            fund_ctx = self.shared_data.get("fund_context", {})
+            fund_id = inputs.get("fund_id") or fund_ctx.get("fundId")
+            metrics_list = inputs.get("metrics", ["nav", "irr", "dpi", "tvpi"])
+            result = await fms.calculate_fund_metrics(fund_id)
+            if not isinstance(result, dict):
+                return {"metrics": {}}
+            # Filter to requested metrics client-side
+            metrics_data = result.get("metrics", result)
+            if metrics_list:
+                filtered = {k: v for k, v in result.items() if k in metrics_list or k in ("fund_id", "as_of", "metrics", "portfolio", "investments")}
+                return {"metrics": filtered if filtered else result}
+            return {"metrics": result}
+        except Exception as e:
+            logger.warning(f"[TOOL] fund_metrics failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_valuation(self, inputs: dict) -> dict:
+        """Run valuation via ValuationEngineService.value_company()."""
+        try:
+            if not self.valuation_engine:
+                return {"error": "ValuationEngineService not available"}
+            ves = self.valuation_engine
+            company_id = inputs.get("company_id", "")
+            # Build company_data from grid snapshot
+            grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
+            company_data = {}
+            for row in grid.get("rows", []):
+                if row.get("rowId") == company_id or row.get("companyName", "").lower() == company_id.lower():
+                    cells = row.get("cells", {})
+                    company_data = {
+                        "name": self._extract_str(cells, "name", "companyName") or row.get("companyName", company_id),
+                        "revenue": self._extract_numeric(cells, "arr", "revenue"),
+                        "growth_rate": self._extract_numeric(cells, "growthRate", "growth_rate"),
+                        "funding_stage": self._extract_str(cells, "fundingStage", "stage"),
+                        "total_funding": self._extract_numeric(cells, "totalFunding", "total_funding"),
+                        "valuation": self._extract_numeric(cells, "valuation", "currentValuation"),
+                    }
+                    break
+            if not company_data:
+                company_data = {"name": company_id}
+            result = await ves.value_company(
+                company_data,
+                method=inputs.get("method", "auto"),
+            )
+            val_result = result if isinstance(result, dict) else {"valuation": result}
+
+            # Auto-emit suggestion to grid if valuation produced a number
+            val_amount = val_result.get("valuation") or val_result.get("fair_value") or val_result.get("equity_value")
+            fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+            if val_amount and fund_id and company_id:
+                try:
+                    supabase_url = settings.SUPABASE_URL
+                    supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+                    if supabase_url and supabase_key:
+                        from supabase import create_client
+                        sb = create_client(supabase_url, supabase_key)
+                        method_used = val_result.get("method", inputs.get("method", "auto"))
+                        sb.table("pending_suggestions").insert({
+                            "fund_id": fund_id,
+                            "company_id": company_id,
+                            "column_id": "currentValuation",
+                            "suggested_value": str(val_amount),
+                            "source_service": f"valuation_engine.{method_used}",
+                            "reasoning": f"Valuation via {method_used}: {val_result.get('summary', '')}",
+                            "metadata": {"tool": "run_valuation", "method": method_used},
+                        }).execute()
+                except Exception as e:
+                    logger.warning(f"[TOOL] Failed to persist valuation suggestion: {e}")
+
+            return val_result
+        except Exception as e:
+            logger.warning(f"[TOOL] valuation failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_scenario(self, inputs: dict) -> dict:
+        """Run scenario analysis.
+
+        First tries NLScenarioComposer for natural language "what if" parsing.
+        Falls back to direct ScenarioAnalyzer for keyword-based scenarios.
+        """
+        try:
+            from app.services.scenario_analyzer import ScenarioAnalyzer, ScenarioType
+            from app.services.nl_scenario_composer import NLScenarioComposer
+
+            sa = ScenarioAnalyzer()
+            nl_composer = self.nl_scenario_composer or NLScenarioComposer()
+            model_id = inputs.get("model_id", "portfolio")
+            description = inputs.get("scenario_description", "Ad-hoc scenario")
+            fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+
+            # --- Try NL parsing first for "what if" style queries ---
+            composed = await nl_composer.parse_what_if_query(description, fund_id=fund_id)
+
+            if composed.events:
+                logger.info(f"[TOOL] scenario: NL composer parsed {len(composed.events)} events")
+                try:
+                    wm_result = await nl_composer.compose_scenario_to_world_model(
+                        composed_scenario=composed,
+                        model_id=model_id,
+                        fund_id=fund_id,
+                    )
+                    scenario = wm_result.get("scenario")
+                    if scenario and scenario.get("id"):
+                        exec_result = await sa.execute_scenario(scenario["id"])
+                        result = exec_result if isinstance(exec_result, dict) else {"analysis": str(exec_result)}
+                        result["nl_events"] = [
+                            {"entity": e.entity_name, "type": e.event_type, "timing": e.timing}
+                            for e in composed.events
+                        ]
+                        return result
+                except Exception as nl_err:
+                    logger.warning(f"[TOOL] NL scenario composition failed, falling back: {nl_err}")
+
+            # --- Fallback: keyword-based scenario type detection ---
+            desc_lower = description.lower()
+            if any(w in desc_lower for w in ["stress", "worst", "crash", "downturn"]):
+                s_type = ScenarioType.STRESS
+            elif any(w in desc_lower for w in ["upside", "best", "bull"]):
+                s_type = ScenarioType.UPSIDE
+            elif any(w in desc_lower for w in ["downside", "bear"]):
+                s_type = ScenarioType.DOWNSIDE
+            else:
+                s_type = ScenarioType.CUSTOM
+
+            scenario = await sa.create_scenario(
+                model_id=model_id,
+                scenario_name=description[:50],
+                scenario_type=s_type,
+                description=description,
+            )
+            if scenario and scenario.get("id"):
+                result = await sa.execute_scenario(scenario["id"])
+                return result if isinstance(result, dict) else {"analysis": str(result)}
+            return {"analysis": "Scenario created but could not be executed", "scenario": scenario}
+        except Exception as e:
+            logger.warning(f"[TOOL] scenario failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_chart(self, inputs: dict) -> dict:
+        """Generate chart config via ChartDataService — dispatches to specific generators."""
+        try:
+            from app.services.chart_data_service import ChartDataService
+            cds = ChartDataService()
+            chart_type = inputs.get("chart_type", "bar")
+            grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
+
+            # Extract company list from grid for multi-company charts
+            companies = []
+            for row in grid.get("rows", []):
+                cells = row.get("cells", {})
+                companies.append({
+                    "name": self._extract_str(cells, "name", "companyName") or row.get("companyName", ""),
+                    "revenue": self._extract_numeric(cells, "arr", "revenue"),
+                    "valuation": self._extract_numeric(cells, "valuation", "currentValuation"),
+                    "growth_rate": self._extract_numeric(cells, "growthRate"),
+                    "funding_stage": self._extract_str(cells, "fundingStage"),
+                    "total_funding": self._extract_numeric(cells, "totalFunding"),
+                })
+
+            chart_dispatch = {
+                "revenue_multiples_scatter": lambda: cds.generate_revenue_multiples_scatter(grid),
+                "revenue_multiple_scatter": lambda: cds.generate_revenue_multiple_scatter(companies),
+                "revenue_treemap": lambda: cds.generate_revenue_treemap(companies),
+                "revenue_growth_treemap": lambda: cds.generate_revenue_growth_treemap(companies),
+                "probability_cloud": lambda: cds.generate_probability_cloud(companies[0] if companies else {}, 10_000_000),
+                "path_to_100m": lambda: cds.generate_path_to_100m(companies),
+                "cashflow": lambda: cds.generate_cashflow_projection(companies),
+                "velocity_ranking": lambda: cds.generate_product_velocity_ranking(companies),
+                "next_round_treemap": lambda: cds.generate_next_round_treemap(companies),
+            }
+
+            generator = chart_dispatch.get(chart_type)
+            if generator:
+                config = generator()
+                return {"chart_config": config} if config else {"error": f"No data for {chart_type}"}
+            # Fallback: use ChartGenerationSkill for auto/unknown types
+            skill = self.skills.get("chart-generator") or self.skills.get("chart_generation")
+            if skill:
+                skill_result = await skill.execute({
+                    "chart_type": chart_type,
+                    "companies": companies,
+                    "data": grid,
+                })
+                charts = skill_result.get("charts", [])
+                if charts:
+                    return {"chart_config": charts[0]}
+            # Last resort: revenue_multiples_scatter
+            config = cds.generate_revenue_multiples_scatter(grid) if grid.get("rows") else None
+            if config:
+                return {"chart_config": config}
+            return {"error": f"Unknown chart type: {chart_type}. Available: {list(chart_dispatch.keys())}"}
+        except Exception as e:
+            logger.warning(f"[TOOL] chart failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_web_search(self, inputs: dict) -> dict:
+        """Search the web via existing Tavily integration."""
+        try:
+            raw = await self._tavily_search(inputs["query"])
+            items = raw.get("results", []) if isinstance(raw, dict) else []
+            # Compress: title + snippet + url, max 5 results
+            return {
+                "results": [
+                    {
+                        "title": r.get("title", ""),
+                        "snippet": r.get("content", "")[:200],
+                        "url": r.get("url", ""),
+                    }
+                    for r in items[:5]
+                ]
+            }
+        except Exception as e:
+            logger.warning(f"[TOOL] web_search failed: {e}")
+            return {"results": [], "error": str(e)}
+
+    async def _tool_suggest_edit(self, inputs: dict) -> dict:
+        """Return grid command AND persist to pending_suggestions for the accept/reject flow."""
+        company_id = inputs.get("company")
+        column_id = inputs.get("column")
+        value = inputs.get("value")
+        reasoning = inputs.get("reasoning", "")
+
+        # Persist to pending_suggestions so the grid picks it up on refresh
+        fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+        if fund_id and company_id and column_id:
+            try:
+                supabase_url = settings.SUPABASE_URL
+                supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+                if supabase_url and supabase_key:
+                    from supabase import create_client
+                    sb = create_client(supabase_url, supabase_key)
+                    sb.table("pending_suggestions").insert({
+                        "fund_id": fund_id,
+                        "company_id": company_id,
+                        "column_id": column_id,
+                        "suggested_value": json.dumps(value) if not isinstance(value, str) else value,
+                        "source_service": "agent.suggest_edit",
+                        "reasoning": reasoning,
+                        "metadata": {"tool": "suggest_grid_edit"},
+                    }).execute()
+            except Exception as e:
+                logger.warning(f"[TOOL] Failed to persist suggestion: {e}")
+
+        return {
+            "grid_command": {
+                "action": "edit",
+                "rowId": company_id,
+                "columnId": column_id,
+                "value": value,
+                "reasoning": reasoning,
+            }
+        }
+
+    async def _tool_suggest_action(self, inputs: dict) -> dict:
+        """Return an action suggestion (insight / warning / action item)."""
+        VALID_TYPES = {"insight", "warning", "action_item", "follow_up"}
+        suggestion_type = inputs.get("type", "insight")
+        if suggestion_type not in VALID_TYPES:
+            return {"error": f"Invalid suggestion type '{suggestion_type}'. Must be one of: {VALID_TYPES}"}
+        return {
+            "suggestion": {
+                "type": suggestion_type,
+                "title": inputs.get("title", ""),
+                "description": inputs.get("description", ""),
+                "priority": inputs.get("priority", "medium"),
+            }
+        }
+
+    async def _tool_write_memo(self, inputs: dict) -> dict:
+        """Return memo sections for the frontend to append. No DB write here."""
+        return {"memo_sections": inputs.get("sections", [])}
+
+    async def _tool_fetch_company(self, inputs: dict) -> dict:
+        """Wrap existing _execute_company_fetch — dealflow pipeline stays intact."""
+        try:
+            result = await self._execute_company_fetch({
+                "company": inputs["company_name"],
+                "prompt_handle": f"@{inputs['company_name']}",
+            })
+            companies = result.get("companies", [])
+            compress_keys = [
+                "name", "description", "revenue", "arr", "valuation",
+                "funding_stage", "total_funding", "investors",
+            ]
+            return {
+                "companies": [
+                    {k: c.get(k) for k in compress_keys}
+                    for c in companies[:3]
+                ]
+            }
+        except Exception as e:
+            logger.warning(f"[TOOL] fetch_company failed: {e}")
+            return {"companies": [], "error": str(e)}
+
+    async def _tool_fpa(self, inputs: dict) -> dict:
+        """Run FP&A analysis via NL→parse→classify→build→execute pipeline."""
+        try:
+            from app.services.nl_fpa_parser import NLFPAParser
+            from app.services.fpa_query_classifier import FPAQueryClassifier
+            from app.services.fpa_workflow_builder import FPAWorkflowBuilder
+            from app.services.fpa_executor import FPAExecutor, ExecutorContext
+
+            parser = NLFPAParser()
+            classifier = FPAQueryClassifier()
+            builder = FPAWorkflowBuilder()
+            executor = FPAExecutor()
+
+            query = inputs.get("query", "")
+            parsed = parser.parse(query)
+            handler_key = classifier.route(parsed)
+            workflow = builder.build(parsed, handler_key)
+            ctx = ExecutorContext(
+                fund_id=self.shared_data.get("fund_context", {}).get("fundId"),
+                portfolio_snapshot=self.shared_data.get("matrix_context", {}).get("gridSnapshot"),
+            )
+            result = await executor.execute(workflow, ctx)
+            fpa_result = result if isinstance(result, dict) else {"result": str(result)}
+            # Auto-generate memo sections from FPA model structure
+            model_structure = fpa_result.get("model_structure")
+            if model_structure and isinstance(model_structure, dict):
+                assumptions = model_structure.get("assumptions", {})
+                if assumptions:
+                    fpa_result["memo_sections"] = [
+                        {"type": "heading2", "content": f"FP&A: {query[:50]}"},
+                        {
+                            "type": "table",
+                            "table": {
+                                "headers": ["Assumption", "Value"],
+                                "rows": [[str(k), str(v)] for k, v in assumptions.items()],
+                                "caption": "Editable assumptions",
+                            },
+                        },
+                    ]
+            return fpa_result
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_parse_accounts(self, inputs: dict) -> dict:
+        """Parse raw financial accounts into structured data."""
+        text = inputs.get("text", "")
+        doc_id = inputs.get("document_id")
+
+        if doc_id:
+            try:
+                from app.services.document_query_service import DocumentQueryService
+                dqs = DocumentQueryService()
+                doc = await dqs.analyze_document(doc_id)
+                text = doc.get("content", "") or doc.get("summary", "")
+            except Exception as e:
+                logger.warning(f"[TOOL] parse_accounts doc fetch failed: {e}")
+
+        if not text:
+            return {"error": "No accounts data provided"}
+
+        extraction_prompt = f"""Extract financial data from these accounts into JSON:
+{text[:4000]}
+
+Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "values": [1000000, ...], "type": "revenue|expense|asset|liability|equity"}}]}}"""
+
+        try:
+            response = await self.model_router.get_completion(
+                prompt=extraction_prompt,
+                system_prompt="Extract financial data into structured JSON. Numbers in raw form (no formatting).",
+                capability=ModelCapability.STRUCTURED,
+                max_tokens=1500,
+                json_mode=True,
+                caller_context="parse_accounts",
+            )
+            content = response.get("response", "") if isinstance(response, dict) else str(response)
+            try:
+                accounts = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                return {"error": "Failed to parse LLM response as JSON", "raw": content[:500]}
+            return {"accounts": accounts, "row_count": len(accounts.get("line_items", []))}
+        except Exception as e:
+            logger.warning(f"[TOOL] parse_accounts extraction failed: {e}")
+            return {"error": f"Failed to parse accounts: {e}"}
+
+    async def _tool_fx_check(self, inputs: dict) -> dict:
+        """Check FX rates and compute currency impact on portfolio companies."""
+        try:
+            from app.services.fx_intelligence_service import fx_intelligence_service
+            base = inputs.get("base_currency", "USD")
+            grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
+            companies = []
+            for row in grid.get("rows", []):
+                cells = row.get("cells", {})
+                name = cells.get("name", {}).get("value") or cells.get("company_name", {}).get("value") or ""
+                rev = cells.get("revenue", {}).get("value") or cells.get("arr", {}).get("value")
+                mix = cells.get("currency_mix", {}).get("value")
+                if name:
+                    companies.append({"name": name, "revenue_usd": rev, "currency_mix": mix})
+            if not companies:
+                rates = await fx_intelligence_service._fetch_rates()
+                top_rates = {k: rates[k] for k in ["EUR", "GBP", "JPY", "CHF", "CAD"] if k in rates}
+                return {"rates": top_rates, "note": "No portfolio companies with currency mix data. Showing major rates."}
+            result = await fx_intelligence_service.get_portfolio_fx_summary(companies, base)
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] fx_check failed: {e}")
+            return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Output generation tools — allow agent loop to produce decks, memos, run skills
+    # ------------------------------------------------------------------
+
+    async def _tool_generate_deck(self, inputs: dict) -> dict:
+        """Invoke deck-storytelling skill from agent loop.
+
+        Requires companies in shared_data (from fetch_company_data or portfolio).
+        Returns full deck with slides, theme, charts.
+        """
+        try:
+            companies = self.shared_data.get("companies", [])
+            if not companies:
+                return {"error": "No companies in shared_data. Fetch company data first or query portfolio."}
+            result = await self._execute_deck_generation(inputs)
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] generate_deck failed: {e}")
+            return {"error": str(e), "format": "deck", "slides": []}
+
+    async def _tool_generate_memo(self, inputs: dict) -> dict:
+        """Invoke memo-writer skill from agent loop.
+
+        Supports memo types: investment, followon, lp_report, gp_strategy.
+        Returns structured document sections for MemoEditor.
+        """
+        try:
+            companies = self.shared_data.get("companies", [])
+            if not companies:
+                return {"error": "No companies in shared_data. Fetch company data first or query portfolio."}
+            # Pass memo_type and prompt through to the skill
+            memo_inputs = {
+                "memo_type": inputs.get("memo_type", "investment"),
+                "prompt": inputs.get("prompt", self.shared_data.get("original_prompt", "")),
+                "use_shared_data": True,
+            }
+            result = await self._execute_memo_generation(memo_inputs)
+            # Also return memo sections as side effects for the streaming pipeline
+            if result.get("sections"):
+                result["memo_sections"] = result["sections"]
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] generate_memo failed: {e}")
+            return {"error": str(e), "format": "docs", "sections": []}
+
+    async def _tool_run_skill(self, inputs: dict) -> dict:
+        """Run any registered analysis skill by name.
+
+        Dispatches to the skill registry (self.skills). Results are merged into
+        shared_data so downstream tools (e.g., generate_deck) can use them.
+        """
+        skill_name = inputs.get("skill", "")
+        skill_inputs = inputs.get("inputs") or {}
+        skill_inputs["use_shared_data"] = True
+
+        if not hasattr(self, "skills") or not self.skills:
+            return {"error": "Skill registry not initialized"}
+
+        skill_entry = self.skills.get(skill_name)
+        if not skill_entry:
+            available = list(self.skills.keys())[:20]
+            return {"error": f"Unknown skill '{skill_name}'. Available: {available}"}
+
+        handler = skill_entry.get("handler") if isinstance(skill_entry, dict) else skill_entry
+        if not handler:
+            return {"error": f"Skill '{skill_name}' has no handler"}
+
+        try:
+            result = await handler(skill_inputs)
+            # Merge skill output into shared_data so subsequent tools can use it
+            if isinstance(result, dict):
+                async with self.shared_data_lock:
+                    for k, v in result.items():
+                        if k == "companies":
+                            existing = self.shared_data.get("companies", [])
+                            existing_names = {c.get("company", c.get("name", "")).lower() for c in existing}
+                            for c in v:
+                                cname = c.get("company", c.get("name", "")).lower()
+                                if cname not in existing_names:
+                                    existing.append(c)
+                            self.shared_data["companies"] = existing
+                        elif k not in ("error",):
+                            self.shared_data[k] = v
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] run_skill({skill_name}) failed: {e}")
+            return {"error": f"Skill '{skill_name}' failed: {e}"}
+
+    # ------------------------------------------------------------------
+    # Dedicated tool handlers — thin adapters to _execute_* methods
+    # ------------------------------------------------------------------
+
+    async def _tool_portfolio_health(self, inputs: dict) -> dict:
+        """Portfolio health dashboard: delegates to _execute_company_health_dashboard."""
+        return await self._execute_company_health_dashboard({
+            "fund_id": inputs.get("fund_id") or self.shared_data.get("fund_context", {}).get("fund_id"),
+            "context": inputs,
+        })
+
+    async def _tool_followon(self, inputs: dict) -> dict:
+        """Follow-on strategy: delegates to _execute_followon_strategy."""
+        return await self._execute_followon_strategy({
+            "company": inputs.get("company"),
+            "company_name": inputs.get("company"),
+            "fund_id": inputs.get("fund_id") or self.shared_data.get("fund_context", {}).get("fund_id"),
+            "context": inputs,
+        })
+
+    async def _tool_round_modeling(self, inputs: dict) -> dict:
+        """Round modeling: delegates to _execute_round_modeling."""
+        return await self._execute_round_modeling({
+            "company": inputs.get("company"),
+            "company_name": inputs.get("company"),
+            "round_type": inputs.get("round_type"),
+            "raise_amount": inputs.get("raise_amount"),
+            "context": inputs,
+        })
+
+    async def _tool_exit_modeling(self, inputs: dict) -> dict:
+        """Exit modeling: delegates to _execute_exit_modeling."""
+        return await self._execute_exit_modeling({
+            "company": inputs.get("company"),
+            "company_name": inputs.get("company"),
+            "exit_values": inputs.get("exit_values"),
+            "context": inputs,
+        })
+
+    async def _tool_regression(self, inputs: dict) -> dict:
+        """Dispatches to regression / monte carlo / sensitivity / time-series by type."""
+        analysis_type = (inputs.get("type") or "linear").lower()
+        base_inputs = {
+            "company": inputs.get("company"),
+            "metric": inputs.get("metric"),
+            "context": inputs,
+            **(inputs.get("inputs") or {}),
+        }
+        dispatch = {
+            "linear": self._execute_regression_analysis,
+            "regression": self._execute_regression_analysis,
+            "monte_carlo": self._execute_monte_carlo,
+            "montecarlo": self._execute_monte_carlo,
+            "sensitivity": self._execute_sensitivity_analysis,
+            "time_series": self._execute_time_series_forecast,
+            "forecast": self._execute_time_series_forecast,
+            "growth_decay": self._execute_growth_decay_forecast,
+        }
+        handler = dispatch.get(analysis_type, self._execute_regression_analysis)
+        return await handler(base_inputs)
+
+    async def _tool_report(self, inputs: dict) -> dict:
+        """Report generation: delegates to _execute_report_generation."""
+        return await self._execute_report_generation({
+            "type": inputs.get("type", "lp_report"),
+            "report_type": inputs.get("type", "lp_report"),
+            "fund_id": inputs.get("fund_id") or self.shared_data.get("fund_context", {}).get("fund_id"),
+            "company": inputs.get("company"),
+            "context": inputs,
+        })
+
+    # ------------------------------------------------------------------
+    # Feedback loop — read back corrections
+    # ------------------------------------------------------------------
+
+    async def _get_recent_corrections(self, prompt: str, company: Optional[str] = None) -> List[str]:
+        """Fetch recent user corrections from Supabase for context injection."""
+        try:
+            supabase_url = settings.SUPABASE_URL
+            supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+            if not supabase_url or not supabase_key:
+                return []
+            from supabase import create_client
+            sb = create_client(supabase_url, supabase_key)
+            query = sb.table("agent_corrections").select("correction, model_type, created_at").order("created_at", desc=True).limit(5)
+            if company:
+                query = query.eq("company", company)
+            result = query.execute()
+            if result.data:
+                return [f"[{r.get('model_type', '')}] {r['correction']}" for r in result.data]
+        except Exception as e:
+            logger.warning(f"[CORRECTIONS] Failed to fetch: {e}")
+        return []
+
+    # ------------------------------------------------------------------
+    # Query intent classification — maps open-ended prompts to thinking
+    # chains so the agent knows which tools to use and in what order.
+    # ------------------------------------------------------------------
+
+    QUERY_INTENTS = [
+        # (intent_name, trigger_patterns, thinking_chain, description)
+        (
+            "portfolio_overview",
+            ["tell me about my portfolio", "portfolio overview", "how is my portfolio",
+             "portfolio summary", "show my portfolio", "portfolio status",
+             "how are my companies doing", "what's in my portfolio"],
+            "query_portfolio → run_portfolio_health → calculate_fund_metrics → generate_chart(type=bar, title='Portfolio Overview') → synthesize",
+            "Broad portfolio overview: pulls companies, runs health check, computes fund metrics, visualizes.",
+        ),
+        (
+            "company_deep_dive",
+            ["tell me about @", "deep dive on", "analyze @", "what do we know about",
+             "how is @ doing", "status of @", "update on @"],
+            "query_portfolio(company=@X) → run_portfolio_health → run_valuation → run_exit_modeling → generate_chart → synthesize",
+            "Deep analysis of a specific portfolio company: health, valuation, exit scenarios.",
+        ),
+        (
+            "comparable_tracking",
+            ["comparable", "comps for", "peers of", "similar companies to",
+             "benchmarks for", "how does @ compare", "compare @ to"],
+            "query_portfolio(company=@X) → web_search(query='@X competitors funding revenue') → fetch_company_data(comps) → run_skill(deal-comparer) → generate_chart → synthesize",
+            "Find and track comparables for a portfolio company.",
+        ),
+        (
+            "fund_metrics",
+            ["fund performance", "fund metrics", "dpi", "tvpi", "irr",
+             "fund returns", "how is the fund", "fund status", "deployment pace",
+             "capital deployed", "dry powder"],
+            "calculate_fund_metrics → query_portfolio → generate_chart(type=bar) → synthesize",
+            "Fund-level metrics: DPI, TVPI, IRR, deployment pacing.",
+        ),
+        (
+            "followon_decision",
+            ["follow on", "follow-on", "pro rata", "should we extend",
+             "bridge for", "extend @", "double down on", "increase position"],
+            "query_portfolio(company=@X) → run_followon_strategy → run_round_modeling → generate_chart → synthesize",
+            "Follow-on investment decision: pro-rata, ownership impact, dilution modeling.",
+        ),
+        (
+            "exit_analysis",
+            ["exit scenario", "what if @ exits", "ipo scenario", "m&a scenario",
+             "secondary", "exit at", "return on @", "what would we make"],
+            "query_portfolio(company=@X) → run_exit_modeling → run_skill(pwerm-calculator) → generate_chart(type=probability_cloud) → synthesize",
+            "Exit modeling: returns at various exit values, PWERM probability weighting.",
+        ),
+        (
+            "scenario_stress",
+            ["what if", "scenario", "stress test", "if rates rise",
+             "if market crashes", "downside case", "worst case", "monte carlo",
+             "sensitivity analysis", "forecast"],
+            "query_portfolio → run_scenario → run_regression(type=sensitivity) → generate_chart → synthesize",
+            "Scenario/stress test: run what-if across portfolio or specific companies.",
+        ),
+        (
+            "deck_generation",
+            ["generate a deck", "investment deck", "pitch deck", "presentation",
+             "make slides", "build a deck", "create a deck"],
+            "fetch_company_data → run_valuation → run_skill(cap-table-generator) → run_skill(pwerm-calculator) → generate_deck → synthesize",
+            "Full investment deck generation.",
+        ),
+        (
+            "memo_writing",
+            ["write a memo", "investment memo", "lp report", "quarterly report",
+             "gp strategy", "follow-on memo", "due diligence report",
+             "write a report", "draft a memo"],
+            "query_portfolio → calculate_fund_metrics → run_portfolio_health → run_report → synthesize",
+            "Document/memo generation with real data.",
+        ),
+        (
+            "company_research",
+            ["research @", "look up @", "find @", "what is @",
+             "search for @", "fetch @", "get data on @"],
+            "fetch_company_data → run_valuation → generate_chart → synthesize",
+            "Research a new company from the web.",
+        ),
+        (
+            "round_modeling",
+            ["model series", "model round", "model the next round", "what if they raise",
+             "dilution if", "new round for", "series b for", "series c for"],
+            "query_portfolio(company=@X) → run_round_modeling → run_skill(cap-table-generator) → generate_chart → synthesize",
+            "Model a future funding round with dilution and waterfall.",
+        ),
+        (
+            "portfolio_construction",
+            ["portfolio construction", "allocation", "how should we deploy",
+             "remaining capital", "pacing", "stage allocation", "check size"],
+            "calculate_fund_metrics → query_portfolio → run_portfolio_health → run_skill(fund-analyzer) → generate_chart → synthesize",
+            "Portfolio construction and capital deployment analysis.",
+        ),
+    ]
+
+    def _classify_query_intent(self, prompt: str) -> Optional[Dict[str, Any]]:
+        """Classify the user's prompt into a known intent with a thinking chain.
+
+        Returns None if no strong match — the agent loop will use generic reasoning.
+        When matched, returns {"intent", "chain", "description"} to guide routing.
+        """
+        lower = prompt.lower()
+        for intent_name, triggers, chain, description in self.QUERY_INTENTS:
+            for trigger in triggers:
+                # Handle @-mention patterns
+                if "@" in trigger:
+                    pattern = trigger.replace("@", "")
+                    if pattern in lower and "@" in prompt:
+                        return {"intent": intent_name, "chain": chain, "description": description}
+                elif trigger in lower:
+                    return {"intent": intent_name, "chain": chain, "description": description}
+        return None
+
+    # ------------------------------------------------------------------
+    # Lightweight plan mode (cheap model)
+    # ------------------------------------------------------------------
+
+    def _needs_plan(self, prompt: str) -> bool:
+        """Rule-based: does this need user approval before executing?"""
+        lower = prompt.lower()
+        expensive_triggers = [
+            "stress test all", "revalue entire", "lp report",
+            "full analysis of", "revalue portfolio",
+            "generate report", "generate deck", "generate memo",
+            "compare all", "analyze portfolio", "portfolio health",
+            "portfolio scenarios", "what if", "forecast",
+            "monte carlo", "sensitivity analysis", "model round",
+            "model series", "build world model", "cap table scenario",
+        ]
+        if any(w in lower for w in expensive_triggers):
+            return True
+        # 2+ @mentions with a complex verb → needs plan
+        at_mentions = re.findall(r"@\w+", prompt)
+        complex_verbs = ["compare", "analyze", "deck", "memo", "report", "forecast", "stress"]
+        if len(at_mentions) >= 2 and any(v in lower for v in complex_verbs):
+            return True
+        return False
+
+    async def _generate_cheap_plan(self, prompt: str) -> List[Dict[str, Any]]:
+        """Generate plan with cheap model. Uses intent classifier for guidance."""
+        tool_descriptions = "\n".join(f"- {t.name}: {t.description}" for t in AGENT_TOOLS)
+        intent = self._classify_query_intent(prompt)
+        intent_hint = ""
+        if intent:
+            intent_hint = (
+                f"\nDetected intent: {intent['intent']}\n"
+                f"Suggested chain: {intent['chain']}\n"
+                f"Adapt this chain to the specific request.\n"
+            )
+
+        plan_prompt = (
+            f"Break this into 3-6 steps using these tools:\n{tool_descriptions}\n"
+            f"{intent_hint}"
+            f"Task: {prompt}\n"
+            'Return JSON array: [{"id":"1","label":"short description","tool":"tool_name","input":{}}]'
+        )
+        try:
+            plan_response = await self.model_router.get_completion(
+                prompt=plan_prompt,
+                system_prompt="Return a JSON array of execution steps. Include tool name and input params. Be brief.",
+                capability=ModelCapability.FAST,
+                max_tokens=400,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="plan_generation",
+            )
+            content = plan_response.get("response", "[]") if isinstance(plan_response, dict) else str(plan_response)
+            steps = json.loads(content)
+            return [
+                {
+                    "id": s.get("id", str(i)),
+                    "label": s.get("label", ""),
+                    "status": "pending",
+                    "tool": s.get("tool", ""),
+                    "input": s.get("input", {}),
+                }
+                for i, s in enumerate(steps)
+            ]
+        except Exception as e:
+            logger.warning(f"[PLAN] Cheap plan generation failed: {e}")
+            return []
+
+    # ------------------------------------------------------------------
+    # ReAct Agent Loop: reason → act → reflect → synthesize
+    # ------------------------------------------------------------------
+
+    def _truncate(self, text: str, max_chars: int) -> str:
+        """Truncate text for LLM context compression."""
+        return text[:max_chars] + "..." if len(text) > max_chars else text
+
+    def _extract_citations_from_results(self, tool_results: List[dict]) -> List[dict]:
+        """Extract citations from tool results for the response."""
+        citations = []
+        for r in tool_results:
+            output = r.get("output", {})
+            # Web search results become source citations
+            if r.get("tool") == "web_search":
+                for sr in output.get("results", []):
+                    if sr.get("url"):
+                        citations.append({
+                            "type": "source",
+                            "title": sr.get("title", sr["url"]),
+                            "url": sr["url"],
+                        })
+            # Document queries become document citations
+            if r.get("tool") == "query_documents":
+                for doc in output.get("documents", []):
+                    if doc.get("id"):
+                        citations.append({
+                            "type": "document",
+                            "title": doc.get("title", "Document"),
+                            "document_id": doc["id"],
+                        })
+        return citations[:10]  # Cap at 10
+
+    async def _run_agent_loop(
+        self, prompt: str, context: Optional[Dict[str, Any]] = None, memo_text: str = "",
+        max_iterations: int = 10, approved_plan: bool = False, entities: Optional[Dict[str, Any]] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """ReAct loop: reason → act → reflect. Cheap model for routing, full model for synthesis."""
+
+        # Check if this needs plan approval first (skip if user already approved)
+        if not approved_plan and self._needs_plan(prompt):
+            plan = await self._generate_cheap_plan(prompt)
+            yield {
+                "type": "complete",
+                "result": {
+                    "content": "",
+                    "format": "analysis",
+                    "plan_steps": plan,
+                    "awaiting_approval": True,
+                },
+            }
+            return
+
+        tool_results: List[dict] = []
+        memo_sections: List[dict] = []
+        grid_commands: List[dict] = []
+        suggestions: List[dict] = []
+        charts: List[dict] = []
+        plan_steps: List[dict] = []
+        failed_tools: set = set()
+
+        # Recover plan steps from approved plan (sent back by frontend)
+        plan_steps_from_approval: List[dict] = []
+        if approved_plan and context:
+            plan_steps_from_approval = context.get("plan_steps", []) or []
+            if plan_steps_from_approval:
+                max_iterations = min(max_iterations, len(plan_steps_from_approval) + 2)
+                logger.info(f"[AGENT_LOOP] Executing approved plan with {len(plan_steps_from_approval)} steps")
+
+        # Restore working memory from previous turns so follow-up queries have context
+        prior_memory = self.shared_data.get("agent_context", {}).get("working_memory", [])
+        if prior_memory:
+            for mem in prior_memory:
+                tool_results.append({"tool": mem.get("tool", "prior"), "input": {}, "output": mem.get("summary", "")})
+            logger.info(f"[AGENT_LOOP] Restored {len(prior_memory)} prior tool results from working_memory")
+
+        # Build compact tool catalog for LLM (~600 tokens)
+        tool_catalog = "\n".join(f"- {t.name}: {t.description}" for t in AGENT_TOOLS)
+
+        ROUTE_MAX_TOKENS = 300
+        REFLECT_MAX_TOKENS = 150
+        SYNTH_MAX_TOKENS = 2000
+
+        for i in range(max_iterations):
+            # Budget enforcement
+            if hasattr(self, 'model_router') and hasattr(self.model_router, 'budget') and self.model_router.budget:
+                budget = self.model_router.budget
+                if budget.exhausted:
+                    logger.warning(f"[AGENT_LOOP] Budget exhausted after {i} iterations, stopping")
+                    break
+                warning = budget.warn_if_expensive(f"agent_loop_iter_{i}")
+                if warning:
+                    logger.info(f"[AGENT_LOOP] {warning}")
+
+            # --- REASON (cheap model) ---
+            results_summary = json.dumps([
+                {
+                    "tool": r["tool"],
+                    "ok": "error" not in r.get("output", {}),
+                    "summary": self._truncate(json.dumps(r.get("output", {})), 200),
+                }
+                for r in tool_results
+            ]) if tool_results else "[]"
+
+            # Exclude tools that previously failed in this loop
+            active_catalog = "\n".join(
+                f"- {t.name}: {t.description}" for t in AGENT_TOOLS if t.name not in failed_tools
+            ) if failed_tools else tool_catalog
+
+            # Build context about what's available in shared_data
+            sd_companies = self.shared_data.get("companies", [])
+            sd_summary = f"shared_data has {len(sd_companies)} companies" if sd_companies else "shared_data is empty"
+
+            # Classify the query intent for guided routing
+            intent = self._classify_query_intent(prompt)
+            intent_guidance = ""
+            if intent and i == 0:  # Only inject on first iteration
+                intent_guidance = (
+                    f"\nDETECTED INTENT: {intent['intent']}\n"
+                    f"SUGGESTED CHAIN: {intent['chain']}\n"
+                    f"CONTEXT: {intent['description']}\n"
+                    f"Follow this chain unless the results so far indicate a different path.\n"
+                )
+
+            # If we have plan_steps from an approved plan, follow them
+            plan_guidance = ""
+            if approved_plan and plan_steps_from_approval and i < len(plan_steps_from_approval):
+                step = plan_steps_from_approval[i]
+                plan_guidance = (
+                    f"\nAPPROVED PLAN — Execute step {i+1}: {step.get('label', '')}\n"
+                    f"Tool: {step.get('tool', '')}, Input: {json.dumps(step.get('input', {}))}\n"
+                    f"Execute this step now.\n"
+                )
+
+            route_prompt = f"""Task: {prompt}
+
+Available tools:
+{active_catalog}
+
+State: {sd_summary}
+Results so far: {results_summary}
+{intent_guidance}{plan_guidance}
+WORKFLOW PATTERNS:
+- Portfolio overview ("tell me about my portfolio"): query_portfolio → run_portfolio_health → calculate_fund_metrics → generate_chart
+- Company deep dive ("analyze @Ramp"): query_portfolio → run_portfolio_health → run_valuation → run_exit_modeling → generate_chart
+- Comparables / peers: query_portfolio → web_search(competitors) → fetch_company_data → run_skill(deal-comparer) → generate_chart
+- Follow-on / pro-rata: query_portfolio → run_followon_strategy → run_round_modeling → generate_chart
+- Exit scenarios: query_portfolio → run_exit_modeling → generate_chart(probability_cloud)
+- Fund metrics (DPI/TVPI/IRR): calculate_fund_metrics → generate_chart
+- Stress test / what-if: query_portfolio → run_scenario → run_regression(type=sensitivity) → generate_chart
+- Round modeling / dilution: query_portfolio → run_round_modeling → run_skill(cap-table-generator) → generate_chart
+- Portfolio construction / pacing: calculate_fund_metrics → query_portfolio → run_portfolio_health → run_skill(fund-analyzer)
+- Fetch NEW company from web: fetch_company_data → run_valuation → run_skill(cap-table-generator)
+- Generate deck: (gather data first) → generate_deck
+- Generate memo/report: (gather data first) → run_report(type=lp_report|followon_memo|gp_strategy) or generate_memo
+- run_skill can invoke: valuation-engine, cap-table-generator, exit-modeler, scenario-generator, portfolio-analyzer, fund-metrics-calculator, followon-strategy, deal-comparer, regression-analyzer, monte-carlo-simulator, sensitivity-analyzer, market-sourcer, competitive-intelligence
+
+Pick the NEXT tool to call, or say done if the task is complete.
+Return JSON: {{"action":"call_tool"|"done","tool":"name","input":{{...}},"reasoning":"1 sentence"}}"""
+
+            route_response = await self.model_router.get_completion(
+                prompt=route_prompt,
+                system_prompt="You are a portfolio CFO agent. Pick the next tool to achieve the user's goal. Chain tools in logical order. Return valid JSON only.",
+                capability=ModelCapability.FAST,
+                max_tokens=ROUTE_MAX_TOKENS,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="agent_loop_reason",
+            )
+            route_text = route_response.get("response", "{}") if isinstance(route_response, dict) else str(route_response)
+
+            try:
+                action = json.loads(route_text)
+            except json.JSONDecodeError:
+                match = re.search(r'\{.*\}', route_text, re.DOTALL)
+                if match:
+                    try:
+                        action = json.loads(match.group())
+                    except json.JSONDecodeError:
+                        logger.warning(f"[AGENT] Reason JSON parse failed (iter {i}), ending loop.\nRaw text: {route_text[:500]}")
+                        action = {"action": "done"}
+                else:
+                    logger.warning(f"[AGENT] Reason returned non-JSON (iter {i}), ending loop.\nRaw text: {route_text[:500]}")
+                    action = {"action": "done"}
+
+            if action.get("action") == "done":
+                break
+
+            tool_name = action.get("tool", "")
+            tool_input = action.get("input", {})
+            reasoning = action.get("reasoning", "")
+
+            step = {"id": f"step-{i}", "label": f"{tool_name}: {reasoning}", "status": "running"}
+            plan_steps.append(step)
+            yield {
+                "type": "progress",
+                "stage": "agent_step",
+                "message": reasoning,
+                "plan_steps": plan_steps,
+            }
+
+            # --- ACT (Python service call, no LLM) ---
+            result = await self._execute_tool(tool_name, tool_input)
+            tool_results.append({"tool": tool_name, "input": tool_input, "output": result})
+
+            # Collect side effects
+            if "memo_sections" in result:
+                memo_sections.extend(result["memo_sections"])
+            if "grid_command" in result:
+                grid_commands.append(result["grid_command"])
+            if "chart_config" in result:
+                charts.append(result["chart_config"])
+            if "suggestion" in result:
+                suggestions.append(result["suggestion"])
+
+            if "error" in result:
+                failed_tools.add(tool_name)
+                logger.warning(f"[AGENT] Tool {tool_name} failed, excluding from future iterations: {result['error']}")
+            step["status"] = "done" if "error" not in result else "failed"
+            yield {
+                "type": "progress",
+                "stage": "agent_step",
+                "message": f"{tool_name} complete",
+                "plan_steps": plan_steps,
+            }
+
+            # --- REFLECT (cheap model) ---
+            reflect_prompt = f"""Task: {prompt}
+Latest result from {tool_name}: {self._truncate(json.dumps(result), 300)}
+All results: {len(tool_results)} tools called.
+Is this sufficient to answer the task? Return JSON: {{"sufficient":true|false,"reason":"1 sentence"}}"""
+
+            reflect_response = await self.model_router.get_completion(
+                prompt=reflect_prompt,
+                system_prompt="Decide if we have enough data. Return JSON only.",
+                capability=ModelCapability.FAST,
+                max_tokens=REFLECT_MAX_TOKENS,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="agent_loop_reflect",
+            )
+            reflect_text = reflect_response.get("response", "{}") if isinstance(reflect_response, dict) else str(reflect_response)
+
+            try:
+                reflection = json.loads(reflect_text)
+            except json.JSONDecodeError as e:
+                logger.warning(f"[AGENT] Reflect JSON parse failed (iter {i}): {e}\nRaw text: {reflect_text[:500]}")
+                reflection = {"sufficient": i >= 2}
+
+            if reflection.get("sufficient"):
+                break
+
+        # --- SYNTHESIZE (full model, one call) ---
+        synth_context = json.dumps([
+            {
+                "tool": r["tool"],
+                "output": self._truncate(json.dumps(r.get("output", {})), 500),
+            }
+            for r in tool_results
+        ])
+
+        # Inject corrections from feedback loop (reuse entities from caller to avoid extra LLM call)
+        first_company = ((entities or {}).get("companies") or [None])[0]
+        corrections = await self._get_recent_corrections(prompt, first_company)
+        correction_ctx = ""
+        if corrections:
+            correction_ctx = f"\n\nUser has previously corrected: {'; '.join(corrections[:3])}\nAdjust your response accordingly."
+
+        memo_context = f"\nWorking memo context:\n{memo_text[:2000]}\n" if memo_text else ""
+        synth_prompt = f"""User asked: {prompt}{memo_context}
+Tool results: {synth_context}{correction_ctx}
+Write a clear, concise answer. Use markdown. Reference specific numbers. If charts were generated, describe what they show."""
+
+        synthesis_response = await self.model_router.get_completion(
+            prompt=synth_prompt,
+            system_prompt="You are a portfolio CFO assistant. Write concise analysis with specific numbers.",
+            capability=ModelCapability.ANALYSIS,
+            max_tokens=SYNTH_MAX_TOKENS,
+            temperature=0.3,
+            caller_context="agent_loop_synthesize",
+        )
+        synthesis = synthesis_response.get("response", "") if isinstance(synthesis_response, dict) else str(synthesis_response)
+
+        # Build condensed working memory for session continuity
+        working_memory = [
+            {"tool": r["tool"], "summary": self._truncate(json.dumps(r.get("output", {})), 300)}
+            for r in tool_results
+        ]
+
+        # Detect output format from tool results — deck/memo take priority over analysis
+        detected_format = "analysis"
+        extra_result_fields: Dict[str, Any] = {}
+        for r in tool_results:
+            out = r.get("output", {})
+            if isinstance(out, dict):
+                if out.get("format") == "deck" and out.get("slides"):
+                    detected_format = "deck"
+                    # Forward deck fields: slides, theme, metadata, companies
+                    for dk in ("slides", "theme", "metadata", "companies", "deck"):
+                        if dk in out:
+                            extra_result_fields[dk] = out[dk]
+                elif out.get("format") == "docs" and out.get("sections"):
+                    detected_format = "docs"
+                    extra_result_fields["sections"] = out["sections"]
+                    if out.get("title"):
+                        extra_result_fields["title"] = out["title"]
+
+        yield {
+            "type": "complete",
+            "result": {
+                "content": synthesis,
+                "format": detected_format,
+                **extra_result_fields,
+                "grid_commands": grid_commands,
+                "suggestions": suggestions,
+                "memo_updates": {"action": "append", "sections": memo_sections} if memo_sections else None,
+                "plan_steps": plan_steps,
+                "charts": charts,
+                "citations": self._extract_citations_from_results(tool_results),
+                "working_memory": working_memory,
+            },
+        }
+
     async def process_request_stream(
         self,
         prompt: str,
-        output_format: str = "analysis", 
+        output_format: str = "analysis",
         context: Optional[Dict[str, Any]] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
@@ -700,11 +2660,24 @@ class UnifiedMCPOrchestrator:
                 logger.info(f"[REQUEST_START] Cleared caches but preserved {len(companies_to_preserve)} companies in shared_data")
             else:
                 logger.info(f"[REQUEST_START] Cleared all caches and shared data for new request")
+
+            # Start per-request budget tracking
+            budget = self.model_router.start_budget(max_cost=2.0, max_tokens=500_000)
             
             # Store context in shared_data if provided
             if context:
                 async with self.shared_data_lock:
                     self.shared_data['fund_context'] = dict(context)
+                    # Control centre: matrix context for grid-aware skills (rowIds, companyNames, columns)
+                    matrix_ctx = context.get('matrix_context') or context.get('matrixContext')
+                    if matrix_ctx:
+                        self.shared_data['matrix_context'] = matrix_ctx
+                        logger.info(f"[MATRIX_CONTEXT] Stored {len(matrix_ctx.get('rowIds', []) or matrix_ctx.get('companyNames', []))} rows")
+                    # Agent context for conversation continuity
+                    agent_ctx = context.get('agent_context')
+                    if agent_ctx:
+                        self.shared_data['agent_context'] = agent_ctx
+                        logger.info(f"[AGENT_CONTEXT] Stored agent context: {list(agent_ctx.keys())}")
                 logger.info(f"[CONTEXT] Stored fund context with keys: {list(context.keys())}")
                 # Log key fund parameters if available
                 if 'fund_size' in context:
@@ -728,6 +2701,15 @@ class UnifiedMCPOrchestrator:
             
             entities = await self._extract_entities(prompt)
             
+            # Phase 1: Merge context.companies (all @mentions from frontend) into entities
+            if context and context.get("companies"):
+                ctx_companies = context["companies"]
+                if isinstance(ctx_companies, list) and ctx_companies:
+                    existing = entities.get("companies") or []
+                    merged = list(dict.fromkeys(ctx_companies + [c for c in existing if c not in ctx_companies]))
+                    entities["companies"] = merged
+                    logger.info(f"[ENTITY_EXTRACTION] Merged context.companies: {merged}")
+            
             # NEW: Merge extracted fund context into shared_data
             if entities:
                 fund_keys = ['fund_size', 'remaining_capital', 'deployed_capital', 'fund_year', 
@@ -743,34 +2725,84 @@ class UnifiedMCPOrchestrator:
                 else:
                     logger.info(f"[ENTITY_EXTRACTION] No fund context extracted from entities")
             
-            # Build skill chain based on prompt
+            # ---- Complexity gate: route to agent loop, direct dispatch, or existing pipeline ----
+            # Also read memo context from agent_context for augmentation
+            memo_ctx = self.shared_data.get("agent_context", {}).get("memo_sections", [])
+            if memo_ctx:
+                memo_text = self._serialize_memo_sections(memo_ctx, limit=15)
+                if memo_text:
+                    logger.info(f"[MEMO_CONTEXT] Injected {len(memo_ctx)} memo sections ({len(memo_text)} chars) into context")
+
+            complexity = self._assess_complexity(prompt, context)
+            logger.info(f"[ORCHESTRATOR] Complexity assessment: {complexity}")
+
+            if complexity == "simple":
+                result = await self._direct_dispatch(prompt, context)
+                budget_summary = self.model_router.end_budget() or {}
+                yield {
+                    "type": "complete",
+                    "result": result,
+                    "success": True,
+                    "metadata": {"budget": budget_summary, "complexity": "simple"},
+                }
+                return
+
+            if complexity == "complex":
+                memo_ctx = self.shared_data.get("agent_context", {}).get("memo_sections", [])
+                memo_text = self._serialize_memo_sections(memo_ctx) if memo_ctx else ""
+                approved_plan = bool(context.get("approved_plan")) if context else False
+                async for event in self._run_agent_loop(
+                    prompt, context, memo_text=memo_text, approved_plan=approved_plan, entities=entities
+                ):
+                    yield event
+                self.model_router.end_budget()
+                return
+
+            # complexity == "dealflow" → fall through to existing skill chain pipeline
+
+            # Phase 2: Planning for complex prompts
+            planning_triggers = ["all", "full", "complete", "do everything", "all 5", "full analysis", "step by step", "comprehensive", "detailed analysis"]
+            grid_action_triggers = ["run valuation", "value @", "value for", "run pwerm", "pwerm for", "value acme", "value mercury"]
+            lower_prompt = prompt.lower()
+            matrix_ctx = context.get("matrix_context") or context.get("matrixContext") if context else {}
+            has_matrix = bool(matrix_ctx and (matrix_ctx.get("rowIds") or matrix_ctx.get("row_ids")))
+            needs_planning = (
+                any(t in lower_prompt for t in planning_triggers)
+                or len(entities.get("companies", [])) >= 3
+                or (has_matrix and any(t in lower_prompt for t in grid_action_triggers))
+            )
+            
+            if needs_planning:
+                yield {
+                    "type": "progress",
+                    "stage": "planning",
+                    "message": "Creating multi-step execution plan"
+                }
+                plan_steps = await self._execute_planning(prompt, output_format, entities)
+                if plan_steps:
+                    async with self.shared_data_lock:
+                        self.shared_data["plan_steps"] = plan_steps
+                    logger.info(f"[PLANNING] Created {len(plan_steps)} plan steps")
+            
+            # Build skill chain based on prompt (or plan when present)
             yield {
                 "type": "progress",
                 "stage": "planning",
-                "message": "Building execution plan"
+                "message": "Building execution plan",
+                "plan_steps": self.shared_data.get("plan_steps", []),
             }
             
-            skill_chain = await self.build_skill_chain(prompt, output_format)
+            skill_chain = await self.build_skill_chain(prompt, output_format, entities=entities)
             
             # FORCE deck-storytelling when output_format is "deck"
             if output_format == "deck":
-                print("=" * 80)
-                print("🟡 [FORCE_DECK] Checking deck-storytelling in chain...")
-                print(f"🟡 [FORCE_DECK] Chain length: {len(skill_chain)}")
-                print(f"🟡 [FORCE_DECK] Skills in chain: {[n.skill for n in skill_chain]}")
                 logger.critical(f"[FORCE_DECK] 🟡🟡🟡 Checking deck-storytelling, chain has {len(skill_chain)} skills 🟡🟡🟡")
                 
                 deck_storytelling_exists = any(node.skill == "deck-storytelling" for node in skill_chain)
                 logger.info(f"[FORCE_DECK] 🔒 deck-storytelling exists: {deck_storytelling_exists}")
                 
-                # #region agent log
-                with open('/Users/admin/code/dilla-ai/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"unified_mcp_orchestrator.py:749","message":"deck-storytelling in chain check","data":{"exists":deck_storytelling_exists,"chain_length":len(skill_chain),"skills":[n.skill for n in skill_chain]},"timestamp":int(__import__('time').time()*1000)})+'\n')
-                # #endregion
                 
                 if not deck_storytelling_exists:
-                    print("🟡 [FORCE_DECK] ⚠️ deck-storytelling NOT in chain! Force-adding...")
                     logger.warning(f"[FORCE_DECK] ⚠️ deck-storytelling NOT in chain! Force-adding it now...")
                     skill_chain.append(SkillChainNode(
                         skill="deck-storytelling",
@@ -778,37 +2810,72 @@ class UnifiedMCPOrchestrator:
                         inputs={"use_shared_data": True},
                         parallel_group=3
                     ))
-                    print(f"🟡 [FORCE_DECK] ✅ Force-added deck-storytelling. Chain length now: {len(skill_chain)}")
                     logger.info(f"[FORCE_DECK] ✅ Force-added deck-storytelling. Chain length now: {len(skill_chain)}")
                     
-                    # #region agent log
-                    with open('/Users/admin/code/dilla-ai/.cursor/debug.log', 'a') as f:
-                        import json
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"unified_mcp_orchestrator.py:761","message":"deck-storytelling force-added","data":{"chain_length_after":len(skill_chain)},"timestamp":int(__import__('time').time()*1000)})+'\n')
-                    # #endregion
                 else:
-                    print("🟡 [FORCE_DECK] ✅ deck-storytelling already in chain")
                     logger.info(f"[FORCE_DECK] ✅ deck-storytelling already in chain")
-                print("=" * 80)
             
-            # Execute skill chain
+            # Execute skill chain with real-time plan step updates
+            plan_steps_snapshot = self.shared_data.get("plan_steps", [])
             yield {
                 "type": "progress",
                 "stage": "execution",
-                "message": f"Executing {len(skill_chain)} skills"
+                "message": f"Executing {len(skill_chain)} skills",
+                "plan_steps": plan_steps_snapshot,
             }
-            
-            results = await self._execute_skill_chain(skill_chain)
+
+            if plan_steps_snapshot:
+                # Use queue to relay real-time plan step updates during execution
+                _progress_queue: asyncio.Queue = asyncio.Queue()
+
+                async def _plan_progress_cb(steps, message=""):
+                    await _progress_queue.put((steps, message))
+
+                exec_task = asyncio.create_task(
+                    self._execute_skill_chain(skill_chain, progress_callback=_plan_progress_cb)
+                )
+
+                while not exec_task.done():
+                    try:
+                        steps, msg = await asyncio.wait_for(_progress_queue.get(), timeout=1.0)
+                        yield {
+                            "type": "progress",
+                            "stage": "execution",
+                            "message": msg or "Executing plan steps",
+                            "plan_steps": steps,
+                        }
+                    except asyncio.TimeoutError:
+                        continue
+
+                # Drain any remaining queued updates
+                while not _progress_queue.empty():
+                    steps, msg = _progress_queue.get_nowait()
+                    yield {
+                        "type": "progress",
+                        "stage": "execution",
+                        "message": msg or "Executing plan steps",
+                        "plan_steps": steps,
+                    }
+
+                results = exec_task.result()
+            else:
+                results = await self._execute_skill_chain(skill_chain)
             
             # Format output based on requested format
             yield {
                 "type": "progress",
                 "stage": "formatting",
-                "message": f"Formatting output as {output_format}"
+                "message": f"Formatting output as {output_format}",
+                "plan_steps": self.shared_data.get("plan_steps", []),
             }
             
             formatted_result = await self._format_output(results, output_format, prompt)
-            
+
+            # Propagate skill chain warnings into the formatted result
+            skill_warnings = results.get("warnings", [])
+            if skill_warnings and isinstance(formatted_result, dict):
+                formatted_result["warnings"] = skill_warnings
+
             # Add detailed logging for the complete result being yielded
             logger.info(f"[STREAM] About to yield complete result")
             logger.info(f"[STREAM] formatted_result type: {type(formatted_result)}")
@@ -820,6 +2887,9 @@ class UnifiedMCPOrchestrator:
                 if slides_data:
                     logger.info(f"[STREAM] Slide IDs being yielded: {[s.get('id') for s in slides_data[:3]]}")
             
+            # End budget tracking and capture summary
+            budget_summary = self.model_router.end_budget() or {}
+
             # Yield single complete result
             yield {
                 "type": "complete",
@@ -828,36 +2898,158 @@ class UnifiedMCPOrchestrator:
                 "metadata": {
                     "streaming_disabled": True,
                     "format": output_format,
-                    "skills_executed": len(skill_chain)
+                    "skills_executed": len(skill_chain),
+                    "budget": budget_summary,
                 }
             }
             
         except Exception as e:
             logger.error(f"Error processing request: {e}")
+            self.model_router.end_budget()  # Clean up budget on error
             yield {
                 "type": "error",
                 "error": str(e)
             }
+
+    async def _execute_planning(
+        self, prompt: str, output_format: str, entities: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Decompose complex prompt into structured plan steps using LLM."""
+        available_skills = list(self.skills.keys())
+        companies = entities.get("companies", [])
+        grid_snapshot = self.shared_data.get("matrix_context", {}).get("gridSnapshot")
+        
+        planning_prompt = f"""Decompose this investment prompt into a multi-step execution plan.
+
+<prompt>
+{prompt}
+</prompt>
+
+<available_skills>
+{json.dumps(available_skills[:25])}
+</available_skills>
+
+<companies_mentioned>
+{json.dumps(companies)}
+</companies_mentioned>
+
+Return a JSON array of steps. Each step:
+{{
+  "id": "step-1",
+  "label": "Short human-readable label",
+  "action": "skill_name",
+  "detail": "Brief description",
+  "tool_to_use": "company-data-fetcher|valuation-engine|cap-table-generator|deal-comparer|exit-modeler|deck-storytelling|portfolio-analyzer|fund-metrics-calculator|followon-strategy|round-modeler|report-generator|scenario-analyzer|memo-generator|portfolio-scenario-modeler|company-health-dashboard|grid-run-valuation|grid-run-pwerm|grid-run-document-extract",
+  "companies": ["CompanyA"],
+  "explanation": "Why this step"
+}}
+
+Map tool_to_use to one of: company-data-fetcher, valuation-engine, cap-table-generator, deal-comparer, exit-modeler, deck-storytelling, portfolio-analyzer, fund-metrics-calculator, followon-strategy, round-modeler, report-generator, scenario-analyzer, memo-generator, excel-generator, portfolio-scenario-modeler, company-health-dashboard, grid-run-valuation, grid-run-pwerm, grid-run-document-extract.
+When the user asks to run valuation, value a company, run PWERM, or run pwerm for specific companies, use tool_to_use "grid-run-valuation" or "grid-run-pwerm" with the companies list in the "companies" field.
+When the user asks to extract a document for a company (e.g. "extract document for @Acme"), use tool_to_use "grid-run-document-extract" with the company in the "companies" field.
+When the user asks about follow-on, pro-rata, dilution, or whether to follow on, use "followon-strategy".
+When the user asks to model a next round (Series D, etc.), use "round-modeler".
+When the user asks to generate a report (LP quarterly, follow-on memo, GP deck), use "report-generator".
+When the user asks "what if" or scenario questions, use "scenario-analyzer".
+When the user asks to generate a memo or document, use "memo-generator".
+When the user asks about fund return scenarios, portfolio-level what-ifs, or how different company outcomes affect fund returns, use "portfolio-scenario-modeler".
+When the user asks about portfolio health, company growth/burn/runway, company signals, or wants a health dashboard, use "company-health-dashboard".
+Output format requested: {output_format}
+Return ONLY the JSON array, no other text."""
+
+        try:
+            result = await self.model_router.get_completion(
+                prompt=planning_prompt,
+                capability=ModelCapability.STRUCTURED,
+                max_tokens=1500,
+                temperature=0,
+                json_mode=True,
+                fallback_enabled=True
+            )
+            content = result.get("response", "[]")
+            import re
+            match = re.search(r'\[.*\]', content, re.DOTALL)
+            if match:
+                steps = json.loads(match.group(0))
+                for i, s in enumerate(steps):
+                    s.setdefault("id", f"step-{i+1}")
+                    s.setdefault("status", "pending")
+                    s.setdefault("label", s.get("action", f"Step {i+1}"))
+                return steps
+        except Exception as e:
+            logger.warning(f"[PLANNING] LLM planning failed: {e}")
+        return []
     
-    async def build_skill_chain(self, prompt: str, output_format: str) -> List[SkillChainNode]:
+    async def build_skill_chain(
+        self, prompt: str, output_format: str, entities: Optional[Dict[str, Any]] = None
+    ) -> List[SkillChainNode]:
         """
-        Use Claude to analyze prompt and build optimal skill chain
+        Use Claude to analyze prompt and build optimal skill chain.
+        When plan_steps exists in shared_data, build chain from plan instead of keyword matching.
         """
-        # CRITICAL DEBUG: Log immediately
-        print("=" * 80)
-        print("🟠 [SKILL_BUILDER] build_skill_chain CALLED")
-        print(f"🟠 [SKILL_BUILDER] Prompt: {prompt[:200]}")
-        print(f"🟠 [SKILL_BUILDER] Output format: {output_format}")
-        print("=" * 80)
         logger.critical(f"[SKILL_BUILDER] 🟠🟠🟠 build_skill_chain CALLED: prompt='{prompt[:100]}...', format={output_format} 🟠🟠🟠")
-        logger.info(f"[SKILL_BUILDER] 🔧 Building skill chain for prompt: '{prompt[:100]}...'")
-        logger.info(f"[SKILL_BUILDER] 🔧 Output format: {output_format}")
         
-        # Simplified skill chain builder - in full implementation this uses Claude
-        # to semantically understand the request and choose skills
+        # Phase 2: Plan-driven skill chain when plan_steps exists
+        plan_steps = self.shared_data.get("plan_steps", [])
+        if plan_steps:
+            logger.info(f"[SKILL_BUILDER] 📋 Using plan-driven chain with {len(plan_steps)} steps")
+            chain = []
+            tool_to_skill = {
+                "company-data-fetcher": "company-data-fetcher",
+                "valuation-engine": "valuation-engine",
+                "valuation_engine": "valuation-engine",
+                "cap-table-generator": "cap-table-generator",
+                "deal-comparer": "deal-comparer",
+                "exit-modeler": "exit-modeler",
+                "deck-storytelling": "deck-storytelling",
+                "portfolio-analyzer": "portfolio-analyzer",
+                "fund-metrics-calculator": "fund-metrics-calculator",
+                "followon-strategy": "followon-strategy",
+                "round-modeler": "round-modeler",
+                "report-generator": "report-generator",
+                "scenario-analyzer": "scenario-generator",
+                "memo-generator": "memo-writer",
+                "excel-generator": "excel-generator",
+                "portfolio-scenario-modeler": "portfolio-scenario-modeler",
+                "company-health-dashboard": "company-health-dashboard",
+                **{k: k for k in GRID_ACTION_MAP},  # All grid-run-* skills map to themselves
+            }
+            for i, step in enumerate(plan_steps):
+                tool = step.get("tool_to_use") or step.get("action", "")
+                skill = tool_to_skill.get(tool, tool) if isinstance(tool, str) else "company-data-fetcher"
+                if skill not in self.skills:
+                    skill = "company-data-fetcher"  # Fallback
+                companies = step.get("companies", [])
+                group = min(i, 2)
+                if skill == "company-data-fetcher" and len(companies) > 1:
+                    for c in companies:
+                        chain.append(SkillChainNode(
+                            skill=skill,
+                            purpose=f"Fetch data for {c}",
+                            inputs={"company": c, "prompt_handle": c, "_plan_step_index": i},
+                            parallel_group=group,
+                            depends_on=[]
+                        ))
+                else:
+                    inputs = {"use_shared_data": True} if not companies else {"company": companies[0], "prompt_handle": companies[0]}
+                    if len(companies) > 1 and skill != "company-data-fetcher":
+                        inputs = {"companies": companies, "use_shared_data": True}
+                    inputs["_plan_step_index"] = i
+                    chain.append(SkillChainNode(
+                        skill=skill,
+                        purpose=step.get("label", step.get("detail", str(skill))),
+                        inputs=inputs,
+                        parallel_group=group,
+                        depends_on=[]
+                    ))
+            return chain
         
-        logger.info(f"[SKILL_BUILDER] 🔍 Extracting entities from prompt...")
-        entities = await self._extract_entities(prompt)
+        # Fallback: keyword-based skill chain
+        if entities is None:
+            logger.info(f"[SKILL_BUILDER] 🔍 Extracting entities from prompt...")
+            entities = await self._extract_entities(prompt)
+        else:
+            logger.info(f"[SKILL_BUILDER] 🔍 Using provided entities: {entities}")
         logger.info(f"[SKILL_BUILDER] 🔍 Extracted entities: {entities}")
         
         chain = []
@@ -982,6 +3174,143 @@ class UnifiedMCPOrchestrator:
                 inputs={"use_shared_data": True},
                 parallel_group=1
             ))
+
+        # Follow-on strategy
+        lower = prompt.lower()
+        if any(kw in lower for kw in ["follow on", "follow-on", "followon", "pro rata", "pro-rata", "should we follow", "extension"]):
+            logger.info(f"[SKILL_BUILDER] 🔬 Adding followon-strategy")
+            chain.append(SkillChainNode(
+                skill="followon-strategy",
+                purpose="Analyze follow-on / extension / sell decision",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+
+        # Round modeling
+        if any(kw in lower for kw in ["next round", "model round", "series d", "series c", "series b"]):
+            logger.info(f"[SKILL_BUILDER] 🔬 Adding round-modeler")
+            chain.append(SkillChainNode(
+                skill="round-modeler",
+                purpose="Model next funding round with dilution & waterfall",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+
+        # NL scenario analysis
+        if any(kw in lower for kw in ["what if", "what happens", "stress test", "scenario"]):
+            logger.info(f"[SKILL_BUILDER] 🔬 Adding scenario-generator")
+            chain.append(SkillChainNode(
+                skill="scenario-generator",
+                purpose="Run scenario / what-if analysis",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+
+        # FPA: Regression analysis
+        if any(kw in lower for kw in ["regression", "correlat", "r-squared", "r squared", "fit line", "trend line"]):
+            logger.info(f"[SKILL_BUILDER] 🔬 Adding regression-analyzer")
+            chain.append(SkillChainNode(
+                skill="regression-analyzer",
+                purpose="Run regression / correlation analysis",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+
+        # FPA: Time series forecast
+        if any(kw in lower for kw in ["forecast", "project revenue", "predict", "time series"]):
+            logger.info(f"[SKILL_BUILDER] 🔬 Adding time-series-forecaster")
+            chain.append(SkillChainNode(
+                skill="time-series-forecaster",
+                purpose="Forecast time series with confidence intervals",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+
+        # FPA: Growth/decay modeling
+        if any(kw in lower for kw in ["growth rate", "decay", "half life", "half-life", "exponential growth", "exponential decay"]):
+            logger.info(f"[SKILL_BUILDER] 🔬 Adding growth-decay-forecaster")
+            chain.append(SkillChainNode(
+                skill="growth-decay-forecaster",
+                purpose="Model exponential growth/decay",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+
+        # FPA: Monte Carlo
+        if any(kw in lower for kw in ["monte carlo", "simulation", "probability distribution", "variance"]):
+            logger.info(f"[SKILL_BUILDER] 🔬 Adding monte-carlo-simulator")
+            chain.append(SkillChainNode(
+                skill="monte-carlo-simulator",
+                purpose="Run Monte Carlo simulation",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+
+        # FPA: Sensitivity / tornado
+        if any(kw in lower for kw in ["sensitivity", "tornado", "what drives", "key driver"]):
+            logger.info(f"[SKILL_BUILDER] 🔬 Adding sensitivity-analyzer")
+            chain.append(SkillChainNode(
+                skill="sensitivity-analyzer",
+                purpose="Sensitivity / tornado analysis",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+
+        # Fund-level analysis (comprehensive)
+        if any(kw in lower for kw in ["analyze fund", "analyse fund", "fund analysis", "fund strategy", "fund performance"]):
+            logger.info(f"[SKILL_BUILDER] 🔬 Adding fund-analyzer")
+            chain.append(SkillChainNode(
+                skill="fund-analyzer",
+                purpose="Comprehensive fund analysis with follow-on strategy",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+
+        # Portfolio scenario modeling (fund-level what-if)
+        if any(kw in lower for kw in ["fund return scenario", "portfolio scenario", "what if company", "fund impact"]):
+            logger.info(f"[SKILL_BUILDER] 🔬 Adding portfolio-scenario-modeler")
+            chain.append(SkillChainNode(
+                skill="portfolio-scenario-modeler",
+                purpose="Model fund return scenarios across portfolio",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+
+        # Company health dashboard (portfolio-wide analytics)
+        if any(kw in lower for kw in ["portfolio health", "company health", "health dashboard", "runway analysis", "growth decay"]):
+            logger.info(f"[SKILL_BUILDER] 🔬 Adding company-health-dashboard")
+            chain.append(SkillChainNode(
+                skill="company-health-dashboard",
+                purpose="Portfolio health: growth, burn, runway, signals",
+                inputs={"use_shared_data": True},
+                parallel_group=1
+            ))
+
+        # Memo / report generation
+        if any(kw in lower for kw in ["memo", "generate report", "lp report", "quarterly report", "gp deck", "follow-on memo"]):
+            logger.info(f"[SKILL_BUILDER] 🔬 Adding report-generator")
+            chain.append(SkillChainNode(
+                skill="report-generator",
+                purpose="Generate report / memo with charts",
+                inputs={"use_shared_data": True},
+                parallel_group=2,
+                required=False
+            ))
+
+        # Phase 1.5: Grid skills (Phase 6) - when matrix_context present and keywords match
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        has_matrix = bool(matrix_ctx.get("rowIds") or matrix_ctx.get("row_ids"))
+        if has_matrix:
+            lower = prompt.lower()
+            for skill_name, triggers in GRID_TRIGGER_MAP.items():
+                if any(t in lower for t in triggers):
+                    action_id = GRID_ACTION_MAP.get(skill_name, ("", "value"))[0]
+                    chain.append(SkillChainNode(
+                        skill=skill_name,
+                        purpose=f"Run {action_id} on grid",
+                        inputs={"use_shared_data": True},
+                        parallel_group=1
+                    ))
         
         # Phase 2: Generation/Formatting
         logger.info(f"[SKILL_BUILDER] 🎨 Phase 2: Generation/Formatting")
@@ -1007,6 +3336,15 @@ class UnifiedMCPOrchestrator:
                 parallel_group=3  # CRITICAL FIX: Move to group 3 to ensure companies are available
             ))
             logger.info(f"[SKILL_BUILDER] 🎨 ✅ Added deck-storytelling to chain. Chain length now: {len(chain)}")
+        elif output_format == "docs":
+            logger.info(f"[SKILL_BUILDER] 📝 Adding memo-writer (output_format=docs)")
+            chain.append(SkillChainNode(
+                skill="memo-writer",
+                purpose="Generate investment memo with charts",
+                inputs={"use_shared_data": True},
+                parallel_group=3  # After data fetching/valuation
+            ))
+            logger.info(f"[SKILL_BUILDER] 📝 ✅ Added memo-writer to chain. Chain length now: {len(chain)}")
         else:
             logger.warning(f"[SKILL_BUILDER] ⚠️ Unknown output_format: '{output_format}'")
         
@@ -1031,15 +3369,13 @@ class UnifiedMCPOrchestrator:
             result *= float(safe_val)
         return result
     
-    async def _execute_skill_chain(self, chain: List[SkillChainNode]) -> Dict[str, Any]:
-        """Execute skill chain with parallel group support"""
-        # CRITICAL DEBUG: Log immediately
-        print("=" * 80)
-        print("🟣 [SKILL_CHAIN] _execute_skill_chain CALLED")
-        print(f"🟣 [SKILL_CHAIN] Chain length: {len(chain)}")
-        print(f"🟣 [SKILL_CHAIN] Skills: {[n.skill for n in chain]}")
-        print(f"🟣 [SKILL_CHAIN] Has deck-storytelling: {any(n.skill == 'deck-storytelling' for n in chain)}")
-        print("=" * 80)
+    async def _execute_skill_chain(self, chain: List[SkillChainNode], progress_callback=None) -> Dict[str, Any]:
+        """Execute skill chain with parallel group support.
+
+        Args:
+            progress_callback: Optional async callable(steps, message) invoked
+                whenever a plan step status changes, enabling real-time streaming.
+        """
         logger.critical(f"[SKILL_CHAIN] 🟣🟣🟣 _execute_skill_chain CALLED with {len(chain)} skills 🟣🟣🟣")
         
         results = {}
@@ -1064,30 +3400,63 @@ class UnifiedMCPOrchestrator:
             group_skills = groups[group_num]
             logger.info(f"[SKILL_CHAIN] 🔄 Executing group {group_num} with {len(group_skills)} skills: {[s.skill for s in group_skills]}")
             
+            # Snapshot shared_data under lock so parallel skills in this group
+            # read a consistent view even while the prior group's writes land.
+            async with self.shared_data_lock:
+                group_snapshot = dict(self.shared_data)
+
             # Pre-execution validation for critical groups
             if group_num == 3:  # Deck generation group
-                companies_count = len(self.shared_data.get("companies", []))
+                companies_count = len(group_snapshot.get("companies", []))
                 if companies_count == 0:
                     logger.warning(f"[SKILL_CHAIN] ⚠️ Group 3 (deck generation) has no companies - will attempt to generate anyway")
-                    logger.warning(f"[SKILL_CHAIN] ⚠️ Available shared_data keys: {list(self.shared_data.keys())}")
+                    logger.warning(f"[SKILL_CHAIN] ⚠️ Available shared_data keys: {list(group_snapshot.keys())}")
                     # Don't raise - let deck generation handle empty companies gracefully
                 else:
                     logger.info(f"[SKILL_CHAIN] ✅ Group 3 validation passed: {companies_count} companies available")
-            
-            # Log shared_data state before group execution
+
+            # Log shared_data state before group execution (from snapshot)
             logger.info(f"[SKILL_CHAIN] 📋 Shared data before group {group_num}:")
-            logger.info(f"[SKILL_CHAIN]   Keys: {list(self.shared_data.keys())}")
-            if 'companies' in self.shared_data:
-                companies = self.shared_data['companies']
+            logger.info(f"[SKILL_CHAIN]   Keys: {list(group_snapshot.keys())}")
+            if 'companies' in group_snapshot:
+                companies = group_snapshot['companies']
                 logger.info(f"[SKILL_CHAIN]   Companies count: {len(companies)}")
                 for i, company in enumerate(companies):
                     logger.info(f"[SKILL_CHAIN]     Company {i}: {company.get('company', 'NO_COMPANY_FIELD')} (keys: {list(company.keys())})")
             else:
                 logger.info(f"[SKILL_CHAIN]   No 'companies' key in shared_data")
             
+            # Phase 5: Dependency validation — skip skills whose prerequisites failed
+            validated_skills = []
+            for node in group_skills:
+                if node.depends_on:
+                    missing_deps = [
+                        dep for dep in node.depends_on
+                        if dep not in results or (isinstance(results.get(dep), dict) and results[dep].get("error"))
+                    ]
+                    if missing_deps:
+                        logger.warning(f"[SKILL_CHAIN] ⏭️ Skipping '{node.skill}' — missing dependencies: {missing_deps}")
+                        node.status = "skipped"
+                        node.result = {"skipped": True, "reason": f"Missing dependencies: {missing_deps}"}
+                        results[node.skill] = node.result
+                        # Update plan step status
+                        plan_steps = self.shared_data.get("plan_steps", [])
+                        if plan_steps:
+                            step_idx = node.inputs.get("_plan_step_index")
+                            if step_idx is not None and step_idx < len(plan_steps):
+                                plan_steps[step_idx]["status"] = "skipped"
+                                plan_steps[step_idx]["detail"] = f"Skipped — missing: {', '.join(missing_deps)}"
+                                if progress_callback:
+                                    await progress_callback(
+                                        [dict(s) for s in plan_steps],
+                                        f"Skipped {node.skill}",
+                                    )
+                        continue
+                validated_skills.append(node)
+
             # Execute all skills in group in parallel with timeout protection
             tasks = []
-            for node in group_skills:
+            for node in validated_skills:
                 skill_info = self.skills.get(node.skill, {})
                 handler = skill_info.get("handler")
                 logger.info(f"[SKILL_CHAIN] 🎯 Preparing skill '{node.skill}' with inputs: {node.inputs}")
@@ -1129,8 +3498,8 @@ class UnifiedMCPOrchestrator:
             
             if tasks:
                 logger.info(f"[SKILL_CHAIN] 🔍 CHECKPOINT 4: About to execute {len(tasks)} tasks in parallel for group {group_num}")
-                logger.info(f"[SKILL_CHAIN] 🔍 CHECKPOINT 4: Task skills: {[node.skill for node in group_skills]}")
-                logger.info(f"[SKILL_CHAIN] 🔍 CHECKPOINT 4: Task inputs preview: {[str(node.inputs)[:200] + '...' if len(str(node.inputs)) > 200 else str(node.inputs) for node in group_skills]}")
+                logger.info(f"[SKILL_CHAIN] 🔍 CHECKPOINT 4: Task skills: {[node.skill for node in validated_skills]}")
+                logger.info(f"[SKILL_CHAIN] 🔍 CHECKPOINT 4: Task inputs preview: {[str(node.inputs)[:200] + '...' if len(str(node.inputs)) > 200 else str(node.inputs) for node in validated_skills]}")
                 logger.info(f"[SKILL_CHAIN] 🏃 Executing {len(tasks)} tasks in parallel for group {group_num}")
                 # Use return_exceptions=True to prevent one failure from breaking the entire chain
                 # This ensures partial results are always returned even if some skills fail
@@ -1141,37 +3510,54 @@ class UnifiedMCPOrchestrator:
                 logger.info(f"[SKILL_CHAIN] ✅ Group {group_num} execution completed, processing {len(group_results)} results")
                 
                 # Store results
-                for node, result in zip(group_skills, group_results):
-                    # CRITICAL DEBUG: Log deck-storytelling execution
+                for node, result in zip(validated_skills, group_results):
                     if node.skill == "deck-storytelling":
-                        print("=" * 80)
-                        print(f"🟢 [SKILL_CHAIN] Processing deck-storytelling result")
-                        print(f"🟢 [SKILL_CHAIN] Result type: {type(result)}")
-                        print(f"🟢 [SKILL_CHAIN] Is Exception: {isinstance(result, Exception)}")
-                        if isinstance(result, Exception):
-                            print(f"🟢 [SKILL_CHAIN] Exception: {result}")
-                        elif isinstance(result, dict):
-                            print(f"🟢 [SKILL_CHAIN] Result keys: {list(result.keys())}")
-                            print(f"🟢 [SKILL_CHAIN] Has slides: {'slides' in result}")
-                            if 'slides' in result:
-                                print(f"🟢 [SKILL_CHAIN] Slides count: {len(result.get('slides', []))}")
-                        print("=" * 80)
                         logger.critical(f"[SKILL_CHAIN] 🟢🟢🟢 deck-storytelling result: type={type(result)}, is_exception={isinstance(result, Exception)} 🟢🟢🟢")
                         
-                        # #region agent log
-                        with open('/Users/admin/code/dilla-ai/.cursor/debug.log', 'a') as f:
-                            import json
-                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"unified_mcp_orchestrator.py:1150","message":"deck-storytelling execution result","data":{"is_exception":isinstance(result, Exception),"result_type":type(result).__name__,"has_slides":isinstance(result, dict) and 'slides' in result,"slides_count":len(result.get('slides', [])) if isinstance(result, dict) and 'slides' in result else 0,"result_keys":list(result.keys()) if isinstance(result, dict) else []},"timestamp":int(__import__('time').time()*1000)})+'\n')
-                        # #endregion
                     
                     logger.info(f"[SKILL_CHAIN] 🔍 Processing result for skill '{node.skill}'")
                     
+                    # Phase 2: Update plan_steps status when present
+                    plan_steps = self.shared_data.get("plan_steps", [])
+                    if plan_steps:
+                        try:
+                            step_idx = node.inputs.get("_plan_step_index")
+                            if step_idx is not None and step_idx < len(plan_steps):
+                                plan_steps[step_idx]["status"] = "failed" if isinstance(result, Exception) else "done"
+                                plan_steps[step_idx]["detail"] = str(result)[:200] if isinstance(result, Exception) else (plan_steps[step_idx].get("explanation") or f"Completed {node.skill}")
+                            elif step_idx is None and node in chain:
+                                step_idx = chain.index(node)
+                                if step_idx < len(plan_steps):
+                                    plan_steps[step_idx]["status"] = "failed" if isinstance(result, Exception) else "done"
+                                    plan_steps[step_idx]["detail"] = str(result)[:200] if isinstance(result, Exception) else (plan_steps[step_idx].get("explanation") or f"Completed {node.skill}")
+                        except (ValueError, IndexError, TypeError):
+                            pass
+                        # Notify caller of plan step status change
+                        if progress_callback:
+                            await progress_callback(
+                                [dict(s) for s in plan_steps],
+                                f"{'Failed' if isinstance(result, Exception) else 'Completed'} {node.skill}",
+                            )
+
                     if isinstance(result, Exception):
                         logger.error(f"[SKILL_CHAIN] ❌ Skill '{node.skill}' failed with exception: {result}")
                         logger.error(f"[SKILL_CHAIN] ❌ Exception type: {type(result).__name__}")
                         import traceback
                         if hasattr(result, '__traceback__'):
                             logger.error(f"[SKILL_CHAIN] ❌ Traceback: {''.join(traceback.format_tb(result.__traceback__))}")
+
+                        # Phase 5: Graceful degradation — optional skills don't break the chain
+                        if not node.required:
+                            logger.info(f"[SKILL_CHAIN] ⚠️ Optional skill '{node.skill}' failed — continuing chain")
+                            node.status = "degraded"
+                            node.result = {"degraded": True, "error": str(result), "note": f"{node.skill} was unavailable — showing data only"}
+                            results[node.skill] = node.result
+                            continue
+
+                        # Record failure in error handler for circuit breaker
+                        if self.error_handler:
+                            self.error_handler.record_failure(node.skill)
+
                         node.status = "failed"
                         # CRITICAL FIX: Store error result so _format_deck knows deck-storytelling was attempted
                         # Always use valid list structures, never None
@@ -1193,14 +3579,13 @@ class UnifiedMCPOrchestrator:
                     
                     node.result = result
                     results[node.skill] = result
+                    # Phase 6: Collect grid_commands from grid-run-* skills for frontend
+                    if isinstance(result, dict) and result.get("grid_commands"):
+                        async with self.shared_data_lock:
+                            self.shared_data.setdefault("grid_commands", []).extend(result["grid_commands"])
+                        logger.info(f"[SKILL_CHAIN] 📋 Appended {len(result['grid_commands'])} grid_commands from '{node.skill}'")
                     logger.info(f"[SKILL_CHAIN] ✅ Stored result for skill '{node.skill}', type: {type(result)}")
                     
-                    # #region agent log
-                    if node.skill == "deck-storytelling":
-                        with open('/Users/admin/code/dilla-ai/.cursor/debug.log', 'a') as f:
-                            import json
-                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"unified_mcp_orchestrator.py:1162","message":"deck-storytelling result stored","data":{"stored_key":node.skill,"result_type":type(result).__name__,"has_slides":isinstance(result, dict) and 'slides' in result,"slides_count":len(result.get('slides', [])) if isinstance(result, dict) and 'slides' in result else 0,"result_keys":list(result.keys()) if isinstance(result, dict) else []},"timestamp":int(__import__('time').time()*1000)})+'\n')
-                    # #endregion
                     
                     # Deep logging for specific skills
                     if isinstance(result, dict):
@@ -1356,11 +3741,22 @@ class UnifiedMCPOrchestrator:
         if 'companies' in self.shared_data:
             logger.info(f"[SKILL_CHAIN] Final companies count: {len(self.shared_data['companies'])}")
         
+        # Collect warnings from failed/degraded/skipped skills so the frontend can display them
+        skill_warnings = []
+        for node in chain:
+            if node.status == "failed" and isinstance(node.result, dict) and node.result.get("error"):
+                skill_warnings.append(f"Skill '{node.skill}' failed: {node.result['error']}")
+            elif node.status == "degraded":
+                skill_warnings.append(f"Skill '{node.skill}' degraded: {node.result.get('error', 'unavailable')}")
+            elif node.status == "skipped":
+                skill_warnings.append(f"Skill '{node.skill}' skipped: {node.result.get('reason', 'missing dependencies')}")
+
         # CRITICAL FIX: Include shared_data in results to ensure data flows to _format_output
         enhanced_results = {
             **results,
             "companies": self.shared_data.get("companies", []),
             "citations": self.citation_manager.get_all_citations(),
+            "warnings": skill_warnings,
             "shared_data": self.shared_data  # Include full shared_data for debugging
         }
         
@@ -1530,11 +3926,6 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
     
     async def _execute_company_fetch(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Fetch company data using Tavily"""
-        # CRITICAL DEBUG: Log immediately
-        print("=" * 80)
-        print("🔴 [COMPANY_FETCH] _execute_company_fetch CALLED")
-        print(f"🔴 [COMPANY_FETCH] Inputs: {inputs}")
-        print("=" * 80)
         logger.critical(f"[COMPANY_FETCH] 🔴🔴🔴 _execute_company_fetch CALLED with inputs: {inputs} 🔴🔴🔴")
         logger.info(f"[COMPANY_FETCH] 🔍 STARTING extraction for inputs: {inputs}")
         company = inputs.get("company", "")
@@ -2415,11 +4806,6 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
                 )
                 logger.info(f"[COMPANY_FETCH] ✅ Returning {len([validated_data])} company with keys: {list(validated_data.keys())[:10]}")
                 
-                # CRITICAL DEBUG: Log return
-                print("=" * 80)
-                print(f"🔴 [COMPANY_FETCH] RETURNING companies: {[validated_data.get('company', 'NO_NAME')]}")
-                print(f"🔴 [COMPANY_FETCH] Company keys: {list(validated_data.keys())[:10]}")
-                print("=" * 80)
                 logger.critical(f"[COMPANY_FETCH] 🔴🔴🔴 RETURNING {len([validated_data])} company: {validated_data.get('company')} 🔴🔴🔴")
                 
                 return {"companies": [validated_data]}
@@ -2614,6 +5000,86 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
             import traceback
             logger.error(f"Tavily error traceback: {traceback.format_exc()}")
             return {"results": []}
+    
+    async def batch_search_companies(self, company_names: List[str]) -> Dict[str, Any]:
+        """Search multiple companies via Tavily in parallel"""
+        import asyncio
+        
+        async def search_company(name: str) -> tuple[str, Dict[str, Any]]:
+            """Search for a single company"""
+            try:
+                search_query = f"{name} funding revenue valuation ARR"
+                result = await self._tavily_search(search_query)
+                
+                # Extract key information from Tavily results
+                extracted_data: Dict[str, Any] = {
+                    "name": name,
+                    "sector": None,
+                    "arr": None,
+                    "revenue": None,
+                    "valuation": None,
+                    "latestValuation": None,
+                    "industry": None,
+                }
+                
+                # Parse results to extract structured data
+                if result.get("results"):
+                    # Try to extract information from search results
+                    for res in result.get("results", [])[:3]:  # Use top 3 results
+                        content = res.get("content", "").lower()
+                        title = res.get("title", "").lower()
+                        combined = f"{title} {content}"
+                        
+                        # Extract ARR/Revenue
+                        if not extracted_data.get("arr") and not extracted_data.get("revenue"):
+                            # Look for ARR patterns
+                            import re
+                            arr_match = re.search(r'arr[:\s]*\$?([\d.]+)\s*(?:m|million|b|billion)', combined, re.IGNORECASE)
+                            if arr_match:
+                                value = float(arr_match.group(1))
+                                if 'b' in combined[arr_match.start():arr_match.end()]:
+                                    value *= 1000
+                                extracted_data["arr"] = value * 1000000
+                                extracted_data["revenue"] = value * 1000000
+                        
+                        # Extract valuation
+                        if not extracted_data.get("valuation"):
+                            val_match = re.search(r'valuation[:\s]*\$?([\d.]+)\s*(?:m|million|b|billion)', combined, re.IGNORECASE)
+                            if val_match:
+                                value = float(val_match.group(1))
+                                if 'b' in combined[val_match.start():val_match.end()]:
+                                    value *= 1000
+                                extracted_data["valuation"] = value * 1000000
+                                extracted_data["latestValuation"] = value * 1000000
+                        
+                        # Extract sector/industry
+                        if not extracted_data.get("sector"):
+                            sectors = ["saas", "fintech", "healthcare", "e-commerce", "enterprise", "b2b", "b2c"]
+                            for sector in sectors:
+                                if sector in combined:
+                                    extracted_data["sector"] = sector.capitalize()
+                                    extracted_data["industry"] = sector.capitalize()
+                                    break
+                
+                return (name, extracted_data)
+            except Exception as e:
+                logger.error(f"Error searching for {name}: {e}")
+                return (name, {"error": str(e), "name": name})
+        
+        # Execute all searches in parallel
+        tasks = [search_company(name) for name in company_names]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Build result dictionary
+        result_dict: Dict[str, Any] = {}
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"Batch search exception: {result}")
+                continue
+            name, data = result
+            result_dict[name] = data
+        
+        return result_dict
     
     async def _execute_valuation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Execute comprehensive valuation analysis using ValuationEngineService"""
@@ -3159,8 +5625,59 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
             return {"error": str(e)}
     
     async def _execute_scenario_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute scenario analysis using PWERM from ValuationEngineService"""
+        """Execute scenario analysis using PWERM from ValuationEngineService.
+
+        Also supports NL "what if" queries via NLScenarioComposer when prompt
+        contains 'what if' / 'what happens'.
+        """
         try:
+            # NL "what if" branch — parse and model cap table impact
+            prompt = inputs.get("prompt", "") or self.shared_data.get("original_prompt", "")
+            prompt_lower = prompt.lower() if prompt else ""
+            if self.nl_scenario_composer and any(kw in prompt_lower for kw in ["what if", "what happens"]):
+                logger.info(f"[SCENARIO] NL scenario branch for: {prompt[:80]}")
+                composed = await self.nl_scenario_composer.parse_what_if_query(
+                    prompt,
+                    fund_id=self.shared_data.get("fund_context", {}).get("fund_id")
+                )
+                # Map parsed events to cap table operations
+                nl_results = {
+                    "scenario_name": composed.scenario_name,
+                    "events": [
+                        {
+                            "entity": e.entity_name,
+                            "type": e.event_type,
+                            "description": e.event_description,
+                            "timing": e.timing,
+                            "parameters": e.parameters,
+                            "impact_factors": e.impact_factors
+                        }
+                        for e in composed.events
+                    ],
+                    "probability": composed.probability,
+                    "cap_table_impacts": {}
+                }
+                # For each event, compute cap table impact if it's a fundraise
+                for event in composed.events:
+                    if event.event_type == "funding" and event.parameters.get("amount"):
+                        amount = event.parameters["amount"]
+                        pre_money = amount * 4  # Rough estimate
+                        post_money = pre_money + amount
+                        nl_results["cap_table_impacts"][event.entity_name] = {
+                            "new_round_size": amount,
+                            "estimated_pre_money": pre_money,
+                            "new_investor_pct": amount / post_money * 100,
+                            "dilution_to_existing": amount / post_money * 100
+                        }
+                    elif event.event_type == "exit":
+                        nl_results["cap_table_impacts"][event.entity_name] = {
+                            "event": "exit",
+                            "impact": "liquidation waterfall applies"
+                        }
+
+                self.shared_data["scenario_analysis"] = nl_results
+                # Also run standard PWERM below so we get both
+
             companies = self.shared_data.get("companies", [])
             
             scenarios = []
@@ -3236,7 +5753,13 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
                 # CRITICAL: Attach scenarios to the company object so deck generation can access them
                 company["pwerm_scenarios"] = pwerm_scenarios
                 company["expected_exit"] = expected_value
-            
+                company["scenarios"] = pwerm_scenarios  # Also store as 'scenarios' for memo chart generation
+
+            # Store in shared_data for downstream skills (memo, report)
+            self.shared_data["scenario_analysis"] = {
+                c.get("company", "Unknown"): s for c, s in zip(companies, scenarios)
+            } if companies and scenarios else {}
+
             return {"scenario_analysis": scenarios}
             
         except Exception as e:
@@ -7522,6 +10045,77 @@ Return a JSON with this structure:
         # Default fallback
         return Stage.SERIES_A
     
+    def _serialize_memo_section(self, section: Dict[str, Any]) -> str:
+        """Serialize a memo section (chart, table, list, heading, paragraph) into text.
+
+        The frontend sends full memo sections with charts/tables/lists back as context,
+        but previously only `content` was read — making charts and tables invisible to the agent.
+        """
+        section_type = section.get("type", "")
+        content = section.get("content", "")
+
+        if section_type == "chart":
+            chart = section.get("chart", {})
+            title = chart.get("title", "Chart")
+            chart_type = chart.get("type", "unknown")
+            data = chart.get("data", [])
+            lines = [f"[Chart: {title} ({chart_type})]"]
+            if isinstance(data, list):
+                for item in data[:20]:
+                    if isinstance(item, dict):
+                        name = item.get("name") or item.get("label", "")
+                        value = item.get("value", "")
+                        lines.append(f"  {name}: {value}")
+            elif isinstance(data, dict):
+                labels = data.get("labels", [])
+                datasets = data.get("datasets", [])
+                if labels and datasets:
+                    for ds in datasets[:5]:
+                        ds_label = ds.get("label", "")
+                        ds_data = ds.get("data", [])
+                        pairs = [f"{l}={v}" for l, v in zip(labels, ds_data)]
+                        lines.append(f"  {ds_label}: {', '.join(pairs[:10])}")
+                # Sankey nodes/links
+                nodes = data.get("nodes", [])
+                links = data.get("links", [])
+                if nodes:
+                    lines.append(f"  Nodes: {', '.join(str(n.get('name', n)) for n in nodes[:15])}")
+                if links:
+                    for link in links[:10]:
+                        lines.append(f"  {link.get('source','')} → {link.get('target','')}: {link.get('value','')}")
+            return "\n".join(lines)
+
+        if section_type == "table":
+            table = section.get("table", {})
+            headers = table.get("headers", [])
+            rows = table.get("rows", [])
+            caption = table.get("caption", "")
+            lines = []
+            if caption:
+                lines.append(f"[Table: {caption}]")
+            if headers:
+                lines.append(" | ".join(str(h) for h in headers))
+                lines.append("-" * (len(headers) * 12))
+            for row in rows[:25]:
+                lines.append(" | ".join(str(c) for c in row))
+            return "\n".join(lines)
+
+        if section_type == "list":
+            items = section.get("items", [])
+            return "\n".join(f"• {item}" for item in items[:20])
+
+        # heading, paragraph, or anything with content
+        return content
+
+    def _serialize_memo_sections(self, sections: list, limit: int = 15) -> str:
+        """Serialize a list of memo sections into a single text block."""
+        parts = []
+        for s in sections[:limit]:
+            text = self._serialize_memo_section(s)
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+
     def _get_field_safe(self, company: Dict[str, Any], field: str, default: Any = 0) -> Any:
         """Universal safe getter for company fields
         
@@ -7598,11 +10192,6 @@ Return a JSON with this structure:
     async def _execute_deck_generation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Generate presentation deck with structured slides"""
         from datetime import datetime
-        # CRITICAL DEBUG: Log immediately to verify function is being called
-        print("=" * 80)
-        print("🔵 [DECK_GEN] _execute_deck_generation CALLED")
-        print(f"🔵 [DECK_GEN] Inputs: {inputs}")
-        print("=" * 80)
         logger.critical(f"[DECK_GEN] 🔵🔵🔵 _execute_deck_generation CALLED with inputs: {inputs} 🔵🔵🔵")
         
         # CRITICAL FIX: Wrap entire function to ensure we ALWAYS return a result, never raise
@@ -14587,79 +17176,624 @@ Return a JSON with this structure:
             return {"error": str(e), "format": "spreadsheet"}
     
     async def _execute_memo_generation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate investment memo document"""
+        """Generate investment memo with real modeling data and embedded charts.
+
+        Pulls from shared_data populated by earlier skills (company fetch, valuation,
+        scenario analysis, follow-on strategy) so the memo contains actual numbers,
+        not placeholder text.  Returns ``format: 'docs'`` with structured sections
+        that the frontend Docs page can render — including ``type: 'chart'`` sections
+        for TableauLevelCharts.
+        """
         try:
             companies = self.shared_data.get("companies", [])
-            
-            memo_sections = []
-            
-            # Executive Summary
-            total_funding = sum(c.get("total_funding", 0) for c in companies)
-            avg_valuation = sum(c.get("valuation", 0) for c in companies) / max(len(companies), 1)
-            
-            memo_sections.append({
-                "section": "Executive Summary",
-                "content": f"""This memo analyzes {len(companies)} companies with a combined funding of ${total_funding:,.0f} 
-and average valuation of ${avg_valuation:,.0f}. The companies span sectors including 
-{', '.join(set(c.get('sector', 'Unknown') for c in companies))}."""
-            })
-            
-            # Individual Company Analysis
-            for company in companies:
-                memo_sections.append({
-                    "section": f"Company Analysis: {company.get('company', 'Unknown')}",
-                    "content": f"""
-**Business Model**: {company.get('business_model', '')}
-**Stage**: {company.get('stage', 'Unknown')}
-**Valuation**: ${self._get_field_safe(company, 'valuation'):,.0f}
-**Revenue**: ${self._get_field_safe(company, 'revenue'):,.0f}
-**Total Funding**: ${self._get_field_safe(company, 'total_funding'):,.0f}
-**Website**: {company.get('website_url', '')}
+            fund_context = self.shared_data.get("fund_context", {})
+            followon_data = self.shared_data.get("followon_strategy", {})
+            scenario_data = self.shared_data.get("scenario_analysis", {})
+            fund_metrics_data = self.shared_data.get("fund_metrics", {})
+            portfolio_data = self.shared_data.get("portfolio_analysis", {})
+            prompt = inputs.get("prompt", "") or self.shared_data.get("original_prompt", "")
 
-**Investment Thesis**: 
-{company.get('product_description', 'Innovative technology company with strong growth potential.')}
+            # Determine memo type from prompt context
+            prompt_lower = prompt.lower() if prompt else ""
+            is_followon_memo = any(kw in prompt_lower for kw in ["follow-on", "followon", "follow on"])
+            is_lp_report = any(kw in prompt_lower for kw in ["lp report", "lp quarterly", "quarterly report"])
+            is_gp_strategy = any(kw in prompt_lower for kw in ["gp deck", "gp strategy", "strategy report"])
 
-**Key Metrics**:
-- Team Size: {company.get('team_size', 'Unknown')}
-- Founded: {company.get('founded_year', 'Unknown')}
-- Gross Margin: {company.get('key_metrics', {}).get('gross_margin', 0) * 100:.1f}%
-- Revenue Growth: {company.get('revenue_growth', 0) * 100:.1f}%
-                    """
-                })
-            
-            # Risk Analysis
-            memo_sections.append({
-                "section": "Risk Analysis",
-                "content": """Key risks include market competition, execution risk, and funding environment. 
-Mitigation strategies include portfolio diversification and staged investment approach."""
-            })
-            
-            # Recommendations
+            memo_sections: List[Dict[str, Any]] = []
+
+            # --- Title ---
+            if is_followon_memo and companies:
+                title = f"Follow-On Investment Memo — {', '.join(c.get('company', '?') for c in companies[:3])}"
+            elif is_lp_report:
+                fund_name = fund_context.get("fund_name", "Fund")
+                title = f"LP Quarterly Report — {fund_name} — Q{((datetime.now().month - 1) // 3) + 1} {datetime.now().year}"
+            elif is_gp_strategy:
+                title = "GP Strategy & Portfolio Update"
+            else:
+                title = "Investment Analysis Memo"
+
+            memo_sections.append({"type": "heading1", "content": title})
+            memo_sections.append({"type": "paragraph", "content": f"Prepared {datetime.now().strftime('%B %d, %Y')}"})
+
+            # --- Executive Summary ---
+            memo_sections.append({"type": "heading2", "content": "Executive Summary"})
+            exec_bullets = []
             if companies:
-                top_companies = sorted(companies, key=lambda x: x.get('valuation', 0), reverse=True)[:3]
-                recommendations = [f"- {c.get('company')}: ${c.get('valuation', 0):,.0f} valuation" for c in top_companies]
-                
-                memo_sections.append({
-                    "section": "Investment Recommendations",
-                    "content": "Top investment opportunities:\n" + "\n".join(recommendations)
-                })
-            
-            # Return standardized format for frontend consumption
+                total_funding = sum(self._get_field_safe(c, "total_funding") for c in companies)
+                sectors = sorted(set(c.get("sector", "Unknown") for c in companies))
+                exec_bullets.append(f"Analysis of {len(companies)} portfolio companies spanning {', '.join(sectors)} with ${total_funding / 1e6:,.1f}M total funding raised.")
+
+            # Real fund metrics if available
+            perf = fund_metrics_data.get("metrics", {}) if isinstance(fund_metrics_data, dict) else {}
+            if perf.get("tvpi"):
+                exec_bullets.append(f"Fund performance: {perf['tvpi']:.2f}x TVPI, {perf.get('dpi', 0):.2f}x DPI, {perf.get('irr', 0):.1f}% IRR.")
+            elif fund_context.get("fund_size"):
+                fund_size = fund_context["fund_size"]
+                remaining = fund_context.get("remaining_capital", fund_size * 0.4)
+                exec_bullets.append(f"Fund size ${fund_size / 1e6:,.0f}M with ${remaining / 1e6:,.0f}M remaining to deploy ({remaining / fund_size * 100:.0f}%).")
+
+            # Follow-on recommendation summary
+            if followon_data:
+                for company_id, fo in followon_data.items():
+                    if isinstance(fo, dict) and fo.get("recommendation"):
+                        name = fo.get("company_name", company_id)
+                        rec = fo["recommendation"]
+                        pro_rata = fo.get("pro_rata_amount", 0)
+                        exec_bullets.append(f"{name}: Recommend **{rec}**" + (f" — ${pro_rata / 1e6:,.1f}M pro-rata" if pro_rata else ""))
+
+            if not exec_bullets:
+                exec_bullets.append("Comprehensive analysis of portfolio companies with investment recommendations below.")
+
+            memo_sections.append({"type": "list", "items": exec_bullets})
+
+            # --- Per-Company Analysis ---
+            for company in companies:
+                name = company.get("company", "Unknown")
+                memo_sections.append({"type": "heading2", "content": f"Company Analysis: {name}"})
+
+                valuation = self._get_field_safe(company, "valuation")
+                revenue = self._get_field_safe(company, "revenue") or self._get_field_safe(company, "inferred_revenue")
+                stage = company.get("stage", "Unknown")
+                rev_multiple = valuation / revenue if revenue and revenue > 0 else 0
+
+                overview = (
+                    f"**{name}** is a {stage} company"
+                    + (f" with ${valuation / 1e6:,.1f}M valuation" if valuation else "")
+                    + (f" and ${revenue / 1e6:,.1f}M ARR ({rev_multiple:.1f}x revenue multiple)" if revenue else "")
+                    + "."
+                )
+                desc = company.get("product_description", "")
+                if desc and desc != "Innovative technology company with strong growth potential.":
+                    overview += f"\n\n{desc}"
+
+                memo_sections.append({"type": "paragraph", "content": overview})
+
+                # Key metrics table as list
+                metrics_items = []
+                if company.get("total_funding"):
+                    metrics_items.append(f"Total Funding: ${self._get_field_safe(company, 'total_funding') / 1e6:,.1f}M")
+                if company.get("team_size"):
+                    metrics_items.append(f"Team Size: {company['team_size']}")
+                if company.get("founded_year"):
+                    metrics_items.append(f"Founded: {company['founded_year']}")
+                gm = company.get("key_metrics", {}).get("gross_margin")
+                if gm and isinstance(gm, (int, float)):
+                    metrics_items.append(f"Gross Margin: {gm * 100:.0f}%")
+                growth = company.get("revenue_growth")
+                if growth and isinstance(growth, (int, float)):
+                    metrics_items.append(f"Revenue Growth: {growth * 100:.0f}% YoY")
+                if metrics_items:
+                    memo_sections.append({"type": "list", "items": metrics_items})
+
+                # Cap table Sankey chart if we have cap table history
+                cap_history = company.get("cap_table_history") or self.shared_data.get("cap_table_history", {}).get(name)
+                if cap_history and isinstance(cap_history, dict):
+                    sankey_data = cap_history.get("sankey_data")
+                    if sankey_data:
+                        memo_sections.append({
+                            "type": "chart",
+                            "chart": {
+                                "type": "sankey",
+                                "title": f"{name} — Ownership Flow",
+                                "data": sankey_data
+                            }
+                        })
+
+                # PWERM / scenario chart if available
+                company_scenarios = company.get("scenarios") or scenario_data.get(name, {}).get("scenarios")
+                if company_scenarios and isinstance(company_scenarios, list) and len(company_scenarios) > 0:
+                    probability_data = {
+                        "scenarios": [],
+                        "breakpoints": [],
+                        "xConfig": {"label": "Exit Value ($M)", "type": "log"},
+                        "yConfig": {"label": "Return Multiple"}
+                    }
+                    for sc in company_scenarios[:10]:
+                        probability_data["scenarios"].append({
+                            "name": sc.get("name", sc.get("scenario_name", "Scenario")),
+                            "probability": sc.get("probability", 0),
+                            "dataPoints": sc.get("data_points", sc.get("dataPoints", []))
+                        })
+                    memo_sections.append({
+                        "type": "chart",
+                        "chart": {
+                            "type": "probability_cloud",
+                            "title": f"{name} — Exit Scenario Analysis (PWERM)",
+                            "data": probability_data
+                        }
+                    })
+
+            # --- Follow-On Analysis Section ---
+            if followon_data:
+                memo_sections.append({"type": "heading2", "content": "Follow-On Analysis"})
+                for company_id, fo in followon_data.items():
+                    if not isinstance(fo, dict):
+                        continue
+                    name = fo.get("company_name", company_id)
+                    memo_sections.append({"type": "heading3", "content": name})
+                    details = []
+
+                    # Full investment context (enhanced path)
+                    our_invested = fo.get("our_invested", 0)
+                    if our_invested:
+                        details.append(f"Our Investment: ${our_invested / 1e6:,.1f}M ({fo.get('our_entry_round', 'Unknown')})")
+                    current_own = fo.get("current_ownership_pct") or fo.get("current_ownership", 0)
+                    if current_own:
+                        details.append(f"Current Ownership: {current_own:.1f}%")
+                    if fo.get("pro_rata_amount"):
+                        details.append(f"Pro-Rata Amount: ${fo['pro_rata_amount'] / 1e6:,.1f}M")
+                    if fo.get("ownership_with_followon"):
+                        details.append(f"Ownership After Follow-On: {fo['ownership_with_followon']:.1f}%")
+                    if fo.get("ownership_without_followon"):
+                        details.append(f"Ownership Without Follow-On: {fo['ownership_without_followon']:.1f}%")
+
+                    # Exit impact at various multiples (from enhanced analyze_follow_on)
+                    exit_impact = fo.get("exit_impact_at_multiples", {})
+                    for mult_key, impact in exit_impact.items():
+                        if isinstance(impact, dict) and impact.get("our_proceeds"):
+                            details.append(
+                                f"At {mult_key} exit: ${impact['our_proceeds'] / 1e6:,.1f}M proceeds "
+                                f"({impact.get('our_moic', 0):.1f}x MOIC)"
+                            )
+
+                    # Fund return impact
+                    fund_impact = fo.get("fund_return_impact", {})
+                    if fund_impact.get("marginal_moic_change"):
+                        details.append(f"Fund MOIC Impact: {fund_impact['marginal_moic_change']:+.3f}x")
+
+                    if fo.get("recommendation"):
+                        details.append(f"**Recommendation: {fo['recommendation']}**")
+                    if details:
+                        memo_sections.append({"type": "list", "items": details})
+
+                    # Ownership comparison chart (bar chart — before/after follow-on)
+                    if current_own and fo.get("ownership_with_followon"):
+                        memo_sections.append({
+                            "type": "chart",
+                            "chart": {
+                                "type": "bar",
+                                "title": f"{name} — Ownership Scenarios",
+                                "data": [
+                                    {"name": "Current", "value": current_own},
+                                    {"name": "With Follow-On", "value": fo["ownership_with_followon"]},
+                                    {"name": "Without Follow-On", "value": fo.get("ownership_without_followon", current_own * 0.8)}
+                                ]
+                            }
+                        })
+
+                    # Scenario cap table waterfall chart (from enhanced path)
+                    scenario_caps = fo.get("scenario_cap_tables", {})
+                    base_scenario = scenario_caps.get("scenarios", {}).get("base", {})
+                    base_exits = base_scenario.get("waterfall_at_exits", [])
+                    if base_exits:
+                        waterfall_chart_data = []
+                        for we in base_exits:
+                            if isinstance(we, dict) and we.get("our_proceeds"):
+                                waterfall_chart_data.append({
+                                    "name": f"${we['exit_value'] / 1e6:,.0f}M",
+                                    "value": we["our_proceeds"] / 1e6,
+                                    "moic": we.get("our_moic", 0),
+                                })
+                        if waterfall_chart_data:
+                            memo_sections.append({
+                                "type": "chart",
+                                "chart": {
+                                    "type": "bar",
+                                    "title": f"{name} — Our Proceeds by Exit Value (Base Scenario)",
+                                    "data": waterfall_chart_data,
+                                }
+                            })
+
+            # --- Fund Metrics Section (for LP reports) ---
+            if perf and (perf.get("tvpi") or perf.get("total_nav")):
+                memo_sections.append({"type": "heading2", "content": "Fund Performance"})
+                fund_items = []
+                if perf.get("total_committed"):
+                    fund_items.append(f"Fund Size: ${perf['total_committed'] / 1e6:,.0f}M")
+                if perf.get("total_invested"):
+                    fund_items.append(f"Invested: ${perf['total_invested'] / 1e6:,.0f}M")
+                if perf.get("total_nav"):
+                    fund_items.append(f"Current NAV: ${perf['total_nav'] / 1e6:,.0f}M")
+                if perf.get("tvpi"):
+                    fund_items.append(f"TVPI: {perf['tvpi']:.2f}x")
+                if perf.get("dpi"):
+                    fund_items.append(f"DPI: {perf['dpi']:.2f}x")
+                if perf.get("irr"):
+                    fund_items.append(f"IRR: {perf['irr']:.1f}%")
+                if fund_items:
+                    memo_sections.append({"type": "list", "items": fund_items})
+
+                # Fund NAV waterfall chart
+                investments = fund_metrics_data.get("investments", [])
+                if investments:
+                    waterfall_data = []
+                    for inv in sorted(investments, key=lambda x: x.get("nav_contribution", 0), reverse=True)[:10]:
+                        waterfall_data.append({
+                            "name": inv.get("company_name", "Unknown"),
+                            "value": inv.get("nav_contribution", 0)
+                        })
+                    if waterfall_data:
+                        memo_sections.append({
+                            "type": "chart",
+                            "chart": {
+                                "type": "waterfall",
+                                "title": "NAV Contribution by Company",
+                                "data": waterfall_data
+                            }
+                        })
+
+            # --- Portfolio Health Dashboard (from CompanyHealthScorer) ---
+            portfolio_health = self.shared_data.get("portfolio_health", {})
+            if not portfolio_health and self.fund_modeling and fund_context.get("fund_id"):
+                try:
+                    portfolio_health = await self.fund_modeling.analyze_portfolio_companies(
+                        fund_id=fund_context["fund_id"]
+                    )
+                    self.shared_data["portfolio_health"] = portfolio_health
+                except Exception as e:
+                    logger.warning(f"[MEMO] Portfolio health analysis failed: {e}")
+
+            # company_analytics is a dict keyed by company_id from analyze_portfolio_companies
+            raw_analytics = portfolio_health.get("company_analytics", {})
+            raw_returns = portfolio_health.get("company_returns", {})
+            # Normalise: build a list regardless of whether it's dict or list
+            if isinstance(raw_analytics, dict):
+                company_analytics = [
+                    {"analytics": v, "returns": raw_returns.get(k, {}), "company_name": v.get("company_name", k)}
+                    for k, v in raw_analytics.items()
+                ]
+            elif isinstance(raw_analytics, list):
+                company_analytics = raw_analytics
+            else:
+                company_analytics = []
+
+            if company_analytics:
+                memo_sections.append({"type": "heading2", "content": "Portfolio Health Dashboard"})
+                # Summary signals across portfolio
+                all_signals = []
+                health_chart_data = []
+                for ca in company_analytics:
+                    analytics = ca.get("analytics", ca)
+                    returns = ca.get("returns", {})
+                    c_name = ca.get("company_name") or analytics.get("company_name", "Unknown")
+
+                    # Collect critical signals
+                    for sig in analytics.get("signals", []):
+                        if "critical" in sig.lower() or "risk" in sig.lower():
+                            all_signals.append(f"{c_name}: {sig}")
+
+                    # Build per-company health row
+                    items = []
+                    arr_m = analytics.get("current_arr", 0) / 1e6 if analytics.get("current_arr") else 0
+                    growth = analytics.get("growth_rate", 0)
+                    runway = analytics.get("estimated_runway_months", 0)
+                    moic = returns.get("moic", 0)
+                    items.append(
+                        f"**{c_name}**: ${arr_m:,.1f}M ARR, {growth * 100:.0f}% growth, "
+                        f"{runway:.0f}mo runway, {moic:.1f}x MOIC"
+                    )
+                    memo_sections.append({"type": "list", "items": items})
+
+                    health_chart_data.append({"name": c_name, "value": moic})
+
+                if health_chart_data:
+                    memo_sections.append({
+                        "type": "chart",
+                        "chart": {
+                            "type": "bar",
+                            "title": "Portfolio MOIC by Company",
+                            "data": sorted(health_chart_data, key=lambda x: x["value"], reverse=True),
+                        }
+                    })
+
+                if all_signals:
+                    memo_sections.append({"type": "heading3", "content": "Critical Signals"})
+                    memo_sections.append({"type": "list", "items": all_signals[:10]})
+
+            # --- Reserve Forecast Timeline ---
+            reserve_forecast = self.shared_data.get("reserve_forecast", {})
+            quarters = reserve_forecast.get("quarters", [])
+            if quarters:
+                memo_sections.append({"type": "heading2", "content": "Reserve Forecast"})
+                reserve_items = []
+                total_available = reserve_forecast.get("total_available", 0)
+                total_obligated = reserve_forecast.get("total_obligated", 0)
+                reserve_items.append(f"Available Capital: ${total_available / 1e6:,.1f}M")
+                reserve_items.append(f"Total Pro-Rata Obligations: ${total_obligated / 1e6:,.1f}M")
+                if total_available > 0:
+                    coverage = total_available / total_obligated if total_obligated > 0 else float('inf')
+                    reserve_items.append(f"Coverage Ratio: {coverage:.1f}x")
+                memo_sections.append({"type": "list", "items": reserve_items})
+
+                # Quarter-by-quarter chart
+                reserve_chart = []
+                for q in quarters[:8]:  # Show 2 years
+                    reserve_chart.append({
+                        "name": q.get("quarter", "?"),
+                        "value": q.get("cumulative_obligation", 0) / 1e6,
+                    })
+                if reserve_chart:
+                    memo_sections.append({
+                        "type": "chart",
+                        "chart": {
+                            "type": "line",
+                            "title": "Cumulative Pro-Rata Obligations ($M)",
+                            "data": reserve_chart,
+                        }
+                    })
+
+            # --- Fund Return Scenarios ---
+            fund_scenarios = self.shared_data.get("fund_scenarios", {})
+            if not fund_scenarios and self.fund_modeling and fund_context.get("fund_id"):
+                try:
+                    fund_scenarios = await self.fund_modeling.model_fund_scenarios(
+                        fund_id=fund_context["fund_id"]
+                    )
+                    self.shared_data["fund_scenarios"] = fund_scenarios
+                except Exception as e:
+                    logger.warning(f"[MEMO] Fund scenario modeling failed: {e}")
+
+            # model_fund_scenarios returns "portfolio_scenarios" key
+            scenarios_list = fund_scenarios.get("portfolio_scenarios", []) or fund_scenarios.get("scenarios", [])
+            if scenarios_list:
+                memo_sections.append({"type": "heading2", "content": "Fund Return Scenarios"})
+                scenario_items = []
+                scenario_chart = []
+                for sc in scenarios_list:
+                    sc_name = sc.get("scenario_name", "Unknown")
+                    sc_moic = sc.get("fund_moic", 0)
+                    sc_dpi = sc.get("fund_dpi", 0)
+                    scenario_items.append(
+                        f"**{sc_name}**: {sc_moic:.2f}x MOIC, {sc_dpi:.2f}x DPI"
+                    )
+                    scenario_chart.append({"name": sc_name, "value": sc_moic})
+
+                    # Attribution detail
+                    attribution = sc.get("return_attribution", [])
+                    for attr in attribution[:3]:
+                        if isinstance(attr, dict) and attr.get("marginal_impact"):
+                            scenario_items.append(
+                                f"  → {attr.get('company_name', '?')}: "
+                                f"{attr['marginal_impact']:+.3f}x marginal MOIC"
+                            )
+
+                memo_sections.append({"type": "list", "items": scenario_items})
+                if scenario_chart:
+                    memo_sections.append({
+                        "type": "chart",
+                        "chart": {
+                            "type": "bar",
+                            "title": "Fund MOIC by Scenario",
+                            "data": scenario_chart,
+                        }
+                    })
+
+            # --- Exit Pipeline (from plan_exits) ---
+            exit_modeling = self.shared_data.get("exit_modeling", {})
+            exit_scenarios = exit_modeling.get("scenarios", [])
+            if exit_scenarios:
+                memo_sections.append({"type": "heading2", "content": "Exit Pipeline"})
+                for ex in exit_scenarios:
+                    name = ex.get("company_name", ex.get("company", "Unknown"))
+                    memo_sections.append({"type": "heading3", "content": name})
+
+                    exit_items = []
+                    # Secondary route
+                    sec = ex.get("secondary", {})
+                    if sec.get("our_proceeds"):
+                        exit_items.append(
+                            f"Secondary (now): ${sec['our_proceeds'] / 1e6:,.1f}M proceeds at "
+                            f"{sec.get('discount', 0.2) * 100:.0f}% discount ({sec.get('moic', 0):.1f}x MOIC)"
+                        )
+
+                    # M&A scenarios
+                    for ma in ex.get("ma_scenarios", []):
+                        if isinstance(ma, dict) and ma.get("our_proceeds"):
+                            exit_items.append(
+                                f"M&A at {ma.get('label', '?')}: ${ma['our_proceeds'] / 1e6:,.1f}M "
+                                f"({ma.get('moic', 0):.1f}x MOIC, {ma.get('fund_dpi_impact', 0):.3f}x fund DPI)"
+                            )
+
+                    # IPO timing
+                    ipo = ex.get("ipo_timing", {})
+                    if ipo.get("months_to_ipo_arr"):
+                        exit_items.append(
+                            f"IPO-ready in ~{ipo['months_to_ipo_arr']}mo "
+                            f"(current ${ipo.get('current_arr', 0) / 1e6:,.1f}M → $100M ARR threshold)"
+                        )
+
+                    # Hold vs sell
+                    hvs = ex.get("hold_vs_sell", {})
+                    if hvs.get("sell_now_moic") and hvs.get("hold_2yr_moic"):
+                        signal = hvs.get("recommendation_signal", "hold")
+                        exit_items.append(
+                            f"**Hold vs Sell**: Sell now {hvs['sell_now_moic']:.1f}x vs hold 2yr {hvs['hold_2yr_moic']:.1f}x "
+                            f"→ **{signal.replace('_', ' ').title()}**"
+                        )
+
+                    if exit_items:
+                        memo_sections.append({"type": "list", "items": exit_items})
+
+                # Exit pipeline bar chart — hold vs sell comparison
+                exit_chart_data = []
+                for ex in exit_scenarios[:8]:
+                    name = ex.get("company_name", ex.get("company", "?"))
+                    hvs = ex.get("hold_vs_sell", {})
+                    if hvs.get("hold_2yr_moic"):
+                        exit_chart_data.append({
+                            "name": name,
+                            "value": hvs["hold_2yr_moic"],
+                        })
+                if exit_chart_data:
+                    memo_sections.append({
+                        "type": "chart",
+                        "chart": {
+                            "type": "bar",
+                            "title": "Projected 2-Year MOIC by Company",
+                            "data": sorted(exit_chart_data, key=lambda x: x["value"], reverse=True),
+                        }
+                    })
+
+            # --- Growth Trajectory Projections (from company health dashboard) ---
+            if company_analytics:
+                has_projections = False
+                growth_chart_data = {"labels": [], "current": [], "projected_12mo": [], "projected_24mo": []}
+                for ca in (company_analytics if isinstance(company_analytics, list)
+                           else [{"analytics": v, "company_name": v.get("company_name", k)}
+                                 for k, v in company_analytics.items()]
+                           if isinstance(company_analytics, dict) else []):
+                    a = ca.get("analytics", ca) if isinstance(ca, dict) else ca
+                    c_name = a.get("company_name") or ca.get("company_name", "")
+                    cur_arr = a.get("current_arr", 0)
+                    proj_12 = a.get("projected_arr_12mo", 0)
+                    proj_24 = a.get("projected_arr_24mo", 0)
+                    if cur_arr > 0 and (proj_12 > 0 or proj_24 > 0):
+                        growth_chart_data["labels"].append(c_name)
+                        growth_chart_data["current"].append(round(cur_arr / 1e6, 2))
+                        growth_chart_data["projected_12mo"].append(round(proj_12 / 1e6, 2))
+                        growth_chart_data["projected_24mo"].append(round(proj_24 / 1e6, 2))
+                        has_projections = True
+
+                if has_projections:
+                    memo_sections.append({"type": "heading2", "content": "Growth Trajectory Projections"})
+                    memo_sections.append({
+                        "type": "chart",
+                        "chart": {
+                            "type": "bar",
+                            "title": "ARR Trajectory: Current → 12mo → 24mo ($M)",
+                            "data": {
+                                "labels": growth_chart_data["labels"],
+                                "datasets": [
+                                    {"label": "Current ARR", "data": growth_chart_data["current"], "backgroundColor": "#4285F4"},
+                                    {"label": "12mo Projected", "data": growth_chart_data["projected_12mo"], "backgroundColor": "#34A853"},
+                                    {"label": "24mo Projected", "data": growth_chart_data["projected_24mo"], "backgroundColor": "#FBBC04"},
+                                ]
+                            },
+                            "options": {"scales": {"y": {"title": {"text": "ARR ($M)"}}}}
+                        }
+                    })
+
+            # --- Preference Stack Analysis (from scenario cap tables) ---
+            scenario_cap_data = self.shared_data.get("scenario_cap_tables", {})
+            if not scenario_cap_data:
+                # Try to pull from exit modeling scenarios
+                for ex in exit_scenarios:
+                    sc_caps = ex.get("scenario_cap_tables", {})
+                    if sc_caps.get("scenarios"):
+                        scenario_cap_data = sc_caps
+                        break
+
+            if scenario_cap_data.get("scenarios"):
+                memo_sections.append({"type": "heading2", "content": "Preference Stack Analysis"})
+                for sc in scenario_cap_data["scenarios"][:4]:
+                    sc_name = sc.get("label", sc.get("name", "Scenario"))
+                    pref_stack = sc.get("total_preference_stack", 0)
+                    be_exit = sc.get("breakeven_exit_value", 0)
+                    three_x = sc.get("three_x_exit_value", 0)
+
+                    pref_items = [f"**{sc_name}**"]
+                    if pref_stack > 0:
+                        pref_items.append(f"Total Preference Stack: ${pref_stack / 1e6:,.1f}M")
+                    if be_exit > 0:
+                        pref_items.append(f"Breakeven Exit: ${be_exit / 1e6:,.0f}M")
+                    if three_x > 0:
+                        pref_items.append(f"3x Return Exit: ${three_x / 1e6:,.0f}M")
+
+                    # Waterfall at key exit values
+                    wf_exits = sc.get("waterfall_at_exits", [])
+                    for wf in wf_exits[:3]:
+                        if isinstance(wf, dict) and wf.get("our_proceeds"):
+                            pref_consumed = wf.get("pref_consumed", 0)
+                            exit_val = wf.get("exit_value", 0)
+                            pref_pct = (pref_consumed / exit_val * 100) if exit_val > 0 else 0
+                            pref_items.append(
+                                f"At ${exit_val / 1e6:,.0f}M exit: "
+                                f"${wf['our_proceeds'] / 1e6:,.1f}M proceeds, "
+                                f"{pref_pct:.0f}% consumed by preferences"
+                            )
+
+                    memo_sections.append({"type": "list", "items": pref_items})
+
+            # --- Risk Analysis ---
+            memo_sections.append({"type": "heading2", "content": "Risk Analysis"})
+            risks = []
+            for company in companies:
+                name = company.get("company", "Unknown")
+                stage = company.get("stage", "Unknown")
+                valuation = self._get_field_safe(company, "valuation")
+                revenue = self._get_field_safe(company, "revenue") or self._get_field_safe(company, "inferred_revenue")
+                if valuation and revenue and revenue > 0:
+                    multiple = valuation / revenue
+                    if multiple > 30:
+                        risks.append(f"{name}: High valuation multiple ({multiple:.0f}x) relative to revenue — execution risk")
+                    elif multiple < 5 and stage in ("Series B", "Series C"):
+                        risks.append(f"{name}: Low multiple ({multiple:.0f}x) may indicate growth challenges")
+                if company.get("funding_gap_months") and company["funding_gap_months"] > 18:
+                    risks.append(f"{name}: {company['funding_gap_months']:.0f} months since last round — may need bridge")
+
+            # Add health-based risks from portfolio analysis
+            for ca in company_analytics:
+                a = ca.get("analytics", ca) if isinstance(ca, dict) else {}
+                for sig in a.get("signals", []):
+                    if "critical" in sig.lower() or "risk" in sig.lower():
+                        risks.append(f"{ca.get('company_name', a.get('company_name', '?'))}: {sig}")
+
+            if not risks:
+                risks = ["Market competition and execution risk across portfolio", "Funding environment may impact follow-on timing"]
+            memo_sections.append({"type": "list", "items": risks})
+
+            # --- Recommendations ---
+            memo_sections.append({"type": "heading2", "content": "Investment Recommendations"})
+            if companies:
+                recs = []
+                for c in sorted(companies, key=lambda x: self._get_field_safe(x, "valuation"), reverse=True)[:5]:
+                    name = c.get("company", "Unknown")
+                    val = self._get_field_safe(c, "valuation")
+                    fo = followon_data.get(name, {})
+                    if isinstance(fo, dict) and fo.get("recommendation"):
+                        recs.append(f"**{name}** (${val / 1e6:,.0f}M): {fo['recommendation']}")
+                    else:
+                        recs.append(f"**{name}**: ${val / 1e6:,.0f}M valuation — further analysis recommended")
+                memo_sections.append({"type": "list", "items": recs})
+
+            # Return standardized docs format for frontend
             return {
                 "format": "docs",
-                "title": "Investment Analysis Memo",
+                "title": title,
                 "date": datetime.now().strftime("%B %d, %Y"),
                 "sections": memo_sections,
                 "metadata": {
-                    "word_count": sum(len(s["content"].split()) for s in memo_sections),
+                    "word_count": sum(len(str(s.get("content", "") or s.get("items", [])).split()) for s in memo_sections),
                     "section_count": len(memo_sections),
                     "generated_at": datetime.now().isoformat(),
-                    "company_count": len(companies)
+                    "company_count": len(companies),
+                    "has_charts": any(s.get("type") == "chart" for s in memo_sections),
+                    "memo_type": "followon" if is_followon_memo else "lp_quarterly" if is_lp_report else "gp_strategy" if is_gp_strategy else "investment_analysis"
                 }
             }
-            
+
         except Exception as e:
-            logger.error(f"Memo generation error: {e}")
+            logger.error(f"Memo generation error: {e}", exc_info=True)
             return {"error": str(e), "format": "docs"}
     
     async def _execute_chart_generation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
@@ -14878,13 +18012,44 @@ Mitigation strategies include portfolio diversification and staged investment ap
             return {"error": str(e)}
     
     async def _execute_portfolio_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze fund portfolio performance"""
+        """Analyze fund portfolio performance — uses real FundModelingService when fund_id available."""
         try:
             context = inputs.get("context", {})
             companies = self.shared_data.get("companies", [])
-            
-            # Only use fund context if it's actually mentioned/provided (skip if not mentioned)
-            # Get normalized fund_context from shared_data (which has prompt-extracted values)
+            fund_id = (
+                inputs.get("fund_id")
+                or context.get("fund_id")
+                or self.shared_data.get("fund_context", {}).get("fund_id")
+            )
+
+            # Use real service when fund_id is available
+            if fund_id and self.fund_modeling:
+                logger.info(f"[PORTFOLIO_ANALYSIS] Real analysis for fund {fund_id}")
+                metrics = await self.fund_modeling.calculate_fund_metrics(fund_id)
+                optimization = await self.fund_modeling.optimize_portfolio(fund_id)
+                pacing = await self.fund_modeling.analyze_pacing(fund_id)
+
+                portfolio_analysis = {
+                    "fund_overview": metrics.get("portfolio", {}),
+                    "fund_metrics": metrics.get("metrics", {}),
+                    "investments": metrics.get("investments", []),
+                    "optimization": optimization,
+                    "pacing": pacing,
+                    "analyzed_companies": []
+                }
+
+                # Fit scoring for companies in shared_data (if any)
+                for company in companies:
+                    portfolio_analysis["analyzed_companies"].append({
+                        "name": company.get("company"),
+                        "stage": company.get("stage"),
+                        "fit_score": self._calculate_fit_score(company, portfolio_analysis)
+                    })
+
+                self.shared_data["portfolio_analysis"] = portfolio_analysis
+                return {"portfolio_analysis": portfolio_analysis}
+
+            # Fallback: existing prompt-based logic
             stored_fund_context = self.shared_data.get("fund_context", {})
             incoming_fund_context = inputs.get("fund_context") if isinstance(inputs.get("fund_context"), dict) else {}
             fund_context: Dict[str, Any] = {}
@@ -14892,9 +18057,8 @@ Mitigation strategies include portfolio diversification and staged investment ap
                 fund_context.update(stored_fund_context)
             if incoming_fund_context:
                 fund_context.update(incoming_fund_context)
-            
+
             def _coerce_amount(value: Any, default: Optional[float] = None) -> Optional[float]:
-                """Helper to convert string/number amounts to float"""
                 if value in (None, ""):
                     return default
                 try:
@@ -14904,14 +18068,11 @@ Mitigation strategies include portfolio diversification and staged investment ap
                         cleaned = value.replace(",", "").replace("$", "").strip().lower()
                         multiplier = 1.0
                         if cleaned.endswith("mm"):
-                            cleaned = cleaned[:-2]
-                            multiplier = 1_000_000
+                            cleaned = cleaned[:-2]; multiplier = 1_000_000
                         elif cleaned.endswith("m"):
-                            cleaned = cleaned[:-1]
-                            multiplier = 1_000_000
+                            cleaned = cleaned[:-1]; multiplier = 1_000_000
                         elif cleaned.endswith("b"):
-                            cleaned = cleaned[:-1]
-                            multiplier = 1_000_000_000
+                            cleaned = cleaned[:-1]; multiplier = 1_000_000_000
                         cleaned = cleaned.strip()
                         if not cleaned:
                             return default
@@ -14919,28 +18080,26 @@ Mitigation strategies include portfolio diversification and staged investment ap
                 except (ValueError, TypeError):
                     return default
                 return default
-            
-            # Only use fund context if it's actually mentioned - skip if not mentioned
-            # Don't calculate defaults, only use explicitly provided values
+
             fund_size = _coerce_amount(fund_context.get("fund_size")) or _coerce_amount(context.get("fund_size"))
             deployed_capital = _coerce_amount(fund_context.get("deployed_capital"))
             remaining_capital = _coerce_amount(fund_context.get("remaining_capital"))
-            
-            # Only calculate derived values if we have the necessary inputs
-            # If fund_size is provided, we can calculate deployed from remaining or vice versa
+
             if fund_size is not None:
                 if deployed_capital is None and remaining_capital is not None:
                     deployed_capital = max(fund_size - remaining_capital, 0)
                 elif remaining_capital is None and deployed_capital is not None:
                     remaining_capital = max(fund_size - deployed_capital, 0)
-                # If fund_size is mentioned but neither deployed nor remaining, skip those calculations
-            
+
             portfolio_size = context.get("portfolio_size", 16)
             exits = context.get("exits", 2)
-            
-            # Build portfolio analysis - only include fund context if it was mentioned
+
             portfolio_analysis = {
                 "fund_overview": {
+                    "total_fund_size": fund_size,
+                    "deployed_capital": deployed_capital,
+                    "remaining_capital": remaining_capital,
+                    "deployment_rate": deployed_capital / fund_size if fund_size and deployed_capital else None,
                     "portfolio_companies": portfolio_size,
                     "exits_completed": exits,
                     "active_investments": portfolio_size - exits
@@ -14948,46 +18107,19 @@ Mitigation strategies include portfolio diversification and staged investment ap
                 "investment_strategy": {},
                 "analyzed_companies": []
             }
-            
-            # Only add fund-related fields if fund_size was mentioned
-            if fund_size is not None:
-                # Ensure we have both deployed and remaining if we have fund_size and at least one of them
-                if fund_size > 0 and (deployed_capital is not None or remaining_capital is not None):
-                    if deployed_capital is None and remaining_capital is not None:
-                        deployed_capital = fund_size - remaining_capital
-                    elif remaining_capital is None and deployed_capital is not None:
-                        remaining_capital = fund_size - deployed_capital
-                
-                portfolio_analysis["fund_overview"]["total_fund_size"] = fund_size
-                portfolio_analysis["fund_overview"]["deployed_capital"] = deployed_capital
-                portfolio_analysis["fund_overview"]["remaining_capital"] = remaining_capital
-                portfolio_analysis["fund_overview"]["deployment_rate"] = deployed_capital / fund_size if fund_size > 0 and deployed_capital is not None else None
-                
-                if portfolio_size > 0 and remaining_capital is not None and deployed_capital is not None:
-                    avg_check_size = deployed_capital / portfolio_size
-                    portfolio_analysis["investment_strategy"]["avg_check_size"] = avg_check_size
-                    portfolio_analysis["investment_strategy"]["remaining_investments"] = int(remaining_capital / avg_check_size) if avg_check_size > 0 else 0
-                    portfolio_analysis["investment_strategy"]["capital_per_stage"] = {
+
+            if fund_size and deployed_capital and portfolio_size > 0:
+                avg_check_size = deployed_capital / portfolio_size
+                portfolio_analysis["investment_strategy"] = {
+                    "avg_check_size": avg_check_size,
+                    "remaining_investments": int(remaining_capital / avg_check_size) if remaining_capital and avg_check_size > 0 else 0,
+                    "capital_per_stage": {
                         "seed": remaining_capital * 0.2,
                         "series_a": remaining_capital * 0.4,
                         "series_b": remaining_capital * 0.4
-                    }
-                else:
-                    portfolio_analysis["investment_strategy"]["avg_check_size"] = None
-                    portfolio_analysis["investment_strategy"]["remaining_investments"] = None
-                    portfolio_analysis["investment_strategy"]["capital_per_stage"] = None
-            else:
-                # Fund context not mentioned - skip fund-related calculations
-                portfolio_analysis["fund_overview"]["total_fund_size"] = None
-                portfolio_analysis["fund_overview"]["deployed_capital"] = None
-                portfolio_analysis["fund_overview"]["remaining_capital"] = None
-                portfolio_analysis["fund_overview"]["deployment_rate"] = None
-                portfolio_analysis["investment_strategy"]["avg_check_size"] = None
-                portfolio_analysis["investment_strategy"]["remaining_investments"] = None
-                portfolio_analysis["investment_strategy"]["capital_per_stage"] = None
-            
-            # Analyze how the new companies fit
-            # Only calculate fund-related metrics if fund context was mentioned
+                    } if remaining_capital else None
+                }
+
             avg_check_size = portfolio_analysis["investment_strategy"].get("avg_check_size")
             for company in companies:
                 company_fit = {
@@ -14995,72 +18127,692 @@ Mitigation strategies include portfolio diversification and staged investment ap
                     "stage": company.get("stage"),
                     "fit_score": self._calculate_fit_score(company, portfolio_analysis)
                 }
-                # Only add fund-related recommendations if avg_check_size is available
                 if avg_check_size is not None:
-                    company_fit["recommended_investment"] = min(
-                        avg_check_size,
-                        company.get("valuation", 0) * 0.1  # Target 10% ownership
-                    )
-                    company_fit["expected_ownership"] = min(0.1, avg_check_size / company.get("valuation", 1)) if company.get("valuation", 0) > 0 else None
-                else:
-                    company_fit["recommended_investment"] = None
-                    company_fit["expected_ownership"] = None
+                    company_fit["recommended_investment"] = min(avg_check_size, self._get_field_safe(company, "valuation") * 0.1)
+                    val = self._get_field_safe(company, "valuation")
+                    company_fit["expected_ownership"] = min(0.1, avg_check_size / val) if val > 0 else None
                 portfolio_analysis["analyzed_companies"].append(company_fit)
-            
+
+            self.shared_data["portfolio_analysis"] = portfolio_analysis
             return {"portfolio_analysis": portfolio_analysis}
-            
+
         except Exception as e:
-            logger.error(f"Portfolio analysis error: {e}")
+            logger.error(f"Portfolio analysis error: {e}", exc_info=True)
             return {"error": str(e)}
     
     async def _execute_fund_metrics(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Calculate DPI, TVPI, IRR and other fund metrics"""
+        """Calculate DPI, TVPI, IRR and other fund metrics from real portfolio data."""
         try:
             context = inputs.get("context", {})
-            
-            # Extract fund parameters
-            fund_size = context.get("fund_size")
-            dpi = context.get("dpi", 0.5)  # 0.5 DPI non-recycled
-            remaining_capital = context.get("remaining_capital")
-            portfolio_size = context.get("portfolio_size", 16)
-            exits = context.get("exits", 2)
-            
+            fund_id = (
+                inputs.get("fund_id")
+                or context.get("fund_id")
+                or self.shared_data.get("fund_context", {}).get("fund_id")
+            )
+
+            # If we have a fund_id and the real service, use it
+            if fund_id and self.fund_modeling:
+                logger.info(f"[FUND_METRICS] Calculating real metrics for fund {fund_id}")
+                metrics = await self.fund_modeling.calculate_fund_metrics(fund_id)
+                pacing = await self.fund_modeling.analyze_pacing(fund_id)
+
+                # Store in shared_data for downstream skills (memo, report)
+                self.shared_data["fund_metrics"] = metrics
+                self.shared_data["fund_pacing"] = pacing
+                return {"fund_metrics": metrics, "fund_pacing": pacing}
+
+            # Fallback: use fund context from prompt (backward-compatible stub)
+            fund_context = self.shared_data.get("fund_context", {})
+            fund_size = fund_context.get("fund_size") or context.get("fund_size")
+            remaining_capital = fund_context.get("remaining_capital") or context.get("remaining_capital")
+            dpi = context.get("dpi", 0.5)
+
+            if not fund_size or not remaining_capital:
+                return {"error": "No fund_id or fund context provided. Provide fund_id for real metrics."}
+
             deployed = fund_size - remaining_capital
             distributed = fund_size * dpi
-            
-            # Calculate metrics
+            portfolio_size = context.get("portfolio_size", 16)
+            exits = context.get("exits", 2)
+
             metrics = {
-                "performance_metrics": {
-                    "dpi": dpi,  # Distributed to Paid-In
-                    "rvpi": remaining_capital / fund_size,  # Residual Value to Paid-In
-                    "tvpi": dpi + (remaining_capital / fund_size),  # Total Value to Paid-In
-                    "deployed_percentage": deployed / fund_size,
-                    "distributed_capital": distributed,
-                    "unrealized_value": deployed - distributed + remaining_capital
+                "metrics": {
+                    "total_committed": fund_size,
+                    "total_invested": deployed,
+                    "total_nav": deployed * 1.3,  # estimate
+                    "total_distributed": distributed,
+                    "dpi": dpi,
+                    "rvpi": remaining_capital / fund_size if fund_size else 0,
+                    "tvpi": dpi + (remaining_capital / fund_size) if fund_size else 0,
+                    "irr": 0,
+                    "deployment_rate": deployed / fund_size if fund_size else 0
                 },
-                "portfolio_metrics": {
-                    "total_companies": portfolio_size,
-                    "exited_companies": exits,
-                    "active_companies": portfolio_size - exits,
-                    "avg_exit_multiple": distributed / (deployed * (exits / portfolio_size)) if exits > 0 else 0,
-                    "required_exit_multiple": 3.0  # Target for remaining portfolio
+                "portfolio": {
+                    "company_count": portfolio_size,
+                    "active_count": portfolio_size - exits,
+                    "exited_count": exits
                 },
-                "deployment_metrics": {
-                    "year": 3,
-                    "quarter": 1,
-                    "remaining_to_deploy": remaining_capital,
-                    "deployment_pace": remaining_capital / 8,  # Over 2 years (8 quarters)
-                    "target_investments": 8,  # New investments from remaining capital
-                    "avg_new_check": remaining_capital / 8
+                "investments": [],
+                "_source": "fallback_stub"
+            }
+            self.shared_data["fund_metrics"] = metrics
+            return {"fund_metrics": metrics}
+
+        except Exception as e:
+            logger.error(f"Fund metrics calculation error: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    # ------------------------------------------------------------------ #
+    #  NEW SKILLS: Follow-On Strategy, Round Modeling, Report Generation  #
+    # ------------------------------------------------------------------ #
+
+    async def _execute_followon_strategy(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze follow-on / extension / sell decisions for portfolio companies.
+
+        Uses fund_modeling_service.analyze_follow_on() for full scenario analysis
+        with waterfall-connected cap tables, exit impact at multiple multiples,
+        and fund-level return impact.  Falls back to simple pro-rata when the
+        enhanced service is unavailable.
+        """
+        try:
+            from app.core.database import supabase_service
+            fund_id = (
+                inputs.get("fund_id")
+                or self.shared_data.get("fund_context", {}).get("fund_id")
+            )
+            company_name = inputs.get("company") or inputs.get("company_name")
+
+            # Query portfolio companies
+            query = supabase_service.client.table("portfolio_companies").select("*, companies(*)")
+            if fund_id:
+                query = query.eq("fund_id", fund_id)
+            result = query.execute()
+            portfolio_companies = result.data or []
+
+            # Filter to requested company if specified
+            if company_name:
+                company_name_lower = company_name.lower().strip().lstrip("@")
+                portfolio_companies = [
+                    pc for pc in portfolio_companies
+                    if company_name_lower in (pc.get("companies", {}).get("name", "") or "").lower()
+                ]
+
+            if not portfolio_companies:
+                return {"error": f"No portfolio companies found" + (f" matching '{company_name}'" if company_name else "")}
+
+            followon_results = {}
+
+            # --- Enhanced path: use fund_modeling_service ---
+            if self.fund_modeling and fund_id:
+                for pc in portfolio_companies:
+                    company = pc.get("companies", {}) or {}
+                    cid = company.get("id", pc.get("id", "unknown"))
+                    name = company.get("name", "Unknown")
+
+                    try:
+                        # Full follow-on analysis with exit impact and fund return context
+                        fo_analysis = await self.fund_modeling.analyze_follow_on(
+                            fund_id=fund_id,
+                            company_id=str(cid),
+                        )
+
+                        # Scenario cap tables with waterfall at multiple exit values
+                        scenario_caps = {}
+                        if self.valuation_engine:
+                            try:
+                                scenario_caps = self.valuation_engine.generate_scenario_cap_tables(
+                                    company_data=company,
+                                    analytics=fo_analysis.get("analytics"),
+                                    our_investment={
+                                        "amount": fo_analysis.get("our_invested", pc.get("investment_amount", 0)),
+                                        "round": fo_analysis.get("our_entry_round", company.get("stage", "Series A")),
+                                    },
+                                )
+                            except Exception as e:
+                                logger.warning(f"[FOLLOWON] Scenario cap tables failed for {name}: {e}")
+
+                        # Cap table history for Sankey charts
+                        cap_table_history = {}
+                        if self.cap_table_service:
+                            try:
+                                cap_table_history = self.cap_table_service.calculate_full_cap_table_history(company)
+                            except Exception as e:
+                                logger.warning(f"[FOLLOWON] Cap table history failed for {name}: {e}")
+
+                        followon_results[name] = {
+                            **fo_analysis,
+                            "company_name": name,
+                            "company_id": cid,
+                            "scenario_cap_tables": scenario_caps,
+                            "cap_table_history": cap_table_history,
+                        }
+
+                    except Exception as e:
+                        logger.warning(f"[FOLLOWON] Enhanced analysis failed for {name}, falling back: {e}")
+                        # Fall through to simple path below
+                        followon_results[name] = self._followon_simple(pc, company, cid, name)
+
+                # Reserve forecast for entire fund
+                reserve_forecast = {}
+                try:
+                    reserve_forecast = await self.fund_modeling.forecast_reserves(fund_id=fund_id)
+                except Exception as e:
+                    logger.warning(f"[FOLLOWON] Reserve forecast failed: {e}")
+
+                self.shared_data["followon_strategy"] = followon_results
+                self.shared_data["reserve_forecast"] = reserve_forecast
+                return {"followon_strategy": followon_results, "reserve_forecast": reserve_forecast}
+
+            # --- Fallback path: simple pro-rata when fund_modeling unavailable ---
+            for pc in portfolio_companies:
+                company = pc.get("companies", {}) or {}
+                cid = company.get("id", pc.get("id", "unknown"))
+                name = company.get("name", "Unknown")
+                followon_results[name] = self._followon_simple(pc, company, cid, name)
+
+            self.shared_data["followon_strategy"] = followon_results
+            return {"followon_strategy": followon_results}
+
+        except Exception as e:
+            logger.error(f"Follow-on strategy error: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    def _followon_simple(self, pc: Dict, company: Dict, cid: str, name: str) -> Dict[str, Any]:
+        """Simple pro-rata follow-on analysis (fallback when fund_modeling unavailable)."""
+        current_ownership = pc.get("ownership_pct", 0) or 0
+        investment_amount = pc.get("investment_amount", 0) or 0
+        current_valuation = company.get("current_valuation_usd", 0) or 0
+
+        upcoming_round_size = current_valuation * 0.15 if current_valuation else 5_000_000
+        upcoming_pre_money = current_valuation or 10_000_000
+
+        pro_rata_result = {}
+        if self.cap_table_service:
+            try:
+                pro_rata_result = self.cap_table_service.calculate_pro_rata_investment(
+                    current_ownership=Decimal(str(current_ownership / 100)),
+                    new_money_raised=Decimal(str(upcoming_round_size)),
+                    pre_money_valuation=Decimal(str(upcoming_pre_money))
+                )
+            except Exception as e:
+                logger.warning(f"[FOLLOWON] Pro-rata calc failed for {name}: {e}")
+
+        strategy = "pro-rata" if current_ownership >= 5 else "selective"
+        recommendation = "follow_on"
+        if current_ownership < 2:
+            recommendation = "hold"
+        elif current_valuation and investment_amount:
+            moic = (current_ownership / 100 * current_valuation) / investment_amount if investment_amount > 0 else 0
+            if moic > 10:
+                recommendation = "consider_partial_sell"
+            elif moic < 1:
+                recommendation = "hold"
+
+        return {
+            "company_name": name,
+            "company_id": cid,
+            "our_invested": investment_amount,
+            "our_entry_round": company.get("stage", "Unknown"),
+            "current_ownership_pct": current_ownership,
+            "current_valuation": current_valuation,
+            "strategy": strategy,
+            "recommendation": recommendation,
+            "pro_rata_amount": float(pro_rata_result.get("pro_rata_investment_needed", 0)),
+            "ownership_with_followon": float(pro_rata_result.get("ownership_with_pro_rata", 0)) * 100,
+            "ownership_without_followon": float(pro_rata_result.get("ownership_without_pro_rata", 0)) * 100,
+        }
+
+    async def _execute_round_modeling(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Model next round (e.g. 'what is needed for Series D') with dilution + waterfall."""
+        try:
+            from app.core.database import supabase_service
+            company_name = inputs.get("company") or inputs.get("company_name")
+            target_raise = inputs.get("raise_amount") or inputs.get("round_size")
+            pre_money = inputs.get("pre_money") or inputs.get("pre_money_valuation")
+
+            # Find company in portfolio
+            if company_name:
+                company_name_lower = company_name.lower().strip().lstrip("@")
+                result = supabase_service.client.table("portfolio_companies").select(
+                    "*, companies(*)"
+                ).execute()
+                matches = [
+                    pc for pc in (result.data or [])
+                    if company_name_lower in (pc.get("companies", {}).get("name", "") or "").lower()
+                ]
+                if not matches:
+                    return {"error": f"Company '{company_name}' not found in portfolio"}
+                pc = matches[0]
+                company = pc.get("companies", {}) or {}
+            else:
+                # Use first company from shared_data
+                companies = self.shared_data.get("companies", [])
+                if not companies:
+                    return {"error": "No company specified for round modeling"}
+                company = companies[0]
+                pc = {}
+
+            name = company.get("name", company.get("company", "Unknown"))
+            current_valuation = company.get("current_valuation_usd") or self._get_field_safe(company, "valuation") or 50_000_000
+            current_ownership = pc.get("ownership_pct", 0) or 0
+
+            # Default round parameters if not specified
+            if not target_raise:
+                target_raise = current_valuation * 0.2  # Typical 20% dilution round
+            if not pre_money:
+                pre_money = current_valuation * 1.5  # Typical up-round
+
+            target_raise = float(target_raise)
+            pre_money = float(pre_money)
+            post_money = pre_money + target_raise
+
+            # Dilution calculation
+            new_investor_pct = target_raise / post_money * 100
+            dilution_factor = pre_money / post_money
+            ownership_after = current_ownership * dilution_factor
+
+            # Ownership table (before/after)
+            ownership_table = {
+                "before": {"our_fund": current_ownership, "other_investors": 100 - current_ownership},
+                "after": {
+                    "our_fund": ownership_after,
+                    "new_investor": new_investor_pct,
+                    "other_investors": (100 - current_ownership) * dilution_factor
                 }
             }
-            
-            return {"fund_metrics": metrics}
-            
+
+            # Liquidation waterfall at various exit values
+            waterfall_scenarios = []
+            if self.advanced_cap_table:
+                for exit_multiple in [0.5, 1.0, 2.0, 3.0, 5.0, 10.0]:
+                    exit_value = post_money * exit_multiple
+                    try:
+                        waterfall = self.advanced_cap_table.calculate_liquidation_waterfall(
+                            exit_value=exit_value,
+                            cap_table={"our_fund": ownership_after / 100, "new_investor": new_investor_pct / 100},
+                            funding_rounds=[{
+                                "round": "New Round",
+                                "amount": target_raise,
+                                "liquidation_multiple": 1.0,
+                                "participating": False,
+                                "seniority": 10
+                            }]
+                        )
+                        our_proceeds = 0
+                        for dist in waterfall.get("distributions", []):
+                            if "our" in str(dist.get("shareholder", "")).lower() or "fund" in str(dist.get("shareholder", "")).lower():
+                                our_proceeds += dist.get("amount", 0)
+                        if our_proceeds == 0:
+                            our_proceeds = exit_value * (ownership_after / 100)
+
+                        waterfall_scenarios.append({
+                            "exit_multiple": exit_multiple,
+                            "exit_value": exit_value,
+                            "our_proceeds": our_proceeds,
+                            "our_moic": our_proceeds / (pc.get("investment_amount", 1) or 1)
+                        })
+                    except Exception as e:
+                        logger.warning(f"[ROUND_MODEL] Waterfall calc failed for {exit_multiple}x: {e}")
+
+            round_model = {
+                "company_name": name,
+                "round_parameters": {
+                    "raise_amount": target_raise,
+                    "pre_money": pre_money,
+                    "post_money": post_money,
+                    "new_investor_ownership": new_investor_pct
+                },
+                "ownership_table": ownership_table,
+                "dilution": {
+                    "current_ownership": current_ownership,
+                    "ownership_after": ownership_after,
+                    "dilution_pct": current_ownership - ownership_after
+                },
+                "waterfall_scenarios": waterfall_scenarios
+            }
+
+            self.shared_data["round_modeling"] = round_model
+            return {"round_modeling": round_model}
+
         except Exception as e:
-            logger.error(f"Fund metrics calculation error: {e}")
+            logger.error(f"Round modeling error: {e}", exc_info=True)
             return {"error": str(e)}
-    
+
+    async def _execute_report_generation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate LP quarterly, follow-on memo, or GP strategy report.
+
+        Reuses _execute_memo_generation with appropriate context, then wraps
+        for PDF export if requested.
+        """
+        try:
+            prompt = inputs.get("prompt", "") or self.shared_data.get("original_prompt", "")
+            report_type = inputs.get("report_type", "investment_analysis")
+
+            # Auto-detect report type from prompt
+            prompt_lower = prompt.lower()
+            if any(kw in prompt_lower for kw in ["lp report", "lp quarterly", "quarterly report"]):
+                report_type = "lp_quarterly"
+            elif any(kw in prompt_lower for kw in ["follow-on memo", "followon memo"]):
+                report_type = "followon_memo"
+            elif any(kw in prompt_lower for kw in ["gp deck", "gp strategy"]):
+                report_type = "gp_strategy"
+
+            # Ensure prerequisite data is in shared_data
+            fund_id = self.shared_data.get("fund_context", {}).get("fund_id")
+            if fund_id and self.fund_modeling and "fund_metrics" not in self.shared_data:
+                metrics = await self.fund_modeling.calculate_fund_metrics(fund_id)
+                self.shared_data["fund_metrics"] = metrics
+
+            # Generate the memo (which now produces rich docs with charts)
+            memo_result = await self._execute_memo_generation({"prompt": prompt})
+
+            # Tag with report type for frontend/export
+            if isinstance(memo_result, dict):
+                memo_result["report_type"] = report_type
+
+            return memo_result
+
+        except Exception as e:
+            logger.error(f"Report generation error: {e}", exc_info=True)
+            return {"error": str(e), "format": "docs"}
+
+    # ── FPA / Modeling skill handlers ──────────────────────────────────
+
+    def _get_fpa_regression_service(self):
+        """Lazy-load FPARegressionService."""
+        if not hasattr(self, "_fpa_regression_svc"):
+            self._fpa_regression_svc = FPARegressionService() if FPARegressionService else None
+        return self._fpa_regression_svc
+
+    async def _execute_regression_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Run linear regression on company metric pairs (e.g. ARR vs time)."""
+        try:
+            svc = self._get_fpa_regression_service()
+            if not svc:
+                return {"error": "FPA regression service unavailable"}
+            companies = self.shared_data.get("companies", [])
+            results = {}
+            for company in companies:
+                name = company.get("company", "Unknown")
+                # Build x (months since founding), y (revenue) from available data
+                revenue = self._get_field_safe(company, "revenue")
+                growth = self._get_field_safe(company, "growth_rate", 0.5)
+                if revenue and revenue > 0:
+                    # Generate synthetic history: 6 quarters back using growth rate
+                    monthly_growth = (1 + growth) ** (1/12)
+                    y = [revenue / (monthly_growth ** (i * 3)) for i in range(6, -1, -1)]
+                    x = list(range(len(y)))
+                    reg = await svc.linear_regression(x, y)
+                    results[name] = {
+                        "regression": reg,
+                        "current_revenue": revenue,
+                        "projected_12m": reg["slope"] * (len(y) + 4) + reg["intercept"]
+                    }
+            self.shared_data["regression_analysis"] = results
+            return {
+                "regression_analysis": results,
+                "charts": [{"type": "scatter", "title": "Revenue Regression", "data": results}]
+            }
+        except Exception as e:
+            logger.error(f"Regression analysis error: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    async def _execute_time_series_forecast(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Forecast revenue/metrics using exponential smoothing."""
+        try:
+            svc = self._get_fpa_regression_service()
+            if not svc:
+                return {"error": "FPA regression service unavailable"}
+            companies = self.shared_data.get("companies", [])
+            periods = inputs.get("periods", 4)  # Default 4 quarters ahead
+            results = {}
+            for company in companies:
+                name = company.get("company", "Unknown")
+                revenue = self._get_field_safe(company, "revenue")
+                growth = self._get_field_safe(company, "growth_rate", 0.5)
+                if revenue and revenue > 0:
+                    monthly_growth = (1 + growth) ** (1/12)
+                    historical = [
+                        {"value": revenue / (monthly_growth ** (i * 3)), "period": f"Q{6-i}"}
+                        for i in range(6, -1, -1)
+                    ]
+                    forecast = await svc.time_series_forecast(historical, periods)
+                    results[name] = {
+                        "historical": historical,
+                        "forecast": forecast,
+                        "current_revenue": revenue,
+                    }
+            self.shared_data["forecast_results"] = results
+            return {
+                "forecast_results": results,
+                "charts": [{"type": "line", "title": "Revenue Forecast", "data": results}]
+            }
+        except Exception as e:
+            logger.error(f"Time series forecast error: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    async def _execute_growth_decay_forecast(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Model exponential growth or decay with half-life calculation."""
+        try:
+            svc = self._get_fpa_regression_service()
+            if not svc:
+                return {"error": "FPA regression service unavailable"}
+            companies = self.shared_data.get("companies", [])
+            results = {}
+            for company in companies:
+                name = company.get("company", "Unknown")
+                revenue = self._get_field_safe(company, "revenue")
+                growth = self._get_field_safe(company, "growth_rate", 0.5)
+                burn = self._get_field_safe(company, "burn_rate", 0)
+                if revenue and revenue > 0:
+                    monthly_growth = (1 + growth) ** (1/12)
+                    data = [revenue / (monthly_growth ** (i * 3)) for i in range(6, -1, -1)]
+                    time_periods = list(range(len(data)))
+                    decay_result = await svc.exponential_decay(data, time_periods)
+                    results[name] = {
+                        "growth_decay": decay_result,
+                        "current_revenue": revenue,
+                        "growth_rate": growth,
+                        "burn_rate": burn,
+                    }
+            self.shared_data["growth_decay_results"] = results
+            return {
+                "growth_decay_results": results,
+                "charts": [{"type": "line", "title": "Growth/Decay Model", "data": results}]
+            }
+        except Exception as e:
+            logger.error(f"Growth/decay forecast error: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    async def _execute_monte_carlo(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Run Monte Carlo simulation on company valuations."""
+        try:
+            svc = self._get_fpa_regression_service()
+            if not svc:
+                return {"error": "FPA regression service unavailable"}
+            companies = self.shared_data.get("companies", [])
+            iterations = inputs.get("iterations", 1000)
+            results = {}
+            for company in companies:
+                name = company.get("company", "Unknown")
+                revenue = self._get_field_safe(company, "revenue")
+                valuation = self._get_field_safe(company, "valuation")
+                growth = self._get_field_safe(company, "growth_rate", 0.5)
+                if revenue and revenue > 0:
+                    base = {"revenue": revenue, "valuation": valuation or revenue * 10, "growth": growth}
+                    distributions = {
+                        "revenue": {"type": "lognormal", "mean": math.log(max(revenue, 1)), "std": 0.3},
+                        "growth": {"type": "normal", "mean": growth, "std": 0.15},
+                    }
+                    mc_result = await svc.monte_carlo_simulation(base, distributions, iterations)
+                    results[name] = mc_result
+            self.shared_data["monte_carlo_results"] = results
+            return {
+                "monte_carlo_results": results,
+                "charts": [{"type": "histogram", "title": "Monte Carlo Simulation", "data": results}]
+            }
+        except Exception as e:
+            logger.error(f"Monte Carlo error: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    async def _execute_sensitivity_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Sensitivity / tornado analysis on key valuation drivers."""
+        try:
+            svc = self._get_fpa_regression_service()
+            if not svc:
+                return {"error": "FPA regression service unavailable"}
+            companies = self.shared_data.get("companies", [])
+            results = {}
+            for company in companies:
+                name = company.get("company", "Unknown")
+                revenue = self._get_field_safe(company, "revenue")
+                growth = self._get_field_safe(company, "growth_rate", 0.5)
+                margin = self._get_field_safe(company, "gross_margin", 0.7)
+                multiple = self._get_field_safe(company, "revenue_multiple", 10)
+                if revenue and revenue > 0:
+                    base_inputs = {
+                        "revenue": revenue,
+                        "growth_rate": growth,
+                        "gross_margin": margin,
+                        "multiple": multiple,
+                    }
+                    variable_ranges = {
+                        "revenue": [revenue * 0.5, revenue * 0.75, revenue * 1.25, revenue * 1.5],
+                        "growth_rate": [growth * 0.5, growth * 0.75, growth * 1.25, growth * 1.5],
+                        "gross_margin": [max(0, margin - 0.15), margin - 0.05, margin + 0.05, min(1, margin + 0.15)],
+                        "multiple": [max(1, multiple * 0.5), multiple * 0.75, multiple * 1.25, multiple * 1.5],
+                    }
+                    def valuation_model(inputs):
+                        return inputs["revenue"] * inputs["multiple"] * (1 + inputs["growth_rate"]) * inputs["gross_margin"]
+                    sens_result = await svc.sensitivity_analysis(base_inputs, variable_ranges, valuation_model)
+                    results[name] = sens_result
+            self.shared_data["sensitivity_results"] = results
+            return {
+                "sensitivity_results": results,
+                "charts": [{"type": "tornado", "title": "Sensitivity Analysis", "data": results}]
+            }
+        except Exception as e:
+            logger.error(f"Sensitivity analysis error: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    async def _execute_fund_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Comprehensive fund analysis: metrics + follow-on strategy + portfolio construction."""
+        try:
+            # Run portfolio analysis
+            portfolio_result = await self._execute_portfolio_analysis(inputs)
+            # Run fund metrics
+            fund_metrics_result = await self._execute_fund_metrics(inputs)
+            # Run follow-on strategy
+            followon_result = await self._execute_followon_strategy(inputs)
+
+            combined = {
+                "fund_analysis": {
+                    "portfolio": portfolio_result,
+                    "metrics": fund_metrics_result,
+                    "followon_strategy": followon_result,
+                },
+                "charts": [
+                    {"type": "pie", "title": "Portfolio Allocation", "data": portfolio_result.get("portfolio_analysis", {})},
+                    {"type": "bar", "title": "Fund Metrics", "data": fund_metrics_result.get("fund_metrics", {})},
+                ]
+            }
+            self.shared_data["fund_analysis"] = combined
+            return combined
+        except Exception as e:
+            logger.error(f"Fund analysis error: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    async def _execute_portfolio_scenario_modeling(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Model fund-level return scenarios: what if company A exits at 5x while company B bridges.
+
+        Uses fund_modeling_service.model_fund_scenarios() which:
+        - Runs CompanyHealthScorer on all portfolio companies
+        - Generates scenario cap tables per company (base/decay/bridge/outperform)
+        - Builds portfolio-level scenario combinations (power law, stress test, etc.)
+        - Computes fund MOIC/DPI, return attribution, and marginal impact per company
+        """
+        try:
+            fund_id = (
+                inputs.get("fund_id")
+                or self.shared_data.get("fund_context", {}).get("fund_id")
+            )
+            company_scenarios = inputs.get("company_scenarios")  # Optional user-specified map
+
+            if not self.fund_modeling:
+                return {"error": "FundModelingService not available"}
+
+            if not fund_id:
+                return {"error": "No fund_id available — set fund context first"}
+
+            result = await self.fund_modeling.model_fund_scenarios(
+                fund_id=fund_id,
+                company_scenarios=company_scenarios,
+            )
+
+            self.shared_data["fund_scenarios"] = result
+            return {"fund_scenarios": result}
+
+        except Exception as e:
+            logger.error(f"Portfolio scenario modeling error: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    async def _execute_company_health_dashboard(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Portfolio health dashboard: growth decay, burn/runway, funding trajectory, signals.
+
+        Uses fund_modeling_service.analyze_portfolio_companies() which runs
+        CompanyHealthScorer on every portfolio company and produces:
+        - CompanyAnalytics (growth projections, burn, runway, funding prediction, signals)
+        - CompanyReturnMetrics (MOIC, IRR on actual dates, cost basis per %)
+        - Fund-level summary (total invested, NAV, weighted IRR)
+        """
+        try:
+            fund_id = (
+                inputs.get("fund_id")
+                or self.shared_data.get("fund_context", {}).get("fund_id")
+            )
+
+            if not self.fund_modeling:
+                return {"error": "FundModelingService not available"}
+
+            if not fund_id:
+                return {"error": "No fund_id available — set fund context first"}
+
+            result = await self.fund_modeling.analyze_portfolio_companies(fund_id=fund_id)
+
+            # Store for memo generation and other downstream skills
+            self.shared_data["portfolio_health"] = result
+
+            # Build a summary table for easy display
+            summary_rows = []
+            for cid, analytics in result.get("company_analytics", {}).items():
+                returns = result.get("company_returns", {}).get(cid, {})
+                summary_rows.append({
+                    "company_name": analytics.get("company_name", "Unknown"),
+                    "stage": analytics.get("stage", ""),
+                    "current_arr": analytics.get("current_arr", 0),
+                    "growth_rate": analytics.get("growth_rate", 0),
+                    "growth_trend": analytics.get("growth_trend", "stable"),
+                    "runway_months": analytics.get("estimated_runway_months", 0),
+                    "valuation_direction": analytics.get("valuation_direction", "flat"),
+                    "projected_arr_12mo": analytics.get("projected_arr_12mo", 0),
+                    "projected_arr_24mo": analytics.get("projected_arr_24mo", 0),
+                    "signals": analytics.get("signals", []),
+                    "moic": returns.get("moic", 0),
+                    "irr": returns.get("irr", 0),
+                    "invested": returns.get("invested", 0),
+                    "current_nav": returns.get("current_nav", 0),
+                })
+
+            return {
+                "portfolio_health": result,
+                "summary_table": sorted(summary_rows, key=lambda x: x.get("moic", 0), reverse=True),
+                "fund_summary": result.get("fund_summary", {}),
+            }
+
+        except Exception as e:
+            logger.error(f"Company health dashboard error: {e}", exc_info=True)
+            return {"error": str(e)}
+
     async def _execute_stage_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze companies across different funding stages"""
         try:
@@ -15118,133 +18870,157 @@ Mitigation strategies include portfolio diversification and staged investment ap
             return {"error": str(e)}
     
     async def _execute_exit_modeling(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Model exit scenarios and returns WITH FUND OWNERSHIP"""
+        """Model exit scenarios and returns WITH FUND OWNERSHIP.
+
+        Enhanced path uses fund_modeling_service.plan_exits() for full exit route
+        economics (secondary, M&A at multiple multiples, IPO timing) plus
+        valuation_engine.generate_scenario_cap_tables() for waterfall-connected
+        proceeds at every exit value.  Every metric carries full investment context:
+        cost basis, entry round, preference position, proceeds source.
+        """
         try:
             companies = self.shared_data.get("companies", [])
             if not companies:
                 logger.warning("No companies found for exit modeling")
                 return {"exit_modeling": {"scenarios": [], "error": "No companies to model"}}
-            
+
             context = inputs.get("context", {})
-            
-            # Fund parameters - be agile for family office vs traditional VC
-            fund_size = context.get("fund_size")
-            if not fund_size:
-                # Try to infer from fund context or use portfolio contribution
-                fund_context = self.shared_data.get('fund_context', {})
-                fund_size = fund_context.get('fund_size') or fund_context.get('portfolio_contribution') or 126_000_000
-            # Get typical check from context or use stage default
-            typical_check = context.get('typical_check_size')
+            fund_context = self.shared_data.get("fund_context", {})
+            fund_id = (
+                inputs.get("fund_id")
+                or fund_context.get("fund_id")
+            )
+            fund_size = (
+                context.get("fund_size")
+                or fund_context.get("fund_size")
+                or fund_context.get("portfolio_contribution")
+                or 126_000_000
+            )
+
+            # --- Enhanced path: use fund_modeling + scenario cap tables ---
+            if self.fund_modeling and fund_id:
+                try:
+                    exit_plan = await self.fund_modeling.plan_exits(fund_id=fund_id)
+                    exit_scenarios = []
+
+                    # plan_exits returns {"exit_plans": [...], "fund_size": ...}
+                    for company_exit in exit_plan.get("exit_plans", []):
+                        name = company_exit.get("company_name", "Unknown")
+
+                        # Match to fetched company data for additional context
+                        matched_company = next(
+                            (c for c in companies
+                             if (c.get("company", "") or "").lower() == name.lower()),
+                            {}
+                        )
+
+                        # Scenario cap tables with full waterfall
+                        scenario_caps = {}
+                        inv_amount = company_exit.get("secondary", {}).get("value", 0) or 0
+                        if self.valuation_engine and matched_company:
+                            try:
+                                scenario_caps = self.valuation_engine.generate_scenario_cap_tables(
+                                    company_data=matched_company,
+                                    our_investment={
+                                        "amount": inv_amount,
+                                        "round": company_exit.get("stage", ""),
+                                    },
+                                )
+                            except Exception as e:
+                                logger.warning(f"[EXIT] Scenario cap tables failed for {name}: {e}")
+
+                        exit_scenarios.append({
+                            **company_exit,
+                            "moat_score": self._calculate_moat_score(matched_company) if matched_company else 0,
+                            "scenario_cap_tables": scenario_caps,
+                        })
+
+                    enhanced_fund_size = exit_plan.get("fund_size", fund_size)
+                    self.shared_data["exit_modeling"] = {
+                        "scenarios": exit_scenarios,
+                        "fund_size": enhanced_fund_size,
+                    }
+                    return {"exit_modeling": {"scenarios": exit_scenarios, "fund_size": enhanced_fund_size}}
+
+                except Exception as e:
+                    logger.warning(f"[EXIT] Enhanced exit modeling failed, falling back: {e}")
+
+            # --- Fallback path: simple bear/base/bull ---
+            typical_check = context.get("typical_check_size")
             if not typical_check:
-                # Use default stage if no companies yet, otherwise use first company's stage
-                if companies:
-                    stage = companies[0].get('stage', 'Series A')
-                else:
-                    stage = 'Series A'
-                stage_checks = {
-                    "Seed": 2_000_000,
-                    "Series A": 10_000_000,
-                    "Series B": 20_000_000,
-                    "Series C": 40_000_000
-                }
+                stage = companies[0].get("stage", "Series A") if companies else "Series A"
+                stage_checks = {"Seed": 2_000_000, "Series A": 10_000_000, "Series B": 20_000_000, "Series C": 40_000_000}
                 typical_check = stage_checks.get(stage, 10_000_000)
-            
+
             exit_scenarios = []
-            
             for company in companies:
                 company_name = company.get("company")
-                # Use latest_valuation or fallback to other valuation fields
-                current_val = (company.get("latest_valuation") or 
-                             company.get("valuation") or 
-                             company.get("post_money_valuation") or 
-                             100_000_000)  # Default $100M if no valuation
-                
-                # Determine appropriate entry point based on stage
+                current_val = (
+                    company.get("latest_valuation")
+                    or company.get("valuation")
+                    or company.get("post_money_valuation")
+                    or 100_000_000
+                )
                 stage = company.get("stage", "").lower()
                 if "seed" in stage:
-                    entry_valuation = 50_000_000  # Enter at Series A
-                    our_check_size = 5_000_000
+                    entry_valuation, our_check_size = 50_000_000, 5_000_000
                 elif "series a" in stage or "a" in stage:
-                    entry_valuation = 150_000_000  # Enter at late A/early B
-                    our_check_size = 10_000_000
+                    entry_valuation, our_check_size = 150_000_000, 10_000_000
                 elif "series b" in stage or "b" in stage:
-                    entry_valuation = current_val or 200_000_000  # Current valuation or default
-                    our_check_size = 15_000_000
-                else:  # Later stage
-                    entry_valuation = current_val or 300_000_000  # Current valuation or default
-                    our_check_size = 10_000_000
-                
-                # Calculate our ownership
+                    entry_valuation, our_check_size = current_val or 200_000_000, 15_000_000
+                else:
+                    entry_valuation, our_check_size = current_val or 300_000_000, 10_000_000
+
                 our_ownership = (our_check_size / (entry_valuation + our_check_size)) * 100
-                
-                # Analyze moat and momentum
                 moat_score = self._calculate_moat_score(company)
-                momentum_score = self._calculate_momentum_score(company)
-                
-                # Model different exit scenarios with REALISTIC multiples
+                revenue = self._get_field_with_fallback(company, "revenue", 1_000_000)
+
                 scenarios = {
                     "bear": {
-                        "exit_valuation": entry_valuation * 2,  # 2x from entry
-                        "probability": 0.3,
-                        "timeline_years": 3,
-                        "irr": ((2 ** (1/3)) - 1) * 100,  # ~26% IRR
-                        "our_proceeds": our_check_size * 2,
-                        "dpi_contribution": (our_check_size * 2) / fund_size if fund_size and fund_size > 0 else 0
+                        "exit_valuation": entry_valuation * 2, "probability": 0.3, "timeline_years": 3,
+                        "our_invested": our_check_size, "our_entry_round": stage,
+                        "our_proceeds": our_check_size * 2, "our_moic": 2.0,
+                        "our_profit": our_check_size,
                     },
                     "base": {
-                        "exit_valuation": entry_valuation * 5,  # 5x from entry
-                        "probability": 0.5,
-                        "timeline_years": 5,
-                        "irr": ((5 ** (1/5)) - 1) * 100,  # ~38% IRR
-                        "our_proceeds": our_check_size * 5,
-                        "dpi_contribution": (our_check_size * 5) / fund_size
+                        "exit_valuation": entry_valuation * 5, "probability": 0.5, "timeline_years": 5,
+                        "our_invested": our_check_size, "our_entry_round": stage,
+                        "our_proceeds": our_check_size * 5, "our_moic": 5.0,
+                        "our_profit": our_check_size * 4,
                     },
                     "bull": {
-                        "exit_valuation": entry_valuation * 10,  # 10x from entry
-                        "probability": 0.2,
-                        "timeline_years": 7,
-                        "irr": ((10 ** (1/7)) - 1) * 100,  # ~39% IRR
-                        "our_proceeds": our_check_size * 10,
-                        "dpi_contribution": (our_check_size * 10) / fund_size
-                    }
+                        "exit_valuation": entry_valuation * 10, "probability": 0.2, "timeline_years": 7,
+                        "our_invested": our_check_size, "our_entry_round": stage,
+                        "our_proceeds": our_check_size * 10, "our_moic": 10.0,
+                        "our_profit": our_check_size * 9,
+                    },
                 }
-                
-                # Calculate expected returns
-                expected_value = sum(
-                    s["exit_valuation"] * s["probability"]
-                    for s in scenarios.values()
-                )
-                
-                # Calculate revenue multiples - use inferred values if actuals not available
-                revenue = self._get_field_with_fallback(company, 'revenue', 1_000_000)
-                revenue_growth = company.get("revenue_growth") or company.get("inferred_growth") or 0.2
-                
+                expected_value = sum(s["exit_valuation"] * s["probability"] for s in scenarios.values())
+
                 exit_scenarios.append({
                     "company": company_name,
+                    "our_invested": our_check_size,
+                    "our_entry_round": stage,
                     "current_valuation": current_val,
                     "current_revenue": revenue,
-                    "revenue_growth": revenue_growth,
                     "entry_valuation": entry_valuation,
-                    "our_check_size": our_check_size,
-                    "our_ownership": our_ownership,
+                    "our_ownership_pct": our_ownership,
                     "moat_score": moat_score,
-                    "momentum_score": momentum_score,
                     "scenarios": scenarios,
                     "expected_exit_value": expected_value,
                     "expected_multiple": expected_value / entry_valuation if entry_valuation > 0 else 0,
                     "revenue_multiple": current_val / revenue if revenue > 0 else 0,
                     "exit_type": "M&A" if expected_value < 1_000_000_000 else "IPO",
-                    "investment_recommendation": self._get_investment_recommendation(moat_score, momentum_score, our_ownership)
                 })
-            
+
             return {
                 "exit_modeling": {
                     "scenarios": exit_scenarios,
+                    "fund_size": fund_size,
                     "portfolio_expected_value": sum(s["expected_exit_value"] for s in exit_scenarios),
-                    "avg_expected_multiple": sum(s["expected_multiple"] for s in exit_scenarios) / len(exit_scenarios) if exit_scenarios else 0
                 }
             }
-            
+
         except Exception as e:
             logger.error(f"Exit modeling error: {e}")
             return {"error": str(e)}
@@ -15379,6 +19155,102 @@ Mitigation strategies include portfolio diversification and staged investment ap
         else:
             return "⚠️ PASS - Better opportunities available"
     
+    def _company_name_to_row_id(self, matrix_ctx: Dict[str, Any], company_name: str) -> Optional[str]:
+        """Resolve company name (or @Name) to matrix rowId. Uses companyNames[i] <-> rowIds[i]."""
+        if not matrix_ctx:
+            return None
+        row_ids = matrix_ctx.get("rowIds") or matrix_ctx.get("row_ids") or []
+        company_names = matrix_ctx.get("companyNames") or matrix_ctx.get("company_names") or []
+        name_clean = (company_name or "").replace("@", "").strip().lower()
+        for i, cn in enumerate(company_names):
+            if (cn or "").strip().lower() == name_clean:
+                if i < len(row_ids):
+                    return row_ids[i]
+            if name_clean in (cn or "").lower():
+                if i < len(row_ids):
+                    return row_ids[i]
+        return None
+    
+    def _column_id_for_field(self, matrix_ctx: Dict[str, Any], field_key: str) -> Optional[str]:
+        """Map logical field (valuation, arr, revenue, etc.) to matrix columnId from matrix_context.columns."""
+        columns = matrix_ctx.get("columns") or []
+        key_lower = (field_key or "").lower()
+        for col in columns:
+            cid = col.get("id") or col.get("columnId") or ""
+            name = (col.get("name") or col.get("label") or "").lower()
+            if key_lower in name or key_lower in cid.lower():
+                return cid or col.get("id")
+        if columns:
+            return columns[0].get("id") or columns[0].get("columnId")
+        return None
+    
+    def _get_target_row_ids(
+        self, matrix_ctx: Dict[str, Any], entities: Optional[Dict[str, Any]] = None
+    ) -> List[Tuple[str, str]]:
+        """Return list of (rowId, companyName) for target rows. If entities has companies, those only; else all rows."""
+        if not matrix_ctx:
+            return []
+        row_ids = matrix_ctx.get("rowIds") or matrix_ctx.get("row_ids") or []
+        company_names = matrix_ctx.get("companyNames") or matrix_ctx.get("company_names") or []
+        companies_requested = (entities or {}).get("companies") or []
+        if companies_requested:
+            out = []
+            for c in companies_requested:
+                rid = self._company_name_to_row_id(matrix_ctx, c)
+                if rid:
+                    out.append((rid, (c.replace("@", "").strip() if isinstance(c, str) else c)))
+            return out
+        return list(zip(row_ids, company_names)) if len(row_ids) == len(company_names) else []
+    
+    def _build_grid_commands(self, final_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Build grid_commands from shared_data companies + results and from grid-run-* skill output.
+        Pre-computes name->rowId map for O(1) lookups instead of O(n) per company."""
+        commands: List[Dict[str, Any]] = []
+        matrix_ctx = self.shared_data.get("matrix_context") or final_data.get("matrix_context") or {}
+        if not matrix_ctx or not (matrix_ctx.get("rowIds") or matrix_ctx.get("row_ids")):
+            pass
+        else:
+            companies = final_data.get("companies") or self.shared_data.get("companies") or []
+            col_valuation = self._column_id_for_field(matrix_ctx, "valuation")
+            col_arr = self._column_id_for_field(matrix_ctx, "arr")
+            col_revenue = self._column_id_for_field(matrix_ctx, "revenue")
+            # Pre-compute name->rowId map: O(n) once instead of O(n) per company
+            row_ids = matrix_ctx.get("rowIds") or matrix_ctx.get("row_ids") or []
+            company_names = matrix_ctx.get("companyNames") or matrix_ctx.get("company_names") or []
+            name_to_row: Dict[str, str] = {}
+            for i, cn in enumerate(company_names):
+                if i < len(row_ids) and cn:
+                    name_to_row[cn.strip().lower()] = row_ids[i]
+
+            for company in companies:
+                name = company.get("company") or company.get("company_name") or ""
+                name_clean = name.replace("@", "").strip().lower()
+                # O(1) exact match, then O(n) substring only if needed
+                row_id = name_to_row.get(name_clean)
+                if not row_id:
+                    for cn_key, rid in name_to_row.items():
+                        if name_clean in cn_key:
+                            row_id = rid
+                            break
+                if not row_id:
+                    continue
+                val = company.get("valuation") or company.get("inferred_valuation") or company.get("fair_value")
+                if val is not None and col_valuation:
+                    commands.append({"action": "edit", "rowId": row_id, "columnId": col_valuation, "value": val})
+                arr = company.get("arr") or company.get("inferred_arr") or company.get("revenue")
+                if arr is not None and col_arr:
+                    commands.append({"action": "edit", "rowId": row_id, "columnId": col_arr, "value": arr})
+                if arr is not None and col_revenue and col_revenue != col_arr:
+                    commands.append({"action": "edit", "rowId": row_id, "columnId": col_revenue, "value": arr})
+        # Deduplicate: keep last command per (rowId, columnId) to avoid redundant writes
+        existing = self.shared_data.get("grid_commands") or []
+        all_cmds = commands + existing
+        seen: Dict[str, int] = {}
+        for i, cmd in enumerate(all_cmds):
+            key = f"{cmd.get('rowId')}:{cmd.get('columnId')}:{cmd.get('action')}"
+            seen[key] = i
+        return [all_cmds[i] for i in sorted(seen.values())]
+    
     async def _format_output(
         self,
         results: Dict[str, Any],
@@ -15427,11 +19299,6 @@ Mitigation strategies include portfolio diversification and staged investment ap
         # Combine all results with shared_data
         logger.info(f"[FORMAT_OUTPUT] 🔄 Combining results with shared_data")
         
-        # #region agent log
-        with open('/Users/admin/code/dilla-ai/.cursor/debug.log', 'a') as f:
-            import json
-            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"unified_mcp_orchestrator.py:12998","message":"before merge - checking results","data":{"results_keys":list(results.keys()),"has_deck_storytelling":'deck-storytelling' in results,"shared_data_keys":list(self.shared_data.keys())},"timestamp":int(__import__('time').time()*1000)})+'\n')
-        # #endregion
         
         final_data = {
             **self.shared_data,
@@ -15445,12 +19312,6 @@ Mitigation strategies include portfolio diversification and staged investment ap
         else:
             logger.warning(f"[FORMAT_OUTPUT] ❌ deck-storytelling NOT in final_data after merge!")
         
-        # #region agent log
-        with open('/Users/admin/code/dilla-ai/.cursor/debug.log', 'a') as f:
-            import json
-            deck_data = final_data.get('deck-storytelling', {})
-            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"unified_mcp_orchestrator.py:13008","message":"after merge - checking final_data","data":{"final_data_keys":list(final_data.keys()),"has_deck_storytelling":'deck-storytelling' in final_data,"deck_storytelling_type":type(deck_data).__name__ if deck_data else None,"deck_storytelling_keys":list(deck_data.keys()) if isinstance(deck_data, dict) else [],"deck_storytelling_slides_count":len(deck_data.get('slides', [])) if isinstance(deck_data, dict) and 'slides' in deck_data else 0},"timestamp":int(__import__('time').time()*1000)})+'\n')
-        # #endregion
         
         # Debug logging to see companies
         logger.info(f"[FORMAT_OUTPUT] 🏢 Companies in shared_data: {len(self.shared_data.get('companies', []))}")
@@ -15579,10 +19440,23 @@ Mitigation strategies include portfolio diversification and staged investment ap
         # Add citations to final data
         final_data["citations"] = self.citation_manager.get_all_citations()
         
+        # Phase 2: Prepare plan_steps and grid_commands for frontend
+        plan_steps = final_data.get("plan_steps", [])
+        grid_commands = self._build_grid_commands(final_data)
+        def _add_plan_steps(out: Dict[str, Any]) -> Dict[str, Any]:
+            if plan_steps:
+                out["plan_steps"] = [
+                    {"id": s.get("id"), "label": s.get("label"), "status": s.get("status", "pending"), "detail": s.get("detail"), "explanation": s.get("explanation")}
+                    for s in plan_steps
+                ]
+            if grid_commands:
+                out["grid_commands"] = grid_commands
+            return out
+        
         # Format based on output type
         if output_format == "spreadsheet":
             logger.info(f"[FORMAT_OUTPUT] 📊 Formatting as SPREADSHEET")
-            return self._format_spreadsheet(final_data)
+            return _add_plan_steps(self._format_spreadsheet(final_data))
         elif output_format == "deck":
             logger.info(f"[FORMAT_OUTPUT] 🎨 Formatting as DECK")
             logger.info(f"[FORMAT_OUTPUT] 🎨 Calling _format_deck with output_format='{output_format}'")
@@ -15600,20 +19474,10 @@ Mitigation strategies include portfolio diversification and staged investment ap
                 if 'error' in deck_data:
                     logger.error(f"[FORMAT_OUTPUT] 🎨 deck-storytelling has error: {deck_data['error']}")
             
-            # #region agent log
-            with open('/Users/admin/code/dilla-ai/.cursor/debug.log', 'a') as f:
-                import json
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"unified_mcp_orchestrator.py:13133","message":"calling _format_deck","data":{"final_data_keys":list(final_data.keys()),"has_deck_storytelling":'deck-storytelling' in final_data},"timestamp":int(__import__('time').time()*1000)})+'\n')
-            # #endregion
             
             formatted_deck = self._format_deck(final_data)
             logger.info(f"[FORMAT_OUTPUT] 🎨 _format_deck returned: format={formatted_deck.get('format')}, slides_count={len(formatted_deck.get('slides', []))}")
             
-            # #region agent log
-            with open('/Users/admin/code/dilla-ai/.cursor/debug.log', 'a') as f:
-                import json
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"unified_mcp_orchestrator.py:13135","message":"_format_deck returned","data":{"format":formatted_deck.get('format'),"slides_count":len(formatted_deck.get('slides', [])),"is_fallback":formatted_deck.get('metadata', {}).get('is_fallback', False)},"timestamp":int(__import__('time').time()*1000)})+'\n')
-            # #endregion
             logger.info(f"[FORMAT_OUTPUT] 🎨 formatted_deck keys: {list(formatted_deck.keys())}")
             
             # CRITICAL FIX: Ensure deck is returned at top level, not nested
@@ -15669,14 +19533,101 @@ Mitigation strategies include portfolio diversification and staged investment ap
                 raise ValueError(f"All {len(deck_slides)} slides are empty - deck generation failed completely")
             
             logger.info(f"[DECK_GEN] ✅ Returning validated deck with {len(deck_slides)} slides ({len(deck_slides) - len(empty_slides)} with content)")
-            return formatted_deck
+            return _add_plan_steps(formatted_deck)
         elif output_format == "matrix":
             logger.info(f"[FORMAT_OUTPUT] 📊 Formatting as MATRIX")
-            return self._format_matrix(final_data)
+            return _add_plan_steps(self._format_matrix(final_data))
+        elif output_format == "docs":
+            logger.info(f"[FORMAT_OUTPUT] 📝 Formatting as DOCS/MEMO")
+            return _add_plan_steps(self._format_docs(final_data))
         else:
             logger.info(f"[FORMAT_OUTPUT] 📝 Formatting as ANALYSIS")
-            return self._format_analysis(final_data)
+            return _add_plan_steps(self._format_analysis(final_data))
     
+    def _format_docs(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Format data for docs/memo output - pass through memo-writer sections.
+
+        The memo-writer skill returns {format: "docs", title, date, sections, metadata}.
+        This method extracts that result and wraps it so the frontend receives
+        structured sections via memo_updates for the MemoEditor component.
+        """
+        # 1. Check if memo-writer skill produced a result keyed by skill name
+        memo_result = data.get("memo-writer") or data.get("memo-generator")
+
+        if isinstance(memo_result, dict) and memo_result.get("sections"):
+            sections = memo_result["sections"]
+            title = memo_result.get("title", "Investment Memo")
+            date = memo_result.get("date", "")
+            metadata = memo_result.get("metadata", {})
+            logger.info(f"[FORMAT_DOCS] ✅ Found memo-writer sections: {len(sections)} sections")
+        else:
+            # 2. Check if sections are at the top level (e.g. from shared_data merge)
+            sections = data.get("sections", [])
+            title = data.get("title", "Investment Memo")
+            date = data.get("date", "")
+            metadata = data.get("metadata", {})
+            if sections:
+                logger.info(f"[FORMAT_DOCS] ✅ Found top-level sections: {len(sections)} sections")
+            else:
+                logger.warning(f"[FORMAT_DOCS] ⚠️ No memo sections found — building minimal fallback from analysis data")
+                # 3. Fallback: build lightweight sections from company data
+                sections = self._build_fallback_memo_sections(data)
+                title = "Investment Analysis"
+                metadata = {"fallback": True, "section_count": len(sections)}
+
+        return {
+            "format": "docs",
+            "title": title,
+            "date": date,
+            "sections": sections,
+            "metadata": metadata,
+            # memo_updates is what AgentChat.normalizeResponse reads to forward to onMemoUpdates
+            "memo_updates": {
+                "action": "replace",
+                "sections": sections
+            },
+            "citations": data.get("citations", []),
+            "charts": data.get("charts", []),
+            "companies": data.get("companies", []),
+        }
+
+    def _build_fallback_memo_sections(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Build minimal memo sections from analysis data when memo-writer didn't run."""
+        sections: List[Dict[str, Any]] = []
+        sections.append({"type": "heading1", "content": "Investment Analysis"})
+
+        companies = data.get("companies", [])
+        if not companies:
+            sections.append({"type": "paragraph", "content": "No company data available."})
+            return sections
+
+        # Executive summary
+        names = [c.get("company", "Unknown") for c in companies]
+        sections.append({"type": "heading2", "content": "Executive Summary"})
+        sections.append({"type": "paragraph", "content": f"Analysis of {', '.join(names)}."})
+
+        # Per-company overview
+        for company in companies:
+            name = company.get("company", "Unknown")
+            sections.append({"type": "heading2", "content": name})
+            items = []
+            val = self._get_field_safe(company, "valuation") or self._get_field_safe(company, "inferred_valuation")
+            if val:
+                items.append(f"Valuation: ${val / 1e6:,.0f}M")
+            rev = self._get_field_safe(company, "revenue") or self._get_field_safe(company, "inferred_revenue")
+            if rev:
+                items.append(f"Revenue: ${rev / 1e6:,.1f}M")
+            stage = company.get("stage")
+            if stage:
+                items.append(f"Stage: {stage}")
+            if items:
+                sections.append({"type": "list", "items": items})
+            desc = company.get("description") or company.get("product_description", "")
+            if desc:
+                sections.append({"type": "paragraph", "content": desc})
+
+        return sections
+
     def _format_spreadsheet(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Format data for spreadsheet output with commands"""
         # Check if we already have spreadsheet data from skill execution
@@ -15875,24 +19826,10 @@ Mitigation strategies include portfolio diversification and staged investment ap
     
     def _format_deck(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Format data for deck output"""
-        # CRITICAL DEBUG: Log immediately
-        print("=" * 80)
-        print("⚫ [FORMAT_DECK] _format_deck CALLED")
-        print(f"⚫ [FORMAT_DECK] Data keys: {list(data.keys())}")
-        print(f"⚫ [FORMAT_DECK] Has deck-storytelling: {'deck-storytelling' in data}")
-        print(f"⚫ [FORMAT_DECK] Has companies: {'companies' in data}")
-        if 'companies' in data:
-            print(f"⚫ [FORMAT_DECK] Companies count: {len(data.get('companies', []))}")
-        print("=" * 80)
         logger.critical(f"[FORMAT_DECK] ⚫⚫⚫ _format_deck CALLED with keys: {list(data.keys())} ⚫⚫⚫")
         logger.info(f"[FORMAT_DECK] Starting deck formatting, data keys: {list(data.keys())}")
         logger.info(f"[FORMAT_DECK] Data contains deck-storytelling: {'deck-storytelling' in data}")
         
-        # #region agent log
-        with open('/Users/admin/code/dilla-ai/.cursor/debug.log', 'a') as f:
-            import json
-            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"unified_mcp_orchestrator.py:13369","message":"_format_deck entry","data":{"data_keys":list(data.keys()),"has_deck_storytelling":'deck-storytelling' in data,"deck_storytelling_type":type(data.get('deck-storytelling')).__name__ if 'deck-storytelling' in data else None},"timestamp":int(__import__('time').time()*1000)})+'\n')
-        # #endregion
         
         # CRITICAL FIX: Check if deck-storytelling skill already generated the deck
         # The skill result is stored under the skill name key, not at top level!
@@ -15900,11 +19837,6 @@ Mitigation strategies include portfolio diversification and staged investment ap
             deck_data = data["deck-storytelling"]
             logger.info(f"[FORMAT_DECK] Found deck-storytelling data with keys: {list(deck_data.keys())}")
             
-            # #region agent log
-            with open('/Users/admin/code/dilla-ai/.cursor/debug.log', 'a') as f:
-                import json
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"unified_mcp_orchestrator.py:13371","message":"deck-storytelling found in data","data":{"deck_data_keys":list(deck_data.keys()),"has_slides":'slides' in deck_data,"slides_count":len(deck_data.get('slides', [])),"has_error":'error' in deck_data,"format":deck_data.get('format')},"timestamp":int(__import__('time').time()*1000)})+'\n')
-            # #endregion
             
             # Check if deck-storytelling returned an error
             if "error" in deck_data:
@@ -15957,11 +19889,6 @@ Mitigation strategies include portfolio diversification and staged investment ap
                 len(deck_data.get("slides", [])) > 0 and
                 "error" not in deck_data)
             
-            # #region agent log
-            with open('/Users/admin/code/dilla-ai/.cursor/debug.log', 'a') as f:
-                import json
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"unified_mcp_orchestrator.py:13419","message":"deck-storytelling validation check","data":{"format_check":deck_data.get("format") == "deck","has_slides":"slides" in deck_data,"slides_count":len(deck_data.get("slides", [])),"no_error":"error" not in deck_data,"validation_passed":validation_passed},"timestamp":int(__import__('time').time()*1000)})+'\n')
-            # #endregion
             
             if validation_passed:
                 logger.info(f"[FORMAT_DECK] ✅ Using deck-storytelling result with {len(deck_data.get('slides', []))} slides")
@@ -16259,7 +20186,21 @@ Mitigation strategies include portfolio diversification and staged investment ap
     
     def _format_matrix(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Format data for matrix output"""
+        # If data already has matrix structure from MatrixQueryOrchestrator, use it
+        if "columns" in data and "rows" in data:
+            return {
+                "format": "matrix",
+                "columns": data.get("columns", []),
+                "rows": data.get("rows", []),
+                "formulas": data.get("formulas", {}),
+                "metadata": data.get("metadata", {}),
+                "citations": data.get("citations", []),
+                "charts": data.get("charts", [])
+            }
+        
+        # Fallback to original formatting
         return {
+            "format": "matrix",
             "type": "matrix",
             "data": data,
             "dimensions": self._generate_matrix_dimensions(data),
@@ -16293,7 +20234,18 @@ Mitigation strategies include portfolio diversification and staged investment ap
         
         if "exit-modeler" in data and isinstance(data["exit-modeler"], dict):
             formatted["exit_modeling"] = data["exit-modeler"].get("exit_modeling", {})
-        
+
+        if "portfolio-scenario-modeler" in data and isinstance(data["portfolio-scenario-modeler"], dict):
+            formatted["fund_scenarios"] = data["portfolio-scenario-modeler"].get("fund_scenarios", {})
+
+        if "company-health-dashboard" in data and isinstance(data["company-health-dashboard"], dict):
+            formatted["portfolio_health"] = data["company-health-dashboard"].get("portfolio_health", {})
+            formatted["portfolio_health_summary"] = data["company-health-dashboard"].get("summary_table", [])
+
+        if "followon-strategy" in data and isinstance(data["followon-strategy"], dict):
+            formatted["followon_strategy"] = data["followon-strategy"].get("followon_strategy", {})
+            formatted["reserve_forecast"] = data["followon-strategy"].get("reserve_forecast", {})
+
         if "valuation-engine" in data and isinstance(data["valuation-engine"], dict):
             formatted["valuations"] = data["valuation-engine"].get("valuations", {})
         
