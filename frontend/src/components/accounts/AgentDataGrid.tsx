@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { cn } from '@/lib/utils';
-import { RLSupabaseConnector } from '@/lib/rl-system/supabase-connector';
 import { FormulaEngine, FORMULA_DOCS } from '@/lib/spreadsheet-formulas';
 import { convertRangeToSankeyData, convertRangeToWaterfallData } from '@/lib/visualization-tools';
 import { useGrid } from '@/contexts/GridContext';
@@ -40,6 +39,7 @@ import {
   TrendingUp,
   DollarSign
 } from 'lucide-react';
+import { Skeleton } from '@/components/ui/skeleton';
 
 // Grid is 26 columns (A-Z) x 100 rows
 const COLUMNS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
@@ -93,9 +93,8 @@ export default function AgentDataGrid() {
   // Get grid context
   const gridContext = useGrid();
   
-  // RL System
+  // RL System removed
   const [rlEnabled, setRlEnabled] = useState(false);
-  const [rlConnector] = useState(() => new RLSupabaseConnector());
   const [showFormulaHelp, setShowFormulaHelp] = useState(false);
   const [previousGridState, setPreviousGridState] = useState<Record<string, Cell>>({});
   const [visualization, setVisualization] = useState<{
@@ -207,24 +206,9 @@ export default function AgentDataGrid() {
     }
   };
 
-  // Track action in RL system
+  // RL tracking removed
   const trackRLAction = async (action: string, reward: number = 0) => {
-    if (!rlEnabled) return;
-    
-    try {
-      const gridState = Object.entries(cells).map(([k, v]) => `${k}:${v.value}`).join(',');
-      // TODO: Re-enable when storeExperience is implemented
-      // await rlConnector.storeExperience(
-      //   Object.keys(previousGridState).length ? Object.entries(previousGridState).map(([k, v]) => `${k}:${v.value}`).join(',') : 'empty',
-      //   action,
-      //   gridState,
-      //   reward,
-      //   { modelType: 'Spreadsheet', timestamp: new Date().toISOString() }
-      // );
-      setPreviousGridState({ ...cells });
-    } catch (error) {
-      console.error('Failed to track RL action:', error);
-    }
+    // RL system removed - no-op
   };
 
   // Agent API
@@ -1061,8 +1045,8 @@ export default function AgentDataGrid() {
         
         {isCalculating && (
           <div className="flex items-center gap-2 text-sm text-gray-600">
-            <Zap className="w-4 h-4 animate-pulse" />
-            Calculating...
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <Skeleton className="h-4 w-24" />
           </div>
         )}
       </div>
@@ -1113,34 +1097,8 @@ export default function AgentDataGrid() {
                   const isSelected = selectedCell === addr;
                   const isEditing = editingCell === addr;
                   
-                  // Check if this cell is the start of an embedded chart
-                  const chart = embeddedCharts.find(c => c.position === addr);
-                  if (chart) {
-                    const chartCell = parseCell(chart.position);
-                    if (chartCell && col === addr.charAt(0)) {
-                      return (
-                        <td
-                          key={addr}
-                          colSpan={chart.size.cols}
-                          rowSpan={chart.size.rows}
-                          className="border border-gray-300 p-2 bg-gray-50"
-                        >
-                          <div className="w-full h-full min-h-[300px]">
-                            <TableauLevelCharts
-                              type={chart.type as any}
-                              data={chart.data}
-                              title={chart.data.title}
-                              height={chart.size.rows * 32 - 16}
-                              width="100%"
-                              interactive={true}
-                            />
-                          </div>
-                        </td>
-                      );
-                    }
-                  }
-                  
-                  // Check if this cell is covered by a chart
+                  // Charts are now rendered in ChartViewport, not in cells
+                  // Check if this cell is covered by a chart (legacy support - skip rendering)
                   const isCoveredByChart = embeddedCharts.some(c => {
                     const chartStart = parseCell(c.position);
                     const currentCell = parseCell(addr);
@@ -1149,8 +1107,7 @@ export default function AgentDataGrid() {
                     return currentCell.row >= chartStart.row && 
                            currentCell.row < chartStart.row + c.size.rows &&
                            currentCell.col >= chartStart.col && 
-                           currentCell.col < chartStart.col + c.size.cols &&
-                           c.position !== addr;
+                           currentCell.col < chartStart.col + c.size.cols;
                   });
                   
                   if (isCoveredByChart) {
@@ -1276,7 +1233,7 @@ export default function AgentDataGrid() {
             <div className="flex items-center gap-2 mb-2">
               <Bot className="w-4 h-4" />
               <span className="font-bold">Direct API</span>
-              <Sparkles className="w-3 h-3 text-yellow-400 animate-pulse" />
+              <Sparkles className="w-3 h-3 text-yellow-400" />
               <span className="text-gray-400 ml-auto">Grid API</span>
             </div>
           

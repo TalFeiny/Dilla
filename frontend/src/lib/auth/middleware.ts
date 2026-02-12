@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { authOptions } from '@/app/api/auth/[...nextauth]/route';
+import { authOptions } from '@/lib/auth';
 
 // Rate limiting store (in production, use Redis)
 const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
@@ -14,7 +14,7 @@ export interface AuthenticatedRequest extends NextRequest {
  * Authentication middleware for API routes
  * Checks if user is authenticated via NextAuth session
  */
-export async function withAuth(
+export function withAuth(
   handler: (req: AuthenticatedRequest) => Promise<Response>
 ) {
   return async (req: NextRequest) => {
@@ -49,7 +49,7 @@ export async function withAuth(
  * Rate limiting middleware
  * Limits requests per user per minute
  */
-export async function withRateLimit(
+export function withRateLimit(
   handler: (req: AuthenticatedRequest) => Promise<Response>,
   options: {
     requests: number;  // Number of requests
@@ -112,7 +112,10 @@ export function withAuthAndRateLimit(
   handler: (req: AuthenticatedRequest) => Promise<Response>,
   rateLimitOptions?: { requests: number; window: number }
 ) {
-  return withAuth(withRateLimit(handler, rateLimitOptions));
+  // Compose: auth wraps rate limit wraps handler
+  const rateLimitWrapped = withRateLimit(handler, rateLimitOptions);
+  const authWrapped = withAuth(rateLimitWrapped);
+  return authWrapped;
 }
 
 /**

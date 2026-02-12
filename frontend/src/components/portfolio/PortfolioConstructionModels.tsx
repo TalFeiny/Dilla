@@ -446,7 +446,7 @@ export default function PortfolioConstructionModels() {
     });
     
     return matrix;
-  }, Array.from(ets));
+  }, [assets]);
 
   // Run portfolio optimization
   const runOptimization = useCallback(() => {
@@ -480,7 +480,7 @@ export default function PortfolioConstructionModels() {
       setAssets(optimizedAssets);
       setIsOptimizing(false);
     }, 2000);
-  }, Array.from(ets));
+  }, [assets]);
 
   // Calculate efficient frontier
   const efficientFrontier = useMemo(() => {
@@ -583,7 +583,7 @@ export default function PortfolioConstructionModels() {
                         onChange={(e) => {
                           const newAssets = Array.from(assets);
                           const index = newAssets.findIndex(a => a.id === asset.id);
-                          newAssetsArray.from(ex).targetWeight = Number(e.target.value) / 100;
+                          newAssets[index].targetWeight = Number(e.target.value) / 100;
                           setAssets(newAssets);
                         }}
                         className="w-16 px-2 py-1 text-sm border rounded text-right"

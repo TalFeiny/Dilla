@@ -16,78 +16,48 @@ import { ensureChartJSRegistered } from '@/lib/chart-setup';
 // Ensure Chart.js is registered before importing components
 const Line = dynamic(
   () => {
-    if (typeof window !== 'undefined') {
-      ensureChartJSRegistered();
-    }
-    return import('react-chartjs-2').then(mod => mod.Line).catch((err) => {
-      console.error('[AgentChart] Failed to load Line chart:', err);
-      return null;
-    });
+    if (typeof window !== 'undefined') ensureChartJSRegistered();
+    return loadChartComponent(() => import('react-chartjs-2').then((mod) => mod.Line));
   },
   { ssr: false }
 );
 
 const Bar = dynamic(
   () => {
-    if (typeof window !== 'undefined') {
-      ensureChartJSRegistered();
-    }
-    return import('react-chartjs-2').then(mod => mod.Bar).catch((err) => {
-      console.error('[AgentChart] Failed to load Bar chart:', err);
-      return null;
-    });
+    if (typeof window !== 'undefined') ensureChartJSRegistered();
+    return loadChartComponent(() => import('react-chartjs-2').then((mod) => mod.Bar));
   },
   { ssr: false }
 );
 
 const Doughnut = dynamic(
   () => {
-    if (typeof window !== 'undefined') {
-      ensureChartJSRegistered();
-    }
-    return import('react-chartjs-2').then(mod => mod.Doughnut).catch((err) => {
-      console.error('[AgentChart] Failed to load Doughnut chart:', err);
-      return null;
-    });
+    if (typeof window !== 'undefined') ensureChartJSRegistered();
+    return loadChartComponent(() => import('react-chartjs-2').then((mod) => mod.Doughnut));
   },
   { ssr: false }
 );
 
 const Scatter = dynamic(
   () => {
-    if (typeof window !== 'undefined') {
-      ensureChartJSRegistered();
-    }
-    return import('react-chartjs-2').then(mod => mod.Scatter).catch((err) => {
-      console.error('[AgentChart] Failed to load Scatter chart:', err);
-      return null;
-    });
+    if (typeof window !== 'undefined') ensureChartJSRegistered();
+    return loadChartComponent(() => import('react-chartjs-2').then((mod) => mod.Scatter));
   },
   { ssr: false }
 );
 
 const Pie = dynamic(
   () => {
-    if (typeof window !== 'undefined') {
-      ensureChartJSRegistered();
-    }
-    return import('react-chartjs-2').then(mod => mod.Pie).catch((err) => {
-      console.error('[AgentChart] Failed to load Pie chart:', err);
-      return null;
-    });
+    if (typeof window !== 'undefined') ensureChartJSRegistered();
+    return loadChartComponent(() => import('react-chartjs-2').then((mod) => mod.Pie));
   },
   { ssr: false }
 );
 
 const Radar = dynamic(
   () => {
-    if (typeof window !== 'undefined') {
-      ensureChartJSRegistered();
-    }
-    return import('react-chartjs-2').then(mod => mod.Radar).catch((err) => {
-      console.error('[AgentChart] Failed to load Radar chart:', err);
-      return null;
-    });
+    if (typeof window !== 'undefined') ensureChartJSRegistered();
+    return loadChartComponent(() => import('react-chartjs-2').then((mod) => mod.Radar));
   },
   { ssr: false }
 );
@@ -105,7 +75,7 @@ interface AgentChartProps {
   interactive?: boolean;
 }
 
-// Fallback component for when chart libraries fail to load
+// Fallback component for when chart libraries fail to load (also used as dynamic import fallback)
 const ChartFallback = ({ title }: { title?: string }) => (
   <div className="flex items-center justify-center p-8 border border-gray-200 rounded-lg bg-gray-50">
     <div className="text-center">
@@ -116,6 +86,19 @@ const ChartFallback = ({ title }: { title?: string }) => (
     </div>
   </div>
 );
+
+// Dynamic loader helper: always return a module with default export (never null) to avoid webpack __webpack_require__.call(undefined)
+function loadChartComponent(
+  loader: () => Promise<React.ComponentType<any>>
+): Promise<{ default: React.ComponentType<any> }> {
+  return loader().then(
+    (C) => ({ default: C }),
+    (err) => {
+      console.error('[AgentChart] Chart component failed to load:', err);
+      return { default: () => <ChartFallback /> };
+    }
+  );
+}
 
 export function AgentChart({
   data,
@@ -290,6 +273,7 @@ export function AgentChart({
       data-chart-ready={chartReady ? 'true' : 'false'}
     >
       {title && <h3 className="text-lg font-semibold mb-2">{title}</h3>}
+      {/* @ts-ignore - Chart.js components have dynamic props */}
       <ChartComponent data={chartConfig.data} options={chartConfig.options} />
     </div>
   );

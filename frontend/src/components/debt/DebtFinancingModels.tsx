@@ -66,7 +66,7 @@ interface Covenant {
   threshold: number;
   operator: '<' | '>' | '<=' | '>=' | '=' | '!=';
   frequency: 'monthly' | 'quarterly' | 'annually';
-  status: 'compliant' | 'breach' | 'waived' | 'cured';
+  status: 'compliant' | 'breach' | 'waived' | 'cured' | 'warning';
   testDate?: string;
   actualValue?: number;
   consequences?: string;
@@ -335,7 +335,7 @@ export default function DebtFinancingModels() {
     }));
     
     setTimeout(() => setIsCalculating(false), 500);
-  }, Array.from(Model));
+  }, [lboModel]);
 
   // Test covenant compliance
   const testCovenant = (covenant: Covenant): boolean => {

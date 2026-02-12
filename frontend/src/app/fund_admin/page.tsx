@@ -367,11 +367,13 @@ export default function FundAdminPage() {
         setFundData(combinedData);
         
         // Extract citations and charts if available
-        if (fundData.citations) {
-          setCitations(fundData.citations);
+        const citationsData = (fundData as any).citations;
+        const chartsData = (fundData as any).charts;
+        if (citationsData) {
+          setCitations(citationsData);
         }
-        if (fundData.charts) {
-          setCharts(fundData.charts);
+        if (chartsData) {
+          setCharts(chartsData);
         }
         
         setError(null);
@@ -1661,8 +1663,6 @@ export default function FundAdminPage() {
                   <div key={index} className="bg-gray-50 rounded-lg p-4">
                     <AgentChartGenerator
                       prompt={`Chart ${index + 1}: ${chart.title || chart.type}`}
-                      chartData={chart}
-                      autoGenerate={true}
                     />
                   </div>
                 ))}

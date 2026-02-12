@@ -9,10 +9,11 @@ export class SpreadsheetHandler implements IFormatHandler {
     const { text, extractedCompanies, citations, financialAnalyses, charts } = context;
     
     let result: any;
+    let parsedData: any = null;
     
     try {
       // Parse the backend response
-      let parsedData: any = text;
+      parsedData = text;
       if (typeof text === 'string') {
         try {
           parsedData = JSON.parse(text);

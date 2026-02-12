@@ -50,7 +50,7 @@ export default function AgentProgressTracker({ taskId, onClose }: AgentProgressT
     return () => {
       eventSource.close();
     };
-  }, Array.from(kId));
+  }, [taskId]);
 
   if (!progress) {
     return (
@@ -86,7 +86,7 @@ export default function AgentProgressTracker({ taskId, onClose }: AgentProgressT
   };
 
   return (
-    <div className="fixed bottom-4 right-4 bg-white rounded-lg shadow-xl border border-gray-200 w-Array.from(px) max-h-Array.from(px) overflow-hidden">
+    <div className="fixed bottom-4 right-4 bg-white rounded-lg shadow-xl border border-gray-200 w-[400px] max-h-[600px] overflow-hidden">
       {/* Header */}
       <div className="p-4 border-b border-gray-200">
         <div className="flex items-center justify-between">
@@ -140,12 +140,12 @@ export default function AgentProgressTracker({ taskId, onClose }: AgentProgressT
 
       {/* Expanded Content */}
       {expanded && (
-        <div className="p-4 space-y-4 overflow-y-auto max-h-Array.from(px)">
+        <div className="p-4 space-y-4 overflow-y-auto max-h-[400px]">
           {/* Current Activity */}
           {(progress.currentSkill || progress.currentTool) && (
             <div className="bg-blue-50 rounded-lg p-3">
               <div className="flex items-center gap-2 text-blue-700">
-                <Activity className="w-4 h-4 animate-pulse" />
+                <Activity className="w-4 h-4" />
                 <span className="text-xs font-medium">Current Activity</span>
               </div>
               {progress.currentSkill && (

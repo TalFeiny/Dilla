@@ -159,7 +159,7 @@ export class PerplexityCitationSystem {
       this.benchmarkSources.set(key, {
         name: data.name || key,
         type: 'pdf',
-        url: data.url,
+        url: ('url' in data && data.url) ? data.url : '',
         sections: new Map(Object.entries(data.data || {})),
         lastUpdated: '2024-12-31'
       });

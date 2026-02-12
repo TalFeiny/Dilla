@@ -16,6 +16,13 @@ export class FormulaEngine {
   evaluate(formula: string): any {
     if (!formula.startsWith('=')) return formula;
     
+    // Short-circuit WORKFLOW(...) before safeEval — formula engine doesn't support it;
+    // sanitization would strip WORKFLOW and leave E/EE → ReferenceError. Return placeholder.
+    const rest = formula.slice(1).trim();
+    if (/^WORKFLOW\s*\(/i.test(rest)) {
+      return '#WORKFLOW';
+    }
+    
     let expr = formula.substring(1).toUpperCase();
     
     // Replace cell references first
@@ -1162,6 +1169,73 @@ export class FormulaEngine {
       console.error('Formula evaluation error:', error, 'Expression:', expr);
       return '#ERROR';
     }
+  }
+
+  /**
+   * Evaluate a single operand (cell reference, number, or string)
+   */
+  private evaluateOperand(operand: string): any {
+    operand = operand.trim();
+    
+    // If it's a cell reference
+    if (/^[A-Z]+\d+$/.test(operand)) {
+      const cell = this.cells[operand];
+      if (cell?.formula) {
+        return this.evaluate(cell.formula);
+      }
+      return cell?.value ?? 0;
+    }
+    
+    // If it's a number
+    if (/^-?\d+(\.\d+)?$/.test(operand)) {
+      return parseFloat(operand);
+    }
+    
+    // If it's a string (quoted)
+    if (operand.startsWith('"') && operand.endsWith('"')) {
+      return operand.slice(1, -1);
+    }
+    
+    // Try to evaluate as expression
+    try {
+      return this.safeEval(operand);
+    } catch {
+      return operand;
+    }
+  }
+
+  /**
+   * Get range as 2D array (for VLOOKUP, HLOOKUP, etc.)
+   */
+  private getRangeAs2D(range: string): any[][] {
+    const result: any[][] = [];
+    
+    // Handle single cell
+    if (!range.includes(':')) {
+      const cell = this.cells[range];
+      const val = cell?.formula ? this.evaluate(cell.formula) : cell?.value;
+      return [[val ?? 0]];
+    }
+    
+    // Handle range
+    const [start, end] = range.split(':');
+    const startCell = this.parseCell(start);
+    const endCell = this.parseCell(end);
+    
+    if (!startCell || !endCell) return [];
+    
+    for (let r = startCell.row; r <= endCell.row; r++) {
+      const row: any[] = [];
+      for (let c = startCell.col; c <= endCell.col; c++) {
+        const addr = this.cellAddress(c, r);
+        const cell = this.cells[addr];
+        const val = cell?.formula ? this.evaluate(cell.formula) : cell?.value;
+        row.push(val ?? 0);
+      }
+      result.push(row);
+    }
+    
+    return result;
   }
 }
 

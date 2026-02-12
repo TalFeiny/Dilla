@@ -51,8 +51,8 @@ interface Citation {
 }
 
 interface TableauChartProps {
-  type: 'sankey' | 'sunburst' | 'heatmap' | 'waterfall' | 'boxplot' | 'candlestick' | 
-        'bubble' | 'gantt' | 'funnel' | 'radialBar' | 'streamgraph' | 'chord' | 'force' | 'side_by_side_sankey' | 'timeline_valuation' | 'probability_cloud' | 'pie';
+  type: 'sankey' | 'sunburst' | 'heatmap' | 'waterfall' | 'boxplot' | 'candlestick' |
+        'bubble' | 'gantt' | 'funnel' | 'radialBar' | 'streamgraph' | 'chord' | 'force' | 'side_by_side_sankey' | 'timeline_valuation' | 'probability_cloud' | 'pie' | 'line' | 'bar' | 'treemap' | 'scatter' | 'cap_table_waterfall';
   data: any;
   title?: string;
   subtitle?: string;
@@ -911,6 +911,43 @@ export default function TableauLevelCharts({
     );
   };
 
+  // Scatter Chart (growth vs valuation multiple)
+  const renderScatterChart = () => {
+    const points = Array.isArray(data) ? data : (data?.data || data?.points || []);
+    if (!Array.isArray(points) || !points.length) {
+      return (
+        <div className="flex items-center justify-center h-full text-gray-500">
+          <p>No data for scatter chart</p>
+        </div>
+      );
+    }
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <ComposedChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+          <XAxis dataKey="x" type="number" name="Growth %" />
+          <YAxis dataKey="y" type="number" name="Valuation Multiple" />
+          <Tooltip
+            content={({ active, payload }) => {
+              if (active && payload && payload.length) {
+                const p = payload[0].payload;
+                return (
+                  <div className="bg-white p-3 rounded-lg shadow-lg border text-sm">
+                    <p className="font-bold">{p.name}</p>
+                    <p>Growth: {p.x}%</p>
+                    <p>Valuation Multiple: {p.y}x</p>
+                  </div>
+                );
+              }
+              return null;
+            }}
+          />
+          <Scatter data={points} fill={colors[0]} fillOpacity={0.7} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    );
+  };
+
   // Bubble Chart (3D Scatter)
   const renderBubble = () => {
     return (
@@ -1082,7 +1119,10 @@ export default function TableauLevelCharts({
               cx="50%"
               cy="50%"
               labelLine={false}
-              label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(1)}%`}
+              label={(props: any) => {
+                const { name, percent } = props;
+                return `${name}: ${(percent * 100).toFixed(1)}%`;
+              }}
               outerRadius={Math.min(width === '100%' ? 150 : typeof width === 'number' ? width / 3 : 150, height / 2 - 20)}
               fill="#8884d8"
               dataKey="value"
@@ -1489,6 +1529,76 @@ export default function TableauLevelCharts({
     );
   };
 
+  // Render Line/Bar chart (labels + datasets format from Chart.js)
+  const renderLineOrBarChart = () => {
+    const raw = data?.data || data;
+    const labels = raw?.labels || [];
+    const datasets = raw?.datasets || [];
+    if (!labels.length || !datasets.length) {
+      return (
+        <div className="flex items-center justify-center h-full text-gray-500">
+          <p>No data for chart</p>
+        </div>
+      );
+    }
+    const chartData = labels.map((label: string, i: number) => {
+      const point: Record<string, any> = { name: label };
+      datasets.forEach((ds: any) => {
+        point[ds.label || ds.id || `Series${datasets.indexOf(ds)}`] = ds.data?.[i] ?? 0;
+      });
+      return point;
+    });
+    const ChartComponent = type === 'bar' ? BarChart : LineChart;
+    const DataComponent = type === 'bar' ? Bar : Line;
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <ChartComponent data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="name" />
+          <YAxis />
+          <Tooltip />
+          <Legend />
+          {datasets.map((ds: any, i: number) => (
+            <DataComponent
+              key={ds.label || i}
+              type="monotone"
+              dataKey={ds.label || ds.id || `Series${i}`}
+              stroke={ds.borderColor || colors[i % colors.length]}
+              fill={ds.backgroundColor || colors[i % colors.length]}
+              fillOpacity={type === 'bar' ? 0.8 : 0}
+            />
+          ))}
+        </ChartComponent>
+      </ResponsiveContainer>
+    );
+  };
+
+  // Render Treemap (children format: [{ name, value }])
+  const renderTreemapChart = () => {
+    const raw = data?.data || data;
+    const children = raw?.children || raw?.data || (Array.isArray(raw) ? raw : []);
+    if (!Array.isArray(children) || !children.length) {
+      return (
+        <div className="flex items-center justify-center h-full text-gray-500">
+          <p>No data for treemap</p>
+        </div>
+      );
+    }
+    const treemapData = children.map((c: any) => ({ name: c.name || c.label, value: Number(c.value) || 0 })).filter((c: any) => c.value > 0);
+    if (!treemapData.length) {
+      return (
+        <div className="flex items-center justify-center h-full text-gray-500">
+          <p>No positive values for treemap</p>
+        </div>
+      );
+    }
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <Treemap data={treemapData} dataKey="value" aspectRatio={4 / 3} stroke="#fff" fill={colors[0]} />
+      </ResponsiveContainer>
+    );
+  };
+
   // Render Timeline Valuation Chart
   const renderTimelineValuation = () => {
     // Prepare data for time-based chart
@@ -1668,6 +1778,92 @@ export default function TableauLevelCharts({
     );
   };
 
+  // Cap Table Evolution Waterfall: stacked bars per funding round showing ownership %
+  const renderCapTableWaterfall = () => {
+    const chartRef = React.useRef<HTMLDivElement>(null);
+
+    React.useEffect(() => {
+      if (!chartRef.current || !d3) return;
+      const container = chartRef.current;
+      d3.select(container).selectAll('*').remove();
+
+      // Data: cap_table_evolution array [{round, dilution, our_ownership, founders_pct, esop_pct, other_investors_pct, ...}]
+      const evolution: any[] = Array.isArray(data) ? data : data?.cap_table_evolution || data?.evolution || [];
+      if (evolution.length === 0) {
+        d3.select(container).append('p').text('No cap table evolution data').attr('class', 'text-gray-500 text-center');
+        return;
+      }
+
+      const margin = { top: 30, right: 20, bottom: 50, left: 50 };
+      const w = (typeof width === 'number' ? width : container.clientWidth || 500) - margin.left - margin.right;
+      const h = (height || 320) - margin.top - margin.bottom;
+
+      const svg = d3.select(container).append('svg')
+        .attr('width', w + margin.left + margin.right)
+        .attr('height', h + margin.top + margin.bottom)
+        .append('g')
+        .attr('transform', `translate(${margin.left},${margin.top})`);
+
+      // Build stacked data: keys = ownership categories
+      const keys = ['our_ownership', 'founders_pct', 'esop_pct', 'other_investors_pct'];
+      const keysPresent = keys.filter(k => evolution.some(e => e[k] != null));
+      const labels: Record<string, string> = {
+        our_ownership: 'Our Ownership',
+        founders_pct: 'Founders',
+        esop_pct: 'ESOP',
+        other_investors_pct: 'Other Investors',
+      };
+
+      const stackData = evolution.map((e: any) => {
+        const d: Record<string, any> = { round: e.round || e.name || '' };
+        keysPresent.forEach(k => { d[k] = (e[k] ?? 0) * (e[k] > 1 ? 1 : 100); }); // normalize to %
+        return d;
+      });
+
+      const x = d3.scaleBand().domain(stackData.map(d => d.round)).range([0, w]).padding(0.3);
+      const y = d3.scaleLinear().domain([0, 100]).range([h, 0]);
+
+      const stack = d3.stack().keys(keysPresent);
+      const series = stack(stackData as any);
+
+      const colorScale = d3.scaleOrdinal<string>()
+        .domain(keysPresent)
+        .range(['#4e79a7', '#59a14f', '#edc949', '#e15759']);
+
+      svg.selectAll('g.series')
+        .data(series)
+        .join('g')
+        .attr('class', 'series')
+        .attr('fill', (d: any) => colorScale(d.key))
+        .selectAll('rect')
+        .data((d: any) => d)
+        .join('rect')
+        .attr('x', (d: any) => x(d.data.round) ?? 0)
+        .attr('y', (d: any) => y(d[1]))
+        .attr('height', (d: any) => y(d[0]) - y(d[1]))
+        .attr('width', x.bandwidth())
+        .attr('rx', 2);
+
+      // X axis
+      svg.append('g').attr('transform', `translate(0,${h})`).call(d3.axisBottom(x))
+        .selectAll('text').attr('font-size', '10px');
+
+      // Y axis
+      svg.append('g').call(d3.axisLeft(y).ticks(5).tickFormat((d: any) => `${d}%`))
+        .selectAll('text').attr('font-size', '10px');
+
+      // Legend
+      const legend = svg.append('g').attr('transform', `translate(0, -15)`);
+      keysPresent.forEach((k, i) => {
+        const g = legend.append('g').attr('transform', `translate(${i * 120}, 0)`);
+        g.append('rect').attr('width', 10).attr('height', 10).attr('fill', colorScale(k)).attr('rx', 2);
+        g.append('text').attr('x', 14).attr('y', 9).text(labels[k] || k).attr('font-size', '10px').attr('fill', '#666');
+      });
+    }, [data, width, height]);
+
+    return <div ref={chartRef} style={{ width: '100%', height: height || 320 }} />;
+  };
+
   // Main render logic
   const renderChart = () => {
     // Validate data before rendering
@@ -1703,6 +1899,19 @@ export default function TableauLevelCharts({
           return renderRadialBar();
         case 'probability_cloud':
           return renderProbabilityCloud();
+        case 'line':
+          if (data?.labels && data?.datasets) {
+            return renderLineOrBarChart();
+          }
+          return renderTimelineValuation();
+        case 'bar':
+          return renderLineOrBarChart();
+        case 'scatter':
+          return renderScatterChart();
+        case 'treemap':
+          return renderTreemapChart();
+        case 'cap_table_waterfall':
+          return renderCapTableWaterfall();
         default:
           return (
             <div className="flex items-center justify-center h-full text-gray-500">

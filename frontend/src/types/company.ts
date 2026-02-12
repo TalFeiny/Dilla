@@ -50,6 +50,20 @@ export interface Company {
     category?: string;
     ai_first?: boolean;
     business_model?: string;
+    // Portfolio report fields
+    cash_in_bank_usd?: number;
+    investment_lead?: string;
+    last_contacted_date?: string;
+    // Field update timestamps
+    cash_updated_at?: string;
+    burn_rate_updated_at?: string;
+    runway_updated_at?: string;
+    revenue_updated_at?: string;
+    gross_margin_updated_at?: string;
+    // Recent migration fields
+    current_valuation_usd?: number;
+    extra_data?: Record<string, any>;
+    currency_mix?: Record<string, number>;
   }
 
 export interface PortfolioCompany {

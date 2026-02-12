@@ -3,12 +3,7 @@
  * Tracks agent performance and builds fine-tuning dataset
  */
 
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { supabaseService } from '@/lib/supabase';
 
 export interface ModelSession {
   id: string;
@@ -83,7 +78,8 @@ export class ModelLearningSystem {
     this.currentSession.accuracy_score = this.calculateAccuracy();
     
     // Save to Supabase for later fine-tuning
-    const { error } = await supabase
+    if (!supabaseService) return;
+    const { error } = await supabaseService
       .from('model_learning_sessions')
       .insert(this.currentSession);
     
@@ -101,7 +97,7 @@ export class ModelLearningSystem {
 
   // Generate fine-tuning data from good sessions
   async generateFineTuningExample() {
-    if (!this.currentSession) return;
+    if (!this.currentSession || !supabaseService) return;
     
     const example = {
       messages: [
@@ -121,7 +117,7 @@ export class ModelLearningSystem {
     };
     
     // Save to fine-tuning dataset
-    await supabase
+    await supabaseService
       .from('fine_tuning_examples')
       .insert({
         example,
@@ -133,7 +129,8 @@ export class ModelLearningSystem {
 
   // Get insights on common mistakes
   async getCommonMistakes(): Promise<any> {
-    const { data } = await supabase
+    if (!supabaseService) return {};
+    const { data } = await supabaseService
       .from('model_learning_sessions')
       .select('user_corrections')
       .order('created_at', { ascending: false })
@@ -156,7 +153,8 @@ export class ModelLearningSystem {
 
   // Get best performing model templates
   async getBestTemplates(modelType: string): Promise<any> {
-    const { data } = await supabase
+    if (!supabaseService) return [];
+    const { data } = await supabaseService
       .from('model_learning_sessions')
       .select('*')
       .ilike('prompt', `%${modelType}%`)

@@ -1,9 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { supabaseService } from '@/lib/supabase';
 
 interface ConversationContext {
   sessionId: string;
@@ -131,14 +126,18 @@ export class AgentContextManager {
       });
     }
     
-    // Store context in database
-    await this.storeContext(sessionId, {
-      companies: Array.from(companies),
-      markets: Array.from(markets),
-      metrics: Object.fromEntries(metrics),
-      decisions,
-      tools: Array.from(tools)
-    });
+    // Store context in database (non-critical — don't crash if Supabase is down)
+    try {
+      await this.storeContext(sessionId, {
+        companies: Array.from(companies),
+        markets: Array.from(markets),
+        metrics: Object.fromEntries(metrics),
+        decisions,
+        tools: Array.from(tools)
+      });
+    } catch (storeErr) {
+      console.warn('Failed to persist context to Supabase:', storeErr);
+    }
     
     // Generate summary
     const summary = `## Previous Context Summary
@@ -201,8 +200,13 @@ Continuing alpha generation analysis with focus on ${markets.size > 0 ? `${Array
     sessionId: string,
     context: any
   ): Promise<void> {
+    if (!supabaseService) {
+      console.warn('Supabase service client not available, skipping context storage');
+      return;
+    }
+    
     try {
-      await supabase
+      await supabaseService
         .from('agent_conversations')
         .insert({
           session_id: sessionId,
@@ -225,8 +229,13 @@ Continuing alpha generation analysis with focus on ${markets.size > 0 ? `${Array
    * Retrieve historical context for a session
    */
   async retrieveHistoricalContext(sessionId: string): Promise<ConversationContext | null> {
+    if (!supabaseService) {
+      console.warn('Supabase service client not available, cannot retrieve context');
+      return null;
+    }
+    
     try {
-      const { data, error } = await supabase
+      const { data, error } = await supabaseService
         .from('agent_conversations')
         .select('*')
         .eq('session_id', sessionId)
@@ -304,7 +313,7 @@ Continuing alpha generation analysis with focus on ${markets.size > 0 ? `${Array
     const intersection = new Set([...words1].filter(x => words2.has(x)));
     const union = new Set([...words1, ...words2]);
     
-    return intersection.size / union.size;
+    return union.size === 0 ? 1.0 : intersection.size / union.size;
   }
 
   /**
@@ -366,11 +375,18 @@ Continuing alpha generation analysis with focus on ${markets.size > 0 ? `${Array
     maxMessages: number = 5
   ): Message[] {
     // Score each message based on relevance to current query
-    const scoredMessages = messages.map(msg => ({
+    const scoredMessages: Array<{
+      message: Message;
+      relevance: number;
+      recency: number;
+      hasTools: number;
+      combinedScore: number;
+    }> = messages.map(msg => ({
       message: msg,
       relevance: this.calculateSimilarity(msg.content, currentQuery),
       recency: 1 / (messages.length - messages.indexOf(msg) + 1),
-      hasTools: msg.tools && msg.tools.length > 0 ? 0.2 : 0
+      hasTools: msg.tools && msg.tools.length > 0 ? 0.2 : 0,
+      combinedScore: 0 // Will be calculated below
     }));
     
     // Calculate combined score

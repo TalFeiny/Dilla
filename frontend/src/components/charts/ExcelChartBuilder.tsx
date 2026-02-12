@@ -85,7 +85,7 @@ export default function ExcelChartBuilder({ cells, selectedRange, onClose }: Exc
     // Get headers from first row
     for (let col = range.startCol; col <= range.endCol; col++) {
       const cellKey = `${String.fromCharCode(65 + col)}${range.startRow + 1}`;
-      headers.push(cellsArray.from(lKey)?.value || `Column ${col + 1}`);
+      headers.push(cells[cellKey]?.value || `Column ${col + 1}`);
     }
     
     // Get data rows
@@ -94,7 +94,7 @@ export default function ExcelChartBuilder({ cells, selectedRange, onClose }: Exc
       for (let col = range.startCol; col <= range.endCol; col++) {
         const cellKey = `${String.fromCharCode(65 + col)}${row + 1}`;
         const header = headers[col - range.startCol];
-        rowDataArray.from(der) = cellsArray.from(lKey)?.value || 0;
+        rowData[header] = cells[cellKey]?.value || 0;
       }
       data.push(rowData);
     }

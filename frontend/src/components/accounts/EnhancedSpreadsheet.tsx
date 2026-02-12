@@ -240,7 +240,7 @@ export default function EnhancedSpreadsheet({ commands, onCommandsExecuted }: En
   const [chartConfig, setChartConfig] = useState<any>({});
   const gridRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const dataRef = useRef(data);
+  const dataRef = useRef<SpreadsheetData>(data);
   const gridIdRef = useRef(`grid-${Date.now()}`);
   const gridApiRef = useRef<any>(null);
   
@@ -725,7 +725,8 @@ export default function EnhancedSpreadsheet({ commands, onCommandsExecuted }: En
   // Apply conditional formatting
   const applyConditionalFormatting = useCallback((cellRef: string): CellStyle => {
     let style: CellStyle = {};
-    const currentData = dataRef.current || {};
+    const currentData = dataRef.current;
+    if (!currentData) return style;
     
     currentData.conditionalFormats?.forEach(format => {
       // Check if cell is in range

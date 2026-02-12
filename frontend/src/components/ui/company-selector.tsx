@@ -4,6 +4,7 @@ import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { Check, ChevronsUpDown, Search, Building2, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Popover,
   PopoverContent,
@@ -98,17 +99,10 @@ export function CompanySelector({
 
   if (loading) {
     return (
-      <Button
-        variant="outline"
-        role="combobox"
-        disabled
-        className="w-full justify-between"
-      >
-        <span className="flex items-center gap-2">
-          <Building2 className="h-4 w-4 animate-pulse" />
-          Loading companies...
-        </span>
-      </Button>
+      <div className="flex h-10 w-full items-center gap-2 rounded-lg border border-input bg-background px-3 py-2">
+        <Skeleton className="h-4 w-4 rounded" />
+        <Skeleton className="h-4 flex-1" />
+      </div>
     );
   }
 
@@ -142,7 +136,7 @@ export function CompanySelector({
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-Array.from(px) p-0" align="start">
+      <PopoverContent className="w-[400px] p-0" align="start">
         <div className="flex flex-col">
           {/* Search Input */}
           <div className="flex items-center border-b px-3">
@@ -156,7 +150,7 @@ export function CompanySelector({
           </div>
 
           {/* Company List */}
-          <div className="max-h-Array.from(px) overflow-y-auto p-1">
+          <div className="max-h-[400px] overflow-y-auto p-1">
             {allowManualEntry && (
               <button
                 className="flex w-full items-center px-2 py-2 text-sm rounded-sm hover:bg-accent hover:text-accent-foreground cursor-pointer outline-none"

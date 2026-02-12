@@ -65,7 +65,7 @@ export class EnhancedCache {
       this.evictLRU();
     }
     
-    const ttl = dataType ? this.ttlConfigArray.from(aType) : this.defaultTTL;
+    const ttl = dataType ? this.ttlConfig[dataType] : this.defaultTTL;
     
     this.cache.set(key, {
       data,

@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-const FASTAPI_URL = process.env.FASTAPI_URL || 'http://localhost:8000'
+// Single source of truth: same resolution as getBackendUrl() so proxy and API routes use same host
+const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || process.env.FASTAPI_URL || 'http://localhost:8000'
 
 // Security headers configuration - relaxed for development
 const isDevelopment = process.env.NODE_ENV !== 'production'
@@ -49,15 +50,16 @@ if (typeof setInterval !== 'undefined') {
 }
 
 // Routes that should be proxied to FastAPI backend
+// NOTE: /api/documents and /api/documents/* are NOT here – upload/list/process live in Next.js;
+// the Next.js process route then calls the backend. Do not add /api/documents/ here.
 const PYTHON_API_ROUTES = [
   '/api/v2/',              // New versioned API
   '/api/orchestrator/',    // Agent orchestrator
   '/api/agents/',          // Agent endpoints
   '/api/agent/',           // Dynamic data matrix agent
   '/api/pwerm/',           // PWERM analysis
-  '/api/companies/',       // Companies endpoints
-  '/api/documents/',       // Document processing
-  '/api/portfolio/',       // Portfolio management
+  '/api/companies/',        // Companies endpoints (excludes /portfolio - see NEXTJS_ONLY)
+  // /api/portfolio/ REMOVED - portfolio CRUD + companies use Next.js + Supabase; backend has mock stub only
   '/api/market-research/', // Market intelligence
   '/api/dashboard/',       // Dashboard analytics
   '/api/compliance/',      // Compliance/KYC
@@ -75,7 +77,9 @@ const PYTHON_API_ROUTES = [
 ]
 
 // Routes that should be handled by Next.js (not proxied)
+// Portfolio CRUD + companies use Next.js + Supabase; FastAPI has no POST /portfolio/:id/companies
 const NEXTJS_ONLY_ROUTES = [
+  '/api/auth',   // NextAuth session, signin, etc.
   '/api/agent/spreadsheet-direct',
   '/api/agent/spreadsheet-stream',  // New streaming endpoint
   '/api/agent/cim-generator',  // CIM generator
@@ -85,6 +89,11 @@ const NEXTJS_ONLY_ROUTES = [
   '/api/agent/test-orchestration',  // Add our test endpoint
   '/api/agent/tools/',
   '/api/agent/unified-brain',  // Unified brain has its own Next.js route handler
+  '/api/cell-actions',  // Cell actions: Next.js route proxies to backend (execute/route.ts)
+  '/api/portfolio',   // Portfolio + companies: Next.js + Supabase (must NOT proxy to backend)
+  '/api/matrix',      // Matrix columns, cells, suggestions: Next.js + Supabase
+  '/api/documents',   // Document upload/fetch/delete: Next.js + Supabase
+  '/api/funds',       // Fund CRUD: Next.js + Supabase
 ]
 
 // Performance-optimized middleware with API gateway functionality and security
@@ -149,11 +158,12 @@ export function middleware(request: NextRequest) {
     current.count++
     rateLimitStore.set(rateLimitKey, current)
 
-    // Validate request size
+    // Validate request size (skip for document upload – route allows 100MB)
     const contentLength = request.headers.get('content-length')
     const maxSize = 10 * 1024 * 1024 // 10MB
-    
-    if (contentLength && parseInt(contentLength) > maxSize) {
+    const isDocumentUpload = pathname === '/api/documents' && request.method === 'POST'
+
+    if (!isDocumentUpload && contentLength && parseInt(contentLength, 10) > maxSize) {
       return NextResponse.json(
         { error: 'Request entity too large' },
         { status: 413, headers: SECURITY_HEADERS }
@@ -169,7 +179,7 @@ export function middleware(request: NextRequest) {
   
   if (shouldProxy) {
     // Proxy to FastAPI backend
-    const backendUrl = `${FASTAPI_URL}${pathname}${request.nextUrl.search}`
+    const backendUrl = `${BACKEND_URL}${pathname}${request.nextUrl.search}`
     
     // Log the proxy for debugging
     console.log(`[Middleware] Proxying ${pathname} to ${backendUrl}`)
@@ -234,8 +244,8 @@ export function middleware(request: NextRequest) {
       return new Response(null, { status: 200, headers: response.headers })
     }
     
-    // Warn about legacy routes during migration
-    if (!shouldProxy) {
+    // Warn about legacy routes during migration (skip known Next.js routes)
+    if (!shouldProxy && !pathname.startsWith('/api/auth')) {
       console.warn(`[Middleware] Legacy API route accessed: ${pathname}`)
     }
   }

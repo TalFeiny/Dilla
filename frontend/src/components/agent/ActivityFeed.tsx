@@ -21,7 +21,7 @@ import {
   BarChart3,
   FileSearch
 } from 'lucide-react';
-import { createClient } from '@supabase/supabase-js';
+import supabase from '@/lib/supabase';
 
 interface AgentActivity {
   id: number;
@@ -35,17 +35,17 @@ interface AgentActivity {
   session_id: string;
 }
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
-
 export default function ActivityFeed() {
   const [activities, setActivities] = useState<AgentActivity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   const fetchActivities = async () => {
+    if (!supabase) {
+      setIsLoading(false);
+      return;
+    }
+    
     try {
       const { data, error } = await supabase
         .from('agent_activities')
@@ -73,7 +73,7 @@ export default function ActivityFeed() {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, Array.from(oRefresh));
+  }, [autoRefresh]);
 
   const getActivityIcon = (type: string, toolName?: string | null) => {
     switch (type) {

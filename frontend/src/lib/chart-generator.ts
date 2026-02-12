@@ -85,7 +85,7 @@ export class ChartGenerator {
             font: {
               family: DECK_DESIGN_TOKENS.fonts.primary,
               size: 16,
-              weight: '600',
+              weight: 600,
             },
             color: DECK_DESIGN_TOKENS.colors.foreground,
           },
@@ -342,7 +342,7 @@ export class ChartGenerator {
         labels: data.map(d => d.label),
         datasets: [{
           data: data.map(d => d.value),
-          backgroundColor: this.colors.primary,
+          backgroundColor: this.colors[0] || this.colors[0],
           barThickness: (ctx: any) => {
             const value = ctx.parsed.y;
             return (value / maxValue) * 100;

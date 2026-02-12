@@ -82,6 +82,17 @@ interface SlideContent {
   notes?: string;
   citations?: Citation[];
   devices?: any[]; // Visual devices like timelines, matrices, textboxes, etc.
+  charts?: any[]; // Chart data array
+  sankey_data?: any; // Sankey diagram data
+  cap_table_data?: any; // Cap table data
+  insights?: any[]; // Insights array
+  scenarios?: any[]; // Scenarios array
+  strategy_table?: any; // Strategy table data
+  companies?: any[]; // Companies array
+  predictions?: any[]; // Predictions array
+  recommendations?: any[]; // Recommendations array
+  visual_devices?: any[]; // Visual devices array
+  type?: string; // Slide type
 }
 
 interface Slide {
@@ -96,6 +107,7 @@ interface Slide {
     textColor?: string;
     accentColor?: string;
   };
+  devices?: any[]; // Visual devices array
 }
 
 interface DataSource {
@@ -1618,6 +1630,12 @@ function DeckAgentContent() {
                 ? parseDeviceContent(card.change) 
                 : (card.change || '');
               
+              const changeColor = cardChange 
+                ? (cardChange.startsWith('+') 
+                    ? (isDarkMode ? DECK_DESIGN_TOKENS.colors.success.dark : DECK_DESIGN_TOKENS.colors.success.light)
+                    : (isDarkMode ? DECK_DESIGN_TOKENS.colors.error.dark : DECK_DESIGN_TOKENS.colors.error.light))
+                : undefined;
+              
               return (
                 <div 
                   key={idx} 
@@ -1653,11 +1671,11 @@ function DeckAgentContent() {
                       {cardLabel}
                     </div>
                   )}
-                  {cardChange && (
+                  {cardChange && changeColor && (
                     <div 
                       className="font-semibold mt-2"
                       style={{
-                        color: cardChange.startsWith('+') ? DECK_DESIGN_TOKENS.colors.success : DECK_DESIGN_TOKENS.colors.error,
+                        color: changeColor,
                         fontSize: DECK_DESIGN_TOKENS.typography.body.fontSize
                       }}
                     >
@@ -2134,7 +2152,7 @@ function DeckAgentContent() {
                 (slide.content?.type === 'textbox' || slide.content?.type === 'matrix' || slide.content?.type === 'timeline' ? [slide.content] : []) ||
                 [];
               
-              if (possibleDevices.length > 0) {
+              if (Array.isArray(possibleDevices) && possibleDevices.length > 0) {
                 console.log('[renderSlideContent] Found devices in alternative location:', {
                   slideId: slide.id,
                   template: slide.template,
@@ -2209,7 +2227,7 @@ function DeckAgentContent() {
                 </div>
               ) : slide.content.chart_data ? (
                 <div data-testid="cap-table-chart">
-                  {slide.content.chart_data.type && ['sankey', 'side_by_side_sankey', 'sunburst', 'waterfall', 'heatmap', 'bubble', 'radialBar', 'funnel', 'probability_cloud', 'timeline_valuation', 'pie'].includes(slide.content.chart_data.type.toLowerCase()) ? (
+                  {slide.content.chart_data.type && typeof slide.content.chart_data.type === 'string' && ['sankey', 'side_by_side_sankey', 'sunburst', 'waterfall', 'heatmap', 'bubble', 'radialBar', 'funnel', 'probability_cloud', 'timeline_valuation', 'pie'].includes(slide.content.chart_data.type.toLowerCase()) ? (
                     <TableauLevelCharts 
                       type={slide.content.chart_data.type as any}
                       data={slide.content.chart_data.data}
@@ -2220,7 +2238,7 @@ function DeckAgentContent() {
                     // Handle prerendered image with original data
                     (() => {
                       const originalData = slide.content.chart_data.original_data;
-                      if (originalData.type && ['sankey', 'side_by_side_sankey', 'sunburst', 'waterfall', 'heatmap', 'bubble', 'radialBar', 'funnel', 'probability_cloud', 'timeline_valuation', 'pie'].includes(originalData.type.toLowerCase())) {
+                      if (originalData.type && typeof originalData.type === 'string' && ['sankey', 'side_by_side_sankey', 'sunburst', 'waterfall', 'heatmap', 'bubble', 'radialBar', 'funnel', 'probability_cloud', 'timeline_valuation', 'pie'].includes(originalData.type.toLowerCase())) {
                         return (
                           <TableauLevelCharts 
                             type={originalData.type as any}
@@ -2257,7 +2275,9 @@ function DeckAgentContent() {
                   <div data-testid="recharts-container" data-chart-type={slide.content.future_chart_data?.type || 'bar'}>
                     {(() => {
                       try {
-                        const chartType = slide.content.future_chart_data?.type?.toLowerCase() || 'bar';
+                        const chartType = (typeof slide.content.future_chart_data?.type === 'string' 
+                          ? slide.content.future_chart_data.type.toLowerCase() 
+                          : String(slide.content.future_chart_data?.type || 'bar'));
                         const chartData = slide.content.future_chart_data?.data;
                         
                         if (!chartData) {
@@ -2444,7 +2464,11 @@ function DeckAgentContent() {
                                 cx="50%"
                                 cy="50%"
                                 labelLine={false}
-                                label={({name, percent}) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                                label={(props: any) => {
+                                  const percent = props.percent || 0;
+                                  const name = props.name || '';
+                                  return `${name}: ${(percent * 100).toFixed(0)}%`;
+                                }}
                                 outerRadius={80}
                                 fill={COLORS[0]}
                                 dataKey="value"
@@ -3678,13 +3702,15 @@ function DeckAgentContent() {
               ) : (
                 <>
                   {/* Use TableauLevelCharts for advanced visualizations */}
-                  {slide.content.chart_data.type && ['sankey', 'side_by_side_sankey', 'sunburst', 'waterfall', 'heatmap', 'bubble', 'radialBar', 'funnel', 'probability_cloud', 'timeline_valuation'].includes(slide.content.chart_data.type.toLowerCase()) ? (
+                  {slide.content.chart_data.type && typeof slide.content.chart_data.type === 'string' && ['sankey', 'side_by_side_sankey', 'sunburst', 'waterfall', 'heatmap', 'bubble', 'radialBar', 'funnel', 'probability_cloud', 'timeline_valuation'].includes(slide.content.chart_data.type.toLowerCase()) ? (
                     <div data-testid="advanced-chart" data-chart-type={slide.content.chart_data.type}>
                       {slide.content.chart_data.data ? (
                         (() => {
                           // Validate chart data structure before rendering
                           try {
-                            const chartType = slide.content.chart_data.type.toLowerCase();
+                            const chartType = typeof slide.content.chart_data.type === 'string' 
+                              ? slide.content.chart_data.type.toLowerCase() 
+                              : String(slide.content.chart_data.type || 'bar');
                             const chartData = slide.content.chart_data.data;
                             
                             // Basic validation
@@ -3788,9 +3814,11 @@ function DeckAgentContent() {
                   ) : (
                   <div data-testid="recharts-container" data-chart-type={slide.content.chart_data?.type || 'bar'}>
                     {(() => {
+                      const chartType = (typeof slide.content.chart_data?.type === 'string' 
+                        ? slide.content.chart_data.type.toLowerCase() 
+                        : String(slide.content.chart_data?.type || 'bar'));
+                      const chartData = slide.content.chart_data?.data;
                       try {
-                        const chartType = slide.content.chart_data?.type?.toLowerCase() || 'bar';
-                        const chartData = slide.content.chart_data?.data;
                         
                         // Comprehensive validation before rendering
                         if (!chartData) {
@@ -4004,8 +4032,10 @@ function DeckAgentContent() {
                               cx="50%"
                               cy="50%"
                               labelLine={true}
-                              label={({name, percent, value}) => {
+                              label={(props: any) => {
                                 // Show investor name and percentage on chart
+                                const percent = props.percent || 0;
+                                const name = props.name || '';
                                 const pct = (percent * 100).toFixed(1);
                                 return `${name}\n${pct}%`;
                               }}
@@ -4104,19 +4134,19 @@ function DeckAgentContent() {
                     }
                   } catch (error) {
                       console.error('Error rendering chart:', error, { chartType, chartData });
-                        return (
-                          <div className="flex items-center justify-center h-[300px]" style={{ color: isDarkMode ? '#94A3B8' : '#737373' }}>
-                            <div className="text-center">
-                              <p>Error rendering chart</p>
-                              <p className="text-sm mt-2">{String(error)}</p>
-                            </div>
+                      return (
+                        <div className="flex items-center justify-center h-[300px]" style={{ color: isDarkMode ? '#94A3B8' : '#737373' }}>
+                          <div className="text-center">
+                            <p>Error rendering chart</p>
+                            <p className="text-sm mt-2">{String(error)}</p>
                           </div>
-                        );
-                      }
+                        </div>
+                      );
+                    }
                     })()}
                 </div>
                   )}
-                  {slide.content.chart_data.title && !['sankey', 'side_by_side_sankey', 'sunburst', 'waterfall', 'heatmap', 'bubble', 'radialBar', 'funnel', 'probability_cloud', 'timeline_valuation'].includes(slide.content.chart_data.type?.toLowerCase()) && (
+                  {slide.content.chart_data.title && slide.content.chart_data.type && typeof slide.content.chart_data.type === 'string' && !['sankey', 'side_by_side_sankey', 'sunburst', 'waterfall', 'heatmap', 'bubble', 'radialBar', 'funnel', 'probability_cloud', 'timeline_valuation'].includes(slide.content.chart_data.type.toLowerCase()) && (
                     <p 
                       className="text-center text-sm mt-2"
                       style={{
@@ -4369,7 +4399,7 @@ function DeckAgentContent() {
   };
 
   return (
-    <div className={`w-full h-full ${isPdfMode ? 'pdf-mode' : ''}`} style={{ padding: 0, margin: 0 }}>
+    <div className={`w-full min-h-screen flex flex-col ${isPdfMode ? 'pdf-mode' : ''}`} style={{ padding: 0, margin: 0 }}>
       {/* Progress Tracker */}
       {!isPdfMode && activeTaskId && (
         <AgentProgressTracker 
@@ -4378,7 +4408,7 @@ function DeckAgentContent() {
         />
       )}
       
-      <div className="h-full flex flex-col" style={{ padding: 0, margin: 0 }}>
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden" style={{ padding: 0, margin: 0 }}>
           {/* Export Options Bar */}
           {currentDeck && !isPdfMode && (
             <div className="bg-white rounded-lg shadow-lg p-4 mb-4" style={{ marginLeft: '0.5rem', marginRight: '0.5rem', marginTop: '0.5rem' }}>
@@ -4648,25 +4678,25 @@ function DeckAgentContent() {
           )}
 
           {!isPdfMode && !currentDeck && (
-          <div className="flex gap-6">
+          <div className="flex-1 min-h-0 flex gap-4 lg:gap-6 px-4 lg:px-6 overflow-hidden">
           {/* Chat Interface */}
-          <div className="flex-1 bg-white border border-gray-200 rounded">
+          <div className="flex-1 min-w-0 flex flex-col bg-white border border-gray-200 rounded-lg overflow-hidden">
             {/* Header */}
-            <div className="p-6 border-b border-gray-200">
+            <div className="flex-shrink-0 p-4 sm:p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="p-3 bg-green-600 rounded-lg">
-                    <Presentation className="w-6 h-6 text-white" />
+                <div className="flex items-center gap-3 sm:gap-4">
+                  <div className="p-2 sm:p-3 bg-green-600 rounded-lg">
+                    <Presentation className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
                   </div>
                   <div>
-                    <h1 className="text-2xl font-semibold text-gray-900">Deck Generator</h1>
-                    <p className="text-sm text-gray-600">Create professional presentations</p>
+                    <h1 className="text-xl sm:text-2xl font-semibold text-gray-900">Deck Generator</h1>
+                    <p className="text-xs sm:text-sm text-gray-600">Create professional presentations</p>
                   </div>
                 </div>
                 
                 <button
                   onClick={toggleTheme}
-                  className="p-2 text-gray-600 hover:text-gray-900"
+                  className="p-2 text-gray-600 hover:text-gray-900 rounded-lg hover:bg-gray-100"
                   aria-label="Toggle theme"
                 >
                   {isDarkMode ? (
@@ -4679,7 +4709,7 @@ function DeckAgentContent() {
             </div>
 
             {/* Neo-Noir Messages */}
-            <div className="h-64 overflow-y-auto p-6 space-y-4" style={{
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-4" style={{
               background: isDarkMode 
                 ? 'linear-gradient(180deg, #0A0A0F 0%, #111118 100%)'
                 : 'linear-gradient(180deg, #FFFFFF 0%, #FAFAFA 100%)'
@@ -4785,7 +4815,7 @@ function DeckAgentContent() {
             </div>
 
             {/* Input Form */}
-            <form onSubmit={handleSubmit} className="p-6 bg-white border-t border-gray-200">
+            <form onSubmit={handleSubmit} className="flex-shrink-0 p-4 sm:p-6 bg-white border-t border-gray-200">
               <div className="flex gap-3 w-full">
                 <input
                   ref={inputRef}
@@ -4824,10 +4854,10 @@ function DeckAgentContent() {
           </div>
 
           {/* Sidebar */}
-          <div className="w-64">
+          <div className="hidden lg:block flex-shrink-0 w-56 xl:w-64">
             {/* Charts Section */}
             {charts && charts.length > 0 && (
-              <div className="bg-white rounded-lg shadow-lg p-4 mt-4">
+              <div className="bg-white rounded-lg shadow-lg p-4">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-gray-700 flex items-center">
                     <BarChart3 className="w-4 h-4 mr-2" />
