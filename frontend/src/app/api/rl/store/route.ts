@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { supabaseService } from '@/lib/supabase';
 
 export async function POST(request: NextRequest) {
+  if (!supabaseService) {
+    return NextResponse.json({ error: 'Supabase service not configured' }, { status: 503 });
+  }
+
   try {
     const { 
       sessionId, 
@@ -21,7 +20,10 @@ export async function POST(request: NextRequest) {
     console.log(`📝 Storing RL feedback for ${company || 'general'}`);
     
     // Store in model_corrections table which actually exists
-    const { data, error } = await supabase
+    if (!supabaseService) {
+      return NextResponse.json({ error: 'Database unavailable' }, { status: 503 });
+    }
+    const { data, error } = await supabaseService
       .from('model_corrections')
       .insert({
         company_name: company || 'general',

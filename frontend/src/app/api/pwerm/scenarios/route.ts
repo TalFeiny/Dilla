@@ -1,18 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { spawn } from 'child_process';
+import path from 'path';
+import { resolveScriptPath } from '@/lib/scripts-path';
+import { supabaseService } from '@/lib/supabase';
 
 const execAsync = promisify(exec);
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 export async function GET() {
   try {
-    // Fetch scenarios from the actual PWERM analysis script
-    const pythonScriptPath = `${process.cwd()}/scripts/pwerm_analysis.py`;
+    const { path: pythonScriptPath, tried } = resolveScriptPath('pwerm_analysis.py');
+    if (!pythonScriptPath) {
+      const scenarios = generateDefaultScenarios();
+      return NextResponse.json({ scenarios, warning: `Script not found at: ${tried.join(', ')}. Using defaults.` });
+    }
     
     const { stdout, stderr } = await execAsync(
       `python3 "${pythonScriptPath}" --list-scenarios`,
@@ -148,4 +150,185 @@ function generateDefaultScenarios() {
   }
 
   return scenarios;
+}
+
+// POST endpoint to run PWERM analysis for all companies in a portfolio
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { portfolioId } = body;
+
+    if (!portfolioId) {
+      return NextResponse.json({ error: 'Portfolio ID is required' }, { status: 400 });
+    }
+
+    if (!supabaseService) {
+      return NextResponse.json({ error: 'Supabase service not configured' }, { status: 500 });
+    }
+
+    // Fetch portfolio companies
+    const { data: companies, error: companiesError } = await supabaseService
+      .from('companies')
+      .select('*')
+      .eq('fund_id', portfolioId)
+      .not('fund_id', 'is', null);
+
+    if (companiesError) {
+      console.error('Error fetching portfolio companies:', companiesError);
+      return NextResponse.json({ error: 'Failed to fetch portfolio companies' }, { status: 500 });
+    }
+
+    if (!companies || companies.length === 0) {
+      return NextResponse.json({ error: 'No companies found in portfolio' }, { status: 404 });
+    }
+
+    const { path: scriptPath, tried } = resolveScriptPath('pwerm_analysis.py');
+    if (!scriptPath) {
+      return NextResponse.json(
+        { error: `PWERM script not found. Tried: ${tried.join(', ')}. Set SCRIPTS_DIR or run from repo root.` },
+        { status: 500 }
+      );
+    }
+    const scriptsDir = path.dirname(scriptPath);
+    const results = [];
+    const errors = [];
+
+    // Run PWERM analysis for each company
+    for (const company of companies) {
+      try {
+        // Prepare data for PWERM analysis
+        const pwermInput = {
+          company_data: {
+            name: company.name,
+            company_name: company.name,
+            current_arr_usd: (company.current_arr_usd || 1000000) / 1000000, // Convert to millions
+            growth_rate: (company.revenue_growth_annual_pct || 70) / 100, // Convert percentage to decimal
+            sector: company.sector || 'Technology',
+            total_invested_usd: company.total_invested_usd || 0,
+            ownership_percentage: company.ownership_percentage || 0,
+            burn_rate_monthly_usd: company.burn_rate_monthly_usd,
+            runway_months: company.runway_months,
+          },
+          assumptions: {},
+          fund_config: {}
+        };
+
+        const result = await runPythonScript(scriptPath, [], scriptsDir, JSON.stringify(pwermInput));
+
+        if (result.success) {
+          // Update company with PWERM results
+          await supabaseService
+            .from('companies')
+            .update({
+              has_pwerm_model: true,
+              latest_pwerm_run_at: new Date().toISOString(),
+              pwerm_scenarios_count: result.data?.summary?.total_scenarios || 499,
+              thesis_match_score: result.data?.summary?.success_probability 
+                ? result.data.summary.success_probability * 100 
+                : 50,
+              pwerm_results: result.data
+            })
+            .eq('id', company.id);
+
+          results.push({
+            company_id: company.id,
+            company_name: company.name,
+            success: true,
+            results: result.data
+          });
+        } else {
+          errors.push({
+            company_id: company.id,
+            company_name: company.name,
+            error: result.error
+          });
+        }
+      } catch (error) {
+        errors.push({
+          company_id: company.id,
+          company_name: company.name,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: `PWERM analysis completed for ${results.length} companies`,
+      results,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (error) {
+    console.error('Error in POST /api/pwerm/scenarios:', error);
+    return NextResponse.json({ 
+      error: 'Internal server error',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}
+
+function runPythonScript(
+  scriptPath: string, 
+  args: string[], 
+  cwd: string,
+  stdinData?: string
+): Promise<{ success: boolean; data?: any; error?: string }> {
+  return new Promise((resolve) => {
+    const env = {
+      ...process.env,
+      PYTHONPATH: cwd,
+      TAVILY_API_KEY: process.env.TAVILY_API_KEY,
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      PWD: process.cwd()
+    };
+    
+    const pythonProcess = spawn('python3', [scriptPath, ...args], {
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: env
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    pythonProcess.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    pythonProcess.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    if (stdinData) {
+      pythonProcess.stdin.write(stdinData);
+      pythonProcess.stdin.end();
+    }
+
+    pythonProcess.on('close', (code) => {
+      if (code === 0) {
+        try {
+          const result = JSON.parse(stdout);
+          resolve({ success: true, data: result });
+        } catch (parseError) {
+          resolve({ 
+            success: false, 
+            error: `Failed to parse script output: ${parseError}. Output: ${stdout}` 
+          });
+        }
+      } else {
+        resolve({ 
+          success: false, 
+          error: `Script failed with code ${code}: ${stderr}` 
+        });
+      }
+    });
+
+    pythonProcess.on('error', (error) => {
+      resolve({ 
+        success: false, 
+        error: `Failed to start script: ${error.message}` 
+      });
+    });
+  });
 } 

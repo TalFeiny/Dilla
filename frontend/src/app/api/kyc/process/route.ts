@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { spawn } from 'child_process';
 import path from 'path';
+import { resolveScriptPath } from '@/lib/scripts-path';
 
 export async function POST(request: NextRequest) {
   try {
@@ -14,12 +15,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get the absolute path to the script
-    const scriptsDir = path.join(process.cwd(), 'scripts');
-    const scriptPath = path.join(scriptsDir, 'kyc_processor.py');
+    // Sanitize document_path to prevent path traversal
+    const sanitized = path.basename(document_path);
+    if (sanitized !== document_path || document_path.includes('..') || document_path.includes('/') || document_path.includes('\\')) {
+      return NextResponse.json(
+        { error: 'Invalid document_path: must be a plain filename with no directory traversal' },
+        { status: 400 }
+      );
+    }
 
-    // Run the Python script
-    const result = await runPythonScript(scriptPath, [document_path], scriptsDir);
+    const { path: scriptPath, tried } = resolveScriptPath('kyc_processor.py');
+    if (!scriptPath) {
+      return NextResponse.json(
+        { error: `KYC script not found. Tried: ${tried.join(', ')}. Set SCRIPTS_DIR or run from repo root.` },
+        { status: 500 }
+      );
+    }
+    const scriptsDir = path.dirname(scriptPath);
+
+    // Run the Python script with sanitized path
+    const result = await runPythonScript(scriptPath, [sanitized], scriptsDir);
 
     if (result.success) {
       return NextResponse.json(result.data);

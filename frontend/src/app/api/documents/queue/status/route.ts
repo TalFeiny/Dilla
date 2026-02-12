@@ -1,15 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { spawn } from 'child_process';
+import { resolveScriptPath } from '@/lib/scripts-path';
 
 export async function GET(request: NextRequest) {
   try {
+    const { path: scriptPath, tried } = resolveScriptPath('document_queue_processor.py');
+    if (!scriptPath) {
+      return NextResponse.json(
+        { error: `Document queue script not found. Tried: ${tried.join(', ')}. Set SCRIPTS_DIR or run from repo root.` },
+        { status: 500 }
+      );
+    }
     const { searchParams } = new URL(request.url);
     const jobId = searchParams.get('job_id');
     
     if (jobId) {
       // Get specific job status
       const pythonProcess = spawn('python3', [
-        'scripts/document_queue_processor.py',
+        scriptPath,
         '--status',
         jobId
       ]);
@@ -45,7 +53,7 @@ export async function GET(request: NextRequest) {
     } else {
       // Get queue statistics
       const pythonProcess = spawn('python3', [
-        'scripts/document_queue_processor.py',
+        scriptPath,
         '--stats'
       ]);
 

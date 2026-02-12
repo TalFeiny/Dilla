@@ -8,6 +8,16 @@ if (process.env.NODE_ENV !== 'production') {
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  env: {
+    NEXTAUTH_URL: process.env.NEXTAUTH_URL || 'http://localhost:3001',
+    NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET || 'dev-secret-change-in-production',
+  },
+  async redirects() {
+    return [
+      { source: '/favicon.ico', destination: '/dilla-logo.svg', permanent: false },
+      { source: '/matrix', destination: '/matrix-control-panel', permanent: false },
+    ];
+  },
   // Performance optimizations
   reactStrictMode: false, // Disable double rendering in dev
   swcMinify: true, // Use SWC for faster minification
@@ -18,9 +28,9 @@ const nextConfig = {
   // Module transpilation for faster builds
   transpilePackages: ['@supabase/ssr', '@supabase/supabase-js'],
   
-  // Disable type checking in build (run separately)
+  // Enable type checking in build for production safety
   typescript: {
-    ignoreBuildErrors: true,
+    ignoreBuildErrors: false,
     tsconfigPath: './tsconfig.json',
   },
   eslint: {
@@ -33,26 +43,27 @@ const nextConfig = {
   },
   
   webpack: (config, { isServer, dev }) => {
-    // Dev-specific optimizations
+    // Dev-only: lighter watch options
     if (dev) {
       config.watchOptions = {
         poll: 1000,
         aggregateTimeout: 300,
-        ignored: ['**/node_modules', '**/.git', '**/.next'],
+        ignored: [
+          '**/node_modules/**',
+          '**/.git/**',
+          '**/.next/**',
+          '**/.turbo/**',
+          '**/coverage/**',
+          '**/dist/**',
+          '**/.cache/**',
+          join(process.cwd(), '..', 'backend', '**'),
+          join(process.cwd(), '..', 'scripts', '**'),
+          join(process.cwd(), '..', 'supabase', '**'),
+        ],
       };
-      
-      // Reduce bundle size checks in dev
-      config.performance = {
-        hints: false,
-      };
-      
-      // Use cache for faster rebuilds
-      config.cache = {
-        type: 'filesystem',
-      };
+      config.performance = { hints: false };
     }
-    
-    // Exclude onnxruntime-node from client-side bundle
+    // Client: avoid bundling Node builtins (no externals override - was breaking chunks)
     if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
@@ -60,25 +71,7 @@ const nextConfig = {
         path: false,
         crypto: false,
       };
-      
-      // Safely handle externals configuration
-      if (Array.isArray(config.externals)) {
-        config.externals.push('onnxruntime-node');
-      } else if (config.externals) {
-        config.externals = [config.externals, 'onnxruntime-node'];
-      } else {
-        config.externals = ['onnxruntime-node'];
-      }
     }
-    
-    // Handle binary files
-    if (config.module && config.module.rules) {
-      config.module.rules.push({
-        test: /\.node$/,
-        use: 'node-loader',
-      });
-    }
-    
     return config;
   },
 };

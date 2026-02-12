@@ -37,9 +37,10 @@ celery_app.conf.task_routes = {
     "app.tasks.market.*": {"queue": "market"},
     "app.tasks.agent.*": {"queue": "agents"},
 }
-
-# Task rate limits
+# Task annotations: rate limits and long-running company-history (60 min)
 celery_app.conf.task_annotations = {
-    "app.tasks.market.research_market": {"rate_limit": "10/m"},
+    "app.tasks.market.research": {"rate_limit": "10/m"},
     "app.tasks.analysis.run_pwerm": {"rate_limit": "5/m"},
+    "app.tasks.analysis.run_company_history": {"time_limit": 60 * 60, "soft_time_limit": 55 * 60},
+    "app.tasks.document.process": {"rate_limit": "5/m"},  # Avoid hammering LLM APIs when many docs queued
 }

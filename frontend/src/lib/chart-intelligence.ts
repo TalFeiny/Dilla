@@ -343,8 +343,9 @@ export class ChartIntelligence {
         insights.push(`Total change: ${totalChange > 0 ? '+' : ''}${totalChange.toLocaleString()}`);
       }
       
-      if (chartType === 'sankey' && data.nodes) {
-        insights.push(`${data.nodes.length} entities with ${data.links.length} connections`);
+      if (chartType === 'sankey' && !Array.isArray(data) && data && typeof data === 'object' && 'nodes' in data && 'links' in data) {
+        const sankeyData = data as { nodes: any[]; links: any[] };
+        insights.push(`${sankeyData.nodes.length} entities with ${sankeyData.links.length} connections`);
       }
     }
     

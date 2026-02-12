@@ -79,15 +79,18 @@ export async function POST(request: NextRequest) {
       lpsToInsert.push({
         organization_id: orgId,
         name: name,
-        type: 'individual', // or 'family' if name includes "& family"
+        lp_type: name.toLowerCase().includes('family') ? 'family_office' : 'individual',
         country: 'India',
-        net_worth_usd: netWorthUsd,
-        industry: row['Industry']?.trim() || null,
-        linkedin_profiles: linkedinUrls.length > 0 ? linkedinUrls : null,
-        notes: row['Notes']?.trim() || null,
         status: 'active',
-        investment_capacity: netWorthUsd ? netWorthUsd * 0.01 : null, // Assume 1% of net worth
-        preferred_sectors: row['Industry'] ? [row['Industry']] : null,
+        contact_name: name,
+        investment_capacity_usd: netWorthUsd ? netWorthUsd * 0.01 : null, // Assume 1% of net worth
+        investment_focus: {
+          net_worth_usd: netWorthUsd,
+          industry: row['Industry']?.trim() || null,
+          linkedin_profiles: linkedinUrls.length > 0 ? linkedinUrls : null,
+          notes: row['Notes']?.trim() || null,
+          preferred_sectors: row['Industry'] ? [row['Industry']] : null,
+        },
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       });
@@ -95,17 +98,14 @@ export async function POST(request: NextRequest) {
 
     console.log(`Prepared ${lpsToInsert.length} LPs for insertion`);
 
-    // Check if lps table exists and create if needed
+    // Check if limited_partners table exists
     const { error: tableCheckError } = await supabaseService
-      .from('lps')
+      .from('limited_partners')
       .select('id')
       .limit(1);
 
     if (tableCheckError && tableCheckError.code === 'PGRST116') {
-      // Table doesn't exist, create it
-      console.log('LPs table does not exist, creating it...');
-      // Note: In production, you'd use migrations for this
-      // For now, we'll work with existing table structure
+      console.log('limited_partners table does not exist - run the migration first');
     }
 
     // Insert LPs in batches
@@ -117,7 +117,7 @@ export async function POST(request: NextRequest) {
       const batch = lpsToInsert.slice(i, i + batchSize);
       
       const { data, error } = await supabaseService
-        .from('lps')
+        .from('limited_partners')
         .insert(batch)
         .select();
 
@@ -132,12 +132,12 @@ export async function POST(request: NextRequest) {
 
     // Get final count
     const { count: finalCount } = await supabaseService
-      .from('lps')
+      .from('limited_partners')
       .select('*', { count: 'exact', head: true });
 
     // Get distribution by net worth
     const { data: allLps } = await supabaseService
-      .from('lps')
+      .from('limited_partners')
       .select('name, net_worth_usd, industry')
       .order('net_worth_usd', { ascending: false });
 

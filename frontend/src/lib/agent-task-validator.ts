@@ -90,7 +90,15 @@ export class AgentTaskValidator {
   }> {
     try {
       // Safe math evaluation
-      const math = await import('mathjs');
+      // @ts-ignore - Optional dependency
+      const math = await import('mathjs').catch(() => null);
+      if (!math) {
+        return {
+          valid: false,
+          result: 0,
+          error: 'mathjs package not available'
+        };
+      }
       const scope = { ...inputs };
       const result = math.evaluate(formula, scope);
       

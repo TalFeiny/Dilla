@@ -22,7 +22,7 @@ export class DeckHandler implements IFormatHandler {
       
       // The backend returns: { success: true, result: { format: "deck", slides: [...] } }
       // So we need to look in parsedData.result.slides first
-      const slides = 
+      let slides = 
         parsedData?.result?.slides ||            // Backend unified-brain response format
         parsedData?.slides ||                    // Direct structure from skill
         parsedData?.deck?.slides ||             // Nested in deck (old format)

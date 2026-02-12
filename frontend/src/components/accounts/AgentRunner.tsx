@@ -5,6 +5,7 @@ import { Bot, Play, Loader2, Trash2, Copy, Check, Brain, TrendingUp, BarChart3 }
 import { cn } from '@/lib/utils';
 import { useGrid } from '@/contexts/GridContext';
 import AgentChartGenerator from '@/components/AgentChartGenerator';
+import { Skeleton } from '@/components/ui/skeleton';
 
 // Helper function to convert grid data to commands
 function convertGridDataToCommands(grid: any): string[] {
@@ -19,7 +20,8 @@ function convertGridDataToCommands(grid: any): string[] {
         
         // Format the value based on type
         if (typeof value === 'string') {
-          value = `"${value}"`;
+          const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+          value = `"${escaped}"`;
         } else if (typeof value === 'number') {
           // Keep numbers as is
         } else if (value === null || value === undefined) {
@@ -79,6 +81,20 @@ function convertGridDataToCommands(grid: any): string[] {
   }
   
   return commands;
+}
+
+/** Extract commands from all possible response paths */
+function extractCommands(data: any): string[] {
+  if (data.commands && Array.isArray(data.commands)) return data.commands;
+  if (data.result?.commands && Array.isArray(data.result.commands)) return data.result.commands;
+  if (data.results?.commands && Array.isArray(data.results.commands)) return data.results.commands;
+  if (data.grid?.commands && Array.isArray(data.grid.commands)) return data.grid.commands;
+  // Try to extract from grid data directly
+  if (data.result?.grid || data.grid) {
+    const gridData = data.result?.grid || data.grid;
+    return convertGridDataToCommands(gridData);
+  }
+  return [];
 }
 
 export default function AgentRunner() {
@@ -173,29 +189,22 @@ export default function AgentRunner() {
       
       // Use unified-brain endpoint with our architecture
       const endpoint = '/api/agent/unified-brain';
-      
-      // Get current grid state to send as context
-      let gridState = {};
-      if (typeof window !== 'undefined' && (window as any).grid) {
-        gridState = (window as any).grid.getState ? (window as any).grid.getState() : {};
-      }
-      
+
       // Update progress
       setProgressMessage('🔍 Researching data...');
       setExecutionSteps(prev => [...prev, '🌐 Fetching real-time data...']);
-      
-      // Call the streaming API
+
+      // Call the API
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           prompt,
-          outputFormat: 'spreadsheet',  // Specify spreadsheet format
+          outputFormat: 'spreadsheet',
+          matrixMode: 'portfolio',
           company,
           previousCompany: currentCompany,
-          gridState,  // Send current grid state for context
-          stream: false,  // Disable streaming - prevents partial data issues
-          // Request formulas and citations
+          stream: false,
           includeFormulas: true,
           includeCitations: true
         })
@@ -209,16 +218,8 @@ export default function AgentRunner() {
       if (data.success) {
         console.log('[AgentRunner] Received response:', data);
         
-        // Extract commands from the response
-        let commands: string[] = [];
-        
-        if (data.commands && Array.isArray(data.commands)) {
-          commands = data.commands;
-        } else if (data.result?.commands && Array.isArray(data.result.commands)) {
-          commands = data.result.commands;
-        } else if (data.results?.commands && Array.isArray(data.results.commands)) {
-          commands = data.results.commands;
-        }
+        // Extract commands from all possible response paths
+        const commands = extractCommands(data);
         
         console.log('[AgentRunner] Extracted commands:', commands.length);
         
@@ -484,35 +485,6 @@ export default function AgentRunner() {
         </div>
       )}
       
-      {/* RL Feedback Panel - Commented out as RLFeedbackPanel component is missing */}
-      {/* {useRL && lastCommands.length > 0 && (
-        <RLFeedbackPanel
-          sessionId={sessionId}
-          company={currentCompany}
-          modelType={detectModelType(prompt)}
-          commands={lastCommands}
-          waitingForFeedback={waitingForFeedback}
-          isEnabled={useRL}
-          onFeedback={async (reward, specificFeedback) => {
-            console.log('Feedback received:', reward, specificFeedback);
-            if (rlSystemRef.current) {
-              // Provide feedback to RL system
-              const gridAPI = (window as any).grid || null;
-              if (typeof reward === 'number') {
-                await rlSystemRef.current.recordFeedback(reward, gridAPI, specificFeedback);
-              } else if (specificFeedback) {
-                await rlSystemRef.current.recordFeedback(specificFeedback, gridAPI);
-              }
-              
-              // Update stats
-              const stats = await rlSystemRef.current.getStats();
-              setRLStats(stats);
-              setWaitingForFeedback(false);
-            }
-          }}
-        />
-      )} */}
-      
       {/* RL Toggle */}
       <div className="flex items-center justify-between p-2 bg-gray-800 rounded">
         <span className="text-xs text-gray-400">Reinforcement Learning</span>
@@ -548,7 +520,7 @@ export default function AgentRunner() {
                 🎯 SEMANTIC FEEDBACK - {lastCommands.length} commands generated
               </div>
               {feedbackSent && (
-                <div className="text-xs text-green-300 animate-pulse">
+                <div className="text-xs text-green-300">
                   ✓ Feedback sent!
                 </div>
               )}

@@ -7,7 +7,6 @@ export async function GET() {
     const { data: companies, error } = await supabase
       .from('companies')
       .select('*')
-      .in('funnel_status', ['portfolio', 'exited'])
       .order('first_investment_date', { ascending: true });
 
     if (error) {

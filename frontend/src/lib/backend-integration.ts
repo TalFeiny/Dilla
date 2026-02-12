@@ -3,7 +3,9 @@
  * This replaces all duplicate API route logic in frontend
  */
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+import { getClientBackendUrl } from './backend-url';
+
+const BACKEND_URL = getClientBackendUrl();
 
 export class BackendIntegration {
   private static instance: BackendIntegration;

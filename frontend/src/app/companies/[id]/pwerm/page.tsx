@@ -153,7 +153,9 @@ export default function CompanyPwermPage() {
           assumptions: {
             ...parameters,
             annual_revenue: arrValue || 1000000 // Default to 1M if no ARR available
-          }
+          },
+          // Align extraction → valuation: pass document analysis for sector, business_model, category, ARR
+          document_analysis: documentAnalysis?.extracted_data ?? undefined,
         }),
       });
 

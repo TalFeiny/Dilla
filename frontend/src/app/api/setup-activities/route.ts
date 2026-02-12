@@ -1,12 +1,11 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { NextResponse } from 'next/server';
+import { supabaseService } from '@/lib/supabase';
 
 export async function POST() {
+  if (!supabaseService) {
+    return NextResponse.json({ error: 'Supabase service not configured' }, { status: 503 });
+  }
+
   try {
     // Create the agent_activities table
     const createTableSQL = `
@@ -47,7 +46,7 @@ export async function POST() {
       END $$;
     `;
 
-    const { error } = await supabase.rpc('exec_sql', { 
+    const { error } = await supabaseService.rpc('exec_sql', { 
       sql: createTableSQL 
     });
 
@@ -56,7 +55,7 @@ export async function POST() {
     }
 
     // Test insert a sample activity
-    const { data: testData, error: insertError } = await supabase
+    const { data: testData, error: insertError } = await supabaseService
       .from('agent_activities')
       .insert({
         activity_type: 'setup',

@@ -39,11 +39,19 @@ export interface MCPResponse {
     tools_used?: string[];
     data_sources?: string[];
   };
+  // Additional fields used in components
+  companies?: any[];
+  charts?: any[];
+  citations?: any[];
+  capTables?: any[];
+  result?: any; // Single result field
 }
+
+import { getClientBackendUrl } from './backend-url';
 
 export class MCPBackendConnector {
   private static instance: MCPBackendConnector;
-  private baseUrl: string = process.env.NEXT_PUBLIC_FASTAPI_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+  private baseUrl: string = getClientBackendUrl();
   private cache = new Map<string, { data: any; timestamp: number }>();
   private cacheTimeout = 5 * 60 * 1000; // 5 minutes
   private maxCacheSize = 100; // Maximum number of cached items
@@ -279,28 +287,6 @@ export class MCPBackendConnector {
       return await response.json();
     } catch (error) {
       console.error('[MCP Connector] PWERM error:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Call RL recommendation system
-   */
-  async getRecommendations(context: any): Promise<any> {
-    try {
-      const response = await fetch(`${this.baseUrl}/api/rl/recommend`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(context),
-      });
-
-      if (!response.ok) {
-        throw new Error(`RL API error: ${response.status}`);
-      }
-
-      return await response.json();
-    } catch (error) {
-      console.error('[MCP Connector] RL recommendations error:', error);
       return null;
     }
   }

@@ -25,7 +25,10 @@ class UnifiedRequest(BaseModel):
     """Request model for unified brain processing"""
     prompt: str = Field(..., description="User prompt to process")
     output_format: str = Field("analysis", description="Output format: spreadsheet, deck, docs, analysis, matrix")
+    output_format_hint: Optional[str] = Field(None, description="Frontend hint — backend may override based on tool results")
     context: Optional[Dict] = Field(None, description="Additional context")
+    agent_context: Optional[Dict] = Field(None, description="Frontend agent context for conversation continuity")
+    approved_plan: Optional[bool] = Field(None, description="True when user approved an execution plan")
     options: Optional[Dict] = Field(default_factory=dict, description="Additional options")
 
 
@@ -35,8 +38,8 @@ async def process_unified_request(request: UnifiedRequest):
     Main endpoint for all agent requests
     Handles data gathering, analysis, and formatting
     """
-    logger.error(f"[UNIFIED-BRAIN] ⭐⭐⭐ ENDPOINT HIT ⭐⭐⭐ Received request with output_format: {request.output_format}")
-    logger.error(f"[UNIFIED-BRAIN] Prompt: {request.prompt[:100]}")
+    logger.info(f"[UNIFIED-BRAIN] Received request with output_format: {request.output_format}")
+    logger.info(f"[UNIFIED-BRAIN] Prompt: {request.prompt[:100]}")
     try:
         # Validate output format - handle string conversion
         output_format_str = request.output_format.lower().replace('-', '_')
@@ -73,6 +76,21 @@ async def process_unified_request(request: UnifiedRequest):
         logger.info(f"[DEBUG] Parsed OutputFormat enum: {output_format}")
         logger.info(f"[DEBUG] Enum value string: {output_format.value}")
         
+        # Merge agent_context into context so orchestrator can store it in shared_data
+        merged_context = dict(request.context) if request.context else {}
+        if request.agent_context:
+            merged_context["agent_context"] = request.agent_context
+            logger.info(f"[API] Merged agent_context keys: {list(request.agent_context.keys())}")
+        if request.approved_plan:
+            merged_context["approved_plan"] = True
+            logger.info("[API] Plan approval flag set — agent loop will skip plan generation")
+        # Forward plan_steps from context so the agent loop can execute the approved plan
+        if merged_context.get("plan_steps"):
+            logger.info(f"[API] Forwarding {len(merged_context['plan_steps'])} approved plan steps")
+        # Forward format hint so orchestrator can use it without overriding its own detection
+        if request.output_format_hint:
+            merged_context["output_format_hint"] = request.output_format_hint
+
         # Non-streaming response - await the coroutine directly
         # Always pass the original format string to preserve it
         logger.info(f"[API] About to call orchestrator.process_request with output_format: {request.output_format}")
@@ -80,13 +98,8 @@ async def process_unified_request(request: UnifiedRequest):
             result = await orchestrator.process_request(
                 prompt=request.prompt,
                 output_format=request.output_format,  # Always pass original format string
-                context=request.context
+                context=merged_context
             )
-            # #region agent log
-            import json
-            with open('/Users/admin/code/dilla-ai/.cursor/debug.log','a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"unified_brain.py:86","message":"Orchestrator result received","data":{"resultType":str(type(result)),"isDict":isinstance(result,dict),"isNone":result is None,"hasSuccess":result.get('success') if isinstance(result,dict) else False,"keys":list(result.keys()) if isinstance(result,dict) else []},"timestamp":int(__import__('time').time()*1000)})+'\n')
-            # #endregion
             logger.info(f"[API] Received result from orchestrator: {type(result)}")
             logger.info(f"[API] Result success: {result.get('success') if isinstance(result, dict) else 'not_dict'}")
             logger.info(f"[API] Result keys: {list(result.keys()) if isinstance(result, dict) else 'not_dict'}")
@@ -99,11 +112,6 @@ async def process_unified_request(request: UnifiedRequest):
             logger.error(f"[API] Exception type: {type(e)}")
             import traceback
             logger.error(f"[API] Traceback: {traceback.format_exc()}")
-            # #region agent log
-            import json
-            with open('/Users/admin/code/dilla-ai/.cursor/debug.log','a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"unified_brain.py:97","message":"Orchestrator exception","data":{"error":str(e),"errorType":str(type(e))},"timestamp":int(__import__('time').time()*1000)})+'\n')
-            # #endregion
             raise HTTPException(status_code=500, detail=f"Orchestrator error: {str(e)}")
         
         # CRITICAL: Clean all numpy types from result before returning
@@ -131,11 +139,6 @@ async def process_unified_request(request: UnifiedRequest):
             except Exception as e:
                 logger.warning(f"[ENDPOINT] Error converting inf values: {e}")
         
-        # #region agent log
-        import json
-        with open('/Users/admin/code/dilla-ai/.cursor/debug.log','a') as f:
-            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"unified_brain.py:125","message":"After inf conversion - before success check","data":{"resultType":str(type(result)),"isTruthy":bool(result),"isDict":isinstance(result,dict),"hasSuccess":result.get('success') if isinstance(result,dict) else False,"keys":list(result.keys()) if isinstance(result,dict) else []},"timestamp":int(__import__('time').time()*1000)})+'\n')
-        # #endregion
         
         # Debug logging before success check
         logger.info(f"[ENDPOINT] After inf conversion - result type: {type(result)}")
@@ -145,11 +148,6 @@ async def process_unified_request(request: UnifiedRequest):
             logger.info(f"[ENDPOINT] After inf conversion - result keys: {list(result.keys())}")
         
         # Return the result  
-        # #region agent log
-        import json
-        with open('/Users/admin/code/dilla-ai/.cursor/debug.log','a') as f:
-            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"unified_brain.py:132","message":"Before success check","data":{"resultExists":result is not None,"resultSuccess":result.get('success') if isinstance(result,dict) else False,"resultType":str(type(result))},"timestamp":int(__import__('time').time()*1000)})+'\n')
-        # #endregion
         
         if result and result.get('success'):
             # Check if slides are already at top level (new structure from process_request)
@@ -173,11 +171,6 @@ async def process_unified_request(request: UnifiedRequest):
                     "result": deck_data  # Frontend expects 'result' field
                 }
                 
-                # #region agent log
-                import json
-                with open('/Users/admin/code/dilla-ai/.cursor/debug.log','a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"unified_brain.py:155","message":"Returning deck response","data":{"hasSuccess":response_data.get('success'),"hasResult":'result' in response_data,"resultKeys":list(response_data.get('result',{}).keys()) if isinstance(response_data.get('result'),dict) else [],"slidesCount":len(response_data.get('result',{}).get('slides',[])) if isinstance(response_data.get('result'),dict) else 0},"timestamp":int(__import__('time').time()*1000)})+'\n')
-                # #endregion
                 
                 try:
                     cleaned_response = clean_for_json(response_data)
@@ -186,11 +179,6 @@ async def process_unified_request(request: UnifiedRequest):
                     logger.error(f"[ENDPOINT] JSON serialization error for deck: {e}")
                     import traceback
                     logger.error(f"[ENDPOINT] Traceback: {traceback.format_exc()}")
-                    # #region agent log
-                    import json
-                    with open('/Users/admin/code/dilla-ai/.cursor/debug.log','a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"unified_brain.py:165","message":"Deck serialization error","data":{"error":str(e)},"timestamp":int(__import__('time').time()*1000)})+'\n')
-                    # #endregion
                     error_response = clean_for_json({
                         "success": False,
                         "error": f"Serialization error: {str(e)}"
@@ -391,11 +379,6 @@ async def process_unified_request(request: UnifiedRequest):
                 logger.error(f"[ENDPOINT] Result keys: {list(result.keys()) if isinstance(result, dict) else 'not_dict'}")
                 logger.error(f"[ENDPOINT] Result success value: {result.get('success') if isinstance(result, dict) else 'N/A'}")
                 logger.error(f"[ENDPOINT] Result error value: {result.get('error') if isinstance(result, dict) else 'N/A'}")
-                # #region agent log
-                import json
-                with open('/Users/admin/code/dilla-ai/.cursor/debug.log','a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"unified_brain.py:345","message":"No success in result - returning error","data":{"resultType":str(type(result)),"isDict":isinstance(result,dict),"keys":list(result.keys()) if isinstance(result,dict) else [],"success":result.get('success') if isinstance(result,dict) else None,"error":result.get('error') if isinstance(result,dict) else None},"timestamp":int(__import__('time').time()*1000)})+'\n')
-                # #endregion
                 error_response = clean_for_json({"success": False, "error": result.get('error', 'No results generated') if isinstance(result, dict) else 'Invalid result format'})
                 return JSONResponse(content=error_response, status_code=500)
     
@@ -415,11 +398,53 @@ async def process_unified_request(request: UnifiedRequest):
 @router.post("/unified-brain-stream")
 async def process_unified_stream(request: UnifiedRequest):
     """
-    STREAMING DISABLED - This endpoint now returns non-streaming results
+    Streaming endpoint — yields NDJSON progress events followed by a final complete event.
+    Each line is a JSON object with a 'type' field: 'progress' or 'complete'.
     """
-    logger.info(f"[UNIFIED-BRAIN-STREAM] Streaming disabled, using non-streaming endpoint")
-    # Just call the non-streaming endpoint
-    return await process_unified_request(request)
+    from fastapi.responses import StreamingResponse
+    import json as _json
+
+    logger.info(f"[UNIFIED-BRAIN-STREAM] Streaming request for: {request.prompt[:80]}")
+
+    orchestrator = get_unified_orchestrator()
+    readiness_info = getattr(orchestrator, "readiness_status", lambda: {"ready": True})()
+    if not readiness_info.get("ready", True):
+        raise HTTPException(status_code=503, detail="Orchestrator dependencies not ready")
+
+    merged_context = dict(request.context) if request.context else {}
+    if request.agent_context:
+        merged_context["agent_context"] = request.agent_context
+    if request.approved_plan:
+        merged_context["approved_plan"] = True
+    if merged_context.get("plan_steps"):
+        logger.info(f"[STREAM] Forwarding {len(merged_context['plan_steps'])} approved plan steps")
+    if request.output_format_hint:
+        merged_context["output_format_hint"] = request.output_format_hint
+
+    async def event_generator():
+        try:
+            async for event in orchestrator.process_request_stream(
+                prompt=request.prompt,
+                output_format=request.output_format,
+                context=merged_context,
+            ):
+                event_type = event.get("type", "unknown")
+                if event_type == "progress":
+                    yield _json.dumps({"type": "progress", "stage": event.get("stage"), "message": event.get("message"), "plan_steps": event.get("plan_steps")}) + "\n"
+                elif event_type == "complete":
+                    from app.utils.numpy_converter import convert_numpy_to_native
+                    result = event.get("result", {})
+                    if result:
+                        result = convert_numpy_to_native(result)
+                    cleaned = clean_for_json({"type": "complete", "success": True, "result": result})
+                    yield _json.dumps(cleaned) + "\n"
+                elif event_type == "error":
+                    yield _json.dumps({"type": "error", "error": event.get("error")}) + "\n"
+        except Exception as e:
+            logger.error(f"[UNIFIED-BRAIN-STREAM] Error: {e}")
+            yield _json.dumps({"type": "error", "error": str(e)}) + "\n"
+
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
 
 @router.get("/unified-brain/health")
@@ -506,7 +531,8 @@ async def diagnostics():
                     # Get provider value (enum.value or string)
                     try:
                         provider_name = provider.value if hasattr(provider, 'value') else str(provider)
-                    except:
+                    except Exception as e:
+                        logger.warning(f"[UNIFIED-BRAIN] Provider name extraction failed: {e}")
                         provider_name = str(provider)
                     
                     # Check if we have the API key for this provider

@@ -47,8 +47,9 @@ export class BackendConnector {
   private wsConnection: WebSocket | null = null;
   
   private constructor() {
-    // Use environment variable for backend URL
-    this.baseUrl = process.env.NEXT_PUBLIC_FASTAPI_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    // Use shared helper for backend URL
+    const { getClientBackendUrl } = require('./backend-url');
+    this.baseUrl = getClientBackendUrl();
   }
   
   static getInstance(): BackendConnector {

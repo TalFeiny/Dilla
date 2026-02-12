@@ -31,7 +31,7 @@ const options = {
             processed: { type: 'boolean' },
             document_type: { 
               type: 'string', 
-              enum: ['pitch_deck', 'financial_statement', 'due_diligence', 'term_sheet', 'other'] 
+              enum: ['pitch_deck', 'financial_statement', 'due_diligence', 'term_sheet', 'investment_memo', 'other'] 
             }
           }
         },

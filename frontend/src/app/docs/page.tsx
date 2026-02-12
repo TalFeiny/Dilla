@@ -1,16 +1,15 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
-import TableauLevelCharts from '@/components/charts/TableauLevelCharts';
+import dynamic from 'next/dynamic';
 import { 
   Bold, 
   Italic, 
   Underline, 
   List, 
-  ListOrdered,
   Heading1,
   Heading2,
   Quote,
@@ -24,6 +23,12 @@ import {
   FileText,
   Loader2
 } from 'lucide-react';
+
+// Model router: AI calls go via /api/agent/unified-brain → backend → model_router
+const TableauLevelCharts = dynamic(
+  () => import('@/components/charts/TableauLevelCharts'),
+  { ssr: false }
+);
 
 interface DocumentSection {
   type: 'heading1' | 'heading2' | 'heading3' | 'paragraph' | 'chart' | 'list' | 'quote' | 'code' | 'image';
@@ -45,34 +50,51 @@ export default function DocsPage() {
   const [documentTitle, setDocumentTitle] = useState('Untitled Document');
   const contentEditableRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const sectionsRef = useRef(sections);
+  const selectedSectionRef = useRef(selectedSection);
+  sectionsRef.current = sections;
+  selectedSectionRef.current = selectedSection;
 
-  // Handle image paste
+  const handleImageFile = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const imageUrl = (e.target?.result ?? '') as string;
+      const imageSection: DocumentSection = {
+        type: 'image',
+        imageUrl,
+        imageCaption: 'Click to add caption...'
+      };
+      const newSections = [...sectionsRef.current];
+      newSections.splice(selectedSectionRef.current + 1, 0, imageSection);
+      setSections(newSections);
+      setSelectedSection(selectedSectionRef.current + 1);
+    };
+    reader.readAsDataURL(file);
+  }, []);
+
   useEffect(() => {
-    const handlePaste = async (e: ClipboardEvent) => {
+    const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
-
       for (const item of Array.from(items)) {
         if (item.type.indexOf('image') !== -1) {
           e.preventDefault();
           const file = item.getAsFile();
-          if (file) {
-            await handleImageFile(file);
-          }
+          if (file) handleImageFile(file);
+          break;
         }
       }
     };
 
-    const handleDrop = async (e: DragEvent) => {
+    const handleDrop = (e: DragEvent) => {
       e.preventDefault();
       setIsDragging(false);
-      
       const files = e.dataTransfer?.files;
       if (!files) return;
-
       for (const file of Array.from(files)) {
         if (file.type.startsWith('image/')) {
-          await handleImageFile(file);
+          handleImageFile(file);
+          break;
         }
       }
     };
@@ -91,62 +113,53 @@ export default function DocsPage() {
     document.addEventListener('drop', handleDrop);
     document.addEventListener('dragover', handleDragOver);
     document.addEventListener('dragleave', handleDragLeave);
-
     return () => {
       document.removeEventListener('paste', handlePaste);
       document.removeEventListener('drop', handleDrop);
       document.removeEventListener('dragover', handleDragOver);
       document.removeEventListener('dragleave', handleDragLeave);
     };
-  }, []);
+  }, [handleImageFile]);
 
-  // Handle image file
-  const handleImageFile = async (file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const imageUrl = e.target?.result as string;
-      const imageSection: DocumentSection = {
-        type: 'image',
-        imageUrl,
-        imageCaption: 'Click to add caption...'
-      };
-      
-      const newSections = [...sections];
-      newSections.splice(selectedSection + 1, 0, imageSection);
-      setSections(newSections);
-      setSelectedSection(selectedSection + 1);
-    };
-    reader.readAsDataURL(file);
-  };
-
-  // Generate document with AI
-  const generateWithAI = async () => {
-    if (!aiPrompt.trim()) return;
-    
+  // Upload and process document via model router
+  const handleDocumentUpload = async (file: File) => {
     setIsGenerating(true);
     try {
+      // First upload to Supabase storage
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const uploadResponse = await fetch('/api/documents', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (!uploadResponse.ok) {
+        throw new Error('Failed to upload document');
+      }
+      
+      const uploadResult = await uploadResponse.json();
+      
+      // Then process via model router (unified-brain)
       const response = await fetch('/api/agent/unified-brain', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: aiPrompt,
+          prompt: `Analyze the uploaded document (ID: ${uploadResult.document?.id || 'unknown'}) and generate a summary with key insights, metrics, and recommendations. Format as a document with sections.`,
           outputFormat: 'docs',
+          documentId: uploadResult.document?.id,
           includeFormulas: false,
           includeCitations: true
         })
       });
-
+      
       if (response.ok) {
         const data = await response.json();
         if (data.success && data.result) {
-          // Process the document sections
+          // Process the document sections (same as generateWithAI)
           const newSections: DocumentSection[] = [];
           
-          // Handle unified format where format: 'docs' is present
           if (data.result.format === 'docs') {
-            console.log('[DocsPage] Processing unified docs format');
-            
-            // Parse content into sections if it's markdown
             if (data.result.content) {
               const lines = data.result.content.split('\n');
               let currentParagraph = '';
@@ -185,7 +198,6 @@ export default function DocsPage() {
               }
             }
             
-            // Also process structured sections if present
             if (data.result.sections && Array.isArray(data.result.sections)) {
               data.result.sections.forEach((section: any) => {
                 if (section.type === 'chart' && section.chart) {
@@ -202,7 +214,119 @@ export default function DocsPage() {
               });
             }
             
-            // Add charts if present
+            if (data.result.charts && Array.isArray(data.result.charts)) {
+              data.result.charts.forEach((chart: any) => {
+                newSections.push({
+                  type: 'chart',
+                  chart: chart
+                });
+              });
+            }
+          }
+          
+          if (newSections.length > 0) {
+            setSections(newSections);
+            const firstHeading = newSections.find(s => s.type === 'heading1');
+            if (firstHeading?.content) {
+              setDocumentTitle(firstHeading.content);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Failed to process document:', error);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  // Generate document with AI — model router path: unified-brain → backend → model_router
+  const generateWithAI = async () => {
+    if (!aiPrompt.trim()) return;
+    
+    setIsGenerating(true);
+    try {
+      const response = await fetch('/api/agent/unified-brain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: aiPrompt,
+          outputFormat: 'docs',
+          includeFormulas: false,
+          includeCitations: true
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && data.result) {
+          // Process the document sections
+          const newSections: DocumentSection[] = [];
+          
+          // Handle unified format where format: 'docs' is present
+          if (data.result.format === 'docs') {
+            console.log('[DocsPage] Processing unified docs format');
+
+            // Prefer structured sections over raw markdown content
+            if (data.result.sections && Array.isArray(data.result.sections) && data.result.sections.length > 0) {
+              data.result.sections.forEach((section: any) => {
+                if (section.type === 'chart' && section.chart) {
+                  newSections.push({
+                    type: 'chart',
+                    chart: section.chart
+                  });
+                } else if (section.type === 'list' && section.items) {
+                  newSections.push({
+                    type: 'list' as any,
+                    items: section.items
+                  });
+                } else {
+                  newSections.push({
+                    type: section.type as any,
+                    content: section.content || section.section
+                  });
+                }
+              });
+            } else if (data.result.content) {
+              // Fallback: Parse content as markdown only if no structured sections
+              const lines = data.result.content.split('\n');
+              let currentParagraph = '';
+
+              for (const line of lines) {
+                if (line.startsWith('# ')) {
+                  if (currentParagraph) {
+                    newSections.push({ type: 'paragraph', content: currentParagraph });
+                    currentParagraph = '';
+                  }
+                  newSections.push({ type: 'heading1', content: line.slice(2) });
+                } else if (line.startsWith('## ')) {
+                  if (currentParagraph) {
+                    newSections.push({ type: 'paragraph', content: currentParagraph });
+                    currentParagraph = '';
+                  }
+                  newSections.push({ type: 'heading2', content: line.slice(3) });
+                } else if (line.startsWith('### ')) {
+                  if (currentParagraph) {
+                    newSections.push({ type: 'paragraph', content: currentParagraph });
+                    currentParagraph = '';
+                  }
+                  newSections.push({ type: 'heading3', content: line.slice(4) });
+                } else if (line.trim() === '') {
+                  if (currentParagraph) {
+                    newSections.push({ type: 'paragraph', content: currentParagraph });
+                    currentParagraph = '';
+                  }
+                } else {
+                  currentParagraph += (currentParagraph ? ' ' : '') + line;
+                }
+              }
+
+              if (currentParagraph) {
+                newSections.push({ type: 'paragraph', content: currentParagraph });
+              }
+            }
+
+            // Add standalone charts if present
             if (data.result.charts && Array.isArray(data.result.charts)) {
               data.result.charts.forEach((chart: any) => {
                 newSections.push({
@@ -292,14 +416,15 @@ export default function DocsPage() {
         newSection.content = '// Code snippet';
         break;
       case 'chart':
-        // Add a placeholder chart
+        // Placeholder uses TableauLevelCharts-supported type (model router via unified-brain)
         newSection.chart = {
-          type: 'bar',
+          type: 'pie',
           title: 'Sample Chart',
-          data: {
-            categories: ['A', 'B', 'C'],
-            series: [{ name: 'Values', data: [10, 20, 30] }]
-          }
+          data: [
+            { name: 'A', value: 10 },
+            { name: 'B', value: 20 },
+            { name: 'C', value: 30 }
+          ]
         };
         break;
     }
@@ -381,7 +506,7 @@ export default function DocsPage() {
       
       case 'heading2':
         return (
-          <h2 
+          <h2
             className={`text-2xl font-semibold mb-3 p-2 rounded ${isSelected ? 'bg-blue-50 border-l-4 border-blue-500' : ''}`}
             contentEditable
             suppressContentEditableWarning
@@ -391,7 +516,20 @@ export default function DocsPage() {
             {section.content}
           </h2>
         );
-      
+
+      case 'heading3':
+        return (
+          <h3
+            className={`text-xl font-medium mb-2 p-2 rounded ${isSelected ? 'bg-blue-50 border-l-4 border-blue-500' : ''}`}
+            contentEditable
+            suppressContentEditableWarning
+            onClick={() => setSelectedSection(index)}
+            onBlur={(e) => updateSection(index, e.currentTarget.textContent || '')}
+          >
+            {section.content}
+          </h3>
+        );
+
       case 'paragraph':
         return (
           <p 
@@ -462,7 +600,7 @@ export default function DocsPage() {
           >
             {section.chart && (
               <TableauLevelCharts
-                type={section.chart.type as any}
+                type={(section.chart.type ?? 'pie') as any}
                 data={section.chart.data}
                 title={section.chart.title}
                 colors={section.chart.colors}
@@ -680,6 +818,28 @@ export default function DocsPage() {
               ) : (
                 'Generate'
               )}
+            </Button>
+            <input
+              type="file"
+              accept=".pdf,.docx,.doc,.txt"
+              className="hidden"
+              id="document-upload"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  handleDocumentUpload(file);
+                }
+              }}
+              disabled={isGenerating}
+            />
+            <Button
+              onClick={() => document.getElementById('document-upload')?.click()}
+              disabled={isGenerating}
+              variant="outline"
+              title="Upload and analyze document via model router"
+            >
+              <FileText className="w-4 h-4 mr-2" />
+              Upload Doc
             </Button>
           </div>
         </Card>

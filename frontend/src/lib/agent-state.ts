@@ -3,8 +3,9 @@
  * Persistent conversation and context storage with Redis/Supabase fallback
  */
 
-import { createClient } from '@supabase/supabase-js';
-import { Redis } from '@upstash/redis';
+import { supabaseService } from '@/lib/supabase';
+// Redis import is conditional - only used if UPSTASH_REDIS_REST_URL is set
+type Redis = any;
 
 // State interfaces
 export interface AgentMessage {
@@ -80,17 +81,24 @@ export class AgentStateManager {
     this.initializeBackends();
   }
   
-  private initializeBackends() {
+  private async initializeBackends() {
     // Redis setup (if available)
     if (this.backend === StorageBackend.REDIS) {
       const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
       const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
       
       if (redisUrl && redisToken) {
-        this.redis = new Redis({
-          url: redisUrl,
-          token: redisToken
-        });
+        try {
+          // @ts-ignore - Optional dependency
+          const { Redis } = await import('@upstash/redis');
+          this.redis = new Redis({
+            url: redisUrl,
+            token: redisToken
+          });
+        } catch (error) {
+          console.warn('Redis package not available, falling back to memory:', error);
+          this.backend = StorageBackend.MEMORY;
+        }
       } else {
         console.warn('Redis credentials not found, falling back to memory');
         this.backend = StorageBackend.MEMORY;
@@ -98,14 +106,12 @@ export class AgentStateManager {
     }
     
     // Supabase setup (if available)
+    // Use the shared service client to prevent multiple instances
     if (this.backend === StorageBackend.SUPABASE) {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-      
-      if (supabaseUrl && supabaseKey) {
-        this.supabase = createClient(supabaseUrl, supabaseKey);
+      if (supabaseService) {
+        this.supabase = supabaseService;
       } else {
-        console.warn('Supabase credentials not found, falling back to memory');
+        console.warn('Supabase service client not available, falling back to memory');
         this.backend = StorageBackend.MEMORY;
       }
     }

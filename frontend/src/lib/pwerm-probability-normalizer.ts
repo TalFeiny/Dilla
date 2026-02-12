@@ -80,7 +80,10 @@ export class PWERMProbabilityNormalizer {
     
     console.log(`  ✅ Normalized to: ${(this.calculateSum(result.normalized) * 100).toFixed(2)}%`);
     
-    return result;
+    return {
+      ...result,
+      validation: { isValid: true, message: 'Normalization completed successfully', severity: 'info' }
+    };
   }
 
   /**

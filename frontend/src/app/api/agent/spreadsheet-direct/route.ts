@@ -17,10 +17,7 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
 });
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { supabaseService } from '@/lib/supabase';
 
 // Enhanced system prompt with reasoning chain and professional financial modeling standards
 const getSystemPrompt = () => `You are an expert financial analyst creating professional spreadsheet models.
@@ -831,7 +828,7 @@ IMPORTANT RULES:
 async function searchCompanies(query: string) {
   try {
     // First try semantic search with embeddings using the correct function
-    const { data: embeddingData, error: embeddingError } = await supabase.rpc(
+    const { data: embeddingData, error: embeddingError } = await supabaseService.rpc(
       'search_companies_advanced_json',
       {
         search_query: JSON.stringify({
@@ -848,7 +845,8 @@ async function searchCompanies(query: string) {
     }
     
     // Fallback to text search if embedding search fails or returns nothing
-    const { data, error } = await supabase
+    if (!supabaseService) return [];
+    const { data, error } = await supabaseService
       .from('companies')
       .select('*')  // Get all columns for comprehensive data
       .or(`name.ilike.%${query}%,description.ilike.%${query}%`)
@@ -1056,7 +1054,11 @@ function detectModelType(prompt: string): string {
 export async function POST(request: NextRequest) {
   try {
     const { prompt, includeContext = true, previousCompany = null, useOpus = false, gridState = {}, useOrchestrator = false } = await request.json();
-    
+
+    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
+      return NextResponse.json({ error: 'Prompt is required', success: false }, { status: 400 });
+    }
+
     // Check if we should use the orchestrator for multi-step tasks
     if (useOrchestrator && prompt.toLowerCase().includes('then')) {
       console.warn('[spreadsheet-direct] Orchestrator requested but disabled');
@@ -1151,11 +1153,11 @@ export async function POST(request: NextRequest) {
           // Then try vector similarity search for better RAG
           let allMatches = [...exactMatches];
           
-          // Use pgvector similarity search if no exact match
-          if (exactMatches.length === 0) {
+          // Use pgvector similarity search if no exact match (only when supabase client is available)
+          if (exactMatches.length === 0 && supabaseService) {
             try {
               // Search using embedding similarity
-              const { data: similarCompanies, error } = await supabase
+              const { data: similarCompanies, error } = await supabaseService
                 .rpc('search_similar_companies', { 
                   query_text: companyName,
                   match_threshold: 0.7,
@@ -1168,7 +1170,7 @@ export async function POST(request: NextRequest) {
               }
             } catch (err) {
               // Fallback to fuzzy text search
-              const { data: fuzzyMatches } = await supabase
+              const { data: fuzzyMatches } = await supabaseService
                 .from('companies')
                 .select('*')
                 .ilike('name', `%${companyName.split(' ')[0]}%`)
@@ -1200,8 +1202,8 @@ export async function POST(request: NextRequest) {
             }
             
             // Also fetch sector comparables for better context
-            if (allMatches[0].sector) {
-              const { data: sectorComps } = await supabase
+            if (allMatches[0].sector && supabaseService) {
+              const { data: sectorComps } = await supabaseService
                 .from('companies')
                 .select('name, revenue_usd, total_funding_usd, last_valuation_usd, growth_rate')
                 .eq('sector', allMatches[0].sector)
@@ -1235,11 +1237,13 @@ export async function POST(request: NextRequest) {
       if (needsDeepAnalysis && companiesForComparison.length > 0) {
         // Limit to first company to avoid rate limits
         const companyToScrape = companiesForComparison[0];
-        console.log(`Using intelligent scraper for deep analysis of ${companyToScrape}`);
+        console.log(`Skipping intelligent scraper for ${companyToScrape} (not available)`);
         try {
-          const scraperResult = await intelligentWebScraper.scrapeCompany(companyToScrape, prompt);
+          // intelligentWebScraper is not available - skip deep scraping
+          const scraperResult = null;
             
           if (scraperResult && scraperResult.data) {
+            // This block is skipped when scraper is not available
             context += `\n=== DEEP COMPANY ANALYSIS FOR ${companyToScrape.toUpperCase()} ===\n`;
             context += `Website: ${scraperResult.website || 'Not found'}\n`;
             context += `Pages Scraped: ${scraperResult.pagesScraped}\n`;
@@ -1762,12 +1766,12 @@ IMPORTANT INSTRUCTIONS:
       });
     } catch (error: any) {
       console.error('Generation error:', error);
-      // Return empty commands on error
       return NextResponse.json({
-        success: true,
+        success: false,
+        error: error?.message || 'Command generation failed',
         commands: [],
         raw: ''
-      });
+      }, { status: 500 });
     }
   }
   } catch (error: any) {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { supabaseService } from '@/lib/supabase';
 
 /**
  * @swagger
@@ -90,10 +90,6 @@ import { createClient } from '@supabase/supabase-js';
  *               $ref: '#/components/schemas/Error'
  */
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-const supabase = createClient(supabaseUrl, supabaseKey);
 
 export async function GET(
   request: NextRequest,
@@ -102,7 +98,11 @@ export async function GET(
   try {
     const { id } = await params;
 
-    const { data, error } = await supabase
+    if (!supabaseService) {
+      return NextResponse.json({ error: 'Database unavailable' }, { status: 503 });
+    }
+
+    const { data, error } = await supabaseService
       .from('processed_documents')
       .select('*')
       .eq('id', parseInt(id))
@@ -141,6 +141,47 @@ export async function GET(
   }
 }
 
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+
+    if (!supabaseService) {
+      return NextResponse.json({ error: 'Database unavailable' }, { status: 503 });
+    }
+
+    const body = await request.json();
+    const { company_id, fund_id } = body as { company_id?: string; fund_id?: string };
+
+    const updates: Record<string, unknown> = {};
+    if (company_id != null) updates.company_id = company_id;
+    if (fund_id != null) updates.fund_id = fund_id;
+
+    if (Object.keys(updates).length === 0) {
+      return NextResponse.json({ error: 'Provide company_id and/or fund_id to link document' }, { status: 400 });
+    }
+
+    const { data, error } = await supabaseService
+      .from('processed_documents')
+      .update(updates)
+      .eq('id', parseInt(id))
+      .select()
+      .single();
+
+    if (error) {
+      console.error('PATCH document error:', error);
+      return NextResponse.json({ error: 'Failed to update document' }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true, document: data });
+  } catch (error) {
+    console.error('PATCH document error:', error);
+    return NextResponse.json({ error: 'Failed to update document' }, { status: 500 });
+  }
+}
+
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -148,7 +189,11 @@ export async function DELETE(
   try {
     const { id } = await params;
 
-    const { error } = await supabase
+    if (!supabaseService) {
+      return NextResponse.json({ error: 'Database unavailable' }, { status: 503 });
+    }
+
+    const { error } = await supabaseService
       .from('processed_documents')
       .delete()
       .eq('id', parseInt(id));

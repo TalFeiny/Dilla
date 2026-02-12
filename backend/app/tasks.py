@@ -4,9 +4,13 @@ Celery background tasks
 
 from celery import Task
 from app.core.celery_app import celery_app
+from app.core.exceptions import RateLimitError
 from app.services.pwerm_service import pwerm_service
-from app.services.document_service import document_processor
 from app.services.market_research_service import market_research_service
+try:
+    from app.services.document_service import document_processor
+except ImportError:
+    document_processor = None  # Use document_process_service path when missing
 # from app.services.agent_service import self_learning_agent  # Temporarily disabled
 import logging
 from typing import Dict, Any, Optional
@@ -65,43 +69,67 @@ def run_pwerm_analysis(
         }
 
 
-@celery_app.task(bind=True, base=CallbackTask, name="app.tasks.document.process")
+@celery_app.task(
+    bind=True,
+    base=CallbackTask,
+    name="app.tasks.document.process",
+    acks_late=True,
+    autoretry_for=(RateLimitError,),
+    retry_backoff=True,
+    retry_backoff_max=600,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 5},
+)
 def process_document(
     self,
     document_id: str,
-    file_path: str
+    file_path: str,
+    document_type: Optional[str] = "other",
+    company_id: Optional[str] = None,
+    fund_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Process document as background task"""
+    """Process document as background task (backend-agnostic via document_process_service).
+    Supports long-running extraction; retries on rate limit (429).
+    """
     try:
         self.update_state(state="PROGRESS", meta={"status": "Processing document"})
-        
-        # Process document
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        with open(file_path, 'rb') as f:
-            content = f.read()
-        
-        metadata = loop.run_until_complete(
-            document_processor.process_document(
-                file_content=content,
-                filename=file_path.split("/")[-1]
+        if document_processor is not None:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            with open(file_path, "rb") as f:
+                content = f.read()
+            metadata = loop.run_until_complete(
+                document_processor.process_document(
+                    file_content=content,
+                    filename=file_path.split("/")[-1],
+                )
             )
+            return {"status": "success", "document_id": metadata.id, "processed": metadata.processed}
+        from app.core.adapters import get_storage, get_document_repo
+        from app.services.document_process_service import run_document_process
+        storage = get_storage()
+        document_repo = get_document_repo()
+        out = run_document_process(
+            document_id=document_id,
+            storage_path=file_path,
+            document_type=document_type or "other",
+            storage=storage,
+            document_repo=document_repo,
+            company_id=company_id,
+            fund_id=fund_id,
         )
-        
         return {
-            "status": "success",
-            "document_id": metadata.id,
-            "processed": metadata.processed
+            "status": "success" if out.get("success") else "error",
+            "document_id": out.get("document_id", document_id),
+            "error": out.get("error"),
         }
-        
     except Exception as e:
-        logger.error(f"Document processing failed: {e}")
-        return {
-            "status": "error",
-            "error": str(e)
-        }
+        err_str = str(e).lower()
+        if "429" in str(e) or "rate limit" in err_str or "rate_limit" in err_str or "too many requests" in err_str:
+            raise RateLimitError("llm_api", retry_after=60) from e
+        logger.exception("Document processing failed: %s", e)
+        return {"status": "error", "error": str(e)}
 
 
 @celery_app.task(bind=True, base=CallbackTask, name="app.tasks.market.research")
@@ -178,6 +206,39 @@ def train_agent(self, training_data: Dict[str, Any]) -> Dict[str, Any]:
             "status": "error",
             "error": str(e)
         }
+
+
+@celery_app.task(bind=True, base=CallbackTask, name="app.tasks.analysis.run_company_history")
+def run_company_history_analysis(
+    self,
+    fund_id: str,
+    company_ids: Optional[list] = None,
+    document_ids: Optional[list] = None,
+) -> Dict[str, Any]:
+    """Long-running: resolve docs, bulk extract, aggregate per company, follow-on, DPI Sankey."""
+    try:
+        from app.core.adapters import get_storage, get_document_repo, get_company_repo
+        from app.services.company_history_analysis_service import run as run_pipeline
+
+        def progress_cb(progress: Dict[str, Any]) -> None:
+            self.update_state(state="PROGRESS", meta=progress)
+
+        storage = get_storage()
+        document_repo = get_document_repo()
+        company_repo = get_company_repo()
+        result = run_pipeline(
+            fund_id=fund_id,
+            company_ids=company_ids,
+            document_ids=document_ids,
+            storage=storage,
+            document_repo=document_repo,
+            company_repo=company_repo,
+            progress_callback=progress_cb,
+        )
+        return {"status": "success", "result": result}
+    except Exception as e:
+        logger.exception("Company history analysis failed: %s", e)
+        return {"status": "error", "error": str(e)}
 
 
 @celery_app.task(bind=True, name="app.tasks.periodic.cleanup")

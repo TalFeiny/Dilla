@@ -626,6 +626,107 @@ class ValuationEngineService:
         else:
             return "Moderate path - monitor execution closely"
 
+    def _company_data_to_request(
+        self,
+        company_data: Dict[str, Any],
+        method: str = "auto",
+        comparables: Optional[List[Dict[str, Any]]] = None,
+        assumptions: Optional[Dict[str, Any]] = None,
+    ) -> ValuationRequest:
+        """Build ValuationRequest from company_data dict (thin API / value_company adapter)."""
+        stage_str = (company_data.get("stage") or company_data.get("investment_stage") or "seed")
+        if isinstance(stage_str, Stage):
+            stage = stage_str
+        else:
+            stage_map = {
+                "pre_seed": Stage.PRE_SEED,
+                "seed": Stage.SEED,
+                "series_a": Stage.SERIES_A,
+                "series_b": Stage.SERIES_B,
+                "series_c": Stage.SERIES_C,
+                "growth": Stage.GROWTH,
+                "late": Stage.LATE,
+                "public": Stage.PUBLIC,
+            }
+            stage = stage_map.get(str(stage_str).lower().replace("-", "_"), Stage.SEED)
+
+        method_str = (method or "auto").lower()
+        method_map = {
+            "auto": ValuationMethod.AUTO,
+            "pwerm": ValuationMethod.PWERM,
+            "dcf": ValuationMethod.DCF,
+            "opm": ValuationMethod.OPM,
+            "waterfall": ValuationMethod.WATERFALL,
+            "recent_transaction": ValuationMethod.RECENT_TRANSACTION,
+            "cost_method": ValuationMethod.COST_METHOD,
+            "milestone": ValuationMethod.MILESTONE,
+            "multiples": ValuationMethod.AUTO,
+        }
+        method_enum = method_map.get(method_str, ValuationMethod.AUTO)
+
+        def _num(v: Any) -> Optional[float]:
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        name = company_data.get("name") or company_data.get("company") or "Unknown"
+        return ValuationRequest(
+            company_name=name,
+            stage=stage,
+            revenue=_num(company_data.get("revenue") or company_data.get("arr") or company_data.get("current_arr_usd")),
+            growth_rate=_num(company_data.get("growth_rate") or company_data.get("revenue_growth_pct")),
+            last_round_valuation=_num(company_data.get("last_round_valuation") or company_data.get("current_valuation_usd") or company_data.get("valuation")),
+            inferred_valuation=_num(company_data.get("inferred_valuation")),
+            last_round_date=company_data.get("last_round_date") or company_data.get("last_valuation_date"),
+            total_raised=_num(company_data.get("total_raised") or company_data.get("total_invested_usd")),
+            preferred_shares_outstanding=company_data.get("preferred_shares_outstanding"),
+            common_shares_outstanding=company_data.get("common_shares_outstanding"),
+            liquidation_preferences=tuple(company_data["liquidation_preferences"]) if isinstance(company_data.get("liquidation_preferences"), (list, tuple)) else None,
+            method=method_enum,
+            business_model=company_data.get("business_model"),
+            industry=company_data.get("industry") or company_data.get("sector"),
+            category=company_data.get("category"),
+            ai_component_percentage=_num(company_data.get("ai_component_percentage")),
+        )
+
+    async def value_company(
+        self,
+        company_data: Dict[str, Any],
+        method: str = "auto",
+        comparables: Optional[List[Dict[str, Any]]] = None,
+        assumptions: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Adapter for thin API: build ValuationRequest from company_data dict, call
+        calculate_valuation, return a serializable dict (fair_value, method_used, etc.).
+        """
+        request = self._company_data_to_request(company_data, method, comparables or [], assumptions or {})
+        result = await self.calculate_valuation(request)
+        # Serialize ValuationResult to dict for JSON response
+        return {
+            "fair_value": getattr(result, "fair_value", 0),
+            "value": getattr(result, "fair_value", 0),
+            "method_used": getattr(result, "method_used", method),
+            "explanation": getattr(result, "explanation", ""),
+            "confidence": getattr(result, "confidence", 0.5),
+            "common_stock_value": getattr(result, "common_stock_value", None),
+            "preferred_value": getattr(result, "preferred_value", None),
+            "assumptions": getattr(result, "assumptions", {}),
+            "scenarios": [
+                {
+                    "scenario": getattr(s, "scenario", ""),
+                    "probability": getattr(s, "probability", 0),
+                    "exit_value": getattr(s, "exit_value", 0),
+                    "present_value": getattr(s, "present_value", 0),
+                    "moic": getattr(s, "moic", 0),
+                }
+                for s in (getattr(result, "scenarios", None) or [])
+            ],
+        }
+
     async def calculate_valuation(self, request: ValuationRequest) -> ValuationResult:
         """
         Main valuation method - automatically selects appropriate method based on stage
@@ -2107,6 +2208,627 @@ class ValuationEngineService:
             confidence=confidence,
             explanation=explanation
         )
+
+    # ------------------------------------------------------------------
+    # Phase 2: Scenario-Branching Cap Tables with Full Waterfall
+    # ------------------------------------------------------------------
+    def generate_scenario_cap_tables(
+        self,
+        company_data: Dict[str, Any],
+        analytics: Optional[Dict[str, Any]] = None,
+        our_investment: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Generate scenario-branching cap tables with full waterfall integration.
+
+        For each company, models 4 future scenarios for the next round,
+        then runs AdvancedCapTable.calculate_liquidation_waterfall() at
+        various exit values to show exactly what we get paid — including
+        liquidation preferences, participation rights, and seniority.
+
+        Args:
+            company_data: Company dict with funding_rounds, stage, valuation, etc.
+            analytics: CompanyAnalytics dict (from Phase 1). Optional — will infer if missing.
+            our_investment: {amount, ownership_pct, round_name}. If missing, uses company data.
+
+        Returns:
+            Dict with scenario branches, each containing waterfall at key exit values,
+            return curves, breakpoints, and Sankey data.
+        """
+        from app.services.advanced_cap_table import CapTableCalculator
+        from app.services.pre_post_cap_table import PrePostCapTable
+        from app.services.data_validator import ensure_numeric
+
+        cap_table_service = PrePostCapTable()
+        waterfall_calc = CapTableCalculator()
+
+        # --- Extract company info ---
+        stage = str(company_data.get("stage", "Series A"))
+        funding_rounds = company_data.get("funding_rounds", []) or []
+        current_valuation = ensure_numeric(
+            company_data.get("valuation") or company_data.get("current_valuation_usd"), 0
+        )
+        total_funding = ensure_numeric(company_data.get("total_funding"), 0)
+        if total_funding == 0:
+            total_funding = sum(
+                ensure_numeric(r.get("amount") or r.get("round_size"), 0)
+                for r in funding_rounds if isinstance(r, dict)
+            )
+
+        # Our investment
+        our_amount = ensure_numeric((our_investment or {}).get("amount"), 0)
+        our_ownership = ensure_numeric((our_investment or {}).get("ownership_pct"), 0) / 100
+        our_round = (our_investment or {}).get("round_name", stage)
+
+        # Use analytics if available, else use company_data directly
+        growth_rate = 1.0
+        runway_months = 18.0
+        valuation_direction = "flat"
+        if analytics:
+            growth_rate = analytics.get("growth_rate", 1.0)
+            runway_months = analytics.get("estimated_runway_months", 18.0)
+            valuation_direction = analytics.get("valuation_direction", "flat")
+
+        # Get current cap table
+        try:
+            cap_history = cap_table_service.calculate_full_cap_table_history(company_data)
+            current_cap = cap_history.get("current_cap_table", {})
+        except Exception as e:
+            logger.warning(f"Cap table calculation failed: {e}")
+            current_cap = {"Founders": 50.0, f"{stage} Investors": 30.0, "Option Pool": 20.0}
+
+        # Determine next stage
+        stage_sequence = ["Pre-seed", "Seed", "Series A", "Series B", "Series C", "Series D", "Series E"]
+        next_stage = "Series B"
+        for i, s in enumerate(stage_sequence):
+            if s.lower() in stage.lower() and i + 1 < len(stage_sequence):
+                next_stage = stage_sequence[i + 1]
+                break
+
+        # Stage-typical round data
+        typical_rounds = {
+            "Seed": {"amount": 3_000_000, "dilution": 0.15},
+            "Series A": {"amount": 15_000_000, "dilution": 0.20},
+            "Series B": {"amount": 50_000_000, "dilution": 0.15},
+            "Series C": {"amount": 100_000_000, "dilution": 0.12},
+            "Series D": {"amount": 200_000_000, "dilution": 0.10},
+            "Series E": {"amount": 350_000_000, "dilution": 0.08},
+        }
+        typical = typical_rounds.get(next_stage, {"amount": 50_000_000, "dilution": 0.15})
+
+        # --- Build 4 scenarios ---
+        scenarios = []
+
+        # 1. Base Case — Hits Current Trajectory
+        base_round_size = typical["amount"]
+        base_dilution = typical["dilution"]
+        base_pre_money = base_round_size / base_dilution - base_round_size if base_dilution > 0 else current_valuation * 1.5
+        scenarios.append({
+            "name": "base",
+            "label": "Base Case — Hits Targets",
+            "round_stage": next_stage,
+            "round_size": base_round_size,
+            "pre_money": base_pre_money,
+            "dilution": base_dilution,
+            "new_investor_preference": 1.0,
+            "new_investor_participating": False,
+            "esop_expansion": 0.02,
+        })
+
+        # 2. Growth Decay — Misses by 30%
+        decay_dilution = min(base_dilution * 1.4, 0.30)
+        decay_round_size = base_round_size * 0.75
+        decay_pre_money = decay_round_size / decay_dilution - decay_round_size if decay_dilution > 0 else current_valuation * 0.9
+        scenarios.append({
+            "name": "growth_decay",
+            "label": "Growth Decay — Misses by 30%",
+            "round_stage": next_stage,
+            "round_size": decay_round_size,
+            "pre_money": decay_pre_money,
+            "dilution": decay_dilution,
+            "new_investor_preference": 1.0,
+            "new_investor_participating": True,
+            "esop_expansion": 0.02,
+        })
+
+        # 3. Bridge / Extension
+        bridge_round_size = base_round_size * 0.3
+        bridge_pre_money = current_valuation * 0.75 if current_valuation > 0 else base_pre_money * 0.5
+        bridge_dilution = bridge_round_size / (bridge_pre_money + bridge_round_size) if (bridge_pre_money + bridge_round_size) > 0 else 0.25
+        scenarios.append({
+            "name": "bridge",
+            "label": "Bridge / Extension",
+            "round_stage": f"{stage} Extension",
+            "round_size": bridge_round_size,
+            "pre_money": bridge_pre_money,
+            "dilution": bridge_dilution,
+            "new_investor_preference": 1.5,
+            "new_investor_participating": True,
+            "esop_expansion": 0.0,
+        })
+
+        # 4. Outperformance
+        outperform_dilution = max(base_dilution * 0.65, 0.08)
+        outperform_round_size = base_round_size * 1.3
+        outperform_pre_money = outperform_round_size / outperform_dilution - outperform_round_size if outperform_dilution > 0 else base_pre_money * 2.5
+        scenarios.append({
+            "name": "outperform",
+            "label": "Outperformance — 2x+ Step-Up",
+            "round_stage": next_stage,
+            "round_size": outperform_round_size,
+            "pre_money": outperform_pre_money,
+            "dilution": outperform_dilution,
+            "new_investor_preference": 1.0,
+            "new_investor_participating": False,
+            "esop_expansion": 0.01,
+        })
+
+        # --- For each scenario, compute cap table + waterfall ---
+        exit_values = [
+            10_000_000, 25_000_000, 50_000_000, 100_000_000,
+            250_000_000, 500_000_000, 750_000_000, 1_000_000_000,
+            2_000_000_000, 5_000_000_000,
+        ]
+
+        scenario_results = []
+
+        for sc in scenarios:
+            # Apply dilution to compute post-scenario ownership
+            dilution = sc["dilution"]
+            esop = sc["esop_expansion"]
+            total_dilution = dilution + esop
+
+            our_ownership_post = our_ownership * (1 - total_dilution)
+            founder_ownership_post = 0.0
+            for k, v in current_cap.items():
+                if "founder" in k.lower() or k == "Founders":
+                    founder_ownership_post += (v / 100) * (1 - total_dilution)
+
+            # Build total preference stack
+            existing_prefs = total_funding  # simplified: all prior funding = 1x pref
+            new_pref = sc["round_size"] * sc["new_investor_preference"]
+            total_pref_stack = existing_prefs + new_pref
+
+            # Build funding rounds for waterfall calculation (include the new round)
+            waterfall_rounds = []
+            for i, r in enumerate(funding_rounds):
+                if not isinstance(r, dict):
+                    continue
+                waterfall_rounds.append({
+                    "round": r.get("round", f"Round {i+1}"),
+                    "amount": ensure_numeric(r.get("amount") or r.get("round_size"), 0),
+                    "investors": r.get("investors", []) or [],
+                    "lead_investor": r.get("lead_investor", ""),
+                    "liquidation_multiple": 1.0,
+                    "participating": False,
+                    "seniority": i + 1,
+                })
+            # Add the scenario's new round
+            waterfall_rounds.append({
+                "round": sc["round_stage"],
+                "amount": sc["round_size"],
+                "investors": [f"{sc['round_stage']} New Investor"],
+                "lead_investor": f"{sc['round_stage']} New Investor",
+                "liquidation_multiple": sc["new_investor_preference"],
+                "participating": sc["new_investor_participating"],
+                "seniority": len(waterfall_rounds) + 1,
+            })
+
+            # --- Compute our position in the preference stack ---
+            # Which seniority tranche are we in? What's above/below us?
+            our_seniority = 0
+            prefs_senior_to_us = 0.0
+            prefs_junior_to_us = 0.0
+            our_preference_amount = our_amount * 1.0  # 1x pref on our invested amount
+
+            for wr in waterfall_rounds:
+                wr_seniority = wr.get("seniority", 0)
+                wr_pref_amount = ensure_numeric(wr.get("amount"), 0) * wr.get("liquidation_multiple", 1.0)
+                # Identify our round by matching on our_round name
+                if our_round and our_round.lower() in str(wr.get("round", "")).lower():
+                    our_seniority = wr_seniority
+                    continue
+                if our_seniority > 0 and wr_seniority > our_seniority:
+                    prefs_senior_to_us += wr_pref_amount
+                elif our_seniority > 0 and wr_seniority < our_seniority:
+                    prefs_junior_to_us += wr_pref_amount
+                elif our_seniority == 0:
+                    # Haven't found our round yet — these are all potentially senior
+                    pass
+
+            # If we couldn't match our round, estimate based on total stack
+            if our_seniority == 0:
+                # New round in this scenario is always most senior
+                new_round_pref = sc["round_size"] * sc["new_investor_preference"]
+                prefs_senior_to_us = new_round_pref
+                prefs_junior_to_us = total_pref_stack - new_round_pref - our_preference_amount
+
+            # Run waterfall at each exit value
+            waterfall_at_exits = []
+            return_curve_exits = []
+            return_curve_moics = []
+            return_curve_proceeds = []
+
+            for ev in exit_values:
+                try:
+                    wf = waterfall_calc.calculate_liquidation_waterfall(
+                        exit_value=ev,
+                        cap_table=current_cap,
+                        funding_rounds=waterfall_rounds,
+                    )
+                except Exception as e:
+                    logger.warning(f"Waterfall calc failed for exit={ev}: {e}")
+                    wf = {"distributions": [], "summary": {}}
+
+                pref_paid = sum(
+                    d.get("amount", 0) for d in wf.get("distributions", [])
+                    if d.get("type") == "liquidation_preference"
+                )
+                common_dist = sum(
+                    d.get("amount", 0) for d in wf.get("distributions", [])
+                    if d.get("type") == "common_distribution"
+                )
+
+                # Calculate our proceeds with full waterfall logic
+                our_proceeds = 0.0
+                our_proceeds_source = "none"  # Track where our money comes from
+                if our_ownership_post > 0:
+                    if ev > total_pref_stack:
+                        # Preferences fully satisfied — we participate in common
+                        our_proceeds = (ev - total_pref_stack) * our_ownership_post
+                        our_proceeds_source = "common_participation"
+                    elif our_amount > 0 and ev <= total_pref_stack:
+                        # Preference waterfall — we get our pro-rata of preferences
+                        our_pref_share = our_amount / total_pref_stack if total_pref_stack > 0 else 0
+                        our_proceeds = ev * our_pref_share
+                        our_proceeds_source = "preference_pro_rata"
+
+                our_moic = our_proceeds / our_amount if our_amount > 0 else 0
+                our_profit = our_proceeds - our_amount
+
+                # How much of exit goes to preferences vs common
+                pref_pct_of_exit = (total_pref_stack / ev * 100) if ev > 0 else 100
+
+                waterfall_at_exits.append({
+                    "exit_value": ev,
+                    # --- Full context for our position ---
+                    "our_invested": our_amount,
+                    "our_entry_round": our_round,
+                    "our_ownership_at_entry_pct": round(our_ownership * 100, 2),
+                    "our_ownership_post_scenario_pct": round(our_ownership_post * 100, 2),
+                    "our_preference_amount": round(our_preference_amount, 0),
+                    "prefs_senior_to_us": round(prefs_senior_to_us, 0),
+                    "prefs_junior_to_us": round(prefs_junior_to_us, 0),
+                    # --- Proceeds breakdown ---
+                    "our_proceeds": round(our_proceeds, 0),
+                    "our_proceeds_source": our_proceeds_source,
+                    "our_profit": round(our_profit, 0),
+                    "our_moic": round(our_moic, 2),
+                    # --- Waterfall context ---
+                    "total_pref_stack": round(total_pref_stack, 0),
+                    "pref_consumed": round(pref_paid, 0),
+                    "pref_pct_of_exit": round(pref_pct_of_exit, 1),
+                    "common_gets": round(common_dist, 0),
+                    "total_distributed": round(wf.get("total_distributed", 0), 0),
+                })
+
+                return_curve_exits.append(ev)
+                return_curve_moics.append(round(our_moic, 3))
+                return_curve_proceeds.append(round(our_proceeds, 0))
+
+            # Calculate breakpoints
+            breakeven_exit = 0
+            three_x_exit = 0
+            for w in waterfall_at_exits:
+                if w["our_moic"] >= 1.0 and breakeven_exit == 0:
+                    breakeven_exit = w["exit_value"]
+                if w["our_moic"] >= 3.0 and three_x_exit == 0:
+                    three_x_exit = w["exit_value"]
+
+            scenario_results.append({
+                "name": sc["name"],
+                "label": sc["label"],
+                "round_stage": sc["round_stage"],
+                "round_valuation_pre": round(sc["pre_money"], 0),
+                "round_size": round(sc["round_size"], 0),
+                "dilution_pct": round(sc["dilution"] * 100, 1),
+                "new_investor_preference": sc["new_investor_preference"],
+                "new_investor_participating": sc["new_investor_participating"],
+                # --- Our position context (carried at scenario level too) ---
+                "our_entry": {
+                    "invested": our_amount,
+                    "entry_round": our_round,
+                    "entry_ownership_pct": round(our_ownership * 100, 2),
+                    "entry_valuation": current_valuation,
+                    "cost_basis_per_pct": round(our_amount / (our_ownership * 100), 0) if our_ownership > 0 else 0,
+                },
+                "our_ownership_post": round(our_ownership_post * 100, 2),
+                "our_dilution_this_scenario_pct": round((our_ownership - our_ownership_post) / our_ownership * 100, 1) if our_ownership > 0 else 0,
+                "founder_ownership_post": round(founder_ownership_post * 100, 2),
+                # --- Preference stack context ---
+                "preference_stack": {
+                    "total": round(total_pref_stack, 0),
+                    "senior_to_us": round(prefs_senior_to_us, 0),
+                    "our_preference": round(our_preference_amount, 0),
+                    "junior_to_us": round(prefs_junior_to_us, 0),
+                    "our_seniority_rank": our_seniority,
+                    "total_rounds_in_stack": len(waterfall_rounds),
+                },
+                "waterfall_at_exits": waterfall_at_exits,
+                "return_curve": {
+                    "exit_values": return_curve_exits,
+                    "our_moic": return_curve_moics,
+                    "our_proceeds": return_curve_proceeds,
+                },
+                "breakeven_exit_value": breakeven_exit,
+                "three_x_exit_value": three_x_exit,
+                "preference_satisfaction_value": round(total_pref_stack, 0),
+            })
+
+        return {
+            "company_name": company_data.get("name", "Unknown"),
+            "current_stage": stage,
+            "current_valuation": current_valuation,
+            "total_funding_to_date": total_funding,
+            "our_investment": {
+                "amount": our_amount,
+                "ownership_pct": round(our_ownership * 100, 2),
+                "round": our_round,
+                "cost_basis_per_pct": round(our_amount / (our_ownership * 100), 0) if our_ownership > 0 else 0,
+            },
+            "scenarios": scenario_results,
+        }
+
+    # ------------------------------------------------------------------
+    # Phase 4: Multi-Round Ownership Trees with Preference Deep Dive
+    # ------------------------------------------------------------------
+    def generate_ownership_tree(
+        self,
+        company_data: Dict[str, Any],
+        our_investment: Optional[Dict[str, Any]] = None,
+        rounds_forward: int = 3,
+    ) -> Dict[str, Any]:
+        """Model ownership evolution through multiple future rounds.
+
+        For a company at stage X, model paths through X+1, X+2, ... to exit.
+        Each future round branches into base/decay scenarios. At each terminal
+        node, run the full waterfall to show what we get paid including all
+        accumulated preference stacking.
+
+        Args:
+            company_data: Company dict
+            our_investment: {amount, ownership_pct, round_name}
+            rounds_forward: How many future rounds to model (default 3)
+
+        Returns:
+            Ownership tree with nested branches, preference stacks, and
+            waterfall outcomes at terminal exits.
+        """
+        from app.services.advanced_cap_table import CapTableCalculator
+        from app.services.data_validator import ensure_numeric
+
+        waterfall_calc = CapTableCalculator()
+
+        stage = str(company_data.get("stage", "Series A"))
+        funding_rounds = company_data.get("funding_rounds", []) or []
+        total_funding = ensure_numeric(company_data.get("total_funding"), 0)
+        if total_funding == 0:
+            total_funding = sum(
+                ensure_numeric(r.get("amount") or r.get("round_size"), 0)
+                for r in funding_rounds if isinstance(r, dict)
+            )
+
+        our_amount = ensure_numeric((our_investment or {}).get("amount"), 0)
+        our_ownership = ensure_numeric((our_investment or {}).get("ownership_pct"), 0) / 100
+
+        stage_sequence = ["Pre-seed", "Seed", "Series A", "Series B", "Series C", "Series D", "Series E"]
+        typical_rounds = {
+            "Series A": {"amount": 15_000_000, "dilution": 0.20, "pref": 1.0, "participating": False},
+            "Series B": {"amount": 50_000_000, "dilution": 0.15, "pref": 1.0, "participating": False},
+            "Series C": {"amount": 100_000_000, "dilution": 0.12, "pref": 1.0, "participating": False},
+            "Series D": {"amount": 200_000_000, "dilution": 0.10, "pref": 1.0, "participating": True},
+            "Series E": {"amount": 350_000_000, "dilution": 0.08, "pref": 1.0, "participating": True},
+        }
+
+        def _get_next_stages(current: str, count: int) -> List[str]:
+            stages = []
+            try:
+                idx = next(i for i, s in enumerate(stage_sequence) if s.lower() in current.lower())
+            except StopIteration:
+                idx = 2  # default to Series A
+            for i in range(1, count + 1):
+                if idx + i < len(stage_sequence):
+                    stages.append(stage_sequence[idx + i])
+            return stages
+
+        future_stages = _get_next_stages(stage, rounds_forward)
+
+        # Determine our seniority in the existing stack
+        our_round_name = (our_investment or {}).get("round_name", stage)
+        our_seniority_in_tree = 0
+        for i, r in enumerate(funding_rounds):
+            if isinstance(r, dict) and our_round_name.lower() in str(r.get("round", "")).lower():
+                our_seniority_in_tree = i + 1
+                break
+
+        # Build branches recursively
+        def _build_branch(
+            ownership: float,
+            pref_stack: float,
+            invested: float,
+            stage_idx: int,
+            path_label: str,
+            accumulated_rounds: List[Dict],
+        ) -> Dict[str, Any]:
+            if stage_idx >= len(future_stages):
+                # Terminal node — compute exit outcomes
+                exit_outcomes = []
+                exit_multiples = [1, 3, 5, 8, 10]
+                current_valuation = ensure_numeric(company_data.get("valuation"), 100_000_000)
+
+                # Count rounds by seniority to figure out our position
+                rounds_senior = sum(1 for r in accumulated_rounds if r.get("seniority", 0) > our_seniority_in_tree)
+                rounds_junior = len(accumulated_rounds) - rounds_senior - 1  # minus our round
+
+                for em in exit_multiples:
+                    exit_value = current_valuation * em
+                    # Run waterfall
+                    try:
+                        wf = waterfall_calc.calculate_liquidation_waterfall(
+                            exit_value=exit_value,
+                            cap_table={},
+                            funding_rounds=accumulated_rounds,
+                        )
+                    except Exception:
+                        wf = {"distributions": [], "summary": {}}
+
+                    # Our proceeds
+                    our_proceeds_source = "none"
+                    if exit_value > pref_stack:
+                        our_proceeds = (exit_value - pref_stack) * ownership
+                        our_proceeds_source = "common_participation"
+                    else:
+                        our_pref_share = invested / pref_stack if pref_stack > 0 else 0
+                        our_proceeds = exit_value * our_pref_share
+                        our_proceeds_source = "preference_pro_rata"
+
+                    moic = our_proceeds / invested if invested > 0 else 0
+                    our_profit = our_proceeds - invested
+                    pref_pct = (pref_stack / exit_value * 100) if exit_value > 0 else 100
+
+                    exit_outcomes.append({
+                        "exit_multiple_label": f"{em}x",
+                        "exit_value": round(exit_value, 0),
+                        # Full context
+                        "our_invested": round(invested, 0),
+                        "our_entry_round": (our_investment or {}).get("round_name", stage),
+                        "our_ownership_at_entry_pct": round(our_ownership * 100, 2),
+                        "our_ownership_at_exit_pct": round(ownership * 100, 2),
+                        "dilution_from_entry_pct": round((1 - ownership / our_ownership) * 100, 1) if our_ownership > 0 else 0,
+                        "rounds_since_entry": len(accumulated_rounds) - len(initial_rounds),
+                        # Proceeds breakdown
+                        "our_proceeds": round(our_proceeds, 0),
+                        "our_proceeds_source": our_proceeds_source,
+                        "our_profit": round(our_profit, 0),
+                        "our_moic": round(moic, 2),
+                        # Preference context
+                        "pref_stack_total": round(pref_stack, 0),
+                        "pref_as_pct_of_exit": round(pref_pct, 1),
+                        "rounds_senior_to_us": rounds_senior,
+                        "rounds_junior_to_us": rounds_junior,
+                    })
+
+                return {
+                    "path": path_label,
+                    "our_ownership_pct": round(ownership * 100, 2),
+                    "total_preference_stack": round(pref_stack, 0),
+                    "total_invested_by_us": round(invested, 0),
+                    "dilution_from_entry_pct": round((1 - ownership / our_ownership) * 100, 1) if our_ownership > 0 else 0,
+                    "exit_outcomes": exit_outcomes,
+                    "branches": [],
+                }
+
+            next_stage = future_stages[stage_idx]
+            typical = typical_rounds.get(next_stage, {"amount": 50_000_000, "dilution": 0.15, "pref": 1.0, "participating": False})
+
+            branches = []
+
+            # Branch 1: Base case
+            base_dilution = typical["dilution"]
+            base_round_size = typical["amount"]
+            base_pref = typical["pref"]
+            new_ownership = ownership * (1 - base_dilution - 0.02)  # 2% ESOP
+            new_pref = pref_stack + base_round_size * base_pref
+            new_rounds = accumulated_rounds + [{
+                "round": next_stage,
+                "amount": base_round_size,
+                "investors": [f"{next_stage} Investor"],
+                "lead_investor": f"{next_stage} Investor",
+                "liquidation_multiple": base_pref,
+                "participating": typical["participating"],
+                "seniority": len(accumulated_rounds) + 1,
+            }]
+            base_branch = _build_branch(
+                new_ownership, new_pref, invested,
+                stage_idx + 1, f"{path_label} → {next_stage} (base)", new_rounds,
+            )
+            base_branch["round_label"] = f"{next_stage} — Base"
+            base_branch["round_dilution"] = round(base_dilution * 100, 1)
+            base_branch["round_size"] = base_round_size
+            base_branch["new_pref_added"] = round(base_round_size * base_pref, 0)
+            branches.append(base_branch)
+
+            # Branch 2: Decay/tough terms
+            decay_dilution = min(base_dilution * 1.5, 0.30)
+            decay_round_size = base_round_size * 0.6
+            decay_pref_mult = 1.5
+            decay_ownership = ownership * (1 - decay_dilution - 0.02)
+            decay_pref = pref_stack + decay_round_size * decay_pref_mult
+            decay_rounds = accumulated_rounds + [{
+                "round": f"{next_stage} (tough)",
+                "amount": decay_round_size,
+                "investors": [f"{next_stage} Investor"],
+                "lead_investor": f"{next_stage} Investor",
+                "liquidation_multiple": decay_pref_mult,
+                "participating": True,
+                "seniority": len(accumulated_rounds) + 1,
+            }]
+            decay_branch = _build_branch(
+                decay_ownership, decay_pref, invested,
+                stage_idx + 1, f"{path_label} → {next_stage} (decay)", decay_rounds,
+            )
+            decay_branch["round_label"] = f"{next_stage} — Growth Decay"
+            decay_branch["round_dilution"] = round(decay_dilution * 100, 1)
+            decay_branch["round_size"] = decay_round_size
+            decay_branch["new_pref_added"] = round(decay_round_size * decay_pref_mult, 0)
+            branches.append(decay_branch)
+
+            return {
+                "path": path_label,
+                "our_ownership_pct": round(ownership * 100, 2),
+                "total_preference_stack": round(pref_stack, 0),
+                "total_invested_by_us": round(invested, 0),
+                "branches": branches,
+            }
+
+        # Build the initial waterfall rounds from existing funding
+        initial_rounds = []
+        for i, r in enumerate(funding_rounds):
+            if not isinstance(r, dict):
+                continue
+            initial_rounds.append({
+                "round": r.get("round", f"Round {i+1}"),
+                "amount": ensure_numeric(r.get("amount") or r.get("round_size"), 0),
+                "investors": r.get("investors", []) or [],
+                "lead_investor": r.get("lead_investor", ""),
+                "liquidation_multiple": 1.0,
+                "participating": False,
+                "seniority": i + 1,
+            })
+
+        tree = _build_branch(
+            our_ownership, total_funding, our_amount,
+            0, f"Current ({stage})", initial_rounds,
+        )
+
+        # Add preference stack summary
+        # Count total terminal scenarios
+        def _count_terminals(node: Dict) -> int:
+            if not node.get("branches"):
+                return 1
+            return sum(_count_terminals(b) for b in node["branches"])
+
+        return {
+            "company_name": company_data.get("name", "Unknown"),
+            "current_stage": stage,
+            "our_investment": {
+                "amount": our_amount,
+                "ownership_pct": round(our_ownership * 100, 2),
+            },
+            "rounds_modeled": len(future_stages),
+            "total_terminal_scenarios": _count_terminals(tree),
+            "ownership_tree": tree,
+        }
+
 
 # Global service instance
 valuation_engine_service = ValuationEngineService()

@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { supabaseService } from '@/lib/supabase';
 
 export async function PUT(
   request: NextRequest,
@@ -20,7 +15,10 @@ export async function PUT(
       hurdleRate
     } = body;
 
-    const { data: portfolio, error } = await supabase
+    if (!supabaseService) {
+      return NextResponse.json({ error: 'Database unavailable' }, { status: 503 });
+    }
+    const { data: portfolio, error } = await supabaseService
       .from('portfolios')
       .update({
         graduation_rates: {

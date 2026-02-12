@@ -580,7 +580,7 @@ export default function DynamicDataMatrix() {
           <div className="flex items-center gap-2 mb-3">
             <Bot className="w-4 h-4" />
             <span className="font-bold">Research Matrix API</span>
-            <Sparkles className="w-3 h-3 text-yellow-400 animate-pulse" />
+            <Sparkles className="w-3 h-3 text-yellow-400" />
           </div>
           <div className="space-y-2">
             <div className="text-green-400"># Research any topic - columns adapt to data</div>

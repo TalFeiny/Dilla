@@ -157,26 +157,22 @@ class MAValuation:
     target_standalone_value: float
     acquirer_standalone_value: float
     
-    # Synergy analysis  
+    # Synergy analysis
     total_synergies_npv: float
-    synergy_breakdown: List[SynergyAnalysis] = field(default_factory=list)
     
-    # Combined entity valuation
+    # Combined entity valuation (required before any optional)
     combined_entity_value: float
     value_creation: float  # Total value created
     value_to_acquirer: float  # Net value to acquirer shareholders
     
-    # Deal metrics
+    # Optional from here
+    synergy_breakdown: List[SynergyAnalysis] = field(default_factory=list)
     deal_structure: Optional[DealStructure] = None
     irr_to_acquirer: float = 0.0
     payback_period: float = 0.0  # Years
-    
-    # Risk assessment
     integration_risk: IntegrationRisk = IntegrationRisk.MODERATE
     execution_probability: float = 0.85
     regulatory_risk: float = 0.1
-    
-    # Financial projections (10-year)
     projected_financials: Dict[str, List[float]] = field(default_factory=dict)
     
 
@@ -310,7 +306,10 @@ class MAWorkflowService:
                 acquirer_company=acquirer,
                 target_standalone_value=0.0,
                 acquirer_standalone_value=0.0,
-                total_synergies_npv=0.0
+                total_synergies_npv=0.0,
+                combined_entity_value=0.0,
+                value_creation=0.0,
+                value_to_acquirer=0.0
             )
 
     async def identify_strategic_acquirers(

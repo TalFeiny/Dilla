@@ -703,7 +703,7 @@ export function PWERMResultsDisplayV2({ results }: PWERMResultsDisplayV2Props) {
                 .sort((a, b) => a[1].index - b[1].index)
                 .map(([source, citation]) => (
                   <div key={citation.index} className="flex items-start gap-2 text-xs">
-                    <span className="text-blue-600 font-medium min-w-Array.from(x)">[{citation.index}]</span>
+                    <span className="text-blue-600 font-medium min-w-[2rem]">[{citation.index}]</span>
                     {citation.url ? (
                       <a
                         href={citation.url}
@@ -741,7 +741,7 @@ export function PWERMResultsDisplayV2({ results }: PWERMResultsDisplayV2Props) {
                 .sort((a: any, b: any) => (b.relevance_score || 0) - (a.relevance_score || 0))
                 .map((source: any, idx: number) => (
                 <div key={idx} className="flex items-start gap-3 p-3 border rounded-lg hover:bg-accent/50 transition-colors">
-                  <span className="text-sm font-medium text-muted-foreground min-w-Array.from(x)">
+                  <span className="text-sm font-medium text-muted-foreground min-w-[2rem]">
                     {idx + 1}.
                   </span>
                   <div className="flex-1">

@@ -1,5 +1,11 @@
 # 🚀 How to Start Dilla AI on Localhost
 
+## Environment (Matrix & Cell Actions)
+
+- **BACKEND_URL** / **NEXT_PUBLIC_BACKEND_URL**: Base URL of the FastAPI backend (e.g. `http://localhost:8000`). The frontend proxies cell-actions (PWERM, valuation, etc.) to this URL. **Backend must be running for cell actions to work.**
+- **SCRIPTS_DIR** (optional): Directory containing `pwerm_analysis.py`. If unset, the app looks for `scripts/` under the current working directory or one level up (so running from `frontend/` still finds repo-root `scripts/`).
+- **Matrix persistence**: Cell edits and action outputs are persisted to Supabase only when the row has a **companyId** (portfolio company). Rows added via @CompanyName search have no companyId until you add them to the fund; those rows are in-memory only.
+
 ## Quick Start (Easiest Way)
 
 ### Step 1: Install Dependencies
@@ -94,6 +100,11 @@ pip install <missing-package>
 uvicorn app.main:app --reload --port 8001
 ```
 
+### macOS: too many open files (EMFILE)
+If you see `EMFILE: too many open files` when running the frontend:
+- **Preferred:** run from repo root: `npm run dev:frontend` (the script sets a higher FD limit).
+- **If running from `frontend/`:** run `ulimit -n 10240` in the same terminal before `npm run dev`, or add that line to `~/.zshrc` for a permanent higher limit in new shells.
+
 ## Full Development Setup (Optional)
 
 ### With All Features:
@@ -110,15 +121,15 @@ docker-compose up
 
 ### With Frontend:
 ```bash
-# Terminal 1: Backend
+# Terminal 1: Backend (required for matrix cell actions: PWERM, valuation, etc.)
 cd backend && source venv/bin/activate
 uvicorn app.main:app --reload --port 8000
 
 # Terminal 2: Frontend (Next.js)
-cd trees/main
+cd frontend
 npm install
 npm run dev
-# Frontend at http://localhost:3001
+# Frontend at http://localhost:3000 (or 3001). Set BACKEND_URL if backend is on another host/port.
 ```
 
 ## What's Actually Working Now

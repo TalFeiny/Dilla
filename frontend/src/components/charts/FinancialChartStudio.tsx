@@ -30,7 +30,13 @@ const FundWaterfallChart = ({ data }: { data: any }) => {
   
   const waterfallSteps = useMemo(() => {
     let cumulative = lpInvestment;
-    const steps = [
+    const steps: Array<{
+      name: string;
+      value: number;
+      cumulative: number;
+      type: string;
+      details?: any;
+    }> = [
       { name: 'LP Capital', value: lpInvestment, cumulative: lpInvestment, type: 'initial' }
     ];
     
@@ -301,7 +307,10 @@ const MultiCapTablePies = ({ scenarios }: { scenarios: any[] }) => {
                   cx="50%"
                   cy="50%"
                   labelLine={false}
-                  label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(1)}%`}
+                  label={(props: any) => {
+                    const { name, percent } = props;
+                    return `${name}: ${(percent * 100).toFixed(1)}%`;
+                  }}
                   outerRadius={80}
                   fill="#8884d8"
                   dataKey="value"
@@ -551,7 +560,7 @@ export default function FinancialChartStudio({ cells, onClose, onInsert }: Finan
       case 'scenarios':
         return <MultiCapTablePies scenarios={scenarios} />;
       case 'lpgp':
-        return <LPGPSplitAnalysis data={lpgpData} />;
+        return <LPGPSplitAnalysis data={lpData} />;
       default:
         return null;
     }
@@ -694,7 +703,7 @@ export default function FinancialChartStudio({ cells, onClose, onInsert }: Finan
               Export
             </button>
             <button
-              onClick={() => onInsert && onInsert({ type: chartType, data: { fundData, capTableData, scenarios, lpgpData } })}
+              onClick={() => onInsert && onInsert({ type: chartType, data: { fundData, capTableData, scenarios, lpData } })}
               className="px-6 py-2 bg-gradient-to-r from-green-600 to-blue-600 text-white rounded-lg hover:from-green-700 hover:to-blue-700 flex items-center gap-2"
             >
               <Plus className="w-4 h-4" />

@@ -33,7 +33,7 @@ export function getUnifiedChartOptions(
           font: {
             family: DECK_DESIGN_TOKENS.fonts.primary,
             size: 12,
-            weight: '500',
+            weight: 500,
           },
           color: DECK_DESIGN_TOKENS.colors.muted.foreground,
           usePointStyle: true,
@@ -44,7 +44,7 @@ export function getUnifiedChartOptions(
         titleFont: {
           family: DECK_DESIGN_TOKENS.fonts.primary,
           size: 13,
-          weight: '600',
+          weight: 600,
         },
         bodyFont: {
           family: DECK_DESIGN_TOKENS.fonts.primary,
@@ -70,7 +70,6 @@ export function getUnifiedChartOptions(
         beginAtZero: true,
         grid: {
           color: DECK_DESIGN_TOKENS.colors.border,
-          drawBorder: false,
         },
         ticks: {
           font: {
@@ -91,7 +90,7 @@ export function getUnifiedChartOptions(
           font: {
             family: DECK_DESIGN_TOKENS.fonts.primary,
             size: 12,
-            weight: '600',
+            weight: 600,
           },
           color: DECK_DESIGN_TOKENS.colors.foreground,
         },
@@ -113,7 +112,7 @@ export function getUnifiedChartOptions(
           font: {
             family: DECK_DESIGN_TOKENS.fonts.primary,
             size: 12,
-            weight: '600',
+            weight: 600,
           },
           color: DECK_DESIGN_TOKENS.colors.foreground,
         },

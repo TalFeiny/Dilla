@@ -9,7 +9,60 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { GraduationCap, Plus, Trash2, X, Sparkles, Search, Calculator } from 'lucide-react';
+import { GraduationCap, Plus, Trash2, X, Sparkles, Search, Calculator, Loader2 } from 'lucide-react';
+import { UnifiedMatrix, MatrixData } from '@/components/matrix/UnifiedMatrix';
+import { buildMatrixDataFromPortfolioCompanies, type PortfolioCompanyForMatrix } from '@/lib/matrix/portfolio-matrix-builder';
+import { getAvailableActions, type CellAction } from '@/lib/matrix/cell-action-registry';
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid, Line } from 'recharts';
+import { format, addMonths } from 'date-fns';
+import { parseCurrencyInput } from '@/lib/matrix/cell-formatters';
+import { updateMatrixCell } from '@/lib/matrix/matrix-api-service';
+
+// Helper function to format currency with clear units
+function formatCurrency(value: number | null | undefined, showUnits: boolean = true): string {
+  if (value === null || value === undefined || isNaN(value)) {
+    return 'N/A';
+  }
+  
+  const absValue = Math.abs(value);
+  
+  if (absValue >= 1000000) {
+    // Show in millions
+    const millions = value / 1000000;
+    return showUnits ? `$${millions.toFixed(1)}M USD` : `$${millions.toFixed(1)}M`;
+  } else if (absValue >= 1000) {
+    // Show in thousands
+    const thousands = value / 1000;
+    return showUnits ? `$${thousands.toFixed(1)}K USD` : `$${thousands.toFixed(1)}K`;
+  } else {
+    // Show in USD
+    return showUnits ? `$${value.toFixed(0)} USD` : `$${value.toFixed(0)}`;
+  }
+}
+
+// Helper function to safely parse integer
+function safeParseInt(value: string | number | null | undefined, defaultValue: number = 0): number {
+  if (value === null || value === undefined || value === '') {
+    return defaultValue;
+  }
+  if (typeof value === 'number') {
+    return isNaN(value) ? defaultValue : value;
+  }
+  const parsed = parseInt(String(value), 10);
+  return isNaN(parsed) ? defaultValue : parsed;
+}
+
+// Helper function to safely parse float
+function safeParseFloat(value: string | number | null | undefined, defaultValue: number = 0): number {
+  if (value === null || value === undefined || value === '') {
+    return defaultValue;
+  }
+  if (typeof value === 'number') {
+    return isNaN(value) ? defaultValue : value;
+  }
+  const parsed = parseFloat(String(value));
+  return isNaN(parsed) ? defaultValue : parsed;
+}
 
 interface PortfolioCompany {
   id: string;
@@ -29,6 +82,18 @@ interface PortfolioCompany {
   individualIrr?: number;
   individualMultiple?: number;
   individualReturn?: number;
+  // Portfolio report fields
+  cashInBank?: number;
+  investmentLead?: string;
+  lastContacted?: string;
+  burnRate?: number;
+  runwayMonths?: number;
+  grossMargin?: number;
+  cashUpdatedAt?: string;
+  burnRateUpdatedAt?: string;
+  runwayUpdatedAt?: string;
+  revenueUpdatedAt?: string;
+  grossMarginUpdatedAt?: string;
 }
 
 interface Portfolio {
@@ -55,14 +120,18 @@ interface NewPortfolio {
 export default function PortfolioPage() {
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedPortfolio, setSelectedPortfolio] = useState<string>('');
   const [availableCompanies, setAvailableCompanies] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [showAddFundModal, setShowAddFundModal] = useState(false);
-  const [showAddCompanyModal, setShowAddCompanyModal] = useState(false);
   const [showSimulationModal, setShowSimulationModal] = useState(false);
   const [selectedPortfolioForSimulation, setSelectedPortfolioForSimulation] = useState<Portfolio | null>(null);
+  const [selectedCompanyForEdit, setSelectedCompanyForEdit] = useState<PortfolioCompany | null>(null);
+  const [showEditCompanyModal, setShowEditCompanyModal] = useState(false);
+  const [deletingPortfolioId, setDeletingPortfolioId] = useState<string | null>(null);
+  const [availableActions, setAvailableActions] = useState<CellAction[]>([]);
   const [newPortfolio, setNewPortfolio] = useState({
     name: '',
     fundSize: 0,
@@ -83,22 +152,49 @@ export default function PortfolioPage() {
 
   const loadPortfolios = async () => {
     try {
+      setIsLoading(true);
+      setError(null);
       const response = await fetch('/api/portfolio');
-      if (response.ok) {
-        const data = await response.json();
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        const errorMessage = errorData.message || errorData.error || `Failed to load portfolios (${response.status})`;
+        setError(errorMessage);
+        console.error('Error loading portfolios:', errorMessage);
+        setPortfolios([]);
+        return;
+      }
+      
+      const data = await response.json();
+      // Check if response is an error object
+      if (data.error) {
+        setError(data.message || data.error);
+        setPortfolios([]);
+      } else {
         // Metrics are now pre-calculated on the server
-        setPortfolios(data);
+        setPortfolios(Array.isArray(data) ? data : []);
       }
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to load portfolios';
+      setError(errorMessage);
       console.error('Error loading portfolios:', error);
+      setPortfolios([]);
     } finally {
       setIsLoading(false);
+      // Notify matrices to refresh so they pick up new companies (add/edit/delete)
+      window.dispatchEvent(new CustomEvent('refreshMatrix'));
     }
   };
 
   useEffect(() => {
     loadPortfolios();
     searchCompanies('');
+  }, []);
+
+  useEffect(() => {
+    getAvailableActions('portfolio')
+      .then(setAvailableActions)
+      .catch(() => setAvailableActions([]));
   }, []);
 
   const searchCompanies = async (query: string) => {
@@ -108,9 +204,13 @@ export default function PortfolioPage() {
       if (response.ok) {
         const data = await response.json();
         setAvailableCompanies(data.companies || []);
+      } else {
+        console.error('Error searching companies:', response.status, response.statusText);
+        setAvailableCompanies([]);
       }
     } catch (error) {
       console.error('Error searching companies:', error);
+      setAvailableCompanies([]);
     } finally {
       setIsSearching(false);
     }
@@ -210,6 +310,18 @@ export default function PortfolioPage() {
   };
 
   const handleAddPortfolio = async () => {
+    // Validate inputs
+    if (!newPortfolio.name || newPortfolio.name.trim() === '') {
+      setError('Fund name is required');
+      return;
+    }
+
+    if (!newPortfolio.fundSize || newPortfolio.fundSize <= 0) {
+      setError('Fund size must be greater than 0');
+      return;
+    }
+
+    setError(null);
     try {
       const response = await fetch('/api/portfolio', {
         method: 'POST',
@@ -227,15 +339,30 @@ export default function PortfolioPage() {
           fundType: 'venture'
         });
         loadPortfolios();
+      } else {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to create fund' }));
+        setError(errorData.error || errorData.details?.message || `Failed to create fund (${response.status})`);
       }
     } catch (error) {
       console.error('Error adding portfolio:', error);
+      setError(error instanceof Error ? error.message : 'An error occurred while creating the fund. Please try again.');
     }
   };
 
   const handleAddCompany = async () => {
     if (!selectedPortfolio) {
       alert('Please select a portfolio first');
+      return;
+    }
+
+    // Validate inputs
+    if (!newCompany.name || newCompany.name.trim() === '') {
+      alert('Please enter a company name');
+      return;
+    }
+
+    if (!newCompany.investmentAmount || newCompany.investmentAmount <= 0) {
+      alert('Please enter a valid investment amount (greater than 0)');
       return;
     }
 
@@ -246,58 +373,309 @@ export default function PortfolioPage() {
         body: JSON.stringify(newCompany)
       });
 
-      if (response.ok) {
-        setShowAddCompanyModal(false);
-        setNewCompany({
-          name: '',
-          sector: '',
-          stage: '',
-          investmentAmount: 0,
-          ownershipPercentage: 0,
-          investmentDate: new Date().toISOString().split('T')[0],
-          currentArr: 0,
-          valuation: 0
-        });
-        loadPortfolios();
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to add company' }));
+        alert(errorData.error || errorData.details?.message || 'Failed to add company');
+        return;
       }
+
+      setNewCompany({
+        name: '',
+        sector: '',
+        stage: '',
+        investmentAmount: 0,
+        ownershipPercentage: 0,
+        investmentDate: new Date().toISOString().split('T')[0],
+        currentArr: 0,
+        valuation: 0
+      });
+      loadPortfolios();
     } catch (error) {
       console.error('Error adding company:', error);
+      alert('An error occurred while adding the company. Please try again.');
     }
   };
 
   const handleDeletePortfolio = async (portfolioId: string) => {
-    if (confirm('Are you sure you want to delete this portfolio?')) {
-      try {
-        const response = await fetch(`/api/portfolio/${portfolioId}`, {
-          method: 'DELETE'
-        });
-
-        if (response.ok) {
-          loadPortfolios();
-        }
-      } catch (error) {
-        console.error('Error deleting portfolio:', error);
-      }
+    if (!confirm('Are you sure you want to delete this portfolio? This will remove the fund and unlink all associated companies. This action cannot be undone.')) {
+      return;
     }
+
+    setDeletingPortfolioId(portfolioId);
+    setError(null);
+
+    try {
+      console.log('Deleting portfolio:', portfolioId);
+      const response = await fetch(`/api/portfolio/${portfolioId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log('Delete response status:', response.status);
+      console.log('Delete response headers:', Object.fromEntries(response.headers.entries()));
+
+      if (!response.ok) {
+        let errorMessage = `Failed to delete portfolio (${response.status})`;
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || errorData.message || errorMessage;
+          console.error('Delete error data:', errorData);
+        } catch (parseError) {
+          const errorText = await response.text();
+          console.error('Delete error text:', errorText);
+          errorMessage = errorText || errorMessage;
+        }
+        console.error('Delete error:', errorMessage);
+        setError(errorMessage);
+        alert(`Error deleting portfolio: ${errorMessage}\n\nPlease check:\n1. Supabase connection is configured\n2. You have permission to delete this portfolio\n3. The portfolio ID is valid`);
+        return;
+      }
+
+      const result = await response.json().catch(() => ({}));
+      console.log('Delete successful:', result);
+      
+      // Reload portfolios
+      await loadPortfolios();
+      
+      if (selectedPortfolio === portfolioId) {
+        setSelectedPortfolio('');
+      }
+      
+      // Show success message
+      alert('Portfolio deleted successfully!');
+    } catch (error) {
+      console.error('Error deleting portfolio:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to delete portfolio';
+      setError(errorMessage);
+      alert(`Error deleting portfolio: ${errorMessage}\n\nThis may be due to:\n1. Network connection issues\n2. Supabase service not available\n3. Server error`);
+    } finally {
+      setDeletingPortfolioId(null);
+    }
+  };
+
+  const handleEditCompany = (company: PortfolioCompany) => {
+    setSelectedCompanyForEdit(company);
+    setShowEditCompanyModal(true);
   };
 
   const handleDeleteCompany = async (portfolioId: string, companyId: string) => {
-    if (confirm('Are you sure you want to delete this company?')) {
-      try {
-        const response = await fetch(`/api/portfolio/${portfolioId}/companies?companyId=${companyId}`, {
-          method: 'DELETE'
-        });
+    if (!confirm('Are you sure you want to remove this company from the portfolio?')) {
+      return;
+    }
 
-        if (response.ok) {
-          loadPortfolios();
-        }
-      } catch (error) {
-        console.error('Error deleting company:', error);
+    try {
+      const response = await fetch(`/api/portfolio/${portfolioId}/companies?companyId=${companyId}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to delete company' }));
+        alert(errorData.error || errorData.details?.message || 'Failed to delete company');
+        return;
       }
+
+      loadPortfolios();
+    } catch (error) {
+      console.error('Error deleting company:', error);
+      alert('An error occurred while deleting the company. Please try again.');
     }
   };
 
+  const handleSaveEditCompany = async () => {
+    if (!selectedCompanyForEdit || !selectedCompanyForEdit.fundId) return;
+
+    const toStr = (v: unknown): string | null =>
+      v == null ? null : typeof v === 'string' ? v : (typeof v === 'object' && v !== null && !Array.isArray(v)
+        ? String((v as { value?: unknown }).value ?? (v as { displayValue?: unknown }).displayValue ?? '').trim() || null
+        : String(v));
+
+    try {
+      const payload: Record<string, unknown> = {
+        total_invested_usd: selectedCompanyForEdit.investmentAmount,
+        ownership_percentage: selectedCompanyForEdit.ownershipPercentage,
+        first_investment_date: toStr(selectedCompanyForEdit.investmentDate) ?? selectedCompanyForEdit.investmentDate ?? null,
+        sector: toStr(selectedCompanyForEdit.sector) ?? selectedCompanyForEdit.sector ?? null,
+        investment_lead: toStr(selectedCompanyForEdit.investmentLead) ?? selectedCompanyForEdit.investmentLead ?? null,
+        last_contacted_date: toStr(selectedCompanyForEdit.lastContacted) ?? selectedCompanyForEdit.lastContacted ?? null
+      };
+      const response = await fetch(`/api/portfolio/${selectedCompanyForEdit.fundId}/companies/${selectedCompanyForEdit.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.ok) {
+        setShowEditCompanyModal(false);
+        setSelectedCompanyForEdit(null);
+        loadPortfolios();
+      }
+    } catch (error) {
+      console.error('Error updating company:', error);
+    }
+  };
+
+  const handleEditMatrixCell = async (companyId: string, field: string, value: any) => {
+    const portfolio = portfolios.find(p => p.companies.some(c => c.id === companyId));
+    if (!portfolio) {
+      throw new Error('Portfolio not found');
+    }
+
+    // Map matrix column ids to API body keys (snake_case)
+    const fieldMap: Record<string, string> = {
+      'company': 'name',
+      'companyName': 'name',
+      'name': 'name',
+      'arr': 'current_arr_usd',
+      'currentArr': 'current_arr_usd',
+      'burnRate': 'burn_rate_monthly_usd',
+      'runway': 'runway_months',
+      'runwayMonths': 'runway_months',
+      'grossMargin': 'gross_margin',
+      'totalInvested': 'total_invested_usd',
+      'invested': 'total_invested_usd',
+      'ownershipPercentage': 'ownership_percentage',
+      'ownership': 'ownership_percentage',
+      'cashInBank': 'cash_in_bank_usd',
+      'sector': 'sector',
+      'investmentLead': 'investment_lead',
+      'firstInvestmentDate': 'first_investment_date',
+      'investmentDate': 'first_investment_date',
+      'lastContactedDate': 'last_contacted_date',
+      'valuation': 'current_valuation_usd',
+      'currentValuation': 'current_valuation_usd',
+    };
+
+    const apiField = fieldMap[field] || field;
+    // Coerce to primitive so we never send [object Object] or store objects
+    const raw = value != null && typeof value === 'object' && !Array.isArray(value)
+      ? (value.value ?? value.displayValue ?? value.display_value ?? '')
+      : value;
+    // Never send id-like value as company name (fixes "companyb16366363" bug)
+    const looksLikeId = (v: unknown): boolean => {
+      if (v == null) return false;
+      const s = String(v).trim();
+      return /^company[a-z0-9]+$/i.test(s) || /^[a-f0-9-]{36}$/i.test(s) || /^[0-9a-f]{8}-[0-9a-f]{4}/i.test(s);
+    };
+    if ((field === 'company' || field === 'companyName' || apiField === 'name') && raw != null && raw !== '' && looksLikeId(raw)) {
+      return; // skip update; user should enter a real name
+    }
+
+    const currencyFields = ['arr', 'currentArr', 'burnRate', 'totalInvested', 'invested', 'cashInBank'];
+    const stringOrDateFields = ['name', 'company', 'companyName', 'sector', 'investmentLead', 'firstInvestmentDate', 'investmentDate', 'lastContactedDate'];
+    const numRaw = typeof raw === 'string' ? parseFloat(String(raw).replace(/[^0-9.-]/g, '')) : Number(raw);
+
+    let apiValue: number | string | null;
+    if (currencyFields.includes(field) || apiField === 'current_valuation_usd') {
+      apiValue = parseCurrencyInput(raw);
+    } else if (field === 'runway' || field === 'runwayMonths') {
+      apiValue = parseInt(String(raw), 10) || 0;
+    } else if (field === 'grossMargin') {
+      apiValue = !isNaN(numRaw) ? numRaw : 0;
+      if (typeof apiValue === 'number' && apiValue > 1) apiValue = apiValue / 100;
+    } else if (field === 'ownership' || field === 'ownershipPercentage') {
+      apiValue = !isNaN(numRaw) ? numRaw : 0;
+    } else if (stringOrDateFields.includes(field)) {
+      apiValue = raw != null ? (typeof raw === 'string' ? raw : String(raw)).trim() : '';
+      if (apiValue === '') apiValue = null;
+    } else {
+      apiValue = typeof raw === 'string' || typeof raw === 'number' ? raw : (raw != null ? String(raw) : null);
+    }
+
+    try {
+      const body: Record<string, number | string | null> = { [apiField]: apiValue };
+      const response = await fetch(`/api/portfolio/${portfolio.id}/companies/${companyId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || 'Failed to update company');
+      }
+
+      // Refresh parent totals in background; do not await so a failed refresh never
+      // causes the matrix to revert the cell (matrix already has optimistic update).
+      loadPortfolios().catch((err) => console.warn('Background portfolio refresh failed:', err));
+    } catch (error) {
+      console.error('Error updating matrix cell:', error);
+      throw error;
+    }
+  };
+
+  const handleAddFundingRound = async (companyId: string, roundData: any) => {
+    const portfolio = portfolios.find(p => p.companies.some(c => c.id === companyId));
+    if (!portfolio) {
+      throw new Error('Portfolio not found');
+    }
+
+    try {
+      const response = await fetch(`/api/portfolio/${portfolio.id}/companies/${companyId}/funding-rounds`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(roundData)
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || 'Failed to add funding round');
+      }
+
+      await loadPortfolios();
+    } catch (error) {
+      console.error('Error adding funding round:', error);
+      throw error;
+    }
+  };
+
+  // Calculate pacing data for charts
+  const calculatePacingData = (portfolio: Portfolio) => {
+    const companies = portfolio.companies;
+    if (companies.length === 0) return [];
+
+    // Find earliest investment date
+    let startDate = new Date();
+    for (const company of companies) {
+      if (company.investmentDate) {
+        const date = new Date(company.investmentDate);
+        if (date < startDate) {
+          startDate = date;
+        }
+      }
+    }
+
+    const months: any[] = [];
+    const currentDate = new Date();
+    let monthDate = new Date(startDate);
+    
+    while (monthDate <= currentDate) {
+      const monthKey = format(monthDate, 'yyyy-MM');
+      const monthCompanies = companies.filter(c => {
+        if (!c.investmentDate) return false;
+        const invDate = new Date(c.investmentDate);
+        return invDate <= monthDate;
+      });
+      
+      months.push({
+        month: format(monthDate, 'MMM yyyy'),
+        monthKey,
+        companies: monthCompanies.length,
+        invested: monthCompanies.reduce((sum, c) => sum + (c.investmentAmount || 0), 0)
+      });
+      
+      monthDate = addMonths(monthDate, 1);
+    }
+    
+    return months;
+  };
+
+  const [runningScenarios, setRunningScenarios] = useState<string | null>(null);
+  const [runningPWERM, setRunningPWERM] = useState<string | null>(null);
+
   const handleRunScenarios = async (portfolioId: string) => {
+    setRunningScenarios(portfolioId);
     try {
       const response = await fetch(`/api/scenarios/run`, {
         method: 'POST',
@@ -306,17 +684,22 @@ export default function PortfolioPage() {
       });
 
       if (response.ok) {
-        alert('Scenarios analysis started successfully!');
+        const data = await response.json();
+        alert('Portfolio scenario analysis started! This will analyze different market conditions and exit scenarios.');
       } else {
-        alert('Failed to start scenarios analysis');
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        alert(`Failed to start scenarios analysis: ${errorData.error || 'Unknown error'}`);
       }
     } catch (error) {
       console.error('Error running scenarios:', error);
-      alert('Error running scenarios analysis');
+      alert(`Error running scenarios analysis: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setRunningScenarios(null);
     }
   };
 
   const handleRunPWERM = async (portfolioId: string) => {
+    setRunningPWERM(portfolioId);
     try {
       const response = await fetch(`/api/pwerm/scenarios`, {
         method: 'POST',
@@ -325,13 +708,21 @@ export default function PortfolioPage() {
       });
 
       if (response.ok) {
-        alert('PWERM analysis started successfully!');
+        const data = await response.json();
+        const successCount = data.results?.length || 0;
+        const errorCount = data.errors?.length || 0;
+        alert(`PWERM analysis completed!\n${successCount} companies analyzed successfully${errorCount > 0 ? `\n${errorCount} errors` : ''}`);
+        // Reload portfolios to show updated PWERM data
+        await loadPortfolios();
       } else {
-        alert('Failed to start PWERM analysis');
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        alert(`Failed to run PWERM analysis: ${errorData.error || 'Unknown error'}`);
       }
     } catch (error) {
       console.error('Error running PWERM:', error);
-      alert('Error running PWERM analysis');
+      alert(`Error running PWERM analysis: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setRunningPWERM(null);
     }
   };
 
@@ -344,13 +735,10 @@ export default function PortfolioPage() {
   }
 
   return (
-    <div className="container mx-auto p-6">
-      <div className="flex justify-between items-center mb-6">
+    <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
         <h1 className="text-3xl font-bold">Portfolio Management</h1>
-        <div className="flex gap-2">
-          <Button onClick={() => window.location.href = '/portfolio/pacing'} variant="outline">
-            View Pacing Graph
-          </Button>
+        <div className="flex flex-wrap gap-2">
           <Button onClick={generateRandomPortfolio} variant="outline">
             <Sparkles className="w-4 h-4 mr-2" />
             Random Portfolio
@@ -362,40 +750,68 @@ export default function PortfolioPage() {
         </div>
       </div>
 
-      {portfolios.length === 0 ? (
-        <Alert>
-          <AlertDescription>
-            No funds created yet. Create your first fund to get started.
+      {error ? (
+        <Alert className="mb-6 border-red-500 bg-red-50">
+          <AlertDescription className="text-red-800">
+            <div className="flex flex-col gap-2">
+              <p className="font-semibold">Error loading portfolios: {error}</p>
+              <p className="text-sm">This may be due to a missing Supabase configuration. Please check your environment variables (NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY).</p>
+              <Button onClick={loadPortfolios} variant="outline" size="sm" className="w-fit mt-2">
+                Retry
+              </Button>
+            </div>
           </AlertDescription>
         </Alert>
+      ) : portfolios.length === 0 ? (
+        <Card className="mb-6 border-2 border-dashed">
+          <CardContent className="py-12 text-center">
+            <GraduationCap className="w-16 h-16 mx-auto mb-4 text-gray-400" />
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">No portfolios yet</h3>
+            <p className="text-gray-600 mb-4">Create your first fund to start managing your portfolio</p>
+            <Button onClick={() => setShowAddFundModal(true)}>
+              <Plus className="w-4 h-4 mr-2" />
+              Create Your First Fund
+            </Button>
+          </CardContent>
+        </Card>
       ) : (
-        <div className="space-y-6">
+        <div className="space-y-8">
           {portfolios.map((portfolio) => (
-            <Card key={portfolio.id}>
-              <CardHeader>
-                <div className="flex justify-between items-start">
-                  <div>
-                    <CardTitle className="text-xl">{portfolio.name}</CardTitle>
-                    <CardDescription>
-                      Fund Size: ${portfolio.fundSize.toLocaleString()} | 
-                      Invested: ${portfolio.totalInvested.toLocaleString()} | 
-                      Current Value: ${portfolio.totalValuation.toLocaleString()}
+            <Card key={portfolio.id} className="shadow-lg">
+              <CardHeader className="pb-4">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                  <div className="flex-1">
+                    <CardTitle className="text-xl mb-2">{portfolio.name}</CardTitle>
+                    <CardDescription className="flex flex-wrap gap-2">
+                      <span>Fund Size: {formatCurrency(portfolio.fundSize)}</span>
+                      <span>•</span>
+                      <span>Invested: {formatCurrency(portfolio.totalInvested)}</span>
+                      <span>•</span>
+                      <span>Current Value: {formatCurrency(portfolio.totalValuation)}</span>
                     </CardDescription>
                   </div>
                   <Button
                     variant="destructive"
                     size="sm"
                     onClick={() => handleDeletePortfolio(portfolio.id)}
+                    disabled={deletingPortfolioId === portfolio.id}
                   >
-                    <Trash2 className="w-4 h-4" />
+                    {deletingPortfolioId === portfolio.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-4 h-4" />
+                    )}
                   </Button>
                 </div>
               </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  <div className="flex justify-between items-center">
-                    <h3 className="text-lg font-semibold">Companies ({portfolio.companies.length})</h3>
-                    <div className="flex gap-2">
+              <CardContent className="pt-6">
+                <div className="space-y-6">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900">Companies ({portfolio.companies.length})</h3>
+                      <p className="text-sm text-gray-500 mt-1">Manage your portfolio companies and run analyses</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
                       <Button
                         onClick={() => {
                           setSelectedPortfolioForSimulation(portfolio);
@@ -411,90 +827,143 @@ export default function PortfolioPage() {
                         onClick={() => handleRunScenarios(portfolio.id)}
                         size="sm"
                         variant="outline"
+                        disabled={runningScenarios === portfolio.id}
+                        className="bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-300"
                       >
-                        Run Scenarios
+                        {runningScenarios === portfolio.id ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Running...
+                          </>
+                        ) : (
+                          <>
+                            <Calculator className="w-4 h-4 mr-2" />
+                            Run Scenarios
+                          </>
+                        )}
                       </Button>
                       <Button
                         onClick={() => handleRunPWERM(portfolio.id)}
                         size="sm"
                         variant="outline"
+                        disabled={runningPWERM === portfolio.id}
+                        className="bg-purple-50 hover:bg-purple-100 text-purple-700 border-purple-300"
                       >
-                        Run PWERM
-                      </Button>
-                      <Button
-                        onClick={() => {
-                          setSelectedPortfolio(portfolio.id);
-                          setShowAddCompanyModal(true);
-                        }}
-                        size="sm"
-                      >
-                        <Plus className="w-4 h-4 mr-2" />
-                        Add Company
+                        {runningPWERM === portfolio.id ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Running...
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-4 h-4 mr-2" />
+                            Run PWERM
+                          </>
+                        )}
                       </Button>
                     </div>
                   </div>
                   
-                  {portfolio.companies.length === 0 ? (
-                    <p className="text-gray-500">No companies in this portfolio yet.</p>
-                  ) : (
-                    <div className="grid gap-4">
-                      {portfolio.companies.map((company) => (
-                        <Card key={company.id} className="p-4">
-                          <div className="flex justify-between items-start">
-                            <div className="flex-1">
-                              <h4 className="font-semibold">{company.name}</h4>
-                              <p className="text-sm text-gray-600">
-                                {company.sector} • {company.stage}
-                              </p>
-                              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-2">
-                                <div>
-                                  <p className="text-xs text-gray-500">Investment</p>
-                                  <p className="font-medium">${company.investmentAmount.toLocaleString()}</p>
-                                </div>
-                                <div>
-                                  <p className="text-xs text-gray-500">Ownership</p>
-                                  <p className="font-medium">{company.ownershipPercentage}%</p>
-                                </div>
-                                <div>
-                                  <p className="text-xs text-gray-500">Current ARR</p>
-                                  <p className="font-medium">${company.currentArr.toLocaleString()}</p>
-                                </div>
-                                <div>
-                                  <p className="text-xs text-gray-500">Valuation</p>
-                                  <p className="font-medium">${company.valuation.toLocaleString()}</p>
-                                </div>
-                              </div>
-                              <div className="grid grid-cols-3 gap-4 mt-2">
-                                <div>
-                                  <p className="text-xs text-gray-500">Individual IRR</p>
-                                  <p className={`font-medium ${company.individualIrr && company.individualIrr > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                    {company.individualIrr ? `${company.individualIrr.toFixed(1)}%` : 'N/A'}
-                                  </p>
-                                </div>
-                                <div>
-                                  <p className="text-xs text-gray-500">Multiple</p>
-                                  <p className="font-medium">{company.individualMultiple ? company.individualMultiple.toFixed(2) : 'N/A'}</p>
-                                </div>
-                                <div>
-                                  <p className="text-xs text-gray-500">Return</p>
-                                  <p className={`font-medium ${company.individualReturn && company.individualReturn > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                    ${company.individualReturn ? company.individualReturn.toLocaleString() : 'N/A'}
-                                  </p>
-                                </div>
-                              </div>
-                            </div>
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              onClick={() => handleDeleteCompany(portfolio.id, company.id)}
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
+                  {/* Pacing Charts */}
+                  {portfolio.companies.length > 0 && (
+                    <div className="mb-6 space-y-4">
+                      <h4 className="text-sm font-semibold text-gray-700">Pacing Analysis</h4>
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <div className="bg-white border border-gray-200 rounded p-3">
+                          <h5 className="text-xs font-medium text-gray-600 mb-2">Capital Deployment</h5>
+                          <div className="h-48">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <AreaChart data={calculatePacingData(portfolio)}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                                <XAxis 
+                                  dataKey="month" 
+                                  angle={-45}
+                                  textAnchor="end"
+                                  height={60}
+                                  stroke="#6b7280" 
+                                  fontSize={9}
+                                />
+                                <YAxis 
+                                  tickFormatter={(val) => `$${(val / 1000000).toFixed(1)}M`}
+                                  stroke="#6b7280" 
+                                  fontSize={9}
+                                />
+                                <Tooltip />
+                                <Area 
+                                  type="monotone" 
+                                  dataKey="invested" 
+                                  stroke="#3B82F6" 
+                                  fill="#3B82F6" 
+                                  fillOpacity={0.3}
+                                />
+                              </AreaChart>
+                            </ResponsiveContainer>
                           </div>
-                        </Card>
-                      ))}
+                        </div>
+                        <div className="bg-white border border-gray-200 rounded p-3">
+                          <h5 className="text-xs font-medium text-gray-600 mb-2">Company Count</h5>
+                          <div className="h-48">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={calculatePacingData(portfolio)}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                                <XAxis 
+                                  dataKey="month" 
+                                  angle={-45}
+                                  textAnchor="end"
+                                  height={60}
+                                  stroke="#6b7280" 
+                                  fontSize={9}
+                                />
+                                <YAxis stroke="#6b7280" fontSize={9} />
+                                <Tooltip />
+                                <Bar dataKey="companies" fill="#10B981" />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )}
+
+                  <div className="flex flex-col" style={{ height: 660, minHeight: 660 }} role="region" aria-label="Portfolio matrix">
+                  <UnifiedMatrix
+                    mode="portfolio"
+                    fundId={portfolio.id}
+                    initialData={buildMatrixDataFromPortfolioCompanies(portfolio.companies as unknown as PortfolioCompanyForMatrix[], portfolio.id)}
+                    availableActions={availableActions}
+                    onCellEdit={async (rowId, columnId, value, options) => {
+                      if (columnId === 'documents' && options?.metadata?.documents != null) {
+                        await updateMatrixCell({
+                          companyId: rowId,
+                          rowId,
+                          columnId: 'documents',
+                          newValue: value,
+                          fundId: portfolio.id,
+                          data_source: options.data_source ?? 'manual',
+                          metadata: { documents: options.metadata.documents },
+                        });
+                        return;
+                      }
+                      if (options?.sourceDocumentId != null) {
+                        await updateMatrixCell({
+                          companyId: rowId,
+                          rowId,
+                          columnId,
+                          newValue: value,
+                          fundId: portfolio.id,
+                          data_source: 'document',
+                          sourceDocumentId: options.sourceDocumentId,
+                          metadata: { sourceDocumentId: options.sourceDocumentId },
+                        });
+                        return;
+                      }
+                      await handleEditMatrixCell(rowId, columnId, value);
+                    }}
+                    onRefresh={loadPortfolios}
+                    showQueryBar={false}
+                    showExport={true}
+                  />
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -504,23 +973,34 @@ export default function PortfolioPage() {
 
       {/* Add Fund Modal */}
       {showAddFundModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <Card className="w-full max-w-md">
-            <CardHeader>
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <Card className="w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <CardHeader className="pb-4">
               <div className="flex justify-between items-center">
                 <CardTitle>Add New Fund</CardTitle>
-                <Button variant="ghost" size="sm" onClick={() => setShowAddFundModal(false)}>
+                <Button variant="ghost" size="sm" onClick={() => {
+                  setShowAddFundModal(false);
+                  setError(null);
+                }}>
                   <X className="w-4 h-4" />
                 </Button>
               </div>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-6 pt-2">
+              {error && (
+                <Alert variant="destructive">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
               <div>
                 <Label htmlFor="fundName">Fund Name</Label>
                 <Input
                   id="fundName"
                   value={newPortfolio.name}
-                  onChange={(e) => setNewPortfolio({...newPortfolio, name: e.target.value})}
+                  onChange={(e) => {
+                    setNewPortfolio({...newPortfolio, name: e.target.value});
+                    setError(null);
+                  }}
                   placeholder="Enter fund name"
                 />
               </div>
@@ -529,9 +1009,12 @@ export default function PortfolioPage() {
                 <Input
                   id="fundSize"
                   type="number"
-                  value={newPortfolio.fundSize}
-                  onChange={(e) => setNewPortfolio({...newPortfolio, fundSize: parseInt(e.target.value)})}
-                  placeholder="Enter fund size"
+                  value={newPortfolio.fundSize || ''}
+                  onChange={(e) => {
+                    setNewPortfolio({...newPortfolio, fundSize: safeParseInt(e.target.value, 0)});
+                    setError(null);
+                  }}
+                  placeholder="Enter fund size in USD"
                 />
               </div>
               <div>
@@ -539,8 +1022,8 @@ export default function PortfolioPage() {
                 <Input
                   id="targetMultiple"
                   type="number"
-                  value={newPortfolio.targetMultiple}
-                  onChange={(e) => setNewPortfolio({...newPortfolio, targetMultiple: parseInt(e.target.value)})}
+                  value={newPortfolio.targetMultiple || ''}
+                  onChange={(e) => setNewPortfolio({...newPortfolio, targetMultiple: safeParseInt(e.target.value, 30000)})}
                   placeholder="30000"
                 />
               </div>
@@ -549,8 +1032,8 @@ export default function PortfolioPage() {
                 <Input
                   id="vintageYear"
                   type="number"
-                  value={newPortfolio.vintageYear}
-                  onChange={(e) => setNewPortfolio({...newPortfolio, vintageYear: parseInt(e.target.value)})}
+                  value={newPortfolio.vintageYear || ''}
+                  onChange={(e) => setNewPortfolio({...newPortfolio, vintageYear: safeParseInt(e.target.value, new Date().getFullYear())})}
                   placeholder="2024"
                 />
               </div>
@@ -571,173 +1054,11 @@ export default function PortfolioPage() {
         </div>
       )}
 
-      {/* Add Company Modal */}
-      {showAddCompanyModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <Card className="w-full max-w-md">
-            <CardHeader>
-              <div className="flex justify-between items-center">
-                <CardTitle>Add Company to Portfolio</CardTitle>
-                <Button variant="ghost" size="sm" onClick={() => setShowAddCompanyModal(false)}>
-                  <X className="w-4 h-4" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <Label htmlFor="companySearch">Search Companies</Label>
-                <div className="relative">
-                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="companySearch"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Type to search companies..."
-                    className="pl-8"
-                  />
-                </div>
-              </div>
-              <div>
-                <Label htmlFor="companySelect">Select Company</Label>
-                <Select
-                  value={newCompany.name}
-                  onValueChange={(value) => {
-                    const selected = availableCompanies.find(c => c.name === value);
-                    if (selected) {
-                      setNewCompany({
-                        ...newCompany,
-                        name: selected.name,
-                        sector: selected.sector || newCompany.sector,
-                        currentArr: selected.current_arr_usd || newCompany.currentArr,
-                        valuation: selected.total_invested_usd || newCompany.valuation
-                      });
-                    }
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a company" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {isSearching ? (
-                      <SelectItem value="loading" disabled>Searching...</SelectItem>
-                    ) : availableCompanies.length === 0 ? (
-                      <SelectItem value="none" disabled>No companies found</SelectItem>
-                    ) : (
-                      availableCompanies.map((company) => (
-                        <SelectItem key={company.id} value={company.name}>
-                          <div className="flex flex-col">
-                            <span>{company.name}</span>
-                            {company.sector && (
-                              <span className="text-xs text-muted-foreground">{company.sector}</span>
-                            )}
-                          </div>
-                        </SelectItem>
-                      ))
-                    )}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="text-center text-sm text-muted-foreground">OR</div>
-              <div>
-                <Label htmlFor="companyName">Enter Company Name Manually</Label>
-                <Input
-                  id="companyName"
-                  value={newCompany.name}
-                  onChange={(e) => setNewCompany({...newCompany, name: e.target.value})}
-                  placeholder="Enter company name"
-                />
-              </div>
-              <div>
-                <Label htmlFor="sector">Sector</Label>
-                <Input
-                  id="sector"
-                  value={newCompany.sector}
-                  onChange={(e) => setNewCompany({...newCompany, sector: e.target.value})}
-                  placeholder="Enter sector"
-                />
-              </div>
-              <div>
-                <Label htmlFor="stage">Stage</Label>
-                <Select
-                  value={newCompany.stage}
-                  onValueChange={(value) => setNewCompany({...newCompany, stage: value})}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select stage" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Pre-Seed">Pre-Seed</SelectItem>
-                    <SelectItem value="Seed">Seed</SelectItem>
-                    <SelectItem value="Series A">Series A</SelectItem>
-                    <SelectItem value="Series B">Series B</SelectItem>
-                    <SelectItem value="Series C">Series C</SelectItem>
-                    <SelectItem value="Series D+">Series D+</SelectItem>
-                    <SelectItem value="Growth">Growth</SelectItem>
-                    <SelectItem value="Late Stage">Late Stage</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label htmlFor="investmentAmount">Investment Amount (USD)</Label>
-                <Input
-                  id="investmentAmount"
-                  type="number"
-                  value={newCompany.investmentAmount}
-                  onChange={(e) => setNewCompany({...newCompany, investmentAmount: parseInt(e.target.value)})}
-                  placeholder="Enter investment amount"
-                />
-              </div>
-              <div>
-                <Label htmlFor="ownershipPercentage">Ownership Percentage</Label>
-                <Input
-                  id="ownershipPercentage"
-                  type="number"
-                  value={newCompany.ownershipPercentage}
-                  onChange={(e) => setNewCompany({...newCompany, ownershipPercentage: parseFloat(e.target.value)})}
-                  placeholder="Enter ownership percentage"
-                />
-              </div>
-              <div>
-                <Label htmlFor="investmentDate">Investment Date</Label>
-                <Input
-                  id="investmentDate"
-                  type="date"
-                  value={newCompany.investmentDate}
-                  onChange={(e) => setNewCompany({...newCompany, investmentDate: e.target.value})}
-                />
-              </div>
-              <div>
-                <Label htmlFor="currentArr">Current ARR (USD)</Label>
-                <Input
-                  id="currentArr"
-                  type="number"
-                  value={newCompany.currentArr}
-                  onChange={(e) => setNewCompany({...newCompany, currentArr: parseInt(e.target.value)})}
-                  placeholder="Enter current ARR"
-                />
-              </div>
-              <div>
-                <Label htmlFor="valuation">Current Valuation (USD)</Label>
-                <Input
-                  id="valuation"
-                  type="number"
-                  value={newCompany.valuation}
-                  onChange={(e) => setNewCompany({...newCompany, valuation: parseInt(e.target.value)})}
-                  placeholder="Enter current valuation"
-                />
-              </div>
-              <Button onClick={handleAddCompany} className="w-full">
-                Add Company
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-      )}
 
       {/* Simulation Modal */}
       {showSimulationModal && selectedPortfolioForSimulation && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
-          <Card className="w-full max-w-4xl m-4 max-h-Array.from(h) overflow-y-auto">
+          <Card className="w-full max-w-4xl m-4 max-h-[90vh] overflow-y-auto">
             <CardHeader>
               <div className="flex justify-between items-center">
                 <CardTitle>Portfolio Outcome Simulation</CardTitle>
@@ -754,8 +1075,8 @@ export default function PortfolioPage() {
                 <div className="bg-purple-50 p-4 rounded-lg">
                   <h4 className="font-semibold text-purple-900 mb-2">Portfolio Stats</h4>
                   <p className="text-sm">Companies: {selectedPortfolioForSimulation.companies.length}</p>
-                  <p className="text-sm">Total Invested: ${selectedPortfolioForSimulation.totalInvested.toLocaleString()}</p>
-                  <p className="text-sm">Current Value: ${selectedPortfolioForSimulation.totalValuation.toLocaleString()}</p>
+                  <p className="text-sm">Total Invested: {formatCurrency(selectedPortfolioForSimulation.totalInvested)}</p>
+                  <p className="text-sm">Current Value: {formatCurrency(selectedPortfolioForSimulation.totalValuation)}</p>
                 </div>
                 <div className="bg-blue-50 p-4 rounded-lg">
                   <h4 className="font-semibold text-blue-900 mb-2">Ownership Analysis</h4>
@@ -779,7 +1100,7 @@ export default function PortfolioPage() {
                         <div>
                           <p className="text-gray-600">Acquisition (3-10x)</p>
                           <p className="font-bold text-green-600">
-                            ${((acquirePrice * company.ownershipPercentage / 100)).toLocaleString()}
+                            {formatCurrency((acquirePrice * company.ownershipPercentage / 100))}
                           </p>
                           <p className="text-xs text-gray-500">
                             {(acquirePrice / company.investmentAmount).toFixed(1)}x return
@@ -832,7 +1153,7 @@ export default function PortfolioPage() {
                         });
                         
                         const multiple = totalReturn / selectedPortfolioForSimulation.totalInvested;
-                        return `${multiple.toFixed(1)}x ($${totalReturn.toLocaleString()})`;
+                        return `${multiple.toFixed(1)}x (${formatCurrency(totalReturn, false)})`;
                       })()}
                     </span>
                   </div>
@@ -857,7 +1178,7 @@ export default function PortfolioPage() {
                         });
                         
                         const multiple = totalReturn / selectedPortfolioForSimulation.totalInvested;
-                        return `${multiple.toFixed(1)}x ($${totalReturn.toLocaleString()})`;
+                        return `${multiple.toFixed(1)}x (${formatCurrency(totalReturn, false)})`;
                       })()}
                     </span>
                   </div>

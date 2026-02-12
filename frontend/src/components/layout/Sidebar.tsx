@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { createClient } from '@supabase/supabase-js';
+import { useSession, signOut } from 'next-auth/react';
 import {
   LayoutDashboard,
   FileText,
@@ -24,34 +24,17 @@ import {
   Presentation,
 } from 'lucide-react';
 
-// Only create Supabase client if environment variables are available
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-const supabase = supabaseUrl && supabaseKey 
-  ? createClient(supabaseUrl, supabaseKey)
-  : null;
-
 
 export function Sidebar() {
-  const [user, setUser] = useState<any>(null);
+  const { data: session } = useSession();
   const [isDark, setIsDark] = useState(false);
   const [mounted, setMounted] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
+  const user = session?.user ?? null;
 
   useEffect(() => {
     setMounted(true);
-    
-    if (supabase) {
-      checkUser();
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        setUser(session?.user ?? null);
-      });
-      return () => subscription.unsubscribe();
-    }
-    
-    // Check initial theme AFTER mount
     const theme = document.documentElement.getAttribute('data-theme');
     setIsDark(theme === 'night');
   }, []);
@@ -62,20 +45,8 @@ export function Sidebar() {
     setIsDark(!isDark);
   };
 
-  const checkUser = async () => {
-    if (!supabase) return;
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      setUser(user);
-    } catch (error) {
-      console.error('Error checking user:', error);
-    }
-  };
-
   const handleSignOut = async () => {
-    if (supabase) {
-      await supabase.auth.signOut();
-    }
+    await signOut({ redirect: false });
     router.push('/');
   };
 
@@ -97,8 +68,8 @@ export function Sidebar() {
     { label: 'Fund Admin', href: '/fund_admin', icon: Settings2 },
     { label: 'Audit', href: '/audit', icon: ShieldCheck },
     { label: 'Subscription', href: '/subscription', icon: CreditCard },
-    { label: 'Docs Agent', href: '/docs-agent', icon: FileSearch },
-    { label: 'Matrix', href: '/matrix', icon: Boxes },
+    { label: 'Docs', href: '/docs', icon: FileSearch },
+    { label: 'Matrix', href: '/matrix-control-panel', icon: Boxes },
   ], []);
 
   return (

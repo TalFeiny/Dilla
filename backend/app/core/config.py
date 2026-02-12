@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: Optional[str] = Field(None, env="REDIS_URL")
     
+    # Backend-agnostic storage and data (default: Supabase)
+    STORAGE_PROVIDER: str = Field("supabase", env="STORAGE_PROVIDER")
+    DATA_BACKEND: str = Field("supabase", env="DATA_BACKEND")
+    COMPANY_DATA_BACKEND: Optional[str] = Field(None, env="COMPANY_DATA_BACKEND")  # None = use DATA_BACKEND
+    STORAGE_BUCKET: str = Field("documents", env="STORAGE_BUCKET")
+    STORAGE_PREFIX: str = Field("", env="STORAGE_PREFIX")
+    
     # Feature flags
     ENABLE_STREAMING: bool = Field(True, env="ENABLE_STREAMING")
     ENABLE_WEBSOCKET: bool = Field(True, env="ENABLE_WEBSOCKET")

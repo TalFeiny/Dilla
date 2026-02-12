@@ -5,7 +5,7 @@ Endpoints for MCP tool orchestration (Tavily & Firecrawl)
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from fastapi.responses import StreamingResponse
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from pydantic import BaseModel, Field
 import json
 import asyncio
@@ -270,3 +270,76 @@ async def test_mcp_integration():
             "error": str(e),
             "message": "MCP integration test failed"
         }
+
+
+class BatchSearchRequest(BaseModel):
+    """Request model for batch company search"""
+    companyNames: List[str] = Field(..., description="List of company names to search")
+
+
+class BatchSearchStatusResponse(BaseModel):
+    """Response model for batch search status"""
+    status: str  # pending, processing, completed, failed
+    companyNames: List[str]
+    results: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+# In-memory job storage (for MVP - use Redis in production)
+_batch_search_jobs: Dict[str, Dict[str, Any]] = {}
+
+
+@router.post("/batch-search-companies")
+async def batch_search_companies(request: BatchSearchRequest):
+    """
+    Start a batch search for multiple companies using Tavily
+    Returns immediately with a jobId, search happens in background
+    """
+    try:
+        from app.services.unified_mcp_orchestrator import get_unified_orchestrator
+        
+        # Generate job ID
+        import uuid
+        job_id = str(uuid.uuid4())
+        
+        # Initialize job
+        _batch_search_jobs[job_id] = {
+            "status": "processing",
+            "companyNames": request.companyNames,
+            "results": {},
+            "createdAt": asyncio.get_event_loop().time()
+        }
+        
+        # Start async batch search
+        async def perform_search():
+            try:
+                orchestrator = await get_unified_orchestrator()
+                results = await orchestrator.batch_search_companies(request.companyNames)
+                _batch_search_jobs[job_id]["results"] = results
+                _batch_search_jobs[job_id]["status"] = "completed"
+            except Exception as e:
+                _batch_search_jobs[job_id]["status"] = "failed"
+                _batch_search_jobs[job_id]["error"] = str(e)
+        
+        # Run in background
+        asyncio.create_task(perform_search())
+        
+        return {"jobId": job_id}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/batch-search-status/{job_id}")
+async def get_batch_search_status(job_id: str):
+    """Get status of a batch search job"""
+    if job_id not in _batch_search_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = _batch_search_jobs[job_id]
+    return {
+        "status": job["status"],
+        "companyNames": job["companyNames"],
+        "results": job.get("results"),
+        "error": job.get("error")
+    }

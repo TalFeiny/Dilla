@@ -166,80 +166,170 @@ export default function FundPacingPage() {
   const [loading, setLoading] = useState(true);
   const [selectedChart, setSelectedChart] = useState('deployment');
   const [timeRange, setTimeRange] = useState('all');  // Default to showing full timeline
-  const [funds, setFunds] = useState<Fund[]>([
-    {
-      id: 'fund-1',
-      name: 'Fund I',
-      startDate: '2018-08-01',  // Changed to August 2018
-      vintageYear: 2018,
-      firstClose: '2018-08-01',
-      finalClose: '2019-02-01',
-      size: 50000000, // $50M
-      targetCompanies: 15,
-      targetOwnership: 18,
-      color: '#3B82F6', // blue
-      deploymentPeriodYears: 3,
-      fundLifeYears: 10,
-      extensionYears: 2,
-      initialManagementFee: 2.0,
-      managementFeeReduction: 0.25,
-      carriedInterest: 20,
-      preferredReturn: 8,
-      recyclingRate: 0.15,
-      reserveRatio: 0.5,
-      targetCheckSize: 1500000,
-      targetFollowOnMultiple: 2.0
-    },
-    {
-      id: 'fund-2', 
-      name: 'Fund II',
-      startDate: '2023-01-01',
-      vintageYear: 2023,
-      firstClose: '2023-01-01',
-      finalClose: '2023-06-01',
-      size: 100000000, // $100M
-      targetCompanies: 20,
-      targetOwnership: 15,
-      color: '#10B981', // green
-      deploymentPeriodYears: 4,
-      fundLifeYears: 10,
-      extensionYears: 2,
-      initialManagementFee: 2.0,
-      managementFeeReduction: 0.25,
-      carriedInterest: 20,
-      preferredReturn: 8,
-      recyclingRate: 0.15,
-      reserveRatio: 0.5,
-      targetCheckSize: 2500000,
-      targetFollowOnMultiple: 2.0
-    },
-    {
-      id: 'fund-3',
-      name: 'Fund III',
-      startDate: '2024-06-01',
-      vintageYear: 2024,
-      firstClose: '2024-06-01',
-      finalClose: '2024-12-01',
-      size: 150000000, // $150M
-      targetCompanies: 25,
-      targetOwnership: 12,
-      color: '#F59E0B', // amber
-      deploymentPeriodYears: 5,
-      fundLifeYears: 10,
-      extensionYears: 2,
-      initialManagementFee: 2.0,
-      managementFeeReduction: 0.25,
-      carriedInterest: 20,
-      preferredReturn: 8,
-      recyclingRate: 0.15,
-      reserveRatio: 0.45,
-      targetCheckSize: 3000000,
-      targetFollowOnMultiple: 2.5
-    }
-  ]);
+  const [funds, setFunds] = useState<Fund[]>([]);
   const [pacingData, setPacingData] = useState<PacingData[]>([]);
   const [selectedFunds, setSelectedFunds] = useState<string[]>([]);
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<string>('');
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [editingFund, setEditingFund] = useState<Fund | null>(null);
+  const [regressionEnabled, setRegressionEnabled] = useState(true);
+  const [regressionSlope, setRegressionSlope] = useState<number | null>(null);
+  const [regressionIntercept, setRegressionIntercept] = useState<number | null>(null);
+  const [ledgerData, setLedgerData] = useState<any>(null);
+  const [loadingLedger, setLoadingLedger] = useState(false);
+
+  // Helper function to map database fund to Fund interface
+  const mapDbFundToFund = (dbFund: any, index: number): Fund => {
+    return {
+      id: dbFund.id,
+      name: dbFund.name || `Fund ${index + 1}`,
+      startDate: dbFund.start_date || dbFund.first_close || new Date().toISOString().split('T')[0],
+      vintageYear: dbFund.vintage_year || new Date(dbFund.start_date || dbFund.first_close || Date.now()).getFullYear(),
+      firstClose: dbFund.first_close || dbFund.start_date || new Date().toISOString().split('T')[0],
+      finalClose: dbFund.final_close || new Date().toISOString().split('T')[0],
+      size: dbFund.fund_size_usd || dbFund.size || 100000000,
+      targetCompanies: dbFund.target_companies || 20,
+      targetOwnership: dbFund.target_ownership || 15,
+      color: dbFund.color || COLORS[index % COLORS.length],
+      deploymentPeriodYears: dbFund.deployment_period_years || 4,
+      fundLifeYears: dbFund.fund_life_years || 10,
+      extensionYears: dbFund.extension_years || 2,
+      initialManagementFee: dbFund.initial_management_fee || 2.0,
+      managementFeeReduction: dbFund.management_fee_reduction || 0.25,
+      carriedInterest: dbFund.carried_interest || 20,
+      preferredReturn: dbFund.preferred_return || 8,
+      recyclingRate: dbFund.recycling_rate || 0.15,
+      reserveRatio: dbFund.reserve_ratio || 0.5,
+      targetCheckSize: dbFund.target_check_size || 2500000,
+      targetFollowOnMultiple: dbFund.target_follow_on_multiple || 2.0
+    };
+  };
+
+  // Fetch funds from API
+  const fetchFunds = async () => {
+    try {
+      const response = await fetch('/api/funds');
+      if (response.ok) {
+        const data = await response.json();
+        const fetchedFunds = (data.funds || []).map((f: any, index: number) => mapDbFundToFund(f, index));
+        setFunds(fetchedFunds);
+        if (fetchedFunds.length > 0 && selectedFunds.length === 0) {
+          setSelectedFunds(fetchedFunds.map((f: Fund) => f.id));
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching funds:', error);
+    }
+  };
+
+  // Create a new fund
+  const createFund = async (fundData: Partial<Fund>) => {
+    try {
+      const dbData = {
+        name: fundData.name,
+        start_date: fundData.startDate,
+        vintage_year: fundData.vintageYear,
+        first_close: fundData.firstClose,
+        final_close: fundData.finalClose,
+        fund_size_usd: fundData.size,
+        target_companies: fundData.targetCompanies,
+        target_ownership: fundData.targetOwnership,
+        color: fundData.color || COLORS[funds.length % COLORS.length],
+        deployment_period_years: fundData.deploymentPeriodYears,
+        fund_life_years: fundData.fundLifeYears,
+        extension_years: fundData.extensionYears,
+        initial_management_fee: fundData.initialManagementFee,
+        management_fee_reduction: fundData.managementFeeReduction,
+        carried_interest: fundData.carriedInterest,
+        preferred_return: fundData.preferredReturn,
+        recycling_rate: fundData.recyclingRate,
+        reserve_ratio: fundData.reserveRatio,
+        target_check_size: fundData.targetCheckSize,
+        target_follow_on_multiple: fundData.targetFollowOnMultiple
+      };
+
+      const response = await fetch('/api/funds', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'fund', data: dbData })
+      });
+
+      if (response.ok) {
+        const newFund = await response.json();
+        await fetchFunds();
+        setShowCreateModal(false);
+        return newFund;
+      } else {
+        throw new Error('Failed to create fund');
+      }
+    } catch (error) {
+      console.error('Error creating fund:', error);
+      throw error;
+    }
+  };
+
+  // Update an existing fund
+  const updateFund = async (fundId: string, fundData: Partial<Fund>) => {
+    try {
+      const dbData: any = {};
+      if (fundData.name !== undefined) dbData.name = fundData.name;
+      if (fundData.startDate !== undefined) dbData.start_date = fundData.startDate;
+      if (fundData.vintageYear !== undefined) dbData.vintage_year = fundData.vintageYear;
+      if (fundData.firstClose !== undefined) dbData.first_close = fundData.firstClose;
+      if (fundData.finalClose !== undefined) dbData.final_close = fundData.finalClose;
+      if (fundData.size !== undefined) dbData.fund_size_usd = fundData.size;
+      if (fundData.targetCompanies !== undefined) dbData.target_companies = fundData.targetCompanies;
+      if (fundData.targetOwnership !== undefined) dbData.target_ownership = fundData.targetOwnership;
+      if (fundData.color !== undefined) dbData.color = fundData.color;
+      if (fundData.deploymentPeriodYears !== undefined) dbData.deployment_period_years = fundData.deploymentPeriodYears;
+      if (fundData.fundLifeYears !== undefined) dbData.fund_life_years = fundData.fundLifeYears;
+      if (fundData.extensionYears !== undefined) dbData.extension_years = fundData.extensionYears;
+      if (fundData.initialManagementFee !== undefined) dbData.initial_management_fee = fundData.initialManagementFee;
+      if (fundData.managementFeeReduction !== undefined) dbData.management_fee_reduction = fundData.managementFeeReduction;
+      if (fundData.carriedInterest !== undefined) dbData.carried_interest = fundData.carriedInterest;
+      if (fundData.preferredReturn !== undefined) dbData.preferred_return = fundData.preferredReturn;
+      if (fundData.recyclingRate !== undefined) dbData.recycling_rate = fundData.recyclingRate;
+      if (fundData.reserveRatio !== undefined) dbData.reserve_ratio = fundData.reserveRatio;
+      if (fundData.targetCheckSize !== undefined) dbData.target_check_size = fundData.targetCheckSize;
+      if (fundData.targetFollowOnMultiple !== undefined) dbData.target_follow_on_multiple = fundData.targetFollowOnMultiple;
+
+      const response = await fetch(`/api/funds/${fundId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(dbData)
+      });
+
+      if (response.ok) {
+        await fetchFunds();
+        setEditingFund(null);
+        return await response.json();
+      } else {
+        throw new Error('Failed to update fund');
+      }
+    } catch (error) {
+      console.error('Error updating fund:', error);
+      throw error;
+    }
+  };
+
+  // Delete a fund
+  const deleteFund = async (fundId: string) => {
+    try {
+      const response = await fetch(`/api/funds/${fundId}`, {
+        method: 'DELETE'
+      });
+
+      if (response.ok) {
+        await fetchFunds();
+        setSelectedFunds(prev => prev.filter(id => id !== fundId));
+      } else {
+        throw new Error('Failed to delete fund');
+      }
+    } catch (error) {
+      console.error('Error deleting fund:', error);
+      throw error;
+    }
+  };
 
   // Fetch portfolios from the portfolio API
   const fetchPortfolios = async () => {
@@ -252,32 +342,6 @@ export default function FundPacingPage() {
         // Auto-select first portfolio if available
         if (data.length > 0 && !selectedPortfolioId) {
           setSelectedPortfolioId(data[0].id);
-          // Convert portfolio to fund format for compatibility
-          const portfolioFunds = data.map((p: any, index: number) => ({
-            id: p.id,
-            name: p.name,
-            startDate: new Date(p.companies[0]?.investmentDate || Date.now()).toISOString().split('T')[0],
-            vintageYear: new Date().getFullYear(),
-            firstClose: new Date(p.companies[0]?.investmentDate || Date.now()).toISOString().split('T')[0],
-            finalClose: new Date().toISOString().split('T')[0],
-            size: p.fundSize || 100000000,
-            targetCompanies: 20,
-            targetOwnership: 15,
-            color: COLORS[index % COLORS.length],
-            deploymentPeriodYears: 4,
-            fundLifeYears: 10,
-            extensionYears: 2,
-            initialManagementFee: 2.0,
-            managementFeeReduction: 0.25,
-            carriedInterest: 20,
-            preferredReturn: 8,
-            recyclingRate: 0.15,
-            reserveRatio: 0.5,
-            targetCheckSize: 2500000,
-            targetFollowOnMultiple: 2.0
-          }));
-          setFunds(portfolioFunds);
-          setSelectedFunds(portfolioFunds.map((f: any) => f.id));
           
           // Set portfolio companies from selected portfolio
           const selectedPortfolio = data[0];
@@ -291,8 +355,28 @@ export default function FundPacingPage() {
     }
   };
 
+  // Fetch ledger data (revenue time-series)
+  const fetchLedgerData = async (fundId?: string) => {
+    if (!fundId && selectedFunds.length === 0) return;
+    
+    setLoadingLedger(true);
+    try {
+      const fundIdParam = fundId || selectedFunds[0];
+      const response = await fetch(`/api/portfolio/ledger?fund_id=${fundIdParam}`);
+      if (response.ok) {
+        const data = await response.json();
+        setLedgerData(data);
+      }
+    } catch (error) {
+      console.error('Error fetching ledger data:', error);
+    } finally {
+      setLoadingLedger(false);
+    }
+  };
+
   useEffect(() => {
     fetchPortfolios();
+    fetchFunds();
   }, []);
   
   // Update companies when portfolio selection changes
@@ -311,7 +395,21 @@ export default function FundPacingPage() {
     }
   }, [portfolioCompanies, funds, selectedFunds]);
 
+  // Fetch ledger data when funds are selected
+  useEffect(() => {
+    if (selectedFunds.length > 0) {
+      fetchLedgerData();
+    }
+  }, [selectedFunds]);
+
   const regressionPoints = React.useMemo(() => {
+    if (!regressionEnabled) return null;
+    
+    // Use manual inputs if provided, otherwise calculate
+    if (regressionSlope !== null && regressionIntercept !== null) {
+      return pacingData.map((_, i) => regressionIntercept + regressionSlope * i);
+    }
+    
     const points = pacingData
       .map((data, i) => {
         const totalActual = Object.values(data.funds).reduce((sum, fundData) => sum + fundData.actualInvestment, 0);
@@ -323,7 +421,7 @@ export default function FundPacingPage() {
     const y = points.map(p => p.y);
     const { slope, intercept } = linearRegression(x, y);
     return pacingData.map((_, i) => intercept + slope * i);
-  }, Array.from(pacingData));
+  }, [pacingData, regressionEnabled, regressionSlope, regressionIntercept]);
 
   const earliestFundStart = React.useMemo(() => {
     return funds.length > 0 ? funds.reduce((min, fund) =>
@@ -628,9 +726,10 @@ export default function FundPacingPage() {
               {/* Chart Type Selector */}
               <div className="flex bg-gray-100 rounded-lg p-1">
                 {[
-                  { id: 'deployment', label: 'Deployment', icon: '💰' },
-                  { id: 'companies', label: 'Companies', icon: '🏢' },
-                  { id: 'sectors', label: 'Sectors', icon: '📊' }
+                  { id: 'deployment', label: 'Deployment' },
+                  { id: 'companies', label: 'Companies' },
+                  { id: 'sectors', label: 'Sectors' },
+                  { id: 'stacked', label: 'Stacked' }
                 ].map(chart => (
                   <button
                     key={chart.id}
@@ -641,7 +740,6 @@ export default function FundPacingPage() {
                         : 'text-gray-600 hover:text-gray-900'
                     }`}
                   >
-                    <span className="mr-2">{chart.icon}</span>
                     {chart.label}
                   </button>
                 ))}
@@ -662,6 +760,58 @@ export default function FundPacingPage() {
               </select>
             </div>
           </div>
+          
+          {/* Regression Input UI */}
+          {selectedChart === 'deployment' && (
+            <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+              <div className="flex items-center gap-4 flex-wrap">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={regressionEnabled}
+                    onChange={(e) => setRegressionEnabled(e.target.checked)}
+                    className="rounded"
+                  />
+                  <span className="text-sm font-medium text-gray-700">Enable Regression Line</span>
+                </label>
+                {regressionEnabled && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <label className="text-sm text-gray-600">Slope:</label>
+                      <input
+                        type="number"
+                        value={regressionSlope ?? ''}
+                        onChange={(e) => setRegressionSlope(e.target.value ? Number(e.target.value) : null)}
+                        placeholder="Auto"
+                        step="0.01"
+                        className="w-24 px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-sm text-gray-600">Intercept:</label>
+                      <input
+                        type="number"
+                        value={regressionIntercept ?? ''}
+                        onChange={(e) => setRegressionIntercept(e.target.value ? Number(e.target.value) : null)}
+                        placeholder="Auto"
+                        step="0.01"
+                        className="w-24 px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                      />
+                    </div>
+                    <button
+                      onClick={() => {
+                        setRegressionSlope(null);
+                        setRegressionIntercept(null);
+                      }}
+                      className="px-3 py-1 text-sm text-blue-600 hover:text-blue-700 underline"
+                    >
+                      Reset to Auto
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Enhanced Charts Section */}
@@ -818,7 +968,10 @@ export default function FundPacingPage() {
                       cx="50%"
                       cy="50%"
                       labelLine={false}
-                      label={({ name, percent }) => `${name} ${((percent || 0) * 100).toFixed(0)}%`}
+                      label={(props: any) => {
+                        const { name, percent } = props;
+                        return `${name} ${((percent ?? 0) * 100).toFixed(0)}%`;
+                      }}
                       outerRadius={120}
                       fill="#8884d8"
                       dataKey="value"
@@ -834,6 +987,66 @@ export default function FundPacingPage() {
             </div>
           )}
 
+          {/* Stacked Bar Chart */}
+          {selectedChart === 'stacked' && (
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900">Stacked Investment by Fund</h3>
+                  <p className="text-sm text-gray-600">Cumulative investment breakdown by fund</p>
+                </div>
+              </div>
+              <div className="h-96 w-full overflow-x-auto">
+                <div style={{ minWidth: timeRange === 'all' ? '8000px' : '100%', height: '100%' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={paddedPacingData.map((data, i) => {
+                        const result: any = { month: tenYearMonths[i] };
+                        funds.forEach(fund => {
+                          if (selectedFunds.includes(fund.id) && data.funds[fund.id]) {
+                            result[fund.name] = data.funds[fund.id].actualInvestment;
+                          }
+                        });
+                        return result;
+                      })}
+                      margin={{ top: 20, right: 30, left: 20, bottom: 40 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                      <XAxis 
+                        dataKey="month" 
+                        minTickGap={0} 
+                        interval={timeRange === 'all' ? 2 : 0}
+                        angle={-45}
+                        textAnchor="end"
+                        height={80}
+                        stroke="#6b7280" 
+                        fontSize={9} 
+                      />
+                      <YAxis 
+                        tickFormatter={formatCurrency} 
+                        width={100} 
+                        stroke="#6b7280" 
+                        fontSize={12} 
+                      />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Legend />
+                      {funds.filter(f => selectedFunds.includes(f.id)).map((fund, index) => (
+                        <Bar 
+                          key={fund.id} 
+                          dataKey={fund.name} 
+                          stackId="investment" 
+                          fill={fund.color} 
+                          name={fund.name}
+                          radius={index === funds.filter(f => selectedFunds.includes(f.id)).length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
+                        />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Fund Configuration Panel */}
           <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
             <div className="flex items-center justify-between mb-6">
@@ -841,9 +1054,15 @@ export default function FundPacingPage() {
                 <h3 className="text-xl font-bold text-gray-900">Fund Configuration</h3>
                 <p className="text-sm text-gray-600">Sophisticated fund lifecycle parameters</p>
               </div>
+              <button
+                onClick={() => setShowCreateModal(true)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition-colors"
+              >
+                + Create Fund
+              </button>
             </div>
             
-            <div className="space-y-4 max-h-Array.from(px) overflow-y-auto">
+            <div className="space-y-4 max-h-[400px] overflow-y-auto">
               {funds.map(fund => (
                 <div key={fund.id} className="border border-gray-200 rounded-xl p-4 hover:shadow-md transition-shadow">
                   <div className="flex items-center mb-4">
@@ -852,9 +1071,40 @@ export default function FundPacingPage() {
                       style={{ backgroundColor: fund.color }}
                     ></div>
                     <h4 className="text-lg font-semibold text-gray-900">{fund.name}</h4>
-                    <span className="ml-auto text-sm text-gray-500">
+                    <span className="ml-auto text-sm text-gray-500 mr-4">
                       {calculateManagementFee(fund, new Date().getFullYear() - new Date(fund.startDate).getFullYear()).toFixed(2)}% fee
                     </span>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={async () => {
+                          try {
+                            await updateFund(fund.id, fund);
+                            alert('Fund updated successfully');
+                          } catch (error) {
+                            alert('Failed to update fund');
+                          }
+                        }}
+                        className="px-3 py-1 text-sm text-green-600 hover:text-green-700 hover:bg-green-50 rounded transition-colors"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={() => setEditingFund(fund)}
+                        className="px-3 py-1 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded transition-colors"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (confirm(`Are you sure you want to delete ${fund.name}?`)) {
+                            deleteFund(fund.id);
+                          }
+                        }}
+                        className="px-3 py-1 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
                   
                   {/* Core Parameters */}
@@ -1098,44 +1348,308 @@ export default function FundPacingPage() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount Invested</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ownership %</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current ARR</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Revenue Over Time</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {portfolioCompanies.map((company) => (
-                  <tr key={company.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{company.name}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{company.sector || '-'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {company.first_investment_date ? format(new Date(company.first_investment_date), 'MMM yyyy') : '-'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {company.total_invested_usd ? formatCurrency(company.total_invested_usd) : '-'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {company.ownership_percentage ? formatPercentage(company.ownership_percentage) : '-'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {company.current_arr_usd ? formatCurrency(company.current_arr_usd) : '-'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        company.funnel_status === 'portfolio' ? 'bg-green-100 text-green-800' :
-                        company.funnel_status === 'exited' ? 'bg-blue-100 text-blue-800' :
-                        'bg-gray-100 text-gray-800'
-                      }`}>
-                        {company.funnel_status ? 
-                          company.funnel_status.charAt(0).toUpperCase() + company.funnel_status.slice(1) : 
-                          'Unknown'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {portfolioCompanies.map((company) => {
+                  // Get revenue time-series for this company
+                  const companyRevenueData = ledgerData?.time_series?.filter((entry: any) => 
+                    entry.company_id === company.id
+                  ) || [];
+                  
+                  // Prepare data for sparkline
+                  const sparklineData = companyRevenueData
+                    .map((entry: any) => ({
+                      date: entry.date,
+                      revenue: entry.revenue
+                    }))
+                    .sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+                  return (
+                    <tr key={company.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{company.name}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{company.sector || '-'}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {company.first_investment_date ? format(new Date(company.first_investment_date), 'MMM yyyy') : '-'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {company.total_invested_usd ? formatCurrency(company.total_invested_usd) : '-'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {company.ownership_percentage ? formatPercentage(company.ownership_percentage) : '-'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {company.current_arr_usd ? formatCurrency(company.current_arr_usd) : '-'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {sparklineData.length > 0 ? (
+                          <div className="w-32 h-8">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <LineChart data={sparklineData}>
+                                <Line 
+                                  type="monotone" 
+                                  dataKey="revenue" 
+                                  stroke="#3B82F6" 
+                                  strokeWidth={2}
+                                  dot={false}
+                                />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </div>
+                        ) : (
+                          <span className="text-sm text-gray-400">No data</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          company.funnel_status === 'portfolio' ? 'bg-green-100 text-green-800' :
+                          company.funnel_status === 'exited' ? 'bg-blue-100 text-blue-800' :
+                          'bg-gray-100 text-gray-800'
+                        }`}>
+                          {company.funnel_status ? 
+                            company.funnel_status.charAt(0).toUpperCase() + company.funnel_status.slice(1) : 
+                            'Unknown'}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </div>
       </div>
+
+      {/* Create Fund Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <h2 className="text-2xl font-bold text-gray-900 mb-4">Create New Fund</h2>
+            <FundForm
+              fund={null}
+              onSave={async (fundData) => {
+                await createFund(fundData);
+              }}
+              onCancel={() => setShowCreateModal(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Edit Fund Modal */}
+      {editingFund && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <h2 className="text-2xl font-bold text-gray-900 mb-4">Edit Fund: {editingFund.name}</h2>
+            <FundForm
+              fund={editingFund}
+              onSave={async (fundData) => {
+                await updateFund(editingFund.id, fundData);
+              }}
+              onCancel={() => setEditingFund(null)}
+            />
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+// Fund Form Component
+function FundForm({ fund, onSave, onCancel }: { fund: Fund | null, onSave: (data: Partial<Fund>) => Promise<void>, onCancel: () => void }) {
+  const [formData, setFormData] = useState<Partial<Fund>>(fund || {
+    name: '',
+    startDate: new Date().toISOString().split('T')[0],
+    vintageYear: new Date().getFullYear(),
+    firstClose: new Date().toISOString().split('T')[0],
+    finalClose: new Date().toISOString().split('T')[0],
+    size: 100000000,
+    targetCompanies: 20,
+    targetOwnership: 15,
+    color: COLORS[0],
+    deploymentPeriodYears: 4,
+    fundLifeYears: 10,
+    extensionYears: 2,
+    initialManagementFee: 2.0,
+    managementFeeReduction: 0.25,
+    carriedInterest: 20,
+    preferredReturn: 8,
+    recyclingRate: 0.15,
+    reserveRatio: 0.5,
+    targetCheckSize: 2500000,
+    targetFollowOnMultiple: 2.0
+  });
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await onSave(formData);
+    } catch (error) {
+      alert('Failed to save fund. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Fund Name *</label>
+          <input
+            type="text"
+            required
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Vintage Year *</label>
+          <input
+            type="number"
+            required
+            value={formData.vintageYear}
+            onChange={(e) => setFormData({ ...formData, vintageYear: Number(e.target.value) })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Start Date *</label>
+          <input
+            type="date"
+            required
+            value={formData.startDate}
+            onChange={(e) => setFormData({ ...formData, startDate: e.target.value, firstClose: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Final Close</label>
+          <input
+            type="date"
+            value={formData.finalClose}
+            onChange={(e) => setFormData({ ...formData, finalClose: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Fund Size (USD) *</label>
+          <input
+            type="number"
+            required
+            value={formData.size}
+            onChange={(e) => setFormData({ ...formData, size: Number(e.target.value) })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Target Companies *</label>
+          <input
+            type="number"
+            required
+            value={formData.targetCompanies}
+            onChange={(e) => setFormData({ ...formData, targetCompanies: Number(e.target.value) })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Target Ownership %</label>
+          <input
+            type="number"
+            value={formData.targetOwnership}
+            onChange={(e) => setFormData({ ...formData, targetOwnership: Number(e.target.value) })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Color</label>
+          <input
+            type="color"
+            value={formData.color}
+            onChange={(e) => setFormData({ ...formData, color: e.target.value })}
+            className="w-full h-10 border border-gray-300 rounded-lg"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Deployment Period (Years)</label>
+          <input
+            type="number"
+            step="0.5"
+            value={formData.deploymentPeriodYears}
+            onChange={(e) => setFormData({ ...formData, deploymentPeriodYears: Number(e.target.value) })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Fund Life (Years)</label>
+          <input
+            type="number"
+            value={formData.fundLifeYears}
+            onChange={(e) => setFormData({ ...formData, fundLifeYears: Number(e.target.value) })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Reserve Ratio</label>
+          <input
+            type="number"
+            step="0.01"
+            value={(formData.reserveRatio || 0) * 100}
+            onChange={(e) => setFormData({ ...formData, reserveRatio: Number(e.target.value) / 100 })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+          <span className="text-xs text-gray-500">%</span>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Initial Management Fee %</label>
+          <input
+            type="number"
+            step="0.25"
+            value={formData.initialManagementFee}
+            onChange={(e) => setFormData({ ...formData, initialManagementFee: Number(e.target.value) })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Carried Interest %</label>
+          <input
+            type="number"
+            value={formData.carriedInterest}
+            onChange={(e) => setFormData({ ...formData, carriedInterest: Number(e.target.value) })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Target Check Size</label>
+          <input
+            type="number"
+            value={formData.targetCheckSize}
+            onChange={(e) => setFormData({ ...formData, targetCheckSize: Number(e.target.value) })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+      </div>
+      <div className="flex justify-end gap-3 pt-4 border-t">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          disabled={saving}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50"
+        >
+          {saving ? 'Saving...' : 'Save Fund'}
+        </button>
+      </div>
+    </form>
   );
 } 

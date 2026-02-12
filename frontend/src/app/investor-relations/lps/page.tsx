@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { useSession } from 'next-auth/react';
 import supabase from '@/lib/supabase';
 
 interface LP {
@@ -19,9 +20,20 @@ interface LP {
   status: string;
   created_at: string;
   updated_at: string;
+  // Fund management columns
+  fund_id?: string;
+  commitment_usd?: number;
+  called_usd?: number;
+  distributed_usd?: number;
+  vintage_year?: number;
+  co_invest_rights?: boolean;
+  side_letter_terms?: any;
 }
 
+type ViewMode = 'directory' | 'fund_management';
+
 export default function LPsPage() {
+  const { data: session, status: authStatus } = useSession();
   const [lps, setLps] = useState<LP[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -29,6 +41,11 @@ export default function LPsPage() {
   const [typeFilter, setTypeFilter] = useState('all');
   const [sortBy, setSortBy] = useState('name');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [viewMode, setViewMode] = useState<ViewMode>('directory');
+
+  // Auth guard — LP data is sensitive investor PII
+  if (authStatus === 'loading') return <div className="p-8 text-center">Loading...</div>;
+  if (!session) return <div className="p-8 text-center">Please sign in to view LP data.</div>;
 
   // Fetch LPs from database
   const fetchLPs = async () => {
@@ -144,7 +161,16 @@ export default function LPsPage() {
     }
   };
 
-
+  // Fund management aggregates
+  const fundMetrics = React.useMemo(() => {
+    const totalCommitment = lps.reduce((sum, lp) => sum + (lp.commitment_usd || 0), 0);
+    const totalCalled = lps.reduce((sum, lp) => sum + (lp.called_usd || 0), 0);
+    const totalDistributed = lps.reduce((sum, lp) => sum + (lp.distributed_usd || 0), 0);
+    const totalUnfunded = totalCommitment - totalCalled;
+    const dpi = totalCalled > 0 ? totalDistributed / totalCalled : 0;
+    const coInvestCount = lps.filter(lp => lp.co_invest_rights).length;
+    return { totalCommitment, totalCalled, totalDistributed, totalUnfunded, dpi, coInvestCount };
+  }, [lps]);
 
   if (loading) {
     return (
@@ -167,7 +193,32 @@ export default function LPsPage() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* View Mode Tabs */}
+        <div className="flex space-x-1 bg-gray-100 rounded-lg p-1 mb-8 w-fit">
+          <button
+            onClick={() => setViewMode('directory')}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              viewMode === 'directory'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            LP Directory
+          </button>
+          <button
+            onClick={() => setViewMode('fund_management')}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              viewMode === 'fund_management'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Fund Management
+          </button>
+        </div>
+
         {/* Key Metrics Cards */}
+        {viewMode === 'directory' ? (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
             <p className="text-sm font-medium text-gray-600">Total LPs</p>
@@ -195,6 +246,38 @@ export default function LPsPage() {
             </p>
           </div>
         </div>
+        ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-8">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Total Commitment</p>
+            <p className="text-xl font-bold text-gray-900 mt-1">{formatCurrency(fundMetrics.totalCommitment)}</p>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Called Capital</p>
+            <p className="text-xl font-bold text-gray-900 mt-1">{formatCurrency(fundMetrics.totalCalled)}</p>
+            <p className="text-xs text-gray-500 mt-1">
+              {fundMetrics.totalCommitment > 0 ? formatPercentage((fundMetrics.totalCalled / fundMetrics.totalCommitment) * 100) : '0%'} of commitment
+            </p>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Distributed</p>
+            <p className="text-xl font-bold text-gray-900 mt-1">{formatCurrency(fundMetrics.totalDistributed)}</p>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Unfunded</p>
+            <p className="text-xl font-bold text-blue-700 mt-1">{formatCurrency(fundMetrics.totalUnfunded)}</p>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Fund DPI</p>
+            <p className="text-xl font-bold text-gray-900 mt-1">{formatNumber(fundMetrics.dpi)}x</p>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Co-Invest Rights</p>
+            <p className="text-xl font-bold text-gray-900 mt-1">{fundMetrics.coInvestCount}</p>
+            <p className="text-xs text-gray-500 mt-1">of {lps.length} LPs</p>
+          </div>
+        </div>
+        )}
 
         {/* Filters and Search */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8">
@@ -249,6 +332,9 @@ export default function LPsPage() {
               >
                 <option value="name">Name</option>
                 <option value="investment_capacity_usd">Investment Capacity</option>
+                {viewMode === 'fund_management' && <option value="commitment_usd">Commitment</option>}
+                {viewMode === 'fund_management' && <option value="called_usd">Called Capital</option>}
+                {viewMode === 'fund_management' && <option value="distributed_usd">Distributed</option>}
                 <option value="relationship_start_date">Relationship Start</option>
                 <option value="contact_name">Contact Name</option>
                 <option value="lp_type">Type</option>
@@ -266,7 +352,8 @@ export default function LPsPage() {
           </div>
         </div>
 
-        {/* LPs Table */}
+        {/* LPs Table — Directory View */}
+        {viewMode === 'directory' && (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <h3 className="text-xl font-semibold text-gray-900 mb-4">LP Directory</h3>
           <div className="overflow-x-auto">
@@ -335,14 +422,14 @@ export default function LPsPage() {
               </tbody>
             </table>
           </div>
-          
+
           {filteredAndSortedLPs.length === 0 && (
             <div className="text-center py-12">
               {lps.length === 0 ? (
                 <div>
                   <p className="text-gray-500 mb-4">No LP data found.</p>
                   <p className="text-sm text-gray-400">
-                    You need to create an 'lps' or 'limited_partners' table in your Supabase database.
+                    You need to create an &apos;lps&apos; or &apos;limited_partners&apos; table in your Supabase database.
                   </p>
                   <div className="mt-4 p-4 bg-blue-50 rounded-lg text-left">
                     <p className="text-sm font-medium text-blue-900 mb-2">Required table structure:</p>
@@ -373,6 +460,119 @@ export default function LPsPage() {
             </div>
           )}
         </div>
+        )}
+
+        {/* Fund Management View */}
+        {viewMode === 'fund_management' && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h3 className="text-xl font-semibold text-gray-900 mb-4">Fund Capital Accounts</h3>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">LP Name</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Commitment</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Called</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Distributed</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Unfunded</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">DPI</th>
+                  <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Co-Invest</th>
+                  <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Vintage</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {filteredAndSortedLPs.map((lp) => {
+                  const commitment = lp.commitment_usd || 0;
+                  const called = lp.called_usd || 0;
+                  const distributed = lp.distributed_usd || 0;
+                  const unfunded = commitment - called;
+                  const lpDpi = called > 0 ? distributed / called : 0;
+                  const calledPct = commitment > 0 ? (called / commitment) * 100 : 0;
+
+                  return (
+                    <tr key={lp.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <div className="text-sm font-medium text-gray-900">{lp.name}</div>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getTypeColor(lp.lp_type)}`}>
+                          {lp.lp_type ? lp.lp_type.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()) : '-'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-sm text-right text-gray-900 font-mono">
+                        {commitment > 0 ? formatCurrency(commitment) : '-'}
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-right">
+                        <div className="text-sm text-gray-900 font-mono">{called > 0 ? formatCurrency(called) : '-'}</div>
+                        {commitment > 0 && called > 0 && (
+                          <div className="mt-1 w-full bg-gray-200 rounded-full h-1.5">
+                            <div
+                              className="bg-blue-600 h-1.5 rounded-full"
+                              style={{ width: `${Math.min(calledPct, 100)}%` }}
+                            />
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-sm text-right text-gray-900 font-mono">
+                        {distributed > 0 ? formatCurrency(distributed) : '-'}
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-sm text-right font-mono">
+                        <span className={unfunded > 0 ? 'text-blue-700 font-medium' : 'text-gray-500'}>
+                          {commitment > 0 ? formatCurrency(unfunded) : '-'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-sm text-right font-mono">
+                        <span className={lpDpi >= 1 ? 'text-green-700 font-medium' : 'text-gray-900'}>
+                          {called > 0 ? `${formatNumber(lpDpi)}x` : '-'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-center">
+                        {lp.co_invest_rights ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Yes</span>
+                        ) : (
+                          <span className="text-xs text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-sm text-center text-gray-700">
+                        {lp.vintage_year || '-'}
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getStatusColor(lp.status)}`}>
+                          {lp.status?.charAt(0).toUpperCase() + lp.status?.slice(1) || 'N/A'}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {/* Totals row */}
+                {filteredAndSortedLPs.length > 0 && (
+                  <tr className="bg-gray-50 font-semibold">
+                    <td className="px-4 py-3 text-sm text-gray-900" colSpan={2}>Total ({filteredAndSortedLPs.length} LPs)</td>
+                    <td className="px-4 py-3 text-sm text-right text-gray-900 font-mono">{formatCurrency(fundMetrics.totalCommitment)}</td>
+                    <td className="px-4 py-3 text-sm text-right text-gray-900 font-mono">{formatCurrency(fundMetrics.totalCalled)}</td>
+                    <td className="px-4 py-3 text-sm text-right text-gray-900 font-mono">{formatCurrency(fundMetrics.totalDistributed)}</td>
+                    <td className="px-4 py-3 text-sm text-right text-blue-700 font-mono">{formatCurrency(fundMetrics.totalUnfunded)}</td>
+                    <td className="px-4 py-3 text-sm text-right font-mono">{formatNumber(fundMetrics.dpi)}x</td>
+                    <td className="px-4 py-3 text-sm text-center text-gray-700">{fundMetrics.coInvestCount}</td>
+                    <td className="px-4 py-3" colSpan={2}></td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {filteredAndSortedLPs.length === 0 && (
+            <div className="text-center py-12">
+              <p className="text-gray-500 mb-2">No fund management data available.</p>
+              <p className="text-sm text-gray-400">
+                Run the migration to add fund-management columns, then populate commitment, called, and distributed amounts.
+              </p>
+            </div>
+          )}
+        </div>
+        )}
 
         {/* Summary Statistics */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-8">

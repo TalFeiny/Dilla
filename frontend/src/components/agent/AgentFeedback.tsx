@@ -19,6 +19,8 @@ interface AgentFeedbackProps {
   messageId: string;
   company?: string;
   responseType: string;
+  query?: string;
+  response?: string;
   onFeedback?: (feedback: FeedbackData) => void;
 }
 
@@ -33,12 +35,14 @@ interface FeedbackData {
   timestamp: string;
 }
 
-export default function AgentFeedback({ 
-  sessionId, 
-  messageId, 
-  company, 
+export default function AgentFeedback({
+  sessionId,
+  messageId,
+  company,
   responseType,
-  onFeedback 
+  query = '',
+  response = '',
+  onFeedback
 }: AgentFeedbackProps) {
   const [showFeedback, setShowFeedback] = useState(true); // ALWAYS SHOW by default
   const [specificFeedback, setSpecificFeedback] = useState('');
@@ -68,8 +72,8 @@ export default function AgentFeedback({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sessionId,
-          query: '', // Would need to pass this from parent
-          response: '', // Would need to pass this from parent
+          query,
+          response,
           feedback: specific || specificFeedback || `Feedback: ${type}`,
           score,
           company: company || 'general',
@@ -77,8 +81,8 @@ export default function AgentFeedback({
         })
       });
       
-      // Also send to corrections for pattern extraction
-      const response = await fetch('/api/agent/corrections', {
+      // Also send to corrections for pattern extraction (fire-and-forget)
+      fetch('/api/agent/corrections', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -88,14 +92,14 @@ export default function AgentFeedback({
           correction: specific || specificFeedback || `Feedback: ${type} (score: ${score})`,
           timestamp: feedbackData.timestamp
         })
-      });
+      }).catch(() => {}); // best-effort, primary store is /api/rl/store
 
-      if (response.ok) {
+      if (rlResponse.ok) {
         setFeedbackSent(true);
         if (onFeedback) {
           onFeedback(feedbackData);
         }
-        
+
         // Hide feedback UI after 2 seconds
         setTimeout(() => {
           setShowFeedback(false);
@@ -189,7 +193,7 @@ export default function AgentFeedback({
                 value={specificFeedback}
                 onChange={(e) => setSpecificFeedback(e.target.value)}
                 placeholder="e.g., 'Revenue should be 350M not 500M' or 'Growth rate should decay 10% per year' or 'Missing tax calculation'"
-                className="min-h-Array.from(x) text-sm"
+                className="min-h-[80px] text-sm"
               />
               <div className="flex gap-2">
                 <Button

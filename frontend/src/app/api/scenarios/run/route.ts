@@ -1,15 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { supabaseService } from '@/lib/supabase';
+import { getBackendUrl } from '@/lib/backend-url';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-const BACKEND_URL =
-  process.env.BACKEND_URL ||
-  process.env.NEXT_PUBLIC_BACKEND_URL ||
-  'http://localhost:8000';
+const BACKEND_URL = getBackendUrl();
 
 export async function POST(request: NextRequest) {
   try {
@@ -33,25 +26,30 @@ export async function POST(request: NextRequest) {
 
     // Fetch portfolio metadata (best effort)
     let portfolioRecord: any = null;
-    const { data: portfolioData } = await supabase
-      .from('funds')
-      .select('*')
-      .eq('id', portfolioId)
-      .maybeSingle();
-    if (portfolioData) {
-      portfolioRecord = portfolioData;
+    if (supabaseService) {
+      const { data: portfolioData } = await supabaseService
+        .from('funds')
+        .select('*')
+        .eq('id', portfolioId)
+        .maybeSingle();
+      if (portfolioData) {
+        portfolioRecord = portfolioData;
+      }
     }
 
-    // Fetch portfolio companies with company details
-    const { data: portfolioCompanies, error: pcError } = await supabase
-      .from('portfolio_companies')
-      .select(
-        `
-          *,
-          company:companies(*)
-        `
-      )
-      .eq('fund_id', portfolioId);
+    // Fetch portfolio companies - use companies table with fund_id filter
+    if (!supabaseService) {
+      return NextResponse.json(
+        { error: 'Supabase service not configured' },
+        { status: 500 }
+      );
+    }
+
+    const { data: portfolioCompanies, error: pcError } = await supabaseService
+      .from('companies')
+      .select('*')
+      .eq('fund_id', portfolioId)
+      .not('fund_id', 'is', null);
 
     if (pcError) {
       console.error('Error fetching portfolio companies:', pcError);
@@ -61,49 +59,47 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const companiesPayload = (portfolioCompanies || []).map((pc: any) => {
-      const companyName = pc.company?.name || 'Unknown Company';
+    const companiesPayload = (portfolioCompanies || []).map((company: any) => {
+      const companyName = company.name || 'Unknown Company';
       const valuation =
-        pc.current_valuation_usd ??
-        pc.company?.last_valuation_usd ??
-        pc.company?.current_valuation_usd ??
+        company.current_valuation_usd ??
+        company.last_valuation_usd ??
         null;
       const totalFunding =
-        pc.company?.total_funding_usd ??
-        pc.company?.total_raised_usd ??
-        pc.total_invested_usd ??
+        company.total_funding_usd ??
+        company.total_raised_usd ??
+        company.total_invested_usd ??
         null;
 
       return {
         company: companyName,
-        company_id:
-          pc.company?.id?.toString() || pc.company?.uuid?.toString() || companyName,
+        company_id: company.id?.toString() || companyName,
         stage:
-          pc.investment_stage ||
-          pc.company?.funding_stage ||
-          pc.company?.stage ||
+          company.investment_stage ||
+          company.funding_stage ||
+          company.stage ||
           null,
-        revenue: pc.company?.current_arr_usd ?? null,
-        inferred_revenue: pc.company?.inferred_revenue ?? null,
+        revenue: company.current_arr_usd ?? null,
+        inferred_revenue: company.inferred_revenue ?? null,
         valuation,
-        inferred_valuation: pc.company?.inferred_valuation ?? valuation,
+        inferred_valuation: company.inferred_valuation ?? valuation,
         total_funding: totalFunding,
         total_raised: totalFunding,
-        inferred_total_funding: pc.company?.inferred_total_funding ?? null,
+        inferred_total_funding: company.inferred_total_funding ?? null,
         growth_rate:
-          pc.company?.growth_rate ??
-          pc.company?.revenue_growth_pct ??
-          pc.company?.inferred_growth_rate ??
+          company.growth_rate ??
+          company.revenue_growth_pct ??
+          company.inferred_growth_rate ??
           null,
-        sector: pc.company?.sector ?? null,
-        category: pc.company?.category ?? null,
-        business_model: pc.company?.business_model ?? null,
-        ai_component_percentage: pc.company?.ai_component_percentage ?? null,
-        ownership_percentage: pc.ownership_percentage ?? null,
-        investment_amount: pc.total_invested_usd ?? null,
-        current_arr: pc.company?.current_arr_usd ?? null,
+        sector: company.sector ?? null,
+        category: company.category ?? null,
+        business_model: company.business_model ?? null,
+        ai_component_percentage: company.ai_component_percentage ?? null,
+        ownership_percentage: company.ownership_percentage ?? null,
+        investment_amount: company.total_invested_usd ?? null,
+        current_arr: company.current_arr_usd ?? null,
         current_valuation: valuation,
-        investment_date: pc.investment_date ?? null,
+        investment_date: company.first_investment_date ?? company.created_at ?? null,
       };
     });
 
