@@ -74,9 +74,9 @@ export async function GET(
 
     // Transform to portfolio company format with calculated metrics
     const portfolioCompanies = (companies || []).map((company: any) => {
-      const investmentAmount = company.total_invested_usd || 0;
-      const ownershipPercentage = company.ownership_percentage || 0;
-      const currentArr = company.current_arr_usd || 0;
+      const investmentAmount = company.total_invested_usd ?? null;
+      const ownershipPercentage = company.ownership_percentage ?? null;
+      const currentArr = company.current_arr_usd ?? null;
       // Use persisted current_valuation_usd when present; else derive from investment/ownership only. No invented multiples.
       const valuation =
         company.current_valuation_usd != null && company.current_valuation_usd > 0

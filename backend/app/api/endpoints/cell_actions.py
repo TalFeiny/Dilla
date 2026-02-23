@@ -21,6 +21,7 @@ from app.services.cell_action_registry import (
 from app.tools.financial_tools import FinancialTools
 from app.skills.chart_generation_skill import ChartGenerationSkill
 # Other service imports are lazy (per-request) in _route_to_service so the router loads even if a dependency fails.
+from app.services.ma_workflow_service import MAWorkflowService
 from decimal import Decimal
 import json
 
@@ -371,27 +372,38 @@ async def _extract_funding_rounds(company_id: Optional[str]) -> List[Dict[str, A
     """Fetch funding rounds for a company (backend-agnostic: CompanyDataRepo or Supabase fallback)."""
     if not company_id:
         return []
+    # Try repo first
     try:
-        try:
-            from app.core.adapters import get_company_repo
-            repo = get_company_repo()
-            return repo.get_funding_rounds(company_id) or []
-        except Exception:
-            pass
-        client = _get_supabase_client()
-        if not client:
-            logger.warning("Supabase client not available")
-            return []
+        from app.core.adapters import get_company_repo
+        repo = get_company_repo()
+        rounds = repo.get_funding_rounds(company_id)
+        if rounds:
+            return rounds
+    except Exception:
+        pass
+
+    client = _get_supabase_client()
+    if not client:
+        logger.warning("Supabase client not available")
+        return []
+
+    # Try dedicated table (may not exist yet)
+    try:
         response = client.from_("funding_rounds").select("*").eq("company_id", company_id).order("date", desc=False).execute()
         if response.data:
             return response.data
+    except Exception:
+        pass
+
+    # Fall back to JSONB column on companies table
+    try:
         company_response = client.from_("companies").select("funding_rounds").eq("id", company_id).single().execute()
         if company_response.data and company_response.data.get("funding_rounds"):
             return company_response.data["funding_rounds"]
-        return []
     except Exception as e:
-        logger.error("Error fetching funding rounds: %s", e)
-        return []
+        logger.error("Error fetching funding rounds from companies table: %s", e)
+
+    return []
 
 
 async def _route_to_service(
@@ -439,13 +451,12 @@ async def _route_to_service(
                 engine = ValuationEngineService()
                 result = await engine.calculate_valuation(valuation_request)
                 return {
-                    'fair_value': result.fair_value,
+                    'fair_value': float(result.fair_value) if isinstance(result.fair_value, (int, float)) else result.fair_value,
                     'method_used': result.method_used,
                     'explanation': result.explanation,
-                    'confidence': result.confidence,
-                    'raw_result': result
+                    'confidence': float(result.confidence) if isinstance(result.confidence, (int, float)) else result.confidence,
                 }
-            
+
             elif 'dcf' in action_id:
                 # DCF: DB + inputs
                 company_id = request.company_id or request.inputs.get('company_id')
@@ -470,13 +481,12 @@ async def _route_to_service(
                 
                 engine = ValuationEngineService()
                 result = await engine.calculate_valuation(valuation_request)
-                
+
                 return {
-                    'fair_value': result.fair_value,
+                    'fair_value': float(result.fair_value) if isinstance(result.fair_value, (int, float)) else result.fair_value,
                     'method_used': 'DCF',
                     'explanation': result.explanation,
-                    'confidence': result.confidence,
-                    'raw_result': result
+                    'confidence': float(result.confidence) if isinstance(result.confidence, (int, float)) else result.confidence,
                 }
             
             elif 'auto' in action_id:
@@ -503,15 +513,14 @@ async def _route_to_service(
                 
                 engine = ValuationEngineService()
                 result = await engine.calculate_valuation(valuation_request)
-                
+
                 return {
-                    'fair_value': result.fair_value,
+                    'fair_value': float(result.fair_value) if isinstance(result.fair_value, (int, float)) else result.fair_value,
                     'method_used': result.method_used,
                     'explanation': result.explanation,
-                    'confidence': result.confidence,
-                    'raw_result': result
+                    'confidence': float(result.confidence) if isinstance(result.confidence, (int, float)) else result.confidence,
                 }
-            
+
             elif 'opm' in action_id:
                 # OPM: DB + inputs
                 company_id = request.company_id or request.inputs.get('company_id')
@@ -534,13 +543,12 @@ async def _route_to_service(
                 
                 engine = ValuationEngineService()
                 result = await engine.calculate_valuation(valuation_request)
-                
+
                 return {
-                    'fair_value': result.fair_value,
+                    'fair_value': float(result.fair_value) if isinstance(result.fair_value, (int, float)) else result.fair_value,
                     'method_used': 'OPM',
                     'explanation': result.explanation,
-                    'confidence': result.confidence,
-                    'raw_result': result
+                    'confidence': float(result.confidence) if isinstance(result.confidence, (int, float)) else result.confidence,
                 }
             
             elif 'waterfall' in action_id and 'valuation' in action_id:
@@ -567,13 +575,12 @@ async def _route_to_service(
                 
                 engine = ValuationEngineService()
                 result = await engine.calculate_valuation(valuation_request)
-                
+
                 return {
-                    'fair_value': result.fair_value,
+                    'fair_value': float(result.fair_value) if isinstance(result.fair_value, (int, float)) else result.fair_value,
                     'method_used': 'Waterfall',
                     'explanation': result.explanation,
-                    'confidence': result.confidence,
-                    'raw_result': result
+                    'confidence': float(result.confidence) if isinstance(result.confidence, (int, float)) else result.confidence,
                 }
             
             elif 'recent_transaction' in action_id:
@@ -600,13 +607,12 @@ async def _route_to_service(
                 
                 engine = ValuationEngineService()
                 result = await engine.calculate_valuation(valuation_request)
-                
+
                 return {
-                    'fair_value': result.fair_value,
+                    'fair_value': float(result.fair_value) if isinstance(result.fair_value, (int, float)) else result.fair_value,
                     'method_used': 'Recent Transaction',
                     'explanation': result.explanation,
-                    'confidence': result.confidence,
-                    'raw_result': result
+                    'confidence': float(result.confidence) if isinstance(result.confidence, (int, float)) else result.confidence,
                 }
             
             elif 'cost_method' in action_id:
@@ -631,13 +637,12 @@ async def _route_to_service(
                 
                 engine = ValuationEngineService()
                 result = await engine.calculate_valuation(valuation_request)
-                
+
                 return {
-                    'fair_value': result.fair_value,
+                    'fair_value': float(result.fair_value) if isinstance(result.fair_value, (int, float)) else result.fair_value,
                     'method_used': 'Cost Method',
                     'explanation': result.explanation,
-                    'confidence': result.confidence,
-                    'raw_result': result
+                    'confidence': float(result.confidence) if isinstance(result.confidence, (int, float)) else result.confidence,
                 }
             
             elif 'milestone' in action_id and 'valuation' in service_name:
@@ -664,13 +669,12 @@ async def _route_to_service(
                 
                 engine = ValuationEngineService()
                 result = await engine.calculate_valuation(valuation_request)
-                
+
                 return {
-                    'fair_value': result.fair_value,
+                    'fair_value': float(result.fair_value) if isinstance(result.fair_value, (int, float)) else result.fair_value,
                     'method_used': 'Milestone',
                     'explanation': result.explanation,
-                    'confidence': result.confidence,
-                    'raw_result': result
+                    'confidence': float(result.confidence) if isinstance(result.confidence, (int, float)) else result.confidence,
                 }
         
         # Revenue projection (lazy-import)
@@ -687,6 +691,12 @@ async def _route_to_service(
                 initial_growth=initial_growth,
                 years=years,
                 quality_score=quality_score,
+                stage=request.inputs.get('stage'),
+                investor_quality=request.inputs.get('investor_quality'),
+                geography=request.inputs.get('geography'),
+                sector=request.inputs.get('business_model') or request.inputs.get('sector'),
+                company_age_years=request.inputs.get('company_age_years'),
+                market_size_tam=request.inputs.get('market_size_tam'),
                 return_projections=True
             )
             
@@ -1060,9 +1070,37 @@ async def _route_to_service(
                     }
                 
                 return {'dilution_path': [], 'ownership_evolution': {}}
-        
+
+            elif 'entry_impact' in action_id:
+                # Model our fund's entry into this company
+                our_investment = float(request.inputs.get('our_investment', 0))
+                round_name = request.inputs.get('round_name', 'Series B')
+                if our_investment <= 0:
+                    raise ValueError("our_investment must be a positive dollar amount")
+
+                cap_table_service = PrePostCapTable()
+
+                # Ensure funding rounds exist — reconstruct if needed
+                if not funding_rounds:
+                    from app.services.intelligent_gap_filler import IntelligentGapFiller
+                    gap_filler = IntelligentGapFiller()
+                    funding_rounds = gap_filler.generate_stage_based_funding_rounds(company_data) or []
+
+                company_data_with_rounds = {
+                    'funding_rounds': funding_rounds,
+                    'company': company_data.get('name', 'Unknown'),
+                    'stage': company_data.get('stage', 'Series A'),
+                    'valuation': company_data.get('valuation') or company_data.get('current_valuation_usd') or 100_000_000,
+                }
+                result = cap_table_service.calculate_our_entry_impact(
+                    company_data=company_data_with_rounds,
+                    our_investment=our_investment,
+                    round_name=round_name,
+                )
+                return result
+
         # Ownership & Return Analysis services (DB + inputs)
-        elif 'ownership' in service_name or 'ownership' in action_id:
+        elif service_name.startswith('ownership.') or service_name == 'ownership' or action_id.startswith('ownership.'):
             from app.services.ownership_return_analyzer import OwnershipReturnAnalyzer
             company_id = request.company_id or request.inputs.get('company_id')
             company_data = await _extract_company_data(company_id)
@@ -1105,7 +1143,7 @@ async def _route_to_service(
                 }
         
         # M&A Workflow services
-        elif 'ma' in service_name or 'ma' in action_id:
+        elif service_name.startswith('ma.') or service_name == 'ma' or action_id.startswith('ma.'):
             if 'model_acquisition' in action_id:
                 # Model M&A transaction
                 acquirer = request.inputs.get('acquirer')
@@ -1174,7 +1212,7 @@ async def _route_to_service(
                     }
         
         # Fund metrics - replace placeholder
-        elif 'fund' in service_name or 'metrics' in service_name:
+        elif service_name.startswith('fund.') or service_name == 'fund' or action_id.startswith('fund.'):
             from app.services.ownership_return_analyzer import OwnershipReturnAnalyzer
             fund_id = request.fund_id or request.inputs.get('fund_id')
             if not fund_id:
@@ -1247,9 +1285,18 @@ async def _route_to_service(
                     portfolio_response = client.from_("portfolio_companies").select("*, companies(*)").eq("fund_id", fund_id).execute()
                     companies = portfolio_response.data if portfolio_response.data else []
                     
+                    # Fetch actual fund name
+                    fund_name = "Fund"
+                    try:
+                        fund_resp = client.from_("portfolios").select("name").eq("id", fund_id).limit(1).execute()
+                        if fund_resp.data and fund_resp.data[0].get("name"):
+                            fund_name = fund_resp.data[0]["name"]
+                    except Exception:
+                        pass  # fall back to "Fund"
+
                     # Build Sankey data for DPI flow: Fund → Companies → Exits → Distributions
                     nodes = [
-                        {"id": 0, "name": f"Fund ${fund_id[:8]}", "level": 0},
+                        {"id": 0, "name": fund_name, "level": 0},
                     ]
                     links = []
                     
@@ -1320,7 +1367,21 @@ async def _route_to_service(
                         node_id += 1
                     
                     dpi = total_distributed / total_invested if total_invested > 0 else 0
-                    
+
+                    # Guard: if no links (no companies with investment amounts), return message instead of broken chart
+                    if not links:
+                        return {
+                            'type': 'message',
+                            'title': f'DPI: {dpi:.2f}x',
+                            'data': {'message': 'No portfolio companies with investment amounts found. Add investment amounts to see DPI flow.'},
+                            'metrics': {
+                                'total_invested': total_invested,
+                                'total_distributed': total_distributed,
+                                'dpi': dpi,
+                                'company_count': len(companies),
+                            },
+                        }
+
                     return {
                         'type': 'sankey',
                         'title': f'DPI Flow: {dpi:.2f}x',
@@ -2516,6 +2577,51 @@ async def _route_to_service(
                 logger.error(f"Error executing orchestrator skill {action_id}: {e}", exc_info=True)
                 return {'error': str(e)}
         
+        # Chain: run multiple cell actions in sequence, passing outputs forward
+        if action_id == 'chain.execute':
+            steps = request.inputs.get('steps', [])
+            if not steps:
+                raise ValueError("'steps' array required for chain.execute")
+            shared_inputs = request.inputs.get('shared_inputs', {})
+            results = []
+            carry: Dict[str, Any] = {}
+            registry = get_registry()
+            for i, step in enumerate(steps):
+                step_action_id = step.get('action_id')
+                if not step_action_id:
+                    raise ValueError(f"Step {i} is missing 'action_id'")
+                step_action = registry.get_action(step_action_id)
+                if not step_action:
+                    raise ValueError(f"Action '{step_action_id}' not found in registry (step {i})")
+                # Merge: shared_inputs < previous step carry < this step's own inputs
+                step_inputs = {**shared_inputs, **carry, **step.get('inputs', {})}
+                step_request = ActionExecutionRequest(
+                    action_id=step_action_id,
+                    row_id=request.row_id,
+                    column_id=request.column_id,
+                    inputs=step_inputs,
+                    mode=request.mode,
+                    fund_id=step_inputs.get('fund_id') or request.fund_id,
+                    company_id=step_inputs.get('company_id') or request.company_id,
+                    trace_id=request.trace_id,
+                )
+                step_result = await _route_to_service(step_action, step_request)
+                results.append({'action_id': step_action_id, 'result': step_result})
+                # Carry forward key scalar outputs to the next step's inputs
+                if isinstance(step_result, dict):
+                    carry = {
+                        k: v for k, v in step_result.items()
+                        if k in (
+                            'fair_value', 'value', 'recommendation', 'strategy',
+                            'company_id', 'fund_id', 'nav', 'ownership_pct',
+                        ) and v is not None
+                    }
+            return {
+                'steps': results,
+                'final_result': results[-1]['result'] if results else None,
+                'step_count': len(results),
+            }
+
         # Scenario composition
         if action_id == 'scenario.compose':
             from app.services.matrix_scenario_service import MatrixScenarioService

@@ -3,7 +3,7 @@ import { getBackendUrl } from '@/lib/backend-url';
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
-  const { sections, title, fundId } = body;
+  const { sections, charts, title, companies, fundId } = body;
 
   if (!sections?.length) {
     return NextResponse.json({ error: 'No sections to export' }, { status: 400 });
@@ -18,21 +18,27 @@ export async function POST(request: NextRequest) {
   }));
 
   try {
+    // Backend expects { deck_data: { ... }, format: "pdf" } per DeckExportRequest schema
     const response = await fetch(`${getBackendUrl()}/api/export/deck`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        slides,
-        theme: 'memo',
-        title: title || 'Portfolio Memo',
-        metadata: { fundId, exportType: 'memo' },
+        deck_data: {
+          slides,
+          charts: charts || [],
+          title: title || 'Portfolio Memo',
+          companies: companies || [],
+          theme: 'memo',
+          metadata: { fundId, exportType: 'memo' },
+        },
+        format: 'pdf',
       }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
       console.error('[MEMO_EXPORT] Backend export failed:', errorText);
-      return NextResponse.json({ error: 'PDF export failed' }, { status: 500 });
+      return NextResponse.json({ error: 'PDF export failed', details: errorText }, { status: 500 });
     }
 
     const pdfBuffer = await response.arrayBuffer();

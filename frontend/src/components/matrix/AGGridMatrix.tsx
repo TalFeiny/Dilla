@@ -3,7 +3,7 @@
 import React, { useMemo, useCallback, useRef, useState, useEffect } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import { getTheme } from '@/lib/theme';
-import { ModuleRegistry, AllCommunityModule, ColDef, GridApi, CellValueChangedEvent, CellEditingStartedEvent } from 'ag-grid-community';
+import { ModuleRegistry, AllCommunityModule, ColDef, GridApi } from 'ag-grid-community';
 // Import AG Grid styles - using legacy CSS themes
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
@@ -19,10 +19,6 @@ import { cn } from '@/lib/utils';
 import { DataBarRenderer } from './custom-renderers/DataBarRenderer';
 import { EnhancedMasterDetailRenderer } from './custom-renderers/EnhancedMasterDetail';
 import { TreemapRenderer } from './custom-renderers/TreemapRenderer';
-import type { DocumentSuggestion } from './DocumentSuggestions';
-
-export type SuggestionAcceptPayload = { rowId: string; columnId: string; suggestedValue: unknown };
-
 export interface AGGridMatrixProps {
   matrixData: MatrixData;
   /** Backend-registered cell actions; when set, dropdown/picker show these instead of static workflows. */
@@ -57,11 +53,9 @@ export interface AGGridMatrixProps {
   onAddRow?: () => void | Promise<void>;
   onAddColumn?: () => void;
   onSelectionChange?: (selectedRowIds: string[]) => void;
+  /** Open the edit overlay for a cell (human "Edit Cell" from dropdown). */
+  onStartCellEdit?: (rowId: string, columnId: string) => void;
   onStartEditingCell?: (callback: (rowId: string, columnId: string) => void) => void;
-  /** Document suggestions for in-grid badge; accept/reject callbacks use same signature as ChartViewport. */
-  documentSuggestions?: DocumentSuggestion[];
-  onSuggestionAccept?: (suggestionId: string, payload?: SuggestionAcceptPayload) => void;
-  onSuggestionReject?: (suggestionId: string) => void;
   /** When document extraction completes (from Documents cell), refresh suggestions and open viewport. */
   onSuggestChanges?: (documentId: string, extractedData?: unknown) => void;
   mode?: 'portfolio' | 'query' | 'custom' | 'lp';
@@ -88,11 +82,11 @@ function parseCellValue(value: string, type: MatrixColumn['type']): any {
 
   switch (type) {
     case 'number':
-      return parseFloat(value.replace(/[^0-9.-]/g, '')) || 0;
+      { const n = parseFloat(value.replace(/[^0-9.-]/g, '')); return isNaN(n) ? null : n; }
     case 'currency':
       return parseCurrencyInput(value);
     case 'percentage':
-      return parseFloat(value.replace(/[^0-9.-]/g, '')) / 100 || 0;
+      { const n = parseFloat(value.replace(/[^0-9.-]/g, '')); return isNaN(n) ? null : n / 100; }
     case 'boolean':
       return value.toLowerCase() === 'yes' || value === 'true' || value === '1';
     case 'date':
@@ -117,6 +111,7 @@ const DEFAULT_PORTFOLIO_COLUMNS: MatrixColumn[] = [
   { id: 'cashInBank', name: 'Cash in Bank', type: 'currency' as const, width: 140, editable: true },
   { id: 'valuation', name: 'Current Valuation', type: 'currency' as const, width: 140, editable: true },
   { id: 'ownership', name: 'Ownership %', type: 'percentage' as const, width: 120, editable: true },
+  { id: 'founderOwnership', name: 'Founder Ownership', type: 'percentage' as const, width: 140, editable: false },
   { id: 'optionPool', name: 'Option Pool (bps)', type: 'number' as const, width: 120, editable: true },
   { id: 'latestUpdate', name: 'Latest Update', type: 'text' as const, width: 160, editable: true },
   { id: 'productUpdates', name: 'Product Updates', type: 'text' as const, width: 160, editable: true },
@@ -176,9 +171,6 @@ export function AGGridMatrix({
   onAddColumn,
   onSelectionChange,
   onStartEditingCell,
-  documentSuggestions,
-  onSuggestionAccept,
-  onSuggestionReject,
   onSuggestChanges,
   mode = 'portfolio',
   useAgentPanel,
@@ -224,9 +216,6 @@ export function AGGridMatrix({
     onAddColumn,
     onSelectionChange,
     onStartEditingCell,
-    documentSuggestions,
-    onSuggestionAccept,
-    onSuggestionReject,
     onSuggestChanges,
     mode,
     useAgentPanel,
@@ -257,9 +246,6 @@ export function AGGridMatrix({
     onAddColumn,
     onSelectionChange,
     onStartEditingCell,
-    documentSuggestions,
-    onSuggestionAccept,
-    onSuggestionReject,
     onSuggestChanges,
     mode,
     useAgentPanel,
@@ -366,19 +352,30 @@ export function AGGridMatrix({
         const isCompanyCol = col.id === 'company' || col.id === 'companyName';
         const rawValue = isCompanyCol ? (row.companyName ?? cell.value) : cell.value;
 
-        let displayValue = cell.displayValue;
+        // For numeric types (currency, percentage, number, runway), store the raw
+        // numeric value so AG Grid's valueFormatter can format it correctly.
+        // Storing a pre-formatted string (e.g. "$50.00M") causes double-formatting
+        // where Number("$50.00M") = NaN, producing "0" or "-" in the grid.
+        const isNumericType = col.type === 'currency' || col.type === 'percentage' || col.type === 'number' || (col.type as string) === 'runway';
+
         if (cell.formula && cell.formula.startsWith('=') && formulaEngine) {
           try {
             const result = formulaEngine.evaluate(cell.formula);
-            displayValue = formatCellValue(result, col.type);
+            rowData[col.id] = isNumericType ? result : formatCellValue(result, col.type);
           } catch {
-            displayValue = '#ERROR';
+            rowData[col.id] = '#ERROR';
           }
+        } else if (isNumericType) {
+          // Extract raw numeric value — avoid wrapping in display format
+          let numVal = rawValue;
+          if (typeof rawValue === 'object' && rawValue !== null && !Array.isArray(rawValue)) {
+            numVal = (rawValue as any).value ?? (rawValue as any).fair_value ?? (rawValue as any).displayValue ?? rawValue;
+          }
+          rowData[col.id] = numVal;
         } else {
-          displayValue = displayValue || formatCellValue(rawValue, col.type);
+          const displayValue = cell.displayValue || formatCellValue(rawValue, col.type);
+          rowData[col.id] = displayValue;
         }
-
-        rowData[col.id] = displayValue;
         rowData[`_${col.id}_cell`] = cell;
       });
 
@@ -521,7 +518,7 @@ export function AGGridMatrix({
         resizable: true,
         sortable: true,
         filter: false, // Remove filter icon from headers
-        editable: col.editable !== false, // Respect explicit false, otherwise default to true
+        editable: false, // All edits go through CellDropdownRenderer wrapper, not AG Grid built-in editor
         // Ensure cell value is always from cell object so text shows (fix: "only name has values")
         valueGetter: (params) => {
           if (!params?.data) return null;
@@ -540,17 +537,8 @@ export function AGGridMatrix({
             propsRef.current.onSourceChange?.(rowId, columnId, source);
           },
           onEdit: (rowId: string, columnId: string) => {
-            const api = gridApiRef.current;
-            if (api && !api.isDestroyed() && isGridReadyRef.current && params.node) {
-              try {
-                api.startEditingCell({
-                  rowIndex: params.node.rowIndex!,
-                  colKey: columnId,
-                });
-              } catch (error) {
-                console.error('[AGGridMatrix] Error starting cell edit:', error);
-              }
-            }
+            // Route through parent wrapper (handleCellDoubleClick) — never use AG Grid built-in editor
+            propsRef.current.onStartCellEdit?.(rowId, columnId);
           },
           onFormulaBuilder: (rowId: string, columnId: string) => {
             propsRef.current.onFormulaBuilder?.(rowId, columnId);
@@ -603,13 +591,6 @@ export function AGGridMatrix({
               console.error(`Error running ${serviceName}:`, error);
             }
           },
-          documentSuggestions: p.documentSuggestions ?? [],
-          onSuggestionAccept: (suggestionId: string, payload?: { rowId: string; columnId: string; suggestedValue: unknown }) => {
-            propsRef.current.onSuggestionAccept?.(suggestionId, payload);
-          },
-          onSuggestionReject: (suggestionId: string) => {
-            propsRef.current.onSuggestionReject?.(suggestionId);
-          },
           onUploadDocumentToCell: (rowId: string, columnId: string, file: File) => {
             propsRef.current.onUploadDocumentToCell?.(rowId, columnId, file);
           },
@@ -624,7 +605,7 @@ export function AGGridMatrix({
         valueParser: (params) => {
           return parseCellValue(params.newValue, col.type);
         },
-        cellEditor: col.type === 'formula' ? 'agTextCellEditor' : undefined,
+        // No cellEditor — all editing goes through CellDropdownRenderer wrapper
       };
 
       // Add cell styling
@@ -635,15 +616,19 @@ export function AGGridMatrix({
         case 'currency':
           baseColDef.type = 'numericColumn';
           baseColDef.valueFormatter = (params) => {
-            if (params.value === null || params.value === undefined) return '';
-            return formatCurrencyCompact(Number(params.value));
+            if (params.value === null || params.value === undefined || params.value === '' || params.value === 0) return '';
+            const n = Number(params.value);
+            if (Number.isNaN(n) || n === 0) return '';
+            return formatCurrencyCompact(n);
           };
           break;
         case 'percentage':
           baseColDef.type = 'numericColumn';
           baseColDef.valueFormatter = (params) => {
-            if (params.value === null || params.value === undefined) return '';
-            return `${(Number(params.value) * 100).toFixed(1)}%`;
+            if (params.value === null || params.value === undefined || params.value === '' || params.value === 0) return '';
+            const n = Number(params.value);
+            if (Number.isNaN(n) || n === 0) return '';
+            return `${(n * 100).toFixed(1)}%`;
           };
           break;
         case 'number':
@@ -653,11 +638,8 @@ export function AGGridMatrix({
           baseColDef.type = 'dateColumn';
           break;
         case 'boolean':
-          baseColDef.cellEditor = 'agCheckboxCellEditor';
           break;
         case 'formula':
-          baseColDef.editable = true;
-          baseColDef.cellEditor = 'agTextCellEditor';
           break;
       }
       
@@ -703,20 +685,10 @@ export function AGGridMatrix({
     resizable: true,
     sortable: true,
     filter: false, // Remove filter icon from headers
-    editable: true, // Make all columns editable by default
+    editable: false, // Never use AG Grid built-in editing — all edits go through CellDropdownRenderer wrapper
     cellStyle: getCellStyle as any,
   }), [getCellStyle]);
 
-  // Handle cell editing started - detect empty grid and add row before edit
-  const handleCellEditingStarted = useCallback((event: CellEditingStartedEvent) => {
-    // If grid is empty (no data) and user tries to edit, add a row first
-    if (!event.data && onAddRow) {
-      // Grid is empty, add row first
-      onAddRow();
-    }
-  }, [onAddRow]);
-
-  // Handle cell value changes
   // Handle selection changes
   const handleSelectionChanged = useCallback(() => {
     if (!gridApi || !onSelectionChange) return;
@@ -725,56 +697,8 @@ export function AGGridMatrix({
     onSelectionChange(selectedRowIds);
   }, [gridApi, onSelectionChange]);
 
-  const handleCellValueChanged = useCallback(async (event: CellValueChangedEvent) => {
-    if (!event.data || !event.colDef?.field) return;
-
-    const rowId = event.data.id;
-    const columnId = event.colDef.field;
-    const newValue = event.newValue;
-
-    // Check if it's a formula
-    const column = safeMatrixData.columns.find((c) => c.id === columnId);
-    const isFormula = column?.type === 'formula' || (typeof newValue === 'string' && newValue.startsWith('='));
-
-    if (isFormula && typeof newValue === 'string' && newValue.startsWith('=')) {
-      // Evaluate formula
-      try {
-        // Create updated matrix data with new formula
-        const updatedRows = safeMatrixData.rows.map(r => {
-          if (r.id === rowId) {
-            return {
-              ...r,
-              cells: {
-                ...r.cells,
-                [columnId]: {
-                  ...r.cells[columnId],
-                  formula: newValue,
-                },
-              },
-            };
-          }
-          return r;
-        });
-        
-        const updatedData: MatrixData = {
-          ...matrixData,
-          rows: updatedRows,
-        };
-        
-        const engine = createFormulaEngine(updatedData);
-        const result = engine.evaluate(newValue);
-        event.node.setDataValue(columnId, formatCellValue(result, column?.type || 'text'));
-      } catch (error) {
-        console.error('Formula evaluation error:', error);
-        event.node.setDataValue(columnId, '#ERROR');
-      }
-    }
-
-    // Call onCellEdit callback
-    if (onCellEdit) {
-      await onCellEdit(rowId, columnId, newValue);
-    }
-  }, [safeMatrixData, onCellEdit, onAddRow]);
+  // No handleCellValueChanged — AG Grid built-in editing is disabled.
+  // All edits (human + agent) go through CellDropdownRenderer → onCellEdit → handleCellEdit in UnifiedMatrix.
 
   // Grid ready callback
   const onGridReady = useCallback((params: any) => {
@@ -807,31 +731,7 @@ export function AGGridMatrix({
     return gridApi != null && !gridApi.isDestroyed() && isGridReadyRef.current;
   }, [gridApi]);
 
-  // Expose startEditingCell function to parent via callback
-  useEffect(() => {
-    if (onStartEditingCell && gridApi && isGridReady()) {
-      onStartEditingCell((rowId: string, columnId: string) => {
-        if (!gridApi || !isGridReady()) return;
-        try {
-          // Find the row node by rowId
-          let targetNode = null;
-          gridApi.forEachNode((node: any) => {
-            if (node.data?.id === rowId) {
-              targetNode = node;
-            }
-          });
-          if (targetNode) {
-            gridApi.startEditingCell({
-              rowIndex: targetNode.rowIndex!,
-              colKey: columnId,
-            });
-          }
-        } catch (error) {
-          console.error('[AGGridMatrix] Error starting cell edit:', error);
-        }
-      });
-    }
-  }, [gridApi, onStartEditingCell, isGridReady]);
+  // onStartEditingCell removed — AG Grid built-in editing disabled; edits go through wrapper
 
   // Grid pre-destroy callback - clean up gridApi state
   const onGridPreDestroyed = useCallback(() => {
@@ -881,7 +781,8 @@ export function AGGridMatrix({
         isGridReadyRef.current = false;
       }
     });
-  }, [gridApi, rowData, columnDefs, isGridReady, actionInProgressRef]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gridApi, rowData, columnDefs, isGridReady]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1009,46 +910,24 @@ export function AGGridMatrix({
         style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
         onDragOver={(e) => {
           e.preventDefault();
-          e.stopPropagation();
+          // Don't stopPropagation — let UnifiedMatrix show its drag overlay
           e.dataTransfer.dropEffect = 'copy';
         }}
         onDrop={async (e) => {
           e.preventDefault();
-          e.stopPropagation();
-          
+
           try {
             const data = e.dataTransfer.getData('application/json');
             if (!data) {
-              // Try to get file from dataTransfer
-              const files = Array.from(e.dataTransfer.files);
-              const docFiles = files.filter((f: File) =>
-                /\.(pdf|docx?|xlsx?|xls)$/i.test(f.name)
-              );
-              if (docFiles.length > 0) {
-                if (onUploadDocumentToCell) {
-                  const rowId = dragOverCell?.rowId ?? (() => {
-                    const rowNode = gridApi?.getDisplayedRowAtIndex(0);
-                    return rowNode?.data?.id ?? rowNode?.data?.companyId ?? safeMatrixData.rows?.[0]?.id ?? safeMatrixData.rows?.[0]?.companyId;
-                  })();
-                  const columnId = dragOverCell?.columnId ?? (() => {
-                    const docCol = safeMatrixData.columns?.find(c => c.id === 'documents' || c.name?.toLowerCase().includes('document'));
-                    return docCol?.id ?? safeMatrixData.columns?.[0]?.id;
-                  })();
-                  if (rowId && columnId) {
-                    for (const file of docFiles) {
-                      await onUploadDocumentToCell(rowId, columnId, file);
-                    }
-                  }
-                } else if (onUploadDocument) {
-                  // Legacy: no upload-to-cell handler, navigate to documents for first row
-                  const rowNode = gridApi?.getDisplayedRowAtIndex(0);
-                  const rowId = rowNode?.data?.id ?? rowNode?.data?.companyId;
-                  if (rowId) onUploadDocument(rowId);
-                }
-              }
-              if (docFiles.length > 0) return;
+              // File drop from desktop: let the event bubble to UnifiedMatrix
+              // which has smarter filename-matching logic to target the right company row.
+              // Do NOT handle file drops here — our dragOverCell state is unreliable
+              // (onCellMouseOut never clears it, so it points to a stale or wrong cell).
+              return;
             }
 
+            // JSON data drop (e.g. document link from sidebar) — handle here with cell precision
+            e.stopPropagation();
             const dropData = JSON.parse(data);
             if (dropData.type === 'document') {
               const documentId = dropData.documentId;
@@ -1151,8 +1030,6 @@ export function AGGridMatrix({
                 }
               }}
               onGridPreDestroyed={onGridPreDestroyed}
-              onCellEditingStarted={handleCellEditingStarted}
-              onCellValueChanged={handleCellValueChanged}
               onSelectionChanged={handleSelectionChanged}
               rowSelection={onSelectionChange ? 'multiple' : undefined}
               suppressRowClickSelection={onSelectionChange ? false : true}
@@ -1166,8 +1043,6 @@ export function AGGridMatrix({
               domLayout="normal"
               rowBuffer={30}
               debounceVerticalScrollbar={true}
-              singleClickEdit={true}
-              stopEditingWhenCellsLoseFocus={true}
               theme="legacy"
               // Clipboard (Community edition supports basic clipboard)
               clipboardDelimiter="\t"
@@ -1181,7 +1056,9 @@ export function AGGridMatrix({
                 }
               }}
               onCellMouseOut={() => {
-                // Don't clear immediately - only on actual drop
+                // Clear after a short delay — if another cell fires mouseOver it will
+                // overwrite this, but if the mouse leaves the grid entirely we avoid stale state.
+                setTimeout(() => setDragOverCell(null), 150);
               }}
               onRowGroupOpened={(params) => {
                 // Handle group expansion

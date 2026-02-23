@@ -1,6 +1,9 @@
 /**
  * Workflow executor: run cell actions across target rows (current / all).
  * Used by in-cell =WORKFLOW("action1,action2", "all") — no popovers.
+ *
+ * Key feature: result chaining — action N's output is passed as context
+ * to action N+1, enabling multi-step workflows like pwerm → dcf.
  */
 
 import {
@@ -13,11 +16,16 @@ import { getActionIdForWorkflow } from '@/lib/matrix/workflow-action-map';
 
 export type WorkflowTarget = 'current' | 'all' | 'selected';
 
+/** Accumulated results from previous workflow steps, keyed by actionId. */
+export type WorkflowContext = Record<string, ActionExecutionResponse>;
+
 export interface WorkflowRunResult {
   success: boolean;
   processedCount: number;
-  results: { rowId: string; columnId: string; response: ActionExecutionResponse }[];
+  results: { rowId: string; columnId: string; actionId: string; response: ActionExecutionResponse }[];
   error?: string;
+  /** Per-row workflow context so callers can inspect chained results. */
+  contextByRow?: Record<string, WorkflowContext>;
 }
 
 export interface RunWorkflowParams {
@@ -74,11 +82,29 @@ function cellStr(row: { cells?: Record<string, { value?: unknown }> } | null, co
   return typeof v === 'string' ? v : v != null ? String(v) : '';
 }
 
+/**
+ * Extract numeric values from a workflow context response.
+ * Flattens nested result objects into a flat key-value map.
+ */
+function flattenResponse(resp: ActionExecutionResponse): Record<string, unknown> {
+  const flat: Record<string, unknown> = {};
+  if (!resp) return flat;
+  const data = (resp as any).result ?? (resp as any).data ?? resp;
+  if (typeof data !== 'object' || data === null) return flat;
+  for (const [k, v] of Object.entries(data)) {
+    if (v !== null && v !== undefined) {
+      flat[k] = v;
+    }
+  }
+  return flat;
+}
+
 function buildInputs(
   actionId: string,
   row: { id: string; companyId?: string; cells?: Record<string, { value?: unknown }> },
   columnId: string,
-  matrixData: RunWorkflowParams['matrixData']
+  matrixData: RunWorkflowParams['matrixData'],
+  workflowCtx?: WorkflowContext,
 ): Record<string, unknown> {
   const inputs: Record<string, unknown> = {};
   const fundId = matrixData.metadata?.fundId;
@@ -89,6 +115,32 @@ function buildInputs(
 
   if (companyId) inputs.company_id = companyId;
   if (fundId) inputs.fund_id = fundId;
+
+  // --- Merge previous workflow step results into inputs ---
+  // This enables chaining: pwerm result feeds into dcf, etc.
+  if (workflowCtx && Object.keys(workflowCtx).length > 0) {
+    const chainedData: Record<string, unknown> = {};
+    for (const [prevActionId, prevResponse] of Object.entries(workflowCtx)) {
+      const flat = flattenResponse(prevResponse);
+      // Namespace by action: prev_pwerm_valuation, prev_dcf_fair_value, etc.
+      const prefix = `prev_${prevActionId.replace(/\./g, '_')}`;
+      for (const [k, v] of Object.entries(flat)) {
+        chainedData[`${prefix}_${k}`] = v;
+      }
+      // Also set common fields directly so actions can pick them up
+      if (flat.valuation !== undefined || flat.fair_value !== undefined) {
+        inputs.prev_valuation = flat.valuation ?? flat.fair_value;
+      }
+      if (flat.scenarios !== undefined) {
+        inputs.prev_scenarios = flat.scenarios;
+      }
+      if (flat.pwerm_valuation !== undefined) {
+        inputs.pwerm_valuation = flat.pwerm_valuation;
+      }
+    }
+    inputs._workflow_context = chainedData;
+    inputs._prev_action_ids = Object.keys(workflowCtx);
+  }
 
   if (actionId.startsWith('financial.')) {
     const exitCol = cols.find((c) => /exit|valuation/i.test(c.id));
@@ -138,7 +190,8 @@ function buildInputs(
     }
     const stageVal = cellStr(r, cols, /stage|round|time_since|since_round|funnel/i);
     if (stageVal) inputs.stage = stageVal;
-    const valuationVal = cellValue(r, cols, /valuation|value|currentValuation/i);
+    // Use chained valuation from previous step if available, else from grid
+    const valuationVal = (inputs.prev_valuation as number) ?? cellValue(r, cols, /valuation|value|currentValuation/i);
     if (valuationVal !== undefined && Number.isFinite(valuationVal)) {
       inputs.last_round_valuation = valuationVal;
       inputs.current_valuation_usd = valuationVal;
@@ -193,7 +246,7 @@ function buildInputs(
       inputs.growth_rate = growthVal;
       inputs.revenue_growth_annual_pct = growthVal > 2 ? growthVal : growthVal * 100;
     }
-    const valuationVal = cellValue(r, cols, /valuation|value|currentValuation/i);
+    const valuationVal = (inputs.prev_valuation as number) ?? cellValue(r, cols, /valuation|value|currentValuation/i);
     if (valuationVal !== undefined && Number.isFinite(valuationVal)) {
       inputs.current_valuation_usd = valuationVal;
     }
@@ -222,13 +275,17 @@ function buildInputs(
 export { buildInputs as buildActionInputs };
 
 /**
- * Run workflow: execute each action for each target row, collect results.
+ * Run workflow: execute each action for each target row, chaining results
+ * from action N into action N+1 via WorkflowContext.
+ *
+ * For each row, actions execute sequentially (preserving chain order).
+ * Different rows can be processed in parallel for throughput.
  */
 export async function runWorkflow(params: RunWorkflowParams): Promise<WorkflowRunResult> {
   const { actionIds, target, triggerRowId, triggerColumnId, matrixData, selectedRowIds, fundId, mode } = params;
-  const results: { rowId: string; columnId: string; response: ActionExecutionResponse }[] = [];
+  const results: { rowId: string; columnId: string; actionId: string; response: ActionExecutionResponse }[] = [];
   const rows = matrixData.rows ?? [];
-  
+
   // Determine target rows based on target type
   let targetRows: typeof rows;
   if (target === 'all') {
@@ -247,13 +304,19 @@ export async function runWorkflow(params: RunWorkflowParams): Promise<WorkflowRu
     // 'current'
     targetRows = rows.filter((r) => r.id === triggerRowId);
   }
-  
-  const effectiveMode = (mode ?? 'portfolio') as MatrixMode;
 
+  const effectiveMode = (mode ?? 'portfolio') as MatrixMode;
+  const contextByRow: Record<string, WorkflowContext> = {};
+
+  // Process each row: actions chain sequentially within a row
   for (const row of targetRows) {
+    const rowCtx: WorkflowContext = {};
+    contextByRow[row.id] = rowCtx;
+
     for (const actionId of actionIds) {
       try {
-        const inputs = buildInputs(actionId, row, triggerColumnId, matrixData);
+        // Pass accumulated context from previous actions for this row
+        const inputs = buildInputs(actionId, row, triggerColumnId, matrixData, rowCtx);
         const req: ActionExecutionRequest = {
           action_id: actionId,
           row_id: row.id,
@@ -264,22 +327,153 @@ export async function runWorkflow(params: RunWorkflowParams): Promise<WorkflowRu
           company_id: row.companyId,
         };
         const response = await executeAction(req);
-        results.push({ rowId: row.id, columnId: triggerColumnId, response });
+        results.push({ rowId: row.id, columnId: triggerColumnId, actionId, response });
+        // Store in workflow context so next action can access it
+        rowCtx[actionId] = response;
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
-        return {
-          success: false,
-          processedCount: results.length,
-          results,
-          error: `Row ${row.id} / ${actionId}: ${err}`,
-        };
+        // Don't fail entire workflow — log error and continue to next action
+        console.error(`[workflow] Row ${row.id} / ${actionId} failed: ${err}`);
+        results.push({
+          rowId: row.id,
+          columnId: triggerColumnId,
+          actionId,
+          response: { success: false, error: err } as any,
+        });
+        // Still continue — partial results are better than total failure
       }
     }
   }
 
+  const failCount = results.filter((r) => (r.response as any)?.error).length;
   return {
-    success: true,
+    success: failCount === 0,
     processedCount: results.length,
     results,
+    contextByRow,
+    error: failCount > 0 ? `${failCount} action(s) failed` : undefined,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Plan-based workflow execution with dependency-aware parallel steps
+// ---------------------------------------------------------------------------
+
+export interface PlanStep {
+  id: string;
+  actionId: string;
+  label: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  dependsOn?: string[];
+  parallel?: boolean;
+}
+
+export type PlanStepUpdateCallback = (stepId: string, status: PlanStep['status'], result?: ActionExecutionResponse) => void;
+
+export interface RunPlanParams {
+  steps: PlanStep[];
+  rowId: string;
+  columnId: string;
+  matrixData: RunWorkflowParams['matrixData'];
+  fundId?: string;
+  mode?: MatrixMode;
+  onStepUpdate?: PlanStepUpdateCallback;
+}
+
+export interface PlanRunResult {
+  success: boolean;
+  steps: PlanStep[];
+  results: Record<string, ActionExecutionResponse>;
+  error?: string;
+}
+
+/**
+ * Group plan steps into dependency levels for parallel execution.
+ * Steps in the same level have no mutual dependencies and can run concurrently.
+ */
+function topologicalLevels(steps: PlanStep[]): PlanStep[][] {
+  const levels: PlanStep[][] = [];
+  const completed = new Set<string>();
+  let remaining = [...steps];
+
+  while (remaining.length > 0) {
+    const level = remaining.filter((s) => {
+      if (!s.dependsOn?.length) return true;
+      return s.dependsOn.every((dep) => completed.has(dep));
+    });
+
+    if (level.length === 0) {
+      // Circular dependency or unresolvable — push all remaining
+      levels.push(remaining);
+      break;
+    }
+
+    levels.push(level);
+    for (const s of level) completed.add(s.id);
+    remaining = remaining.filter((s) => !completed.has(s.id));
+  }
+
+  return levels;
+}
+
+/**
+ * Execute a plan: steps grouped by dependency level, each level runs in parallel.
+ * Results from earlier levels are available to later levels via WorkflowContext.
+ */
+export async function runPlan(params: RunPlanParams): Promise<PlanRunResult> {
+  const { steps, rowId, columnId, matrixData, fundId, mode, onStepUpdate } = params;
+  const effectiveMode = (mode ?? 'portfolio') as MatrixMode;
+  const row = matrixData.rows.find((r) => r.id === rowId) ?? matrixData.rows[0];
+  if (!row) {
+    return { success: false, steps, results: {}, error: 'No matching row found' };
+  }
+
+  const levels = topologicalLevels(steps);
+  const workflowCtx: WorkflowContext = {};
+  const allResults: Record<string, ActionExecutionResponse> = {};
+  const updatedSteps = steps.map((s) => ({ ...s }));
+
+  for (const level of levels) {
+    // Execute all steps in this level concurrently
+    const promises = level.map(async (step) => {
+      const stepRef = updatedSteps.find((s) => s.id === step.id)!;
+      stepRef.status = 'running';
+      onStepUpdate?.(step.id, 'running');
+
+      try {
+        const inputs = buildInputs(step.actionId, row, columnId, matrixData, workflowCtx);
+        const req: ActionExecutionRequest = {
+          action_id: step.actionId,
+          row_id: rowId,
+          column_id: columnId,
+          inputs,
+          mode: effectiveMode,
+          fund_id: fundId ?? matrixData.metadata?.fundId,
+          company_id: row.companyId,
+        };
+        const response = await executeAction(req);
+        allResults[step.id] = response;
+        workflowCtx[step.actionId] = response;
+        stepRef.status = 'done';
+        onStepUpdate?.(step.id, 'done', response);
+      } catch (e) {
+        const err = e instanceof Error ? e.message : String(e);
+        allResults[step.id] = { success: false, error: err } as any;
+        stepRef.status = 'failed';
+        onStepUpdate?.(step.id, 'failed');
+        console.error(`[plan] Step ${step.id} (${step.actionId}) failed: ${err}`);
+      }
+    });
+
+    await Promise.all(promises);
+  }
+
+  const failCount = updatedSteps.filter((s) => s.status === 'failed').length;
+  return {
+    success: failCount === 0,
+    steps: updatedSteps,
+    results: allResults,
+    error: failCount > 0 ? `${failCount} step(s) failed` : undefined,
   };
 }

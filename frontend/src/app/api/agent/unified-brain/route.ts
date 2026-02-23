@@ -53,8 +53,14 @@ const normalizeAgentResponse = (backendJson: AnyRecord): AnyRecord => {
   const slides =
     pickSlides(agentPayload, nestedResult, agentPayload?.result, agentPayload?.results, backendJson?.data, backendJson?.result, backendJson?.results) ?? [];
 
-  const resultWithSlides = attachSlides(nestedResult, slides);
-  const resultsWithSlides = agentPayload?.results ? attachSlides(agentPayload.results, slides) : resultWithSlides;
+  // Merge agentPayload fields into nestedResult so sibling fields
+  // (market_analysis, companies, investment_thesis, etc.) are not dropped
+  // when the backend nests the main response under result/results.
+  const mergedResult = nestedResult === agentPayload
+    ? nestedResult
+    : { ...agentPayload, ...nestedResult };
+  const resultWithSlides = attachSlides(mergedResult, slides);
+  const resultsWithSlides = agentPayload?.results ? attachSlides({ ...agentPayload, ...agentPayload.results }, slides) : resultWithSlides;
 
   return {
     ...agentPayload,
@@ -108,12 +114,22 @@ export async function POST(request: NextRequest) {
           fundId: body.context?.fundId ?? body.fundId,
           // Forward approved plan steps so backend can execute them in order
           plan_steps: body.context?.plan_steps || undefined,
+          // Analysis manifest for state persistence — tells backend which derived
+          // data (cap_table_history, scenarios, etc.) was computed in prior requests
+          analysis_manifest: body.context?.analysis_manifest ?? body.analysis_manifest ?? undefined,
+          // Datetime context for time-aware analysis
+          datetime: body.context?.datetime || {
+            iso: new Date().toISOString(),
+            date: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+            quarter: `Q${Math.ceil((new Date().getMonth() + 1) / 3)} ${new Date().getFullYear()}`,
+          },
         },
         // Agent context for conversation continuity (recent analyses, active company, summary, memo)
         agent_context: {
           ...(body.agent_context || {}),
           memo_sections: body.agent_context?.memo_sections || [],
           memo_title: body.agent_context?.memo_title || '',
+          current_datetime: body.agent_context?.current_datetime || new Date().toISOString(),
         },
         // Output format hint — backend determines final format from prompt + tool results
         output_format_hint: body.output_format_hint || body.output_format || 'analysis',

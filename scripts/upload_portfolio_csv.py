@@ -175,9 +175,9 @@ def upload_csv(csv_path: str, fund_id: str) -> None:
             "first_investment_date": r["first_investment_date"] or None,
             "status": "active",
         }
-        # Only add investment_lead if your companies table has this column
-        # if r.get("investment_lead"):
-        #     payload["investment_lead"] = r["investment_lead"]
+        # Add investment_lead if present in CSV data
+        if r.get("investment_lead"):
+            payload["investment_lead"] = r["investment_lead"]
 
         try:
             result = supabase.table("companies").insert(payload).execute()

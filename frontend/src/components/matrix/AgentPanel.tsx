@@ -4,10 +4,15 @@
  * Agent Panel — Cursor-style single chat panel (no tabs)
  * All actions (including document suggestion accept/reject) live inside the chat.
  * Plan, Activity, Charts & suggestions merged into chat or removed.
+ *
+ * Chat mode selector: "Analysis" (infra/portfolio queries) vs "Docs" (memo/report generation).
+ * The mode is sent as output_format_override to AgentChat so the backend
+ * can distinguish between analytical queries and document generation.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { BarChart3, FileText } from 'lucide-react';
 import type { ExportFormat } from '@/components/agent/AgentChat';
 import { MatrixData } from './UnifiedMatrix';
 import { DocumentSuggestion, DocumentInsight, type SuggestionAcceptPayload } from './DocumentSuggestions';
@@ -60,7 +65,7 @@ export interface AgentPanelProps {
   /** Control centre: edit cell from chat (rowId, columnId, value) */
   onCellEdit?: (rowId: string, columnId: string, value: unknown, options?: { data_source?: string; metadata?: Record<string, unknown> }) => Promise<void>;
   /** When provided, grid commands go through this callback for accept/reject flow instead of executing directly */
-  onGridCommandsFromBackend?: (commands: Array<{ action: 'edit' | 'run' | 'add_document'; rowId?: string; columnId?: string; value?: unknown; actionId?: string }>) => Promise<void>;
+  onGridCommandsFromBackend?: (commands: Array<{ action: 'edit' | 'run' | 'add_document'; rowId?: string; columnId?: string; value?: unknown; actionId?: string; source_service?: string; reasoning?: string; confidence?: number; metadata?: Record<string, unknown> }>) => Promise<void>;
   /** Control centre: log tool calls for Activity tab */
   onToolCallLog?: (entry: Omit<ToolCallEntry, 'id' | 'at'>) => void;
   /** Export from chat: matrix CSV/XLS/PDF */
@@ -75,6 +80,13 @@ export interface AgentPanelProps {
   memoSections?: Array<{ type: string; content?: string }>;
   /** Callback when agent returns memo_updates */
   onMemoUpdates?: (updates: { action: string; sections: Array<{ type: string; content?: string; chart?: unknown; items?: string[]; table?: unknown }> }) => void;
+  /** Emit rich analysis to bottom panel */
+  onAnalysisReady?: (analysis: {
+    sections: Array<{ title?: string; content?: string; level?: number }>;
+    charts: Array<{ type: string; title?: string; data: any }>;
+    companies?: any[];
+    capTables?: any[];
+  }) => void;
 }
 
 export function AgentPanel({
@@ -105,6 +117,7 @@ export function AgentPanel({
   onMemoUpdates,
   toolCallEntries = [],
   planSteps = [],
+  onAnalysisReady,
 }: AgentPanelProps) {
   return (
     <div className="flex flex-col h-full min-h-0 w-full border-l bg-background">
@@ -141,6 +154,7 @@ export function AgentPanel({
           onSuggestionReject={onSuggestionReject}
           onRetrySuggestion={onRetrySuggestion}
           toolCallEntries={toolCallEntries}
+          onAnalysisReady={onAnalysisReady}
         />
       </div>
     </div>

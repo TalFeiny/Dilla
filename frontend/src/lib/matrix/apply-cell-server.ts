@@ -70,6 +70,7 @@ const fieldMap: Record<string, string> = {
   lastContactedDate: 'last_contacted_date',
   aiFirst: 'ai_first',
   hasPwermModel: 'has_pwerm_model',
+  founderOwnership: 'founder_ownership',
   fund: 'fund_id',
   fundId: 'fund_id',
   fund_id: 'fund_id',
@@ -139,7 +140,7 @@ export async function applyCellUpdate(input: ApplyCellInput): Promise<ApplyCellR
         ? (new_value as Record<string, unknown>).value ??
           (new_value as Record<string, unknown>).displayValue ??
           (new_value as Record<string, unknown>).display_value ??
-          ''
+          null
         : new_value;
     let value: string | number | unknown[] | null = null;
     if (extraDataKey === 'documents') {
@@ -191,7 +192,7 @@ export async function applyCellUpdate(input: ApplyCellInput): Promise<ApplyCellR
         ...(sourceDocumentId != null ? { source_document_id: sourceDocumentId } : {}),
         ...(metadata && typeof metadata === 'object' ? { metadata } : {}),
       });
-    } catch (_) {}
+    } catch (err) { console.error("[apply-cell] matrix_edits insert failed:", err); }
     return { success: true, company: updatedCompany };
   }
 
@@ -213,7 +214,7 @@ export async function applyCellUpdate(input: ApplyCellInput): Promise<ApplyCellR
       ? (new_value as Record<string, unknown>).value ??
         (new_value as Record<string, unknown>).displayValue ??
         (new_value as Record<string, unknown>).display_value ??
-        ''
+        null
       : new_value;
 
   const currencyFields = [
@@ -221,11 +222,13 @@ export async function applyCellUpdate(input: ApplyCellInput): Promise<ApplyCellR
     'invested', 'totalInvested', 'investmentAmount', 'valuation', 'currentValuation', 'exitValue',
   ];
   const numberFields = [
-    'runway', 'runwayMonths', 'ownership', 'ownershipPercentage', 'exitMultiple',
-    'revenueGrowthMonthly', 'revenueGrowthAnnual', 'customerSegmentEnterprise',
-    'customerSegmentMidmarket', 'customerSegmentSme',
+    'runway', 'runwayMonths', 'exitMultiple',
   ];
-  const percentageFields = ['grossMargin', 'ownership', 'ownershipPercentage'];
+  const percentageFields = [
+    'grossMargin', 'ownership', 'ownershipPercentage', 'founderOwnership',
+    'customerSegmentEnterprise', 'customerSegmentMidmarket', 'customerSegmentSme',
+  ];
+  const growthPctFields = ['revenueGrowthMonthly', 'revenueGrowthAnnual'];
   const booleanFields = ['aiFirst', 'hasPwermModel'];
   const dateFields = [
     'firstInvestmentDate', 'investmentDate', 'date_announced', 'dateAnnounced',
@@ -242,18 +245,41 @@ export async function applyCellUpdate(input: ApplyCellInput): Promise<ApplyCellR
       raw === null || raw === undefined ? undefined : typeof raw === 'string' || typeof raw === 'number' ? raw : String(raw)
     );
   } else if (numberFields.includes(column_id)) {
-    dbValue = typeof raw === 'string' ? parseFloat(raw) || 0 : parseFloat(raw as string) || 0;
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? parseFloat(raw) : NaN;
+    dbValue = Number.isFinite(n) ? n : null;
+  } else if (growthPctFields.includes(column_id)) {
+    // DB columns are integer storing percentage points (3 = 3%, 50 = 50%)
+    let n = typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string'
+        ? parseFloat(raw)
+        : (raw && typeof raw === 'object' && 'value' in (raw as Record<string, unknown>))
+          ? parseFloat(String((raw as Record<string, unknown>).value))
+          : NaN;
+    if (!Number.isFinite(n)) { dbValue = null; } else {
+      // Convert decimal ratios (e.g. 0.0252) to percentage points (2.52)
+      if (n !== 0 && Math.abs(n) < 1) n = n * 100;
+      dbValue = Math.round(n);
+    }
   } else if (percentageFields.includes(column_id)) {
-    let n = typeof raw === 'number' ? raw : parseFloat(raw as string);
-    if (Number.isNaN(n)) n = 0;
-    if (n > 1 && column_id === 'grossMargin') n = n / 100;
-    dbValue = n;
+    let n = typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string'
+        ? parseFloat(raw)
+        : (raw && typeof raw === 'object' && 'value' in (raw as Record<string, unknown>))
+          ? parseFloat(String((raw as Record<string, unknown>).value))
+          : NaN;
+    if (!Number.isFinite(n)) { dbValue = null; } else {
+      if (n > 1) n = n / 100;
+      dbValue = n;
+    }
   } else if (booleanFields.includes(column_id)) {
     dbValue = typeof raw === 'boolean' ? raw : raw === 'true' || raw === true || raw === 1;
   } else if (dateFields.includes(column_id)) {
     dbValue = raw != null ? String(raw) : null;
   } else if (column_id === 'runwayMonths' || column_id === 'runway') {
-    dbValue = typeof raw === 'number' ? Math.floor(raw) : parseInt(String(raw), 10) || 0;
+    const n = typeof raw === 'number' ? Math.floor(raw) : parseInt(String(raw), 10);
+    dbValue = Number.isFinite(n) ? n : null;
   } else if (dbField === 'fund_id') {
     const s = raw != null ? String(raw).trim() : '';
     const uuidMatch = s.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
@@ -346,7 +372,7 @@ export async function applyCellUpdate(input: ApplyCellInput): Promise<ApplyCellR
           ...(sourceDocumentId != null ? { source_document_id: sourceDocumentId } : {}),
           ...(metadata && typeof metadata === 'object' ? { metadata } : {}),
         });
-      } catch (_) {}
+      } catch (err) { console.error("[apply-cell] matrix_edits insert failed:", err); }
       return { success: true, company: updatedViaExtra };
     }
     return { success: false, error: 'Failed to update company', status: 500 };
@@ -367,7 +393,7 @@ export async function applyCellUpdate(input: ApplyCellInput): Promise<ApplyCellR
       ...(sourceDocumentId != null ? { source_document_id: sourceDocumentId } : {}),
       ...(editMetadata ? { metadata: editMetadata } : {}),
     });
-  } catch (_) {}
+  } catch (err) { console.error("[apply-cell] matrix_edits insert failed:", err); }
 
   return { success: true, company: updatedCompany };
 }

@@ -462,6 +462,12 @@ class ModelRouter:
         # Lazy initialization of clients in async context
         await self._init_clients_if_needed()
         
+        # Auto-route to cheap/quality model based on caller_context if no explicit preference
+        if not preferred_models and caller_context:
+            preferred_models = self.preferred_models_for_task(caller_context)
+            if preferred_models:
+                logger.info(f"[MODEL_ROUTER] Task-routed {caller_context} → {preferred_models[0]}")
+
         # Get ordered list of models based on capability and preference
         models = self._get_model_order(capability, preferred_models)
         
@@ -705,11 +711,11 @@ class ModelRouter:
             }
 
             if json_mode:
-                logger.warning(
-                    f"[_call_anthropic] JSON mode requested for {model}, but Anthropic does not support forced JSON responses. "
-                    "Proceeding with plain text output."
-                )
-            
+                # Anthropic has no json_mode -- use assistant prefill to force JSON object
+                messages.append({"role": "assistant", "content": "{"})
+                request_kwargs["messages"] = messages
+                logger.info("[_call_anthropic] JSON mode: prefilling '{' for %s", model)
+
             response = await self.anthropic_client.messages.create(**request_kwargs)
             
             # Parse Anthropic response - handle both old and new format
@@ -727,6 +733,13 @@ class ModelRouter:
             
             if not text:
                 raise ValueError("Anthropic API returned empty text")
+
+            # CRITICAL FIX: When using assistant prefill for JSON mode, the API
+            # response only contains text AFTER the prefill. We must prepend '{'
+            # to reconstruct valid JSON.
+            if json_mode and not text.lstrip().startswith("{"):
+                text = "{" + text
+                logger.info("[_call_anthropic] JSON mode: prepended '{' to response")
             
             logger.info(f"[_call_anthropic] ✅ Anthropic API call successful!")
             return text
@@ -964,11 +977,15 @@ class ModelRouter:
             logger.debug(f"[_get_model_order] No preference specified, using default order: {result}")
             return result
         
-        # Put preferred models first if specified
-        preferred_available = [m for m in preferred if m in capable_models]
+        # Preferred models (from caller_context task routing) always go first,
+        # even if they don't match the capability filter — task routing wins.
+        preferred_in_config = [m for m in preferred if m in self.model_configs]
         other_models = [m for m in capable_models if m not in preferred]
-        result = preferred_available + other_models
-        logger.debug(f"[_get_model_order] Preferred={preferred}, Available={preferred_available}, Others={other_models}")
+        result = preferred_in_config + other_models
+        if set(preferred_in_config) != set(m for m in preferred if m in capable_models):
+            skipped = [m for m in preferred_in_config if m not in capable_models]
+            logger.info(f"[_get_model_order] Preferred models {skipped} lack capability={capability} but included anyway (task routing wins)")
+        logger.debug(f"[_get_model_order] Preferred={preferred}, Result={result}")
         return result
     
     def _get_request_cache_key(self, prompt: str, system_prompt: Optional[str], model_name: str, max_tokens: int, temperature: float) -> str:
@@ -1151,6 +1168,49 @@ class ModelRouter:
             self.error_counts.clear()
             logger.info(f"[MODEL_ROUTER] ✅ Reset all circuit breakers")
     
+    # ------------------------------------------------------------------
+    # Task-based routing — route cheap vs quality models by caller intent
+    # ------------------------------------------------------------------
+
+    # Tasks that can use the cheapest model (extraction, scoring, suggestions)
+    _CHEAP_TASKS = frozenset({
+        "enrichment", "extraction", "gap_filling", "suggestions",
+        "intent_classification", "single_shot_answer",
+        "sourcing_enrich", "granular_search_extract", "parse_accounts",
+        "lightweight_diligence_extract", "micro_skill_extract", "enrich_field",
+        "build_company_list_query_gen", "build_company_list_name_extraction",
+        "find_comparables_extract", "task_planner_decompose",
+        "lightweight_memo_polish",
+    })
+
+    # Tasks that need the quality model (narrative, reasoning, synthesis, document extraction)
+    _QUALITY_TASKS = frozenset({
+        "narrative", "memo_generation", "plan_generation",
+        "agent_loop_reason", "agent_loop_reflect",
+        "agent_loop_synthesize", "agent_loop_synthesize_brief",
+        "lightweight_memo_narratives",
+        "document_process_service.extract_structured",
+    })
+
+    def preferred_models_for_task(self, caller_context: Optional[str] = None) -> Optional[List[str]]:
+        """Return preferred model list based on the caller's task type.
+
+        Cheap tasks (extraction, enrichment, suggestions) → gpt-5-mini first.
+        Quality tasks (narrative, memo, reasoning) → claude-sonnet-4-5 first.
+        Unknown → None (use default order).
+        """
+        if not caller_context:
+            return None
+
+        # Normalize: take the base task name (strip company names etc.)
+        task = caller_context.split("(")[0].strip().lower()
+
+        if task in self._CHEAP_TASKS:
+            return ["gpt-5-mini", "claude-sonnet-4-5"]
+        if task in self._QUALITY_TASKS:
+            return ["claude-sonnet-4-5", "gpt-5.2"]
+        return None
+
     # ------------------------------------------------------------------
     # Budget helpers
     # ------------------------------------------------------------------

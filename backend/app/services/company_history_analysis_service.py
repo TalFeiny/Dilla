@@ -473,3 +473,33 @@ class CompanyHistoryAnalysisService:
 
     async def run(self, *args, **kwargs):
         return await asyncio.to_thread(run, *args, **kwargs)
+
+    async def analyze_full_history(self, company_id: str, fund_id: str = None) -> dict:
+        """Analyze full company history -- funding rounds, metrics evolution, key events."""
+        try:
+            from app.core.adapters import get_storage, get_document_repo, get_company_repo
+            storage = get_storage()
+            document_repo = get_document_repo()
+            company_repo = get_company_repo()
+            if not all([storage, document_repo, company_repo]):
+                return {
+                    "company_id": company_id,
+                    "error": "Storage adapters not available",
+                    "funding_rounds": [],
+                    "metrics_history": [],
+                }
+            return await asyncio.to_thread(
+                run,
+                fund_id=fund_id or "",
+                company_ids=[company_id],
+                storage=storage,
+                document_repo=document_repo,
+                company_repo=company_repo,
+            )
+        except Exception as e:
+            return {
+                "company_id": company_id,
+                "error": str(e),
+                "funding_rounds": [],
+                "metrics_history": [],
+            }

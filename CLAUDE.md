@@ -138,14 +138,22 @@ Multiple = Base SaaS Multiple ×
 3. **PrePostCapTable** - Ownership evolution through rounds
 4. **AdvancedCapTable** - Liquidation waterfalls, preferences
 
-## Testing Guidelines
+## Query Style — Moving Away from @ Prefix
 
-**Use @ prefix for all companies**: `@Ramp`, `@Deel`, `@Mercury`
+**DO NOT use @ prefix for company queries.** The old `@Ramp`, `@Deel` pattern is deprecated.
 
-**Test Companies**:
-- Series A-B: `@Mercury`, `@Brex`, `@Deel`
-- AI/ML: `@Anthropic`, `@Perplexity`, `@Cursor`
-- Vertical: `@Toast`, `@Veeva`, `@Procore`
+The system is moving toward **portfolio-level open-ended questions** and **microskills**:
+- Users ask things like "what's the best Series B in healthcare?", "rank my portfolio by capital efficiency", "forecast revenue across the fund"
+- The agent breaks these into microskill calls (fetch, score, forecast, compare) rather than single-company lookups
+- Individual company actions happen as part of broader workflows, not standalone `@Company` triggers
+
+**Test with portfolio-level queries**:
+- "Find Series B healthcare SaaS companies above $10M ARR"
+- "Score and rank my pipeline by fund fit"
+- "Build a cash flow model for the top 3 companies"
+- "What's the sensitivity of our portfolio IRR to growth rate changes?"
+
+**Reference companies for testing** (no @ prefix): Mercury, Brex, Deel, Anthropic, Perplexity, Cursor, Toast, Veeva, Procore
 
 ## CRITICAL REVENUE RULE
 **NEVER have None type errors for revenue:**
@@ -312,10 +320,7 @@ cd frontend && npm run dev -p 3001
 ```
 
 ## Testing Companies
-Use @ prefix for all companies: `@Ramp`, `@Deel`, `@Mercury`
-- Series A-B: `@Mercury`, `@Brex`, `@Deel`
-- AI/ML: `@Anthropic`, `@Perplexity`, `@Cursor`
-- Vertical: `@Toast`, `@Veeva`, `@Procore`
+No @ prefix — use natural language portfolio queries. Reference companies: Mercury, Brex, Deel, Anthropic, Perplexity, Cursor, Toast, Veeva, Procore
 
 ## Data Quality Requirements (January 2025)
 

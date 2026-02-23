@@ -172,7 +172,7 @@ export function CustomRowBuilder({
                     value={fieldValues[column.id] || ''}
                     onChange={(e) => {
                       const value = column.type === 'number' || column.type === 'currency'
-                        ? parseFloat(e.target.value) || 0
+                        ? (isNaN(parseFloat(e.target.value)) ? null : parseFloat(e.target.value))
                         : e.target.value;
                       handleFieldChange(column.id, value);
                     }}

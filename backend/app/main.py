@@ -48,6 +48,13 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up Dilla AI Backend...")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"Debug mode: {settings.DEBUG}")
+    # Initialize cell action registry so all actions are available immediately
+    try:
+        from app.services.cell_action_registry import get_registry
+        get_registry().initialize_core_services()
+        logger.info("Cell action registry initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize cell action registry: {e}")
     yield
     logger.info("Shutting down Dilla AI Backend...")
 

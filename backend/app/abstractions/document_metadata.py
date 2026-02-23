@@ -39,6 +39,22 @@ class DocumentMetadataRepo(ABC):
         """Insert a new document. Returns inserted row including id."""
         pass
 
+    def claim_for_processing(self, id: str) -> bool:
+        """Atomically transition status from 'pending' to 'processing'.
+
+        Returns True if this caller won the claim (status was 'pending' and is
+        now 'processing').  Returns False if the document was already claimed by
+        another caller (status was 'processing' or 'completed').
+
+        Default implementation uses get+update (not truly atomic).
+        Subclasses should override with a DB-level atomic operation.
+        """
+        doc = self.get(id)
+        if not doc or doc.get("status") != "pending":
+            return False
+        self.update(id, {"status": "processing"})
+        return True
+
 
 class SupabaseDocumentMetadataRepo(DocumentMetadataRepo):
     """Supabase implementation for processed_documents table."""
@@ -86,3 +102,26 @@ class SupabaseDocumentMetadataRepo(DocumentMetadataRepo):
         if not r.data or len(r.data) == 0:
             raise ValueError("insert returned no data")
         return r.data[0]
+
+    def claim_for_processing(self, id: str) -> bool:
+        """Atomically claim a pending document for processing.
+
+        Uses Supabase's UPDATE ... eq(status, pending) which translates to
+        ``UPDATE ... WHERE id = $1 AND status = 'pending'``.
+        If 0 rows are returned the document was already claimed.
+        """
+        try:
+            r = (
+                self._client.table(self._table)
+                .update({"status": "processing"})
+                .eq("id", id)
+                .eq("status", "pending")
+                .execute()
+            )
+            claimed = bool(r.data and len(r.data) > 0)
+            if not claimed:
+                logger.info("claim_for_processing(%s): already claimed or not pending", id)
+            return claimed
+        except Exception as e:
+            logger.warning("claim_for_processing(%s) failed: %s", id, e)
+            return False

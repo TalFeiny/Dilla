@@ -73,6 +73,8 @@ interface ChartViewportProps {
   onMemoChange?: (sections: DocumentSection[]) => void;
   onMemoExportPdf?: () => void;
   memoExportingPdf?: boolean;
+  /** Ref to memo container for chart capture in PDF export */
+  memoContainerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 export function ChartViewport({
@@ -97,6 +99,7 @@ export function ChartViewport({
   onMemoChange,
   onMemoExportPdf,
   memoExportingPdf,
+  memoContainerRef,
 }: ChartViewportProps & { initialTab?: ChartTab }) {
   const safeInitialTab: ChartTab = (initialTab as string) === 'suggestions' || !initialTab ? 'charts' : initialTab;
   const [activeTab, setActiveTab] = useState<ChartTab>(safeInitialTab);
@@ -426,6 +429,7 @@ export function ChartViewport({
                 compact
                 onExportPdf={onMemoExportPdf}
                 exportingPdf={memoExportingPdf}
+                containerRef={memoContainerRef}
               />
             </TabsContent>
           </div>

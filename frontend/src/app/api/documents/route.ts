@@ -2,6 +2,38 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseService } from '@/lib/supabase';
 import { getBackendUrl } from '@/lib/backend-url';
 
+/** Trigger backend processing (fire-and-forget).
+ *  The frontend cell action `document.extract` will poll/wait for results.
+ *  We don't await the sync endpoint because it blocks for up to 5 min,
+ *  causing the upload XHR to hang and the UI to appear frozen.
+ *  Backend has idempotency guard (claim_for_processing) so dupe calls are safe.
+ */
+function triggerProcessing(doc: {
+  id: string; storagePath: string; documentType: string;
+  companyId: string | null; fundId: string | null;
+}): void {
+  const backendUrl = getBackendUrl();
+  const payload = { documents: [{ document_id: String(doc.id), file_path: doc.storagePath, document_type: doc.documentType, company_id: doc.companyId, fund_id: doc.fundId }] };
+  // Fire-and-forget: kick off processing without blocking the upload response.
+  // The sync endpoint will process in the background; document.extract cell action
+  // handles waiting for results and emitting suggestions.
+  fetch(`${backendUrl}/api/documents/process-batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(300_000),
+  })
+    .then((res) => { console.log('[documents] Background processing for %s: %s', doc.id, res.ok ? 'completed' : res.status); })
+    .catch(() => {
+      // Fallback to async Celery
+      fetch(`${backendUrl}/api/documents/process-batch-async`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).catch((e) => console.error('[documents] All processing failed for', doc.id, e));
+    });
+}
+
 /**
  * @swagger
  * /api/documents:
@@ -154,6 +186,11 @@ export async function GET(request: NextRequest) {
       });
     }
 
+    // Build a count query with the same filters to get accurate pagination totals
+    let countQuery = supabaseService
+      .from('processed_documents')
+      .select('id', { count: 'exact', head: true });
+
     // Query with all needed columns (company_id, fund_id for document linkage)
     let query = supabaseService
       .from('processed_documents')
@@ -163,18 +200,21 @@ export async function GET(request: NextRequest) {
 
     if (status) {
       query = query.eq('status', status);
+      countQuery = countQuery.eq('status', status);
     }
 
     if (processed !== null && processed !== undefined) {
       // processed is a string from query params: 'true', 'false', or null
       if (processed === 'true') {
         query = query.eq('status', 'completed');
+        countQuery = countQuery.eq('status', 'completed');
       } else if (processed === 'false') {
         query = query.neq('status', 'completed');
+        countQuery = countQuery.neq('status', 'completed');
       }
     }
 
-    const { data, error } = await query;
+    const [{ data, error }, { count: totalCount }] = await Promise.all([query, countQuery]);
 
     if (error) {
       console.error('Database error:', error);
@@ -242,8 +282,8 @@ export async function GET(request: NextRequest) {
       pagination: {
         page,
         limit,
-        total: transformedData.length,
-        hasMore: transformedData.length === limit
+        total: totalCount ?? transformedData.length,
+        hasMore: offset + limit < (totalCount ?? 0),
       }
     };
 
@@ -322,10 +362,7 @@ export async function POST(request: NextRequest) {
     const name = file.name.toLowerCase();
     const documentType = formDocumentType
       || (name.includes('memo') ? 'investment_memo'
-        : name.includes('transcript') ? 'board_transcript'
-        : name.includes('board') ? 'board_deck'
-        : name.includes('update') ? 'monthly_update'
-        : 'other');
+        : 'company_update');
 
     // Insert into database with pending status, file metadata, and company/fund linking
     const insertPayload: any = {
@@ -376,40 +413,16 @@ export async function POST(request: NextRequest) {
     // Clear cache
     cache.clear();
 
-    // Trigger document processing: call backend directly so we don't rely on internal Next.js hop
-    const backendUrl = getBackendUrl();
-    try {
-      const processPayload = {
-        document_id: String(insertData.id),
-        file_path: filePath,
-        document_type: documentType,
-        company_id: companyId ?? null,
-        fund_id: fundId ?? null,
-      };
-      console.log('[documents] Calling backend directly', backendUrl, '/api/documents/process', 'documentId=', insertData.id);
-      const processResponse = await fetch(`${backendUrl}/api/documents/process`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(processPayload),
-      });
-
-      if (processResponse.ok) {
-        console.log('[documents] Backend processing completed for document', insertData.id);
-      } else {
-        const errText = await processResponse.text();
-        console.error('[documents] Backend processing failed', processResponse.status, errText);
-        await supabaseService
-          .from('processed_documents')
-          .update({ status: 'failed' })
-          .eq('id', insertData.id);
-      }
-    } catch (processingError) {
-      console.error('[documents] Backend call failed (is backend running at', backendUrl, '?):', processingError);
-      await supabaseService
-        .from('processed_documents')
-        .update({ status: 'failed' })
-        .eq('id', insertData.id);
-    }
+    // Fire-and-forget: kick off backend processing without blocking the response.
+    // The document.extract cell action will handle waiting for results.
+    triggerProcessing({
+      id: insertData.id,
+      storagePath: filePath,
+      documentType,
+      companyId,
+      fundId,
+    });
+    console.log('[documents] Document %s inserted. Processing triggered (non-blocking).', insertData.id);
 
     return NextResponse.json({
       success: true,

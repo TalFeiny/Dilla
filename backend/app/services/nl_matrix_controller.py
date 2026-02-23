@@ -4,7 +4,7 @@ Natural language → matrix actions (columns, filters, computed columns)
 """
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 from app.services.matrix_query_orchestrator import MatrixQueryOrchestrator
 
