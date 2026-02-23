@@ -40,8 +40,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
-import type { DocumentSuggestion } from './DocumentSuggestions';
 import { DocumentSuggestionBadge } from './DocumentSuggestions';
+import { useSuggestionsContext } from './SuggestionsContext';
 
 const ICON_CLASS = 'h-3.5 w-3.5 flex-shrink-0';
 const DROPDOWN_ITEM_CLASS = 'flex items-center gap-2';
@@ -71,6 +71,8 @@ function getWorkflowIcon(category: string): React.ReactNode {
 
 export interface CellDropdownRendererProps {
   value: any;
+  /** AG Grid formatted value from the column's valueFormatter (type-aware: "$50.00M", "15.0%", etc.) */
+  valueFormatted?: string | null;
   data: any;
   colDef: any;
   api: any;
@@ -92,10 +94,6 @@ export interface CellDropdownRendererProps {
   fundId?: string;
   /** Backend-registered actions; when set, Workflows section and picker show these. */
   availableActions?: CellAction[];
-  /** Document suggestions for this matrix; in-grid badge shows accept/reject. */
-  documentSuggestions?: DocumentSuggestion[];
-  onSuggestionAccept?: (suggestionId: string, payload?: { rowId: string; columnId: string; suggestedValue: unknown }) => void;
-  onSuggestionReject?: (suggestionId: string) => void;
   /** Upload a file to this cell (documents column). Runs full flow: POST /api/documents → extract → apply. */
   onUploadDocumentToCell?: (rowId: string, columnId: string, file: File) => Promise<void>;
   /** Open valuation method picker in parent (survives cell unmount). If set, cell does not render inline Dialog. */
@@ -121,7 +119,7 @@ function cellValue(row: { cells?: Record<string, { value?: unknown }> } | null, 
   if (!row?.cells || !cols.length) return 0;
   const col = cols.find(c => pattern.test(c.id) || (c.name != null && pattern.test(String(c.name))));
   const v = col ? row.cells[col.id]?.value : undefined;
-  const n = typeof v === 'number' ? v : parseFloat(String(v ?? 0));
+  const n = typeof v === 'number' ? v : (v != null ? parseFloat(String(v)) : NaN);
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -359,8 +357,9 @@ const isDocumentsColumn = (colDef: { field?: string; headerName?: string }) => {
 };
 
 export function CellDropdownRenderer(props: CellDropdownRendererProps) {
-  const { value, data, colDef, api, node } = props;
+  const { value, valueFormatted, data, colDef, api, node } = props;
   const ctx = useCellActionContextOptional();
+  const suggestionsCtx = useSuggestionsContext();
   // Prefer context over props when inside CellActionProvider (UnifiedMatrix) — guarantees stable callback access
   const onRunCellAction = ctx?.onRunCellAction ?? props.onRunCellAction;
   const onOpenValuationPicker = ctx?.onOpenValuationPicker ?? props.onOpenValuationPicker;
@@ -401,17 +400,17 @@ export function CellDropdownRenderer(props: CellDropdownRendererProps) {
   const arrayData = cell.metadata?.raw_output || cell.value;
   const arrayLength = Array.isArray(arrayData) ? arrayData.length : 0;
   
-  // Format value for display
-  const formatValue = (val: any): string => {
+  // Format value for display — prefer AG Grid's type-aware valueFormatted
+  const displayText = (() => {
+    // AG Grid's valueFormatted comes from the column's valueFormatter (currency → "$50.00M", pct → "15.0%")
+    if (valueFormatted != null && valueFormatted !== '') return valueFormatted;
+    // Fallback: use raw value with basic formatting
+    const val = value ?? cell.displayValue ?? cell.value;
     if (val === null || val === undefined) return '';
-    if (isArray && Array.isArray(val)) {
-      return `${val.length} items`;
-    }
-    if (typeof val === 'number') {
-      return val.toLocaleString();
-    }
+    if (isArray && Array.isArray(val)) return `${val.length} items`;
+    if (typeof val === 'number') return val.toLocaleString();
     return String(val);
-  };
+  })();
   
   // Group valuation methods by category
   const groupedMethods = VALUATION_METHODS.reduce((acc, method) => {
@@ -485,18 +484,18 @@ export function CellDropdownRenderer(props: CellDropdownRendererProps) {
             </span>
           ) : null;
         })() : (
-          <span className="truncate min-w-0 flex-1" style={{ color: 'inherit' }} title={formatValue(value ?? cell.displayValue ?? cell.value) || undefined}>{formatValue(value ?? cell.displayValue ?? cell.value)}</span>
+          <span className="truncate min-w-0 flex-1" style={{ color: 'inherit' }} title={displayText || undefined}>{displayText}</span>
         )}
 
-        {/* In-cell document suggestion badge */}
-        {props.documentSuggestions?.length && (
+        {/* In-cell suggestion sparkle badge — reads from React context, not AG Grid props */}
+        {suggestionsCtx && suggestionsCtx.suggestions.length > 0 && (
           <DocumentSuggestionBadge
             rowId={rowId}
             columnId={columnId}
             cell={cell}
-            suggestions={props.documentSuggestions}
-            onAccept={(suggestionId, payload) => props.onSuggestionAccept?.(suggestionId, payload)}
-            onReject={(suggestionId) => props.onSuggestionReject?.(suggestionId)}
+            suggestions={suggestionsCtx.suggestions}
+            onAccept={(suggestionId, payload) => suggestionsCtx.onAccept?.(suggestionId, payload)}
+            onReject={(suggestionId) => suggestionsCtx.onReject?.(suggestionId)}
           />
         )}
 
@@ -1047,6 +1046,8 @@ export function CellDropdownRenderer(props: CellDropdownRendererProps) {
                     className="justify-start h-auto py-2 text-left"
                     onClick={async () => {
                       if (!valuationPicker) return;
+                      const pickerRowId = valuationPicker.rowId;
+                      const pickerColumnId = valuationPicker.columnId;
                       const fundId = props.fundId ?? props.matrixData?.metadata?.fundId;
                       const companyId = data?.companyId;
                       const actionId = method.value === 'auto' ? 'valuation_engine.auto' : `valuation_engine.${method.value}`;
@@ -1055,8 +1056,8 @@ export function CellDropdownRenderer(props: CellDropdownRendererProps) {
                       setValuationPicker(null);
                       const request = {
                         action_id: actionId,
-                        row_id: valuationPicker.rowId,
-                        column_id: valuationPicker.columnId,
+                        row_id: pickerRowId,
+                        column_id: pickerColumnId,
                         inputs,
                         mode: 'portfolio' as const,
                         fund_id: fundId ?? undefined,
@@ -1073,7 +1074,7 @@ export function CellDropdownRenderer(props: CellDropdownRendererProps) {
                       try {
                         const res = await executeAction(request);
                         if (res.success && props.onCellActionResult) {
-                          await props.onCellActionResult(valuationPicker.rowId, valuationPicker.columnId, res);
+                          await props.onCellActionResult(pickerRowId, pickerColumnId, res);
                         } else if (!res.success) {
                           toast.error(res.error ?? 'Valuation failed');
                         }

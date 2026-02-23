@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseService } from '@/lib/supabase';
 import { applyCellUpdate } from '@/lib/matrix/apply-cell-server';
+import { getColumnType, getColumnLabel } from '@/lib/matrix/cell-formatters';
 
 const MAX_POSITIVE = 1e12;
 const MAX_VALUATION = 1e13;
@@ -62,6 +63,7 @@ type MatrixRowValues = {
   tamUsd: number | null;
   samUsd: number | null;
   somUsd: number | null;
+  customerCount: number | null;
 };
 
 /** Format number for reasoning (compact) */
@@ -96,7 +98,11 @@ function mapColumnToMetricKey(columnId: string): string {
   return map[columnId] ?? columnId;
 }
 
-/** Build short, factual reasoning. When doc provides value_explanation, use only that (+ optional "was X"); no generic boilerplate. */
+/**
+ * Build reasoning with source attribution: "quote" → why → metric change.
+ * When doc provides value_explanation (already in "quote → why → change" format), pass it through.
+ * When absent, build attribution from best available signal in business_updates.
+ */
 function buildReasoningAndConfidence(opts: {
   docName: string;
   columnId: string;
@@ -124,34 +130,50 @@ function buildReasoningAndConfidence(opts: {
   const achievements = Array.isArray(bu.achievements) ? bu.achievements.filter((a): a is string => typeof a === 'string') : [];
   const productUpdates = Array.isArray(bu.product_updates) ? bu.product_updates.filter((p): p is string => typeof p === 'string') : [];
   const hasCaution = challenges.length > 0 || risks.length > 0 || defensive.length > 0 || redFlags.length > 0;
-  const hasPositive = achievements.length > 0 || productUpdates.length > 0;
 
   const isPctColumn = columnId === 'grossMargin' || columnId === 'revenueGrowthAnnual' || columnId === 'revenueGrowthMonthly';
   const fmtPct = (n: number) => (columnId === 'grossMargin' && n <= 1 ? (n * 100).toFixed(0) : n.toFixed(1)) + '%';
-  const parts: string[] = [];
+  const fmtVal = (v: number | string) => typeof v === 'number' ? (isPctColumn ? fmtPct(columnId === 'grossMargin' && v <= 1 ? v * 100 : v) : fmtNum(v)) : String(v);
+
+  let reasoning: string;
+
   if (valueExplanation != null && valueExplanation !== '') {
-    // Prefer doc-sourced explanation when available
+    // LLM-sourced explanation already in "quote → why → change" format — pass through
     const base = valueExplanation.trim();
-    const suffix = currentValue !== null && currentValue !== undefined && currentValue !== '' ? ` (was ${typeof currentValue === 'number' ? (isPctColumn ? fmtPct(columnId === 'grossMargin' && currentValue <= 1 ? currentValue * 100 : currentValue) : fmtNum(currentValue)) : String(currentValue)}).` : '.';
-    parts.push(base + suffix);
-  } else if (currentValue !== null && currentValue !== undefined && currentValue !== '') {
-    const curr = typeof currentValue === 'number' ? (isPctColumn ? fmtPct(columnId === 'grossMargin' && currentValue <= 1 ? currentValue * 100 : currentValue) : fmtNum(currentValue)) : String(currentValue);
-    const sugg = typeof suggestedValue === 'number' ? (isPctColumn ? fmtPct(columnId === 'grossMargin' && suggestedValue <= 1 ? suggestedValue * 100 : suggestedValue) : fmtNum(suggestedValue)) : String(suggestedValue);
-    const pctStr = changePercentage != null ? ` (${changePercentage > 0 ? '+' : ''}${(changePercentage * 100).toFixed(0)}%)` : '';
-    parts.push(`Doc: ${sugg}${pctStr}. Matrix: ${curr}.`);
+    if (currentValue !== null && currentValue !== undefined && currentValue !== '') {
+      reasoning = `${base} (was ${fmtVal(currentValue)}).`;
+    } else {
+      reasoning = base.endsWith('.') ? base : `${base}.`;
+    }
   } else {
-    const sugg = typeof suggestedValue === 'number' ? (isPctColumn ? fmtPct(columnId === 'grossMargin' && suggestedValue <= 1 ? suggestedValue * 100 : suggestedValue) : fmtNum(suggestedValue)) : String(suggestedValue);
-    parts.push(`From ${docName}: ${sugg}.`);
-  }
-  // Add context from extracted achievements/product updates and risks when no doc-sourced explanation
-  if (valueExplanation == null || valueExplanation.trim() === '') {
-    if (isExtrapolated) parts.push('Inferred from doc, not stated explicitly.');
-    else if (hasPositive && hasCaution) parts.push('Achievements and product updates; challenges and risks noted.');
-    else if (hasCaution) parts.push('Doc mentions risks or challenges.');
-    else if (hasPositive) parts.push('Achievements/product updates in doc.');
+    // Build attribution from best available signal
+    const sugg = fmtVal(suggestedValue);
+    const pctStr = changePercentage != null ? ` (${changePercentage > 0 ? '+' : ''}${(changePercentage * 100).toFixed(0)}%)` : '';
+
+    // Pick the most relevant signal from business_updates as source attribution
+    let signal: string | null = null;
+    if (hasCaution && challenges.length > 0) signal = challenges[0];
+    else if (hasCaution && risks.length > 0) signal = risks[0];
+    else if (achievements.length > 0) signal = achievements[0];
+    else if (productUpdates.length > 0) signal = productUpdates[0];
+    else if (bu.latest_update && typeof bu.latest_update === 'string') signal = bu.latest_update;
+
+    if (signal && currentValue !== null && currentValue !== undefined && currentValue !== '') {
+      // Full attribution: "signal" → metric moves from X to Y
+      const truncatedSignal = signal.length > 120 ? signal.slice(0, 117) + '...' : signal;
+      reasoning = `"${truncatedSignal}" → ${columnId} ${sugg}${pctStr} (was ${fmtVal(currentValue)}).`;
+    } else if (signal) {
+      const truncatedSignal = signal.length > 120 ? signal.slice(0, 117) + '...' : signal;
+      reasoning = `"${truncatedSignal}" → ${columnId} ${sugg}.`;
+    } else if (currentValue !== null && currentValue !== undefined && currentValue !== '') {
+      reasoning = `${docName}: ${sugg}${pctStr} (was ${fmtVal(currentValue)}).`;
+    } else {
+      reasoning = `${docName}: ${sugg}.`;
+    }
+
+    if (isExtrapolated) reasoning += ' Inferred, not stated explicitly.';
   }
 
-  const reasoning = parts.join(' ');
   const fromExplicit = valueFromExplicitFinancials ? 1 : 0;
   const fromCaution = hasCaution ? 1 : 0;
   const fromExtrapolated = isExtrapolated ? -0.1 : 0;
@@ -255,6 +277,15 @@ const METRIC_MAPPINGS: MetricMapping[] = [
     validator: (v) => validPositive(v),
     changeThreshold: 0.01,
   },
+  {
+    columnId: 'customerCount', rowKey: 'customerCount', idSuffix: 'customerCount', label: 'Customer Count',
+    paths: ['operationalMetrics.customer_count', 'financialMetrics.customer_count', 'extractedData.customer_count'],
+    validator: (v) => {
+      const n = typeof v === 'number' ? v : parseFloat(String(v ?? ''));
+      return Number.isFinite(n) && n > 0 ? n : null;
+    },
+    changeThreshold: 0,
+  },
 ];
 
 function resolveFirstValid(
@@ -341,7 +372,7 @@ function generateInferredSuggestions(
       results.push({
         columnId: 'headcount',
         value: currentHeadcount + newHires.length,
-        reasoning: `${newHires.length} new hire(s) mentioned in ${docName}. Current: ${currentHeadcount} → ${currentHeadcount + newHires.length}. Inferred — verify.`,
+        reasoning: `"${newHires.length} new hire(s)" in ${docName} → headcount ${currentHeadcount} → ${currentHeadcount + newHires.length}. Inferred — verify.`,
         confidence: 0.45,
       });
     }
@@ -351,7 +382,7 @@ function generateInferredSuggestions(
       results.push({
         columnId: 'burnRate',
         value: currentBurn + burnIncrease,
-        reasoning: `${newHires.length} new hire(s) × ~$20K/mo loaded cost. Burn: ${fmtNum(currentBurn)} → ${fmtNum(currentBurn + burnIncrease)}. Inferred — verify.`,
+        reasoning: `"${newHires.length} new hire(s)" → ~$20K/mo loaded each → burn ${fmtNum(currentBurn)} → ${fmtNum(currentBurn + burnIncrease)}. Inferred — verify.`,
         confidence: 0.4,
       });
     }
@@ -368,7 +399,7 @@ function generateInferredSuggestions(
     results.push({
       columnId: 'arr',
       value: newArr,
-      reasoning: `Customer loss mentioned in ${docName}. Estimated ${Math.round(lossPct * 100)}% ARR impact: ${fmtNum(row.arr)} → ${fmtNum(newArr)}. Inferred — verify.`,
+      reasoning: `"customer loss" in ${docName} → ~${Math.round(lossPct * 100)}% ARR impact → ARR ${fmtNum(row.arr)} → ${fmtNum(newArr)}. Inferred — verify.`,
       confidence: 0.35,
     });
   }
@@ -382,7 +413,7 @@ function generateInferredSuggestions(
       results.push({
         columnId: 'cashInBank',
         value: row.cashInBank + raised,
-        reasoning: `Fundraise of ${fmtNum(raised)} detected in ${docName}. Cash: ${fmtNum(row.cashInBank)} → ${fmtNum(row.cashInBank + raised)}. Inferred — verify.`,
+        reasoning: `"raised ${fmtNum(raised)}" in ${docName} → cash ${fmtNum(row.cashInBank)} → ${fmtNum(row.cashInBank + raised)}. Inferred — verify.`,
         confidence: 0.45,
       });
     }
@@ -393,7 +424,7 @@ function generateInferredSuggestions(
         results.push({
           columnId: 'runway',
           value: newRunway,
-          reasoning: `Post-raise cash ${fmtNum(newCash)} ÷ burn ${fmtNum(row.burnRate)}/mo = ${newRunway} months. Inferred — verify.`,
+          reasoning: `"raised ${fmtNum(raised)}" → post-raise cash ${fmtNum(newCash)} ÷ burn ${fmtNum(row.burnRate)}/mo → runway ${newRunway}mo. Inferred — verify.`,
           confidence: 0.4,
         });
       }
@@ -408,7 +439,7 @@ function generateInferredSuggestions(
     results.push({
       columnId: 'burnRate',
       value: newBurn,
-      reasoning: `${Math.round(reductionPct * 100)}% cost reduction mentioned in ${docName}. Burn: ${fmtNum(row.burnRate)} → ${fmtNum(newBurn)}. Inferred — verify.`,
+      reasoning: `"${Math.round(reductionPct * 100)}% cost reduction" in ${docName} → burn ${fmtNum(row.burnRate)} → ${fmtNum(newBurn)}. Inferred — verify.`,
       confidence: 0.4,
     });
   }
@@ -459,20 +490,40 @@ export async function GET(request: NextRequest) {
     const acceptedSet = acceptedResult.error
       ? new Set<string>()
       : new Set((acceptedResult.data ?? []).map((r: { suggestion_id: string }) => r.suggestion_id));
+    // Composite key sets for dedup-safe filtering.  When dedup keeps a higher-confidence
+    // suggestion with a different ID, the raw acceptedSet/rejectedSet miss it.  These
+    // sets track rowId::columnId::source so accepting a document suggestion does NOT
+    // block a service suggestion for the same cell (and vice versa).
+    // Legacy keys without source suffix (rowId::columnId) are treated as blocking both.
+    const acceptedCompositeKeys = new Set<string>();
+    const rejectedCompositeKeys = new Set<string>();
+    for (const id of acceptedSet) {
+      if (id.includes('::')) acceptedCompositeKeys.add(id);
+    }
+    for (const id of rejectedSet) {
+      if (id.includes('::')) rejectedCompositeKeys.add(id);
+    }
 
+    // Include both 'completed' and 'pending' documents.  The backend inline-
+    // processing path (document_query_service.py) can populate extracted_data on
+    // pending docs before Celery marks them completed.  Without this, the demo
+    // flow (upload → inline extract → still "pending" in DB) produces no
+    // suggestions because the old .eq('status','completed') filter excluded them.
+    // Pending docs without extracted_data are harmless — the metric extraction
+    // loop simply finds nothing and skips them.
     let documentsQuery = supabaseService
       .from('processed_documents')
       .select('id, storage_path, processed_at, extracted_data, company_id')
       .eq('fund_id', fundId)
-      .eq('status', 'completed')
+      .in('status', ['completed', 'pending'])
       .order('processed_at', { ascending: false })
       .limit(50);
     if (companyId) documentsQuery = documentsQuery.eq('company_id', companyId);
 
     // Companies: use same tiered column list as GET /api/portfolio/[id]/companies so schema drift doesn't break the route
     const companyColumnsTiers = [
-      ['id', 'current_arr_usd', 'burn_rate_monthly_usd', 'runway_months', 'cash_in_bank_usd', 'gross_margin', 'revenue_growth_monthly_pct', 'revenue_growth_annual_pct', 'sector', 'extra_data'],
-      ['id', 'current_arr_usd', 'burn_rate_monthly_usd', 'runway_months', 'cash_in_bank_usd', 'gross_margin', 'sector', 'extra_data'],
+      ['id', 'name', 'current_arr_usd', 'burn_rate_monthly_usd', 'runway_months', 'cash_in_bank_usd', 'gross_margin', 'revenue_growth_monthly_pct', 'revenue_growth_annual_pct', 'sector', 'extra_data'],
+      ['id', 'name', 'current_arr_usd', 'burn_rate_monthly_usd', 'runway_months', 'cash_in_bank_usd', 'gross_margin', 'sector', 'extra_data'],
     ];
     let companies: { id: string; [k: string]: unknown }[] | null = null;
     let companiesError: { code?: string } | null = null;
@@ -494,8 +545,35 @@ export async function GET(request: NextRequest) {
       Promise.resolve(documentsQuery).catch(() => ({ data: null as unknown as any[], error: { code: 'PGRST' } })),
     ]);
     const { data: documentsRaw, error: documentsError } = docsResult;
-    const documents: { id: number; storage_path: string | null; extracted_data: unknown; company_id: string | null }[] =
+    const documentsAll: { id: number; storage_path: string | null; extracted_data: unknown; company_id: string | null }[] =
       documentsError?.code === '42703' || documentsError?.code === '42P01' ? [] : (documentsRaw ?? []) ?? [];
+
+    // Deduplicate documents: when the same file is processed multiple times (inline + Celery),
+    // keep only the most recent run per company_id + storage_path to avoid duplicate suggestions.
+    const seenDocKeys = new Set<string>();
+    const documents: typeof documentsAll = [];
+    for (const doc of documentsAll) {
+      const dedupKey = `${doc.company_id ?? 'none'}::${doc.storage_path ?? doc.id}`;
+      if (seenDocKeys.has(dedupKey)) continue;
+      seenDocKeys.add(dedupKey);
+      documents.push(doc);
+    }
+
+    /** name→id lookup for documents uploaded without company context.
+     *  Stores both the full name and the first token for partial matching.
+     *  e.g. "Mercury Financial" → entries for "mercury financial" AND "mercury" */
+    const companyNameToId = new Map<string, string>();
+    for (const c of companies) {
+      const cName = typeof c.name === 'string' ? c.name.trim().toLowerCase() : '';
+      if (cName) {
+        companyNameToId.set(cName, String(c.id));
+        // Also index the first word (handles "Mercury Financial" → "mercury")
+        const firstToken = cName.split(/\s+/)[0];
+        if (firstToken && firstToken.length > 2 && !companyNameToId.has(firstToken)) {
+          companyNameToId.set(firstToken, String(c.id));
+        }
+      }
+    }
 
     const companyRows = new Map<string, MatrixRowValues>();
     for (const c of companies) {
@@ -527,6 +605,7 @@ export async function GET(request: NextRequest) {
         tamUsd: num('tam_usd') ?? num('tamUsd') ?? null,
         samUsd: num('sam_usd') ?? num('samUsd') ?? null,
         somUsd: num('som_usd') ?? num('somUsd') ?? null,
+        customerCount: num('customer_count') ?? num('customerCount') ?? null,
       });
     }
 
@@ -560,6 +639,7 @@ export async function GET(request: NextRequest) {
       sourceService?: string;
       citationPage?: number;
       citationSection?: string;
+      documentSummary?: string;
     }> = [];
 
     /** column_id -> MatrixRowValues key for currentValue lookup */
@@ -568,33 +648,98 @@ export async function GET(request: NextRequest) {
       cashInBank: 'cashInBank', grossMargin: 'grossMargin', valuation: 'valuation',
       revenueGrowthAnnual: 'revenueGrowthAnnual', revenueGrowthMonthly: 'revenueGrowthMonthly',
       sector: 'sector', latestUpdate: 'latestUpdate', productUpdates: 'productUpdates',
-      headcount: 'headcount', optionPool: 'optionPool', tamUsd: 'tamUsd', samUsd: 'samUsd', somUsd: 'somUsd',
-      pwerm: 'valuation',
+      headcount: 'headcount', optionPool: 'optionPool', tamUsd: 'tamUsd', samUsd: 'samUsd', somUsd: 'somUsd', customerCount: 'customerCount',
     };
 
-    // Map pending_suggestions to unified suggestion shape
+    // Deduplicate pending_suggestions: keep latest per company_id + column_id
+    const pendingDedup = new Map<string, (typeof pendingRows extends (infer T)[] | null ? T : never)>();
     for (const row of pendingRows ?? []) {
-      const companyRow = companyRows.get(row.company_id);
-      const key = columnToRowKey[row.column_id] ?? (row.column_id as keyof MatrixRowValues);
-      const currentValue = companyRow && key ? (companyRow[key] as number | string | null) ?? null : null;
-      const suggestedValue = row.suggested_value;
-      const val = typeof suggestedValue === 'object' && suggestedValue !== null && 'value' in suggestedValue
-        ? (suggestedValue as { value: unknown }).value
-        : suggestedValue;
-      allSuggestions.push({
-        id: row.id,
-        rowId: String(row.company_id),
-        columnId: row.column_id,
-        suggestedValue: val,
-        currentValue,
-        reasoning: row.reasoning ?? '',
-        confidence: 0.7,
-        source: 'service',
-        sourceService: row.source_service,
-        sourceDocumentName: row.source_service,
-        extractedMetric: row.source_service,
-        changeType: currentValue == null ? 'new' : 'update',
-      });
+      const pk = `${row.company_id}::${row.column_id}`;
+      const existing = pendingDedup.get(pk);
+      if (!existing || new Date(row.created_at) > new Date(existing.created_at)) {
+        pendingDedup.set(pk, row);
+      }
+    }
+    const dedupedPending = [...pendingDedup.values()];
+
+    // Map pending_suggestions to unified suggestion shape
+    // Includes both cell-edit suggestions and action suggestions (_action_* column_id)
+    for (const row of dedupedPending) {
+      const isActionSuggestion = row.column_id?.startsWith('_action_');
+
+      if (isActionSuggestion) {
+        // Action suggestions (insights, warnings, action items) — parse from suggested_value JSON
+        let actionData: Record<string, unknown> = {};
+        try {
+          actionData = typeof row.suggested_value === 'string'
+            ? JSON.parse(row.suggested_value)
+            : (row.suggested_value ?? {});
+        } catch { actionData = {}; }
+
+        allSuggestions.push({
+          id: row.id,
+          rowId: String(row.company_id),
+          columnId: row.column_id,
+          suggestedValue: (actionData.title as string) || row.reasoning || '',
+          currentValue: null,
+          reasoning: (actionData.description as string) || row.reasoning || '',
+          confidence: (row.metadata as Record<string, unknown>)?.confidence as number ?? 0.65,
+          source: 'service',
+          sourceService: row.source_service,
+          sourceDocumentName: row.source_service,
+          extractedMetric: (actionData.type as string) || row.source_service,
+          changeType: 'new',
+        });
+      } else {
+        // Standard cell-edit suggestions
+        const companyRow = companyRows.get(row.company_id);
+        const key = columnToRowKey[row.column_id] ?? (row.column_id as keyof MatrixRowValues);
+        const currentValue = companyRow && key ? (companyRow[key] as number | string | null) ?? null : null;
+        let suggestedValue = row.suggested_value;
+        // JSONB may return a JSON-encoded string — parse it
+        if (typeof suggestedValue === 'string') {
+          try {
+            const parsed = JSON.parse(suggestedValue);
+            suggestedValue = parsed;
+          } catch { /* raw string, keep as-is */ }
+        }
+        // Extract primitive from wrapped objects (e.g. {"value": 123}, {"fair_value": 500000})
+        let val = suggestedValue;
+        let isDelta = false;
+        if (typeof suggestedValue === 'object' && suggestedValue !== null && !Array.isArray(suggestedValue)) {
+          const obj = suggestedValue as Record<string, unknown>;
+          if ('delta' in obj && typeof obj.delta === 'number') {
+            // Delta suggestion (from document impact estimates): apply to current matrix value
+            isDelta = true;
+            val = typeof currentValue === 'number' ? currentValue + obj.delta : null;
+          } else {
+            val = obj.value ?? obj.fair_value ?? obj.displayValue ?? obj.display_value ?? obj.amount;
+            if (val === null || val === undefined) {
+              const firstPrimitive = Object.values(obj).find(v => typeof v === 'string' || typeof v === 'number');
+              val = firstPrimitive ?? JSON.stringify(suggestedValue);
+            }
+          }
+        }
+        // Skip delta suggestions that can't resolve (no current value to apply delta to)
+        if (val === null || val === undefined) continue;
+        allSuggestions.push({
+          id: row.id,
+          rowId: String(row.company_id),
+          columnId: row.column_id,
+          suggestedValue: val,
+          currentValue,
+          reasoning: row.reasoning ?? '',
+          confidence: (row.metadata as Record<string, unknown>)?.confidence as number ?? 0.7,
+          source: 'service',
+          sourceService: row.source_service,
+          sourceDocumentName: row.source_service,
+          extractedMetric: row.source_service,
+          changeType: currentValue == null ? 'new'
+            : (isDelta && typeof val === 'number' && typeof currentValue === 'number'
+              ? (val > currentValue ? 'increase' : 'decrease')
+              : 'update'),
+        });
+      }
     }
 
     const docName = (path: string) => path.split('/').pop()?.replace(/\.(pdf|docx|xlsx)$/i, '') || 'Unknown Document';
@@ -614,18 +759,77 @@ export async function GET(request: NextRequest) {
       risks: string[];
     }> = [];
 
+    // Build a set of (rowId::columnId) pairs already covered by pending_suggestions
+    // so the document-extraction loop below doesn't produce duplicates.
+    const pendingCoveredCells = new Set<string>();
+    for (const s of allSuggestions) {
+      if (s.source === 'service') {
+        pendingCoveredCells.add(`${s.rowId}::${s.columnId}`);
+      }
+    }
+
     let skippedNoCompany = 0;
     let skippedNoRow = 0;
     for (const doc of documents ?? []) {
-      const rowId = doc.company_id ?? 'unknown';
-      const row = companyRows.get(rowId);
+      let rowId = doc.company_id ?? 'unknown';
+
+      // If no company_id, try to match by company name from extracted data or filename
+      if (rowId === 'unknown') {
+        const ext = (doc.extracted_data as Record<string, unknown>) ?? {};
+        const info = (ext.company_info as Record<string, unknown>) ?? {};
+        // Try multiple paths for company name in extracted data
+        const docCompanyName = (
+          info.name ?? info.company_name ?? info.company ??
+          ext.company_name ?? ext.company ??
+          (ext.summary_data as Record<string, unknown> | undefined)?.company_name ??
+          ''
+        ) as string;
+        const docFileName = String(doc.storage_path ?? '');
+        // Build candidate list: extracted name, extracted first-word, filename tokens
+        const candidates: string[] = [];
+        if (docCompanyName && typeof docCompanyName === 'string' && docCompanyName.trim()) {
+          const fullName = docCompanyName.trim().toLowerCase();
+          candidates.push(fullName);
+          // Also try first word: "Mercury Financial Inc" -> "mercury"
+          const firstWord = fullName.split(/\s+/)[0];
+          if (firstWord && firstWord.length > 2 && firstWord !== fullName) {
+            candidates.push(firstWord);
+          }
+        }
+        // Try filename: "Mercury_Q3_Report.pdf" → "mercury"
+        const fileBase = docFileName.split('/').pop()?.replace(/\.[^.]+$/, '')?.split(/[_\-\s]+/)?.[0];
+        if (fileBase && fileBase.length > 2) candidates.push(fileBase.toLowerCase());
+
+        for (const candidate of candidates) {
+          if (candidate.length < 4) continue; // Skip short candidates to avoid false matches
+          // Exact match
+          const exactMatch = companyNameToId.get(candidate);
+          if (exactMatch) { rowId = exactMatch; break; }
+          // Substring match: "mercury" matches "mercury financial"
+          // Only match if candidate is a substantial portion of the name (or vice versa)
+          for (const [name, id] of companyNameToId) {
+            if (name === candidate) { rowId = id; break; }
+            if (name.length >= 4 && (name.startsWith(candidate) || candidate.startsWith(name))) {
+              rowId = id; break;
+            }
+          }
+          if (rowId !== 'unknown') break;
+        }
+        if (rowId !== 'unknown') {
+          console.info(`[suggestions] Resolved document ${doc.id} to company ${rowId} via name matching (candidates: ${candidates.join(', ')})`);
+        }
+      }
+
       if (rowId === 'unknown') {
         skippedNoCompany++;
-        if (skippedNoCompany === 1) {
-          console.warn('[suggestions] Document(s) skipped: company_id is unknown (upload without company context)');
+        if (skippedNoCompany <= 3) {
+          const extD = (doc.extracted_data as Record<string, unknown>) ?? {};
+          const infoD = (extD.company_info as Record<string, unknown>) ?? {};
+          console.warn(`[suggestions] Document ${doc.id} skipped: no company match. extracted_name="${infoD.name ?? infoD.company_name ?? 'none'}", path="${doc.storage_path}"`);
         }
         continue;
       }
+      const row = companyRows.get(rowId);
       if (!row) {
         skippedNoRow++;
         if (skippedNoRow === 1) {
@@ -638,6 +842,21 @@ export async function GET(request: NextRequest) {
       const growthMetrics = (extractedData.growth_metrics as Record<string, unknown>) || {};
       const companyInfo = (extractedData.company_info as Record<string, unknown>) || {};
       const businessUpdates = (extractedData.business_updates as Record<string, unknown>) || {};
+
+      // Build document summary from extracted sections for richer suggestion context
+      const summaryParts: string[] = [];
+      if (typeof extractedData.summary === 'string' && extractedData.summary.trim()) {
+        summaryParts.push(extractedData.summary.trim());
+      } else {
+        // Synthesize from available fields
+        if (typeof companyInfo.description === 'string') summaryParts.push(companyInfo.description);
+        const bu = businessUpdates as Record<string, unknown>;
+        const achArr = Array.isArray(bu.achievements) ? bu.achievements.filter((a): a is string => typeof a === 'string') : [];
+        if (achArr.length > 0) summaryParts.push(`Key achievements: ${achArr.slice(0, 2).join('; ')}`);
+        const riskArr = Array.isArray(bu.risks) ? bu.risks.filter((r): r is string => typeof r === 'string') : [];
+        if (riskArr.length > 0) summaryParts.push(`Risks: ${riskArr.slice(0, 2).join('; ')}`);
+      }
+      const docSummary = summaryParts.length > 0 ? summaryParts.join('. ').slice(0, 500) : undefined;
       const runwayAndCash = (extractedData.runway_and_cash as Record<string, unknown>) || {};
       const operationalMetrics = (extractedData.operational_metrics as Record<string, unknown>) || {};
       const marketSize = (extractedData.market_size as Record<string, unknown>) || {};
@@ -674,6 +893,9 @@ export async function GET(request: NextRequest) {
 
       // Data-driven metric extraction loop
       for (const mapping of METRIC_MAPPINGS) {
+        // Skip if this cell already has a pending_suggestion from the backend pipeline
+        if (pendingCoveredCells.has(`${rowId}::${mapping.columnId}`)) continue;
+
         const value = resolveFirstValid(mapping.paths, sections, mapping.validator);
         if (value === null) continue;
 
@@ -719,17 +941,18 @@ export async function GET(request: NextRequest) {
           source: 'document',
           citationPage: valExpl?.page,
           citationSection: valExpl?.section,
+          documentSummary: docSummary,
         });
       }
 
-      // Special case: Latest Update (builds from latest_update or first achievement — not a numeric metric)
+      // Special case: Latest Update (builds from latest_update or first achievement — NOT summary)
+      // DO NOT fall back to extractedData.summary — that produces junk generic suggestions
       const latestUpdate = validString(
         (businessUpdates as { latest_update?: string }).latest_update
           ?? (Array.isArray((businessUpdates as { achievements?: unknown[] }).achievements)
+              && (businessUpdates as { achievements: unknown[] }).achievements.length > 0
             ? ((businessUpdates as { achievements: unknown[] }).achievements[0] as string)
-            : null)
-          ?? (companyInfo.achievements as string)
-          ?? (extractedData.summary as string),
+            : null),
         2000
       );
       if (latestUpdate !== null) {
@@ -758,6 +981,7 @@ export async function GET(request: NextRequest) {
             extractedMetric: 'Latest Update',
             changeType: current == null ? 'new' : 'update',
             source: 'document',
+            documentSummary: docSummary,
           });
         }
       }
@@ -765,7 +989,11 @@ export async function GET(request: NextRequest) {
       // Special case: Product Updates (concatenates from product_updates or key_metrics)
       const productUpdatesRaw = (businessUpdates as { product_updates?: unknown[] }).product_updates ?? (extractedData.key_metrics as unknown[]);
       const productUpdatesStr = Array.isArray(productUpdatesRaw)
-        ? productUpdatesRaw.map((u: unknown) => typeof u === 'string' ? u : String(u)).filter(Boolean).join('; ')
+        ? productUpdatesRaw.map((u: unknown) => {
+            if (typeof u === 'string') return u;
+            if (typeof u === 'object' && u !== null) { const o = u as Record<string, unknown>; return typeof o.text === 'string' ? o.text : typeof o.description === 'string' ? o.description : typeof o.update === 'string' ? o.update : typeof o.name === 'string' ? o.name : ''; }
+            return '';
+          }).filter(Boolean).join('; ')
         : typeof productUpdatesRaw === 'string'
           ? productUpdatesRaw
           : null;
@@ -796,6 +1024,7 @@ export async function GET(request: NextRequest) {
             extractedMetric: 'Product Updates',
             changeType: current == null ? 'new' : 'update',
             source: 'document',
+            documentSummary: docSummary,
           });
         }
       }
@@ -831,21 +1060,79 @@ export async function GET(request: NextRequest) {
             columnId: 'optionPool',
             suggestedValue: suggestedOptionPool,
             currentValue: current,
-            reasoning: getValueExplanation('optionPool')?.text ? reasoning : `Doc mentions [${newHiresList.slice(0, 3).map((h: unknown) => typeof h === 'string' ? h : (h as Record<string, unknown>)?.role ?? h).join(', ')}]. Senior product/eng hire typically expands option pool; suggest +${suggestedBps} bps (${seniorHireCount} hire(s) × 200 bps). ${reasoning}`,
+            reasoning: getValueExplanation('optionPool')?.text ? reasoning : `Doc mentions [${newHiresList.slice(0, 3).map((h: unknown) => { if (typeof h === 'string') return h; if (typeof h === 'object' && h !== null) { const o = h as Record<string, unknown>; return typeof o.role === 'string' ? o.role : typeof o.title === 'string' ? o.title : typeof o.name === 'string' ? o.name : 'hire'; } return 'hire'; }).join(', ')}]. Senior product/eng hire typically expands option pool; suggest +${suggestedBps} bps (${seniorHireCount} hire(s) × 200 bps). ${reasoning}`,
             confidence,
             sourceDocumentId: doc.id,
             sourceDocumentName: name,
             extractedMetric: 'Option Pool (extrapolated)',
             changeType: current == null ? 'new' : 'update',
             source: 'document',
+            documentSummary: docSummary,
           });
         }
       }
 
+      // === Impact Estimates: LLM-estimated material impact of qualitative signals ===
+      // These are the transformation layer — qualitative prose → numeric suggestions
+      // with document-level citation and reasoning from the LLM.
+      const impactEstimates = (extractedData.impact_estimates as Record<string, unknown>) ?? {};
+      const impactReasoning = (impactEstimates.impact_reasoning as Record<string, string>) ?? {};
+      const IMPACT_TO_COLUMN: Record<string, { columnId: string; rowKey: keyof MatrixRowValues; label: string; isDelta: boolean }> = {
+        estimated_arr_impact: { columnId: 'arr', rowKey: 'arr', label: 'ARR (impact)', isDelta: true },
+        estimated_burn_impact: { columnId: 'burnRate', rowKey: 'burnRate', label: 'Burn Rate (impact)', isDelta: true },
+        estimated_runway_impact: { columnId: 'runway', rowKey: 'runway', label: 'Runway (impact)', isDelta: true },
+        estimated_headcount_impact: { columnId: 'headcount', rowKey: 'headcount', label: 'Headcount (impact)', isDelta: true },
+        estimated_cash_impact: { columnId: 'cashInBank', rowKey: 'cashInBank', label: 'Cash (impact)', isDelta: true },
+        estimated_valuation_impact: { columnId: 'valuation', rowKey: 'valuation', label: 'Valuation (impact)', isDelta: true },
+        estimated_growth_rate_change: { columnId: 'revenueGrowthAnnual', rowKey: 'revenueGrowthAnnual', label: 'Growth Rate (impact)', isDelta: true },
+      };
+      for (const [impactKey, mapping] of Object.entries(IMPACT_TO_COLUMN)) {
+        const delta = typeof impactEstimates[impactKey] === 'number' ? (impactEstimates[impactKey] as number) : null;
+        if (delta == null || delta === 0) continue;
+        // Skip if an explicit extraction already produced a suggestion for this column
+        const existsExplicit = suggestions.find(s => s.rowId === String(rowId) && s.columnId === mapping.columnId);
+        if (existsExplicit) continue;
+        if (pendingCoveredCells.has(`${rowId}::${mapping.columnId}`)) continue;
+
+        const current = row?.[mapping.rowKey] ?? null;
+        // Apply delta to current value (impact estimates are deltas, not absolutes)
+        const suggestedValue = typeof current === 'number' ? current + delta : null;
+        if (suggestedValue == null) continue;
+
+        const sanity = sanityCheck(mapping.columnId, suggestedValue, row);
+        if (!sanity.pass) continue;
+
+        // Use LLM's impact reasoning as document-level citation
+        const impactReasonKey = impactKey.replace('estimated_', '').replace('_impact', '').replace('_change', '');
+        const llmReasoning = impactReasoning[impactReasonKey] || impactReasoning[impactKey] || '';
+        const deltaStr = delta > 0 ? `+${typeof delta === 'number' && Math.abs(delta) >= 1000 ? fmtNum(delta) : delta}` : `${typeof delta === 'number' && Math.abs(delta) >= 1000 ? fmtNum(delta) : delta}`;
+        const reasoning = llmReasoning
+          ? `${llmReasoning} (${deltaStr} from ${name}).`
+          : `Estimated impact: ${deltaStr} based on qualitative signals in ${name}.`;
+
+        suggestions.push({
+          id: `suggestion-${doc.id}-impact-${mapping.columnId}`,
+          cellId: `${rowId}-${mapping.columnId}`,
+          rowId: String(rowId),
+          columnId: mapping.columnId,
+          suggestedValue,
+          currentValue: current,
+          reasoning,
+          confidence: 0.5, // LLM-estimated impacts get moderate confidence
+          sourceDocumentId: doc.id,
+          sourceDocumentName: name,
+          extractedMetric: mapping.label,
+          changeType: typeof current === 'number' ? (suggestedValue > current ? 'increase' : 'decrease') : 'new',
+          source: 'document',
+          documentSummary: docSummary,
+        });
+      }
+
       // Inference engine: generate suggestions from implicit signals in source text
+      // (fallback for when impact_estimates is missing — older extractions)
       const inferred = generateInferredSuggestions(sections, row, name);
       for (const inf of inferred) {
-        // Skip if an explicit suggestion for same column already exists
+        // Skip if an explicit or impact-based suggestion for same column already exists
         const existingForCol = suggestions.find(s => s.rowId === String(rowId) && s.columnId === inf.columnId);
         if (existingForCol) continue;
 
@@ -866,6 +1153,7 @@ export async function GET(request: NextRequest) {
           extractedMetric: `${inf.columnId} (inferred)`,
           changeType: 'update',
           source: 'document',
+          documentSummary: docSummary,
         });
       }
 
@@ -897,11 +1185,159 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Merge document + pending suggestions; exclude rejected and accepted
-    const mergedSuggestions = [...allSuggestions, ...suggestions];
-    const filteredSuggestions = mergedSuggestions.filter(
-      (s) => !rejectedSet.has(s.id) && !acceptedSet.has(s.id)
-    );
+    // --- Phase 7: Auto-enrich sparse companies with stage-based estimates ---
+    const STAGE_BENCHMARKS: Record<string, Record<string, { value: number; confidence: number }>> = {
+      'Pre-Seed': { arr: { value: 200_000, confidence: 0.35 }, burnRate: { value: 80_000, confidence: 0.3 }, headcount: { value: 5, confidence: 0.4 }, runway: { value: 18, confidence: 0.3 } },
+      'Seed': { arr: { value: 1_000_000, confidence: 0.4 }, burnRate: { value: 200_000, confidence: 0.35 }, headcount: { value: 12, confidence: 0.4 }, runway: { value: 18, confidence: 0.35 }, grossMargin: { value: 0.65, confidence: 0.3 } },
+      'Series A': { arr: { value: 5_000_000, confidence: 0.4 }, burnRate: { value: 500_000, confidence: 0.35 }, headcount: { value: 40, confidence: 0.4 }, runway: { value: 20, confidence: 0.35 }, grossMargin: { value: 0.7, confidence: 0.35 } },
+      'Series B': { arr: { value: 15_000_000, confidence: 0.4 }, burnRate: { value: 1_200_000, confidence: 0.35 }, headcount: { value: 120, confidence: 0.4 }, runway: { value: 20, confidence: 0.35 }, grossMargin: { value: 0.72, confidence: 0.35 } },
+      'Series C': { arr: { value: 50_000_000, confidence: 0.4 }, burnRate: { value: 3_000_000, confidence: 0.35 }, headcount: { value: 300, confidence: 0.4 }, runway: { value: 18, confidence: 0.35 }, grossMargin: { value: 0.75, confidence: 0.35 } },
+    };
+
+    for (const c of companies) {
+      const id = String(c.id);
+      const row = companyRows.get(id);
+      if (!row) continue;
+      const extra = (c.extra_data && typeof c.extra_data === 'object') ? c.extra_data as Record<string, unknown> : {};
+      const stage = (extra.stage as string) || (extra.funnel_status as string) || (extra.funding_stage as string) || '';
+      const normalizedStage = Object.keys(STAGE_BENCHMARKS).find(s => stage.toLowerCase().includes(s.toLowerCase()));
+      if (!normalizedStage) continue;
+      const benchmarks = STAGE_BENCHMARKS[normalizedStage];
+      const emptyFields: string[] = [];
+      if (row.arr == null) emptyFields.push('arr');
+      if (row.burnRate == null) emptyFields.push('burnRate');
+      if (row.headcount == null) emptyFields.push('headcount');
+      if (row.runway == null) emptyFields.push('runway');
+      if (row.grossMargin == null) emptyFields.push('grossMargin');
+      if (emptyFields.length < 3) continue;
+      const companyName = typeof c.name === 'string' ? c.name : 'Unknown';
+      for (const field of emptyFields) {
+        const benchmark = benchmarks[field as keyof typeof benchmarks];
+        if (!benchmark) continue;
+        const hasSuggestion = [...allSuggestions, ...suggestions].some(s => s.rowId === id && s.columnId === field);
+        if (hasSuggestion) continue;
+        const suggestionId = `auto-enrich-${id}-${field}`;
+        if (rejectedSet.has(suggestionId) || acceptedSet.has(suggestionId)) continue;
+        allSuggestions.push({
+          id: suggestionId,
+          rowId: id,
+          columnId: field,
+          suggestedValue: benchmark.value,
+          currentValue: null,
+          reasoning: `${normalizedStage} stage median for ${companyName}. Stage benchmark estimate — verify with actual data.`,
+          confidence: benchmark.confidence,
+          source: 'service',
+          sourceService: 'auto_enrich.stage_benchmark',
+          sourceDocumentName: 'Stage Benchmarks',
+          extractedMetric: `${field} (stage estimate)`,
+          changeType: 'new' as const,
+        });
+      }
+    }
+
+    // Merge document + pending suggestions; exclude rejected and accepted; dedup by rowId+columnId (keep highest confidence)
+    const mergedRaw = [...allSuggestions, ...suggestions];
+
+    // Before dedup: scan all raw suggestions and mark SOURCE-AWARE composite keys
+    // (rowId::columnId::source) as accepted/rejected when ANY variant of the suggestion
+    // ID was accepted/rejected.  This way accepting a doc suggestion for ARR does NOT
+    // block a service suggestion for ARR on the same company.
+    for (const s of mergedRaw) {
+      const src = s.source ?? 'document';
+      const sourceAwareKey = `${s.rowId}::${s.columnId}::${src}`;
+      if (acceptedSet.has(s.id)) acceptedCompositeKeys.add(sourceAwareKey);
+      if (rejectedSet.has(s.id)) rejectedCompositeKeys.add(sourceAwareKey);
+    }
+
+    // Dedup by rowId::columnId::source — keep highest confidence per cell per source type.
+    // This means a doc suggestion and a service suggestion for the same cell both survive.
+    const dedupMap = new Map<string, (typeof mergedRaw)[number]>();
+    for (const s of mergedRaw) {
+      const src = s.source ?? 'document';
+      const key = `${s.rowId}::${s.columnId}::${src}`;
+      const existing = dedupMap.get(key);
+      if (!existing || s.confidence > existing.confidence) {
+        dedupMap.set(key, s);
+      }
+    }
+
+    // Value-aware dedup: if a doc and service suggestion target the same cell with
+    // equivalent values, keep only the higher-confidence one regardless of source.
+    const valueDedupMap = new Map<string, (typeof mergedRaw)[number]>();
+    for (const s of dedupMap.values()) {
+      const cellKey = `${s.rowId}::${s.columnId}`;
+      const existing = valueDedupMap.get(cellKey);
+      if (!existing) {
+        valueDedupMap.set(cellKey, s);
+        continue;
+      }
+      // Check if values are equivalent
+      const valuesMatch = typeof s.suggestedValue === 'number' && typeof existing.suggestedValue === 'number'
+        ? Math.abs(s.suggestedValue - existing.suggestedValue) <= 0.01 * Math.max(1, Math.abs(existing.suggestedValue))
+        : String(s.suggestedValue).trim().toLowerCase() === String(existing.suggestedValue).trim().toLowerCase();
+      if (valuesMatch) {
+        // Same value — keep the higher-confidence one
+        if (s.confidence > existing.confidence) {
+          valueDedupMap.set(cellKey, s);
+        }
+      } else {
+        // Different values — both survive, restore the source-keyed entry
+        valueDedupMap.set(`${cellKey}::${s.source ?? 'document'}`, s);
+        // Ensure existing also has a source-keyed entry
+        const existingSourceKey = `${cellKey}::${existing.source ?? 'document'}`;
+        if (!valueDedupMap.has(existingSourceKey)) {
+          valueDedupMap.set(existingSourceKey, existing);
+        }
+      }
+    }
+    // Replace dedupMap with value-deduped results
+    dedupMap.clear();
+    for (const [k, v] of valueDedupMap) {
+      dedupMap.set(k, v);
+    }
+    const filteredSuggestions = [...dedupMap.values()].filter((s) => {
+      // Drop suggestions with null/empty values — these show as "N/A" in the UI
+      if (s.suggestedValue === null || s.suggestedValue === undefined) return false;
+      if (typeof s.suggestedValue === 'object' && s.suggestedValue !== null && !Array.isArray(s.suggestedValue)) {
+        const obj = s.suggestedValue as Record<string, unknown>;
+        const hasUsableValue = Object.values(obj).some(v => v !== null && v !== undefined && v !== '');
+        if (!hasUsableValue) return false;
+      }
+      const src = s.source ?? 'document';
+      const sourceAwareKey = `${s.rowId}::${s.columnId}::${src}`;
+      // Legacy key (no source suffix) blocks both sources for backwards compat
+      const legacyKey = `${s.rowId}::${s.columnId}`;
+      if (rejectedSet.has(s.id) || rejectedCompositeKeys.has(sourceAwareKey) || rejectedCompositeKeys.has(legacyKey)) return false;
+      if (acceptedSet.has(s.id) || acceptedCompositeKeys.has(sourceAwareKey) || acceptedCompositeKeys.has(legacyKey)) return false;
+      return true;
+    });
+
+    // ── Suggestion ranking: composite score by impact, recency, corrections ──
+    const highImpactColumns = new Set([
+      'arr', 'valuation', 'grossMargin', 'revenueGrowthAnnual', 'burnRate', 'runway', 'totalRaised',
+    ]);
+    for (const s of filteredSuggestions) {
+      let score = (s as any).confidence ?? 0.5;
+
+      // Recency boost: suggestions from recent sources rank higher
+      const createdAt = (s as any).createdAt || (s as any).created_at;
+      if (createdAt) {
+        const daysSince = (Date.now() - new Date(createdAt).getTime()) / 86_400_000;
+        score += Math.max(0, 0.15 * (1 - daysSince / 30));
+      }
+
+      // Portfolio impact: financial fields matter more
+      if (highImpactColumns.has(s.columnId)) score += 0.1;
+
+      // Corrections: boost if flagged as a correction
+      if ((s as any).isCorrection || (s as any).is_correction) score += 0.2;
+
+      // Source trust: service suggestions (search-backed) slightly above document-inferred
+      if (s.source === 'service') score += 0.05;
+
+      (s as any)._score = score;
+    }
+    filteredSuggestions.sort((a, b) => ((b as any)._score ?? 0) - ((a as any)._score ?? 0));
 
     if (skippedNoCompany > 0 || skippedNoRow > 0) {
       console.warn(
@@ -909,7 +1345,15 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    return NextResponse.json({ suggestions: filteredSuggestions, insights });
+    // Enrich each suggestion with column metadata so the frontend can
+    // format values and auto-create columns without a separate lookup.
+    const enriched = filteredSuggestions.map((s) => ({
+      ...s,
+      columnType: getColumnType(s.columnId),
+      columnName: getColumnLabel(s.columnId),
+    }));
+
+    return NextResponse.json({ suggestions: enriched, insights });
   } catch (error) {
     console.error('Error generating suggestions:', error);
     return NextResponse.json(
@@ -973,7 +1417,7 @@ export async function POST(request: NextRequest) {
       }
       const { data: inserted, error: insertErr } = await supabaseService
         .from('pending_suggestions')
-        .insert({
+        .upsert({
           fund_id: fundId,
           company_id,
           column_id,
@@ -983,7 +1427,7 @@ export async function POST(request: NextRequest) {
           source_service,
           reasoning: reasoning ?? null,
           metadata: metadata ?? null,
-        })
+        }, { onConflict: 'fund_id,company_id,column_id' })
         .select('id')
         .single();
       if (insertErr) {
@@ -1011,21 +1455,50 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
+      // Build list of rejection records: raw ID + source-aware composite key.
+      const rejectRows: { fund_id: string; suggestion_id: string }[] = [
+        { fund_id: fundId, suggestion_id: String(suggestionId) },
+      ];
+      // If applyPayload carries company_id + column_id, record source-aware composite key.
+      if (applyPayload?.company_id && applyPayload?.column_id) {
+        const src = isServiceSuggestionId(suggestionId) ? 'service' : 'document';
+        rejectRows.push({ fund_id: fundId, suggestion_id: `${applyPayload.company_id}::${applyPayload.column_id}::${src}` });
+      }
+      if (isServiceSuggestionId(suggestionId)) {
+        // Look up the row first so we can record composite key and delete all duplicates
+        const { data: pendingRow } = await supabaseService
+          .from('pending_suggestions')
+          .select('fund_id, company_id, column_id, source_service')
+          .eq('id', suggestionId)
+          .single();
+        if (pendingRow) {
+          rejectRows.push({ fund_id: fundId, suggestion_id: `${pendingRow.company_id}::${pendingRow.column_id}::service` });
+          // Document-originated pending_suggestions (from emit_document_suggestions):
+          // also block the document extraction path so it doesn't resurrect after reject
+          if (typeof pendingRow.source_service === 'string' && pendingRow.source_service.startsWith('document:')) {
+            rejectRows.push({ fund_id: fundId, suggestion_id: `${pendingRow.company_id}::${pendingRow.column_id}::document` });
+          }
+          await supabaseService.from('pending_suggestions')
+            .delete()
+            .eq('fund_id', pendingRow.fund_id)
+            .eq('company_id', pendingRow.company_id)
+            .eq('column_id', pendingRow.column_id);
+        } else {
+          // Row already gone, just delete by id as fallback
+          await supabaseService.from('pending_suggestions').delete().eq('id', suggestionId);
+        }
+      }
+      // Deduplicate rejectRows to avoid "ON CONFLICT DO UPDATE cannot affect row a second time"
+      const uniqueRejectRows = [...new Map(rejectRows.map(r => [`${r.fund_id}::${r.suggestion_id}`, r])).values()];
       const { error: insertError } = await supabaseService
         .from('rejected_suggestions')
-        .upsert(
-          { fund_id: fundId, suggestion_id: String(suggestionId) },
-          { onConflict: 'fund_id,suggestion_id' }
-        );
+        .upsert(uniqueRejectRows, { onConflict: 'fund_id,suggestion_id' });
       if (insertError) {
         console.error('[suggestions] Error persisting rejected suggestion:', { suggestionId, error: insertError.message });
         return NextResponse.json(
           { error: 'Failed to save rejected suggestion' },
           { status: 500 }
         );
-      }
-      if (isServiceSuggestionId(suggestionId)) {
-        await supabaseService.from('pending_suggestions').delete().eq('id', suggestionId);
       }
       return NextResponse.json({
         success: true,
@@ -1056,9 +1529,29 @@ export async function POST(request: NextRequest) {
             { status: 404 }
           );
         }
-        const newValue = typeof pendingRow.suggested_value === 'object' && pendingRow.suggested_value !== null && 'value' in pendingRow.suggested_value
-          ? (pendingRow.suggested_value as { value: unknown }).value
-          : pendingRow.suggested_value;
+        // Validate company exists before applying
+        const { data: svcCompanyRow, error: svcCompanyErr } = await supabaseService
+          .from('companies')
+          .select('id')
+          .eq('id', pendingRow.company_id)
+          .single();
+        if (svcCompanyErr || !svcCompanyRow) {
+          console.warn('[suggestions] Service accept: company_id not found', { suggestionId, company_id: pendingRow.company_id });
+          // Clean up the orphaned pending suggestion
+          await supabaseService.from('pending_suggestions').delete().eq('id', suggestionId);
+          return NextResponse.json(
+            { error: 'Company not found. The suggestion may refer to a company no longer in the matrix.' },
+            { status: 404 }
+          );
+        }
+        let rawSuggested = pendingRow.suggested_value;
+        // JSONB may return a JSON-encoded string — parse it
+        if (typeof rawSuggested === 'string') {
+          try { rawSuggested = JSON.parse(rawSuggested); } catch { /* keep as-is */ }
+        }
+        const newValue = typeof rawSuggested === 'object' && rawSuggested !== null && 'value' in rawSuggested
+          ? (rawSuggested as { value: unknown }).value
+          : rawSuggested;
         const applyResult = await applyCellUpdate({
           company_id: pendingRow.company_id,
           column_id: pendingRow.column_id,
@@ -1075,7 +1568,34 @@ export async function POST(request: NextRequest) {
             { status: failResult.status }
           );
         }
-        await supabaseService.from('pending_suggestions').delete().eq('id', suggestionId);
+        // Persist to accepted_suggestions so the sparkle doesn't reappear.
+        // Record the raw ID + source-aware composite key (companyId::columnId::service)
+        // so that dedup ID swaps on next GET can't resurrect this suggestion.
+        // For document-originated pending_suggestions, also block the document extraction
+        // path so the same metric doesn't resurrect via processed_documents parsing.
+        if (fundId) {
+          const sourceAwareKey = `${pendingRow.company_id}::${pendingRow.column_id}::service`;
+          const rows = [
+            { fund_id: fundId, suggestion_id: String(suggestionId) },
+            { fund_id: fundId, suggestion_id: sourceAwareKey },
+          ];
+          if (typeof pendingRow.source_service === 'string' && pendingRow.source_service.startsWith('document:')) {
+            rows.push({ fund_id: fundId, suggestion_id: `${pendingRow.company_id}::${pendingRow.column_id}::document` });
+          }
+          const { error: acceptErr } = await supabaseService
+            .from('accepted_suggestions')
+            .upsert(rows, { onConflict: 'fund_id,suggestion_id' });
+          if (acceptErr) {
+            console.error('[suggestions] Error persisting accepted service suggestion:', acceptErr);
+          }
+        }
+        // Delete ALL pending_suggestions for this company+column (not just this row),
+        // because duplicate rows with different UUIDs would reappear on next GET.
+        await supabaseService.from('pending_suggestions')
+          .delete()
+          .eq('fund_id', fundId)
+          .eq('company_id', pendingRow.company_id)
+          .eq('column_id', pendingRow.column_id);
         return NextResponse.json({
           success: true,
           message: `Suggestion ${suggestionId} accepted and applied`,
@@ -1124,17 +1644,29 @@ export async function POST(request: NextRequest) {
           );
         }
         const docFundId = applyPayload.fund_id ?? bodyFundId;
-        if (docFundId && suggestionId) {
+        if (!docFundId) {
+          // Cell was applied but we can't record acceptance — roll back is impractical, so return error
+          return NextResponse.json(
+            { error: 'fundId required to persist accepted suggestion' },
+            { status: 400 }
+          );
+        }
+        {
+          // Record the raw ID + source-aware composite key (companyId::columnId::document)
+          // so that dedup ID swaps on next GET can't resurrect this suggestion,
+          // but service suggestions for the same cell are NOT blocked.
+          const sourceAwareKey = `${applyPayload.company_id}::${applyPayload.column_id}::document`;
+          const rows = [
+            { fund_id: docFundId, suggestion_id: String(suggestionId) },
+            { fund_id: docFundId, suggestion_id: sourceAwareKey },
+          ];
           const { error: acceptErr } = await supabaseService
             .from('accepted_suggestions')
-            .upsert(
-              { fund_id: docFundId, suggestion_id: String(suggestionId) },
-              { onConflict: 'fund_id,suggestion_id' }
-            );
+            .upsert(rows, { onConflict: 'fund_id,suggestion_id' });
           if (acceptErr) {
-            console.error('Error persisting accepted suggestion:', acceptErr);
+            console.error('[suggestions] FATAL: accepted_suggestions upsert failed:', acceptErr.message);
             return NextResponse.json(
-              { error: acceptErr.message ?? 'Failed to save accepted suggestion' },
+              { error: 'Cell updated but failed to record acceptance — suggestion may reappear' },
               { status: 500 }
             );
           }
@@ -1147,10 +1679,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({
-      success: true,
-      message: `Suggestion ${suggestionId} ${action}ed`,
-    });
+    return NextResponse.json(
+      { success: false, error: `Unknown action: ${action}` },
+      { status: 400 }
+    );
   } catch (error) {
     console.error('[suggestions] POST error:', error);
     return NextResponse.json(

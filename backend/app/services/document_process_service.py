@@ -32,6 +32,18 @@ def _check_pypdf() -> None:
 
 _check_pypdf()  # Run on module load
 
+# OCR availability flag
+_OCR_AVAILABLE = False
+try:
+    import pytesseract  # noqa: F401
+    from pdf2image import convert_from_path  # noqa: F401
+    _OCR_AVAILABLE = True
+except ImportError:
+    logger.info(
+        "pytesseract/pdf2image not installed; OCR fallback disabled. "
+        "Run: pip install pytesseract pdf2image  (and install Tesseract + Poppler system deps)"
+    )
+
 # Document extraction JSON schema (fields we ask the model to return) – used for other doc types
 # Note: memos, updates, board decks, board transcripts use signal/memo schemas below
 # Flat schema for pitch_deck, other — market_size only in investment_memo
@@ -48,7 +60,7 @@ DOCUMENT_EXTRACTION_SCHEMA = {
     "target_market": "string or null",
     "business_model": "string or null",
     "red_flags": "array of strings (concerns, risks, concerning language)",
-    "value_explanations": "object: { [metric_key]: string } - per-metric doc-sourced reasoning, e.g. arr: 'Q3 exceeded target; doc states $1.2M ARR'",
+    "value_explanations": "object: { [metric_key]: string } — '\"source quote\" → why → metric change'. e.g. arr: '\"Q3 exceeded plan\" → accelerating sales → ARR up to $1.2M'",
 }
 
 # Company-update signal schema – for monthly_update, board_deck, board_transcript
@@ -67,7 +79,7 @@ COMPANY_UPDATE_SIGNAL_SCHEMA = {
         "risks": "array of strings",
         "key_milestones": "array of strings",
         "asks": "array of strings",
-        "latest_update": "string (one-line summary)",
+        "latest_update": "string (one-line summary of what changed this period — NOT a generic company description)",
         "defensive_language": "array of strings (hedging, caveats, excuses)",
     },
     "operational_metrics": {
@@ -94,8 +106,20 @@ COMPANY_UPDATE_SIGNAL_SCHEMA = {
         "cash_balance": "number or null (USD)",
         "gross_margin": "number or null (0-1 or 0-100)",
         "growth_rate": "number or null (e.g. 0.5 for 50%)",
+        "customer_count": "number or null",
     },
-    "value_explanations": "object: { [metric_key]: string } - per-metric doc-sourced reasoning, e.g. arr: 'Q3 exceeded target; doc states $1.2M ARR'. For extrapolated values include doc excerpt and inference.",
+    "impact_estimates": {
+        "_description": "For EACH qualitative signal above, estimate its material impact on core financial metrics. This is the transformation layer — qualitative info becomes quantitative suggestions.",
+        "estimated_arr_impact": "number or null (USD delta, e.g. +500000 if 'landed Fortune 500 client', -300000 if 'lost key customer')",
+        "estimated_burn_impact": "number or null (USD/mo delta, e.g. +60000 if '3 new hires', -100000 if 'cut 20% of team')",
+        "estimated_runway_impact": "number or null (months delta, e.g. -3 if 'burn increased significantly', +12 if 'raised $5M')",
+        "estimated_headcount_impact": "number or null (delta, e.g. +5 if 'hired 5 engineers', -10 if 'RIF'd 10 people')",
+        "estimated_cash_impact": "number or null (USD delta, e.g. +5000000 if 'closed Series B')",
+        "estimated_valuation_impact": "number or null (USD delta, e.g. +20000000 if 'raised at 3x last round')",
+        "estimated_growth_rate_change": "number or null (pct point delta, e.g. +0.1 if 'accelerating growth', -0.05 if 'growth slowing')",
+        "impact_reasoning": "object: { [metric_key]: string } — '\"verbatim quote\" → why → metric change'. e.g. '\"landed 3 enterprise logos\" → ~$200K ACV each → ARR +$600K'",
+    },
+    "value_explanations": "object: { [metric_key]: string } — '\"source quote\" → why → metric change'. e.g. arr: '\"hit $1.2M ARR\" → explicit figure → ARR is $1.2M'; burn_rate: '\"hired 5 senior engineers\" → ~$25K/mo each → burn +$125K/mo'",
 }
 
 # Investment memo schema – for investment_memo
@@ -125,7 +149,7 @@ INVESTMENT_MEMO_SCHEMA = {
         "methodology": "string or null",
     },
     "red_flags": "array of strings (concerns, risks)",
-    "value_explanations": "object: { [metric_key]: string } - per-metric doc-sourced reasoning. For extrapolated values include doc excerpt and inference.",
+    "value_explanations": "object: { [metric_key]: string } — '\"source quote\" → why → metric change'. e.g. arr: '\"Memo states $2M ARR\" → explicit figure → ARR is $2M'",
 }
 
 
@@ -134,9 +158,48 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _ocr_pdf(path: str) -> str:
+    """
+    OCR a PDF using pytesseract + pdf2image.
+    Converts each page to an image and runs Tesseract OCR.
+    Returns extracted text or empty string on failure.
+    """
+    if not _OCR_AVAILABLE:
+        logger.warning("OCR requested but pytesseract/pdf2image not installed")
+        return ""
+    try:
+        import pytesseract
+        from pdf2image import convert_from_path
+
+        logger.info("Running OCR on PDF: %s", path)
+        images = convert_from_path(path, dpi=300)
+        text_parts: list[str] = []
+        for i, img in enumerate(images):
+            try:
+                page_text = pytesseract.image_to_string(img, lang="eng")
+                if page_text and page_text.strip():
+                    text_parts.append(page_text.strip())
+            except Exception as e:
+                logger.debug("OCR failed on page %d: %s", i + 1, e)
+        result = "\n\n".join(text_parts).strip()
+        if result:
+            logger.info("OCR extracted %d chars from %d pages", len(result), len(images))
+        else:
+            logger.warning("OCR produced no text from %d pages", len(images))
+        return result
+    except Exception as e:
+        logger.exception("OCR failed for %s: %s", path, e)
+        return ""
+
+
+# Minimum chars to consider pypdf extraction successful (avoids header-only extracts)
+_MIN_TEXT_THRESHOLD = 50
+
+
 def _text_from_file(path: str, suffix: str) -> str:
     """
-    Extract plain text from a file. Supports PDF (pypdf) and DOCX (python-docx).
+    Extract plain text from a file. Supports PDF (pypdf with OCR fallback) and DOCX (python-docx).
+    For PDFs: tries pypdf first, falls back to OCR if text is empty or too short.
     Returns empty string for unsupported types or on error.
     """
     path_obj = Path(path)
@@ -158,7 +221,23 @@ def _text_from_file(path: str, suffix: str) -> str:
                         text_parts.append(t)
                 except Exception as e:
                     logger.debug("pypdf page extract: %s", e)
-            return "\n\n".join(text_parts).strip() or ""
+            text = "\n\n".join(text_parts).strip()
+
+            # If pypdf got enough text, use it
+            if len(text) >= _MIN_TEXT_THRESHOLD:
+                return text
+
+            # Otherwise try OCR fallback
+            logger.info(
+                "pypdf extracted only %d chars (threshold %d), attempting OCR fallback",
+                len(text), _MIN_TEXT_THRESHOLD,
+            )
+            ocr_text = _ocr_pdf(path)
+            if ocr_text:
+                return ocr_text
+
+            # Return whatever pypdf got (may be empty)
+            return text
 
         if ext in ("docx", "doc"):
             try:
@@ -230,21 +309,100 @@ def _get_memo_context_for_company(
 def _signal_first_prompt(text: str, document_type: str, schema_desc: str, memo_context: Optional[str] = None) -> tuple:
     """Build system and user prompt for signal-first extraction (monthly_update / board_deck / board_transcript)."""
     system_prompt = (
-        "You are a VC document analyst. Extract structured **signals** from company updates, board decks, and board transcripts. "
-        "Prioritize qualitative signals that explain progress and risk; extract financial numbers only when explicitly stated. "
-        "Return a single JSON object. Use null for unknown; use empty arrays for missing lists."
+        "You are a VC document analyst and transformation engine. Extract structured signals from company updates, board decks, and board transcripts. "
+        "You have TWO jobs:\n"
+        "1. EXTRACT: Pull explicit numbers from text into financial_metrics (ARR, burn, headcount, etc.).\n"
+        "2. TRANSFORM: Read qualitative prose — even when NO numbers are stated — and estimate the numeric impact in impact_estimates.\n"
+        "The transform step is the critical one. Most board updates are prose, not spreadsheets. "
+        "Every qualitative signal (hire, product launch, expansion, customer win/loss, risk, pivot) implies a financial impact — estimate it. "
+        "RULE: impact_estimates MUST have at least 2 non-null numeric values. A document with zero impact estimates is a failure. "
+        "RULE: impact_reasoning MUST attribute each estimate to a source quote: '\"quote\" → why → metric change'. "
+        "Return a single JSON object. Use null for truly unknown; use empty arrays for missing lists.\n"
+        "CURRENCY CONVERSION (always convert to USD before storing any numeric value):\n"
+        "- £ (GBP) → multiply by 1.27\n"
+        "- € (EUR) → multiply by 1.09\n"
+        "- ¥ (JPY) → divide by 154\n"
+        "- ₹ (INR) → divide by 84\n"
+        "- Note the original currency and amount in value_explanations (e.g. '£2M → $2.54M USD')."
     )
     user_parts = [
         f"Document type: {document_type}.",
-        "Extract signals first: product_updates, achievements, challenges, risks, asks, defensive_language, key_milestones.",
-        "Then operational_metrics: new_hires (prefer objects with role/department e.g. 'Senior PM, product'), headcount, customer_count when stated.",
+        "Extract signals: product_updates, achievements, challenges, risks, asks, defensive_language, key_milestones.",
+        "Then operational_metrics: new_hires (prefer objects with role/department e.g. 'Senior PM, product'), headcount, customer_count.",
         "Then extracted_entities: competitors_mentioned, industry_terms, partners_mentioned.",
         "Extract business_model, sector, category when inferable from context (needed for valuation and analysis).",
         "Extract red_flags: array of explicit concerns, risks, or concerning language.",
         "Extract implications: array of 'reading between the lines' items (e.g. 'option pool likely expanded given senior product hire').",
-        "If the document states ARR, burn, runway, cash, or growth rate, add them to financial_metrics and set period_date if a period is indicated.",
-        "For each extracted metric, add a short doc-sourced explanation to value_explanations, e.g. arr: 'Q3 exceeded target; doc states $1.2M ARR'.",
-        "For extrapolated values (e.g. option pool from senior hires), include the doc excerpt and inference in value_explanations.",
+        "",
+        "PATH 1 — Explicit numbers → financial_metrics:",
+        "Any number stated in the text ('we hit $1.2M ARR', 'burn is ~$80K/mo', '45 employees') goes DIRECTLY into financial_metrics.",
+        "",
+        "PATH 2 — Qualitative signals → impact_estimates:",
+        "Most updates are prose with NO explicit numbers. Reason from signal to magnitude using the methodology below.",
+        "For each estimate, impact_reasoning MUST follow: '\"verbatim quote\" → why → metric change'.",
+        "MANDATORY: At least 2 non-null impact_estimates per document. Rough is better than null.",
+        "",
+        "=== IMPACT REASONING METHODOLOGY ===",
+        "Work through these steps for every qualitative signal before producing a number:",
+        "",
+        "STEP 1 — CLASSIFY the signal:",
+        "  Revenue signals: customer win/loss/expansion, pricing change, new segment, churn, upsell, product launch",
+        "  Cost signals: hiring, departures, office moves, vendor changes, raises, layoffs",
+        "  Balance sheet signals: fundraise, debt, large purchases, runway changes",
+        "  Growth trajectory signals: market expansion, pivot, acceleration/deceleration, PMF indicators",
+        "",
+        "STEP 2 — ANCHOR to company scale:",
+        "  If a BASELINE ANCHOR is provided above, USE IT. All estimates must be proportional to the company\'s actual size.",
+        "  A \'big enterprise deal\' means ~$50-100K for a $500K ARR startup, but ~$500K-2M for a $50M ARR company.",
+        "  If no baseline exists, infer approximate scale from clues in the document itself:",
+        "    - Team size, customer logos, round stage, office mentions all signal scale",
+        "    - 10-person Series A startup is likely $500K-3M ARR",
+        "    - 200-person post-Series C company is likely $20-80M ARR",
+        "  State your assumed scale in impact_reasoning so the estimate is auditable.",
+        "",
+        "STEP 3 — SIZE the impact as a proportion of scale:",
+        "  Revenue impacts — think in % of current ARR:",
+        "    Single new SMB customer: +1-3% of ARR    |  Single enterprise deal: +5-15% of ARR",
+        "    New segment/market entry: +10-25% over 12mo  |  Key customer lost: -3-10% of ARR",
+        "    Pricing increase: +5-15% of ARR  |  New product/feature upsell: +5-20% over 12mo",
+        "  Burn impacts — think in per-head monthly cost:",
+        "    Junior hire: +$8-15K/mo  |  Senior/exec hire: +$15-30K/mo  |  Departure: reverse",
+        "    Batch hiring (\'scaling the team\'): estimate headcount x avg cost for role level",
+        "  Growth rate changes — percentage-point shifts:",
+        "    Acceleration (strong PMF): +5-15 ppt  |  Deceleration (churn, pivot): -5-20 ppt",
+        "    Segment shift (SMB to enterprise): -5-10 ppt short-term",
+        "",
+        "STEP 4 — CONVERT to dollar amount and show your math:",
+        "  proportion x anchored scale = dollar impact.",
+        "  In impact_reasoning, format as: \'\"verbatim quote\" → [reasoning at assumed scale] → [metric] [direction] $Y\'",
+        "",
+        "=== EXAMPLES (full reasoning chain) ===",
+        "",
+        "Quote: \'We expanded into the enterprise segment\'",
+        "  Signal: new segment entry (revenue). Anchor: ~$2M ARR from baseline. Size: +10-20% of ARR.",
+        "  estimated_arr_impact: +300000",
+        "  impact_reasoning: \'\"expanded into enterprise segment\" → new segment at ~$2M baseline, +10-20% yr1 → ARR +$300K\'",
+        "",
+        "Quote: \'Signed LOI with two Fortune 500 companies\'",
+        "  Signal: customer win (revenue), LOI not closed. F500 contracts $200-400K. Discount: LOI-to-close ~60%.",
+        "  estimated_arr_impact: +400000",
+        "  impact_reasoning: \'\"signed LOI with two Fortune 500\" → 2 x ~$300K ACV, ~60% close rate → ARR +$400K\'",
+        "",
+        "Quote: \'Our head of engineering left last month\'",
+        "  Signal: senior departure (cost). Per-head: senior eng leader ~$25K/mo fully loaded.",
+        "  estimated_burn_impact: -25000, estimated_headcount_impact: -1",
+        "  impact_reasoning: \'\"head of engineering left\" → senior eng exec ~$25K/mo loaded → burn -$25K/mo, headcount -1\'",
+        "",
+        "Quote: \'Pivoting from SMB to mid-market\'",
+        "  Signal: segment shift (growth). Short-term churn from SMB base, slower mid-market cycles.",
+        "  estimated_growth_rate_change: -0.10, estimated_arr_impact: -100000",
+        "  impact_reasoning: \'\"pivoting from SMB to mid-market\" → 5-15% SMB churn + slower cycles → growth -10 ppt, ARR -$100K near-term\'",
+        "",
+        "Quote: \'Burn is ~$80K/mo\'",
+        "  EXPLICIT number — put 80000 in BOTH financial_metrics.burn_rate AND estimated_burn_impact.",
+        "",
+        "For each extracted metric, add to value_explanations: '\"source quote\" → why → metric change'.",
+        "For extrapolated values, include the doc excerpt and inference in value_explanations.",
         "",
         "Schema (JSON):",
         schema_desc,
@@ -256,7 +414,7 @@ def _signal_first_prompt(text: str, document_type: str, schema_desc: str, memo_c
         "Return only the JSON object, no markdown or explanation.",
     ]
     if memo_context:
-        user_parts.insert(1, f"Reference (same company): {memo_context}")
+        user_parts.insert(1, f"BASELINE ANCHOR (same company, use for scaling all estimates): {memo_context}")
     user_prompt = "\n".join(user_parts)
     return system_prompt, user_prompt
 
@@ -270,8 +428,14 @@ def _memo_prompt(text: str, schema_desc: str) -> tuple:
         "Include financial baseline when stated: ARR, revenue, runway_months. "
         "Extract market_size (tam_usd, sam_usd, som_usd) when stated, with tam_description/methodology if available. "
         "Extract red_flags as array of explicit concerns, risks, or concerning language. "
-        "For each extracted metric (arr, revenue, runway, valuation, tam_usd, sam_usd, som_usd, etc.), add a short doc-sourced explanation to value_explanations, e.g. arr: 'Memo states $2M ARR as of Q2'; tam_usd: 'Memo cites Gartner 2024 TAM $42B'. "
-        "Return a single JSON object. Use null when unknown."
+        "For each extracted metric, add to value_explanations: '\"source quote\" → why → metric change', e.g. arr: '\"$2M ARR as of Q2\" → explicit figure → ARR is $2M'. "
+        "Return a single JSON object. Use null when unknown.\n"
+        "CURRENCY CONVERSION (always convert to USD before storing any numeric value):\n"
+        "- £ (GBP) → multiply by 1.27\n"
+        "- € (EUR) → multiply by 1.09\n"
+        "- ¥ (JPY) → divide by 154\n"
+        "- ₹ (INR) → divide by 84\n"
+        "- Note the original currency and amount in value_explanations (e.g. '£2M → $2.54M USD')."
     )
     user_prompt = (
         f"Extract and return a JSON object matching this schema:\n{schema_desc}\n\n"
@@ -289,7 +453,13 @@ def _flat_prompt(text: str, document_type: str, schema_desc: str) -> tuple:
         "company_name, revenue, arr, stage, total_funding, valuation, key_metrics (array of strings), "
         "summary, sector, target_market, business_model. "
         "Numbers must be numeric (no currency symbols in values). key_metrics is an array of short strings. "
-        "For each extracted metric, add a short doc-sourced explanation to value_explanations, e.g. arr: 'Doc states $1.2M ARR'."
+        "For each extracted metric, add to value_explanations: '\"source quote\" → why → metric change', e.g. arr: '\"$1.2M ARR\" → explicit figure → ARR is $1.2M'.\n"
+        "CURRENCY CONVERSION (always convert to USD before storing any numeric value):\n"
+        "- £ (GBP) → multiply by 1.27\n"
+        "- € (EUR) → multiply by 1.09\n"
+        "- ¥ (JPY) → divide by 154\n"
+        "- ₹ (INR) → divide by 84\n"
+        "- Note the original currency and amount in value_explanations (e.g. '£2M → $2.54M USD')."
     )
     user_prompt = (
         f"Document type: {document_type}\n\n"
@@ -315,18 +485,16 @@ async def _extract_document_structured_async(
     router = get_model_router()
     doc_type = (document_type or "other").strip().lower()
 
-    if doc_type in ("monthly_update", "board_deck", "board_transcript"):
-        schema_desc = json.dumps(COMPANY_UPDATE_SIGNAL_SCHEMA, indent=2)
-        system_prompt, user_prompt = _signal_first_prompt(text, document_type, schema_desc, memo_context)
-        empty = _empty_signal_extraction()
-    elif doc_type == "investment_memo":
+    if doc_type == "investment_memo":
         schema_desc = json.dumps(INVESTMENT_MEMO_SCHEMA, indent=2)
         system_prompt, user_prompt = _memo_prompt(text, schema_desc)
         empty = _empty_memo_extraction()
     else:
-        schema_desc = json.dumps(DOCUMENT_EXTRACTION_SCHEMA, indent=2)
-        system_prompt, user_prompt = _flat_prompt(text, document_type, schema_desc)
-        empty = _empty_extraction()
+        # ALL non-memo docs use signal-first extraction — extracts business_updates,
+        # operational_metrics, impact_estimates, financial_metrics, etc.
+        schema_desc = json.dumps(COMPANY_UPDATE_SIGNAL_SCHEMA, indent=2)
+        system_prompt, user_prompt = _signal_first_prompt(text, document_type, schema_desc, memo_context)
+        empty = _empty_signal_extraction()
 
     try:
         result = await router.get_completion(
@@ -342,23 +510,59 @@ async def _extract_document_structured_async(
         if not raw:
             return empty
 
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```\s*$", "", raw)
-        parsed = json.loads(raw)
+        parsed = _extract_json_object(raw)
         if isinstance(parsed, dict):
             return _normalize_extraction(parsed, document_type=document_type)
         return empty
     except Exception as e:
         logger.exception("extract_document_structured failed: %s", e)
-        if doc_type in ("monthly_update", "board_deck", "board_transcript"):
-            out = _empty_signal_extraction()
-        elif doc_type == "investment_memo":
+        if doc_type == "investment_memo":
             out = _empty_memo_extraction()
         else:
-            out = _empty_extraction()
+            out = _empty_signal_extraction()
         out["_extraction_error"] = str(e)
         return out
+
+
+def _extract_json_object(raw: str) -> dict:
+    """Robustly extract a JSON object from an LLM response.
+
+    Handles preamble text, code fences, and the ``[`` prefill artefact
+    that can cause Claude to emit ``[PROCESSING DOCUMENT...]`` before the
+    actual JSON payload.
+    """
+    # 1. Strip code fences anywhere in the string
+    cleaned = re.sub(r"```(?:json)?", "", raw).strip()
+
+    # 2. Try direct parse first (fast path)
+    try:
+        obj = json.loads(cleaned)
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+
+    # 3. Locate the first '{' and try to parse from there
+    start = cleaned.find("{")
+    if start != -1:
+        # Find matching closing brace by trying successively shorter slices
+        depth = 0
+        end = None
+        for i in range(start, len(cleaned)):
+            if cleaned[i] == "{":
+                depth += 1
+            elif cleaned[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end is not None:
+            try:
+                return json.loads(cleaned[start:end])
+            except json.JSONDecodeError:
+                pass
+
+    raise json.JSONDecodeError("No JSON object found in response", raw, 0)
 
 
 def _empty_extraction(error: Optional[str] = None) -> Dict[str, Any]:
@@ -466,7 +670,7 @@ def _normalize_extraction(d: Dict[str, Any], document_type: Optional[str] = None
     doc_type = (document_type or "other").strip().lower()
 
     # —— Signal shape (monthly_update / board_deck / board_transcript) ——
-    if doc_type in ("monthly_update", "board_deck", "board_transcript"):
+    if doc_type != "investment_memo":
         out = dict(d)
         bu = out.get("business_updates")
         if not isinstance(bu, dict):
@@ -495,8 +699,25 @@ def _normalize_extraction(d: Dict[str, Any], document_type: Optional[str] = None
             "cash_balance": _ensure_numeric(fm.get("cash_balance")),
             "gross_margin": _ensure_numeric(fm.get("gross_margin")),
             "growth_rate": _ensure_numeric(fm.get("growth_rate")),
+            "customer_count": _ensure_numeric(fm.get("customer_count")),
         }
+
         out["period_date"] = out.get("period_date") if isinstance(out.get("period_date"), str) else None
+        # Preserve impact_estimates from LLM extraction (transformation layer)
+        ie = out.get("impact_estimates")
+        if isinstance(ie, dict):
+            out["impact_estimates"] = {
+                "estimated_arr_impact": _ensure_numeric(ie.get("estimated_arr_impact")),
+                "estimated_burn_impact": _ensure_numeric(ie.get("estimated_burn_impact")),
+                "estimated_runway_impact": _ensure_numeric(ie.get("estimated_runway_impact")),
+                "estimated_headcount_impact": _ensure_numeric(ie.get("estimated_headcount_impact")),
+                "estimated_cash_impact": _ensure_numeric(ie.get("estimated_cash_impact")),
+                "estimated_valuation_impact": _ensure_numeric(ie.get("estimated_valuation_impact")),
+                "estimated_growth_rate_change": _ensure_numeric(ie.get("estimated_growth_rate_change")),
+                "impact_reasoning": ie.get("impact_reasoning") if isinstance(ie.get("impact_reasoning"), dict) else {},
+            }
+        else:
+            out["impact_estimates"] = None
         # Unified shape for suggestions: add company_info, growth_metrics, runway_and_cash
         out["company_info"] = {
             "name": out.get("company_name"),
@@ -703,6 +924,55 @@ def run_document_process(
     doc_repo = document_repo
     tmp_path: Optional[str] = None
 
+    # ── Idempotency guard: atomic claim prevents duplicate processing ──
+    try:
+        current_doc = doc_repo.get(document_id)
+        if current_doc:
+            current_status = current_doc.get("status")
+            if current_status == "completed":
+                logger.info(
+                    "[DOC_PROCESS] Document %s already completed — returning cached result",
+                    document_id,
+                )
+                return {
+                    "success": True,
+                    "document_id": document_id,
+                    "result": {
+                        "extracted_data": current_doc.get("extracted_data", {}),
+                        "processing_summary": current_doc.get("processing_summary", {}),
+                    },
+                }
+            if current_status == "processing":
+                logger.info(
+                    "[DOC_PROCESS] Document %s already processing — skipping duplicate run",
+                    document_id,
+                )
+                return {
+                    "success": True,
+                    "document_id": document_id,
+                    "result": None,
+                    "message": "Already processing",
+                }
+            # Atomic claim: transition pending → processing in one DB call.
+            # If another caller races us, only one will get True.
+            if current_status == "pending":
+                claimed = doc_repo.claim_for_processing(document_id)
+                if not claimed:
+                    logger.info(
+                        "[DOC_PROCESS] Document %s lost claim race — another caller is processing it",
+                        document_id,
+                    )
+                    return {
+                        "success": True,
+                        "document_id": document_id,
+                        "result": None,
+                        "message": "Already claimed by another processor",
+                    }
+                logger.info("[DOC_PROCESS] Document %s claimed for processing", document_id)
+    except Exception as e:
+        logger.warning("[DOC_PROCESS] Idempotency check failed for %s: %s", document_id, e)
+        # Continue processing — better to risk a duplicate than to block entirely
+
     def update_progress(step: str, message: str = "") -> None:
         try:
             doc_repo.update(
@@ -744,33 +1014,66 @@ def run_document_process(
         raw_text_preview = (raw_text[:5000] + "…") if len(raw_text) > 5000 else raw_text
 
         if not raw_text.strip():
+            error_detail = "No text extracted from document"
+            if suffix.lower().lstrip(".") == "pdf":
+                error_detail = (
+                    "No text extracted from PDF. "
+                    "The file may be image-only (scanned) or password-protected. "
+                    f"OCR available: {_OCR_AVAILABLE}."
+                )
             doc_repo.update(
                 document_id,
                 {
                     "status": "failed",
-                    "processing_summary": {"error": "No text extracted from document", "updated_at": _iso_now()},
+                    "processing_summary": {
+                        "error": error_detail,
+                        "updated_at": _iso_now(),
+                        "ocr_available": _OCR_AVAILABLE,
+                    },
                 },
             )
-            return {"success": False, "document_id": document_id, "error": "No text extracted from document"}
+            logger.warning("[DOC_PROCESS] %s for document %s (path=%s)", error_detail, document_id, storage_path)
+            return {"success": False, "document_id": document_id, "error": error_detail}
 
         update_progress("extracting_structured", "Running AI extraction")
         memo_context: Optional[str] = None
-        if (document_type or "").strip().lower() in ("monthly_update", "board_deck", "board_transcript") and company_id:
+        if (document_type or "").strip().lower() != "investment_memo" and company_id:
             memo_context = _get_memo_context_for_company(doc_repo, company_id, fund_id)
-        loop = asyncio.new_event_loop()
-        try:
-            extracted_data = loop.run_until_complete(
-                _extract_document_structured_async(
-                    raw_text, document_type or "other", memo_context=memo_context
-                )
+        # Use asyncio.run() instead of manually creating/closing event loops.
+        # asyncio.run() is cheaper, avoids resource leaks, and handles cleanup properly.
+        extracted_data = asyncio.run(
+            _extract_document_structured_async(
+                raw_text, document_type or "other", memo_context=memo_context
             )
-        finally:
-            loop.close()
+        )
+
+        # Check for extraction errors and log them
+        extraction_error = extracted_data.get("_extraction_error")
+        if extraction_error:
+            logger.warning(
+                "[DOC_PROCESS] Extraction completed with error for %s: %s",
+                document_id, extraction_error,
+            )
+
+        # Count how many useful fields were extracted
+        field_count = sum(
+            1 for k, v in extracted_data.items()
+            if v is not None and k not in ("_extraction_error", "value_explanations", "period_date")
+            and not (isinstance(v, (list, dict)) and len(v) == 0)
+            and not (isinstance(v, str) and not v.strip())
+        )
+        logger.info(
+            "[DOC_PROCESS] Extracted %d non-empty fields from document %s",
+            field_count, document_id,
+        )
 
         processing_summary = {
             "step": "completed",
-            "message": "Extraction completed",
+            "message": f"Extraction completed — {field_count} fields extracted"
+                       + (f" (warning: {extraction_error})" if extraction_error else ""),
             "updated_at": _iso_now(),
+            "fields_extracted": field_count,
+            "text_length": len(raw_text),
         }
         update_payload: Dict[str, Any] = {
             "status": "completed",
@@ -787,6 +1090,104 @@ def run_document_process(
         if fund_id is not None:
             update_payload["fund_id"] = fund_id
         doc_repo.update(document_id, update_payload)
+
+        # Persist extracted metrics as individual pending_suggestions rows
+        # so the badge-based suggestion pipeline picks them up automatically.
+        if company_id and fund_id and extracted_data:
+            try:
+                from app.services.micro_skills.suggestion_emitter import emit_document_suggestions
+                n = emit_document_suggestions(
+                    extracted_data=extracted_data,
+                    company_id=company_id,
+                    fund_id=fund_id,
+                    document_id=document_id,
+                    document_name=Path(storage_path).stem,
+                )
+                if n:
+                    logger.info("Emitted %d suggestions from document %s", n, document_id)
+                else:
+                    logger.info(
+                        "[DOC_PROCESS] No suggestions emitted from document %s "
+                        "(extracted %d fields, company_id=%s, fund_id=%s)",
+                        document_id, field_count, company_id, fund_id,
+                    )
+            except Exception as e:
+                logger.warning("Failed to emit document suggestions for %s: %s", document_id, e, exc_info=True)
+        elif not company_id or not fund_id:
+            logger.info(
+                "[DOC_PROCESS] Skipping suggestion emission for %s: company_id=%s, fund_id=%s",
+                document_id, company_id, fund_id,
+            )
+
+        # Auto-trigger cap table calculation when funding data is extracted
+        if company_id and fund_id and extracted_data:
+            has_funding_signal = (
+                extracted_data.get("stage")
+                or extracted_data.get("total_funding")
+                or extracted_data.get("valuation_pre_money")
+                or extracted_data.get("round")
+            )
+            if has_funding_signal:
+                try:
+                    from app.services.pre_post_cap_table import PrePostCapTable
+                    from app.services.intelligent_gap_filler import IntelligentGapFiller
+
+                    # Reconstruct funding rounds from flat extracted fields
+                    gap_filler = IntelligentGapFiller()
+                    synthetic_rounds = gap_filler.generate_stage_based_funding_rounds(extracted_data)
+                    if not synthetic_rounds:
+                        # Minimal single-round fallback
+                        stage = extracted_data.get("stage") or extracted_data.get("round") or "Unknown"
+                        amount = extracted_data.get("total_funding") or extracted_data.get("valuation_pre_money") or 0
+                        if amount:
+                            synthetic_rounds = [{"round": stage, "amount": amount}]
+
+                    if synthetic_rounds:
+                        cap_data = {
+                            "funding_rounds": synthetic_rounds,
+                            "founders": [],
+                            "is_yc": False,
+                            "geography": extracted_data.get("geography", "Unknown"),
+                        }
+                        cap_service = PrePostCapTable()
+                        cap_result = cap_service.calculate_full_cap_table_history(cap_data)
+
+                        # Persist to company_cap_tables
+                        from app.core.database import get_supabase_service
+                        sb = get_supabase_service()
+                        if sb:
+                            client = sb.get_client() if hasattr(sb, 'get_client') else sb
+                            if client:
+                                source = "extracted" if extracted_data.get("total_funding") else "synthetic"
+                                client.table("company_cap_tables").upsert({
+                                    "portfolio_id": fund_id,
+                                    "company_id": company_id,
+                                    "company_name": extracted_data.get("company_name", ""),
+                                    "cap_table_json": cap_result.get("current_cap_table", {}),
+                                    "sankey_data": cap_result.get("sankey_data"),
+                                    "waterfall_data": cap_result.get("waterfall_data"),
+                                    "ownership_summary": cap_result.get("ownership_summary"),
+                                    "founder_ownership": cap_result.get("founder_ownership"),
+                                    "total_raised": cap_result.get("total_raised"),
+                                    "num_rounds": cap_result.get("num_rounds"),
+                                    "source": source,
+                                    "funding_data_source": f"document:{document_id}",
+                                }, on_conflict="portfolio_id,company_id").execute()
+                                logger.info("[DOC_CAP_TABLE] Persisted cap table for company %s from document %s", company_id, document_id)
+
+                                # Also emit founderOwnership as a suggestion for the grid
+                                founder_own = cap_result.get("founder_ownership")
+                                if founder_own is not None:
+                                    client.table("pending_suggestions").upsert({
+                                        "fund_id": fund_id,
+                                        "company_id": company_id,
+                                        "column_id": "founderOwnership",
+                                        "suggested_value": {"value": founder_own},
+                                        "source_service": "doc_cap_table",
+                                        "reasoning": f"Founder ownership from document extraction: {founder_own:.1f}%",
+                                    }, on_conflict="fund_id,company_id,column_id").execute()
+                except Exception as e:
+                    logger.warning("[DOC_CAP_TABLE] Cap table calculation failed for document %s: %s", document_id, e, exc_info=True)
 
         result = {
             "success": True,

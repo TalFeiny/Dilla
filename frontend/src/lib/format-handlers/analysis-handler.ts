@@ -1,4 +1,5 @@
 import { IFormatHandler, UnifiedBrainContext, FormatHandlerResult } from './types';
+import { parseMarkdownToSections } from './docs-handler';
 
 /**
  * Handler for analysis format - used by skill-orchestrator for insights
@@ -50,14 +51,26 @@ export class AnalysisHandler implements IFormatHandler {
     
     // Format the content for display with proper sections
     const formattedContent = this.formatAnalysisContent(structuredAnalysis);
-    
+
+    // Parse formatted markdown into structured sections for memo rendering
+    const sections = parseMarkdownToSections(formattedContent);
+
+    // Also try to extract sections from the raw backend result
+    let parsedRaw: any = null;
+    try { parsedRaw = typeof text === 'string' ? JSON.parse(text) : text; } catch {}
+    const backendSections = parsedRaw?.sections ?? parsedRaw?.memo?.sections ?? parsedRaw?.result?.sections ?? [];
+    // Prefer backend-provided sections if they're richer
+    const finalSections = Array.isArray(backendSections) && backendSections.length > sections.length
+      ? backendSections : sections;
+
     return {
       success: true,
       result: {
         content: formattedContent,
+        sections: finalSections,
         structured: structuredAnalysis,
         raw: text,
-        
+
         // Preserve all context for next skill
         context: {
           companies: companiesData,
@@ -66,7 +79,7 @@ export class AnalysisHandler implements IFormatHandler {
           skills: skillContext,
           shared: sharedData
         },
-        
+
         // Quick access data
         quickAccess: {
           latestFunding: this.extractLatestFunding(companiesData),

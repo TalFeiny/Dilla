@@ -735,3 +735,1378 @@ class ChartDataService:
         except Exception as e:
             logger.warning(f"Product velocity ranking failed: {e}")
             return None
+
+    # ── New generators: wire every prompt chart type end-to-end ──────────
+
+    def generate_waterfall(
+        self,
+        companies: List[Dict[str, Any]],
+        metric: str = "nav_contribution",
+    ) -> Optional[Dict[str, Any]]:
+        """Waterfall chart: NAV contribution or exit proceeds by company.
+        metric: 'nav_contribution' | 'exit_proceeds'
+        """
+        if not companies:
+            return None
+        try:
+            items: List[Dict[str, Any]] = []
+            running = 0.0
+            for c in companies:
+                name = c.get("company") or c.get("companyName") or "Unknown"
+                if metric == "exit_proceeds":
+                    val = ensure_numeric(
+                        c.get("exit_proceeds")
+                        or c.get("exit_value")
+                        or c.get("expected_proceeds"),
+                        0,
+                    )
+                else:
+                    # NAV contribution: current value minus cost basis
+                    current = ensure_numeric(
+                        c.get("nav_contribution")
+                        or c.get("current_nav")
+                        or c.get("fair_value")
+                        or c.get("valuation")
+                        or c.get("inferred_valuation"),
+                        0,
+                    )
+                    cost = ensure_numeric(
+                        c.get("cost_basis")
+                        or c.get("investment_amount")
+                        or c.get("total_funding"),
+                        0,
+                    )
+                    val = current - cost if current > 0 and cost > 0 else current
+                if val == 0:
+                    continue
+                items.append({"name": name, "value": round(val / 1_000_000, 2)})
+                running += val
+            if not items:
+                return None
+            items.append({"name": "Total", "value": round(running / 1_000_000, 2)})
+            title_map = {
+                "nav_contribution": "NAV Contribution by Company ($M)",
+                "exit_proceeds": "Exit Proceeds by Company ($M)",
+            }
+            return {
+                "type": "waterfall",
+                "title": title_map.get(metric, "Waterfall ($M)"),
+                "data": {"items": items},
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"Waterfall generation failed: {e}")
+            return None
+
+    def generate_bar_comparison(
+        self,
+        companies: List[Dict[str, Any]],
+        metric: str = "moic",
+    ) -> Optional[Dict[str, Any]]:
+        """Bar comparison chart: MOIC, ARR, or any metric across companies."""
+        if not companies:
+            return None
+        try:
+            metric_extractors = {
+                "moic": lambda c: ensure_numeric(c.get("moic") or c.get("expected_moic"), 0),
+                "arr": lambda c: ensure_numeric(
+                    c.get("revenue") or c.get("arr") or c.get("inferred_revenue"), 0
+                ) / 1_000_000,
+                "valuation": lambda c: ensure_numeric(
+                    c.get("valuation") or c.get("inferred_valuation"), 0
+                ) / 1_000_000,
+                "growth_rate": lambda c: ensure_numeric(
+                    c.get("growth_rate") or c.get("inferred_growth_rate"), 0
+                ) * (100 if ensure_numeric(c.get("growth_rate") or c.get("inferred_growth_rate"), 0) < 10 else 1),
+            }
+            extractor = metric_extractors.get(metric, metric_extractors["moic"])
+            labels = []
+            values = []
+            for c in companies:
+                name = c.get("company") or c.get("companyName") or "Unknown"
+                val = extractor(c)
+                if val != 0:
+                    labels.append(name)
+                    values.append(round(val, 2))
+            if not labels:
+                return None
+            metric_labels = {
+                "moic": "MOIC",
+                "arr": "ARR ($M)",
+                "valuation": "Valuation ($M)",
+                "growth_rate": "Growth Rate (%)",
+            }
+            return {
+                "type": "bar",
+                "title": f"{metric_labels.get(metric, metric)} Comparison",
+                "data": {
+                    "labels": labels,
+                    "datasets": [{"label": metric_labels.get(metric, metric), "data": values}],
+                },
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"Bar comparison generation failed: {e}")
+            return None
+
+    def generate_cap_table_sankey(
+        self,
+        companies: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Cap table Sankey: ownership flow through funding rounds.
+        Uses stage and funding data to build round-by-round ownership flow.
+        """
+        if not companies:
+            return None
+        try:
+            from app.services.pre_post_cap_table import PrePostCapTable
+            cap_table = PrePostCapTable()
+            # Use first company with enough data
+            company = companies[0]
+            name = company.get("company") or company.get("companyName") or "Unknown"
+            stage = company.get("stage") or company.get("funding_stage") or "Series A"
+            total_funding = ensure_numeric(
+                company.get("total_funding") or company.get("total_raised"), 0
+            )
+            valuation = ensure_numeric(
+                company.get("valuation") or company.get("inferred_valuation"), 0
+            )
+            if valuation <= 0:
+                valuation = total_funding * 3 if total_funding > 0 else 100_000_000
+
+            # Build synthetic round history for sankey
+            stage_rounds = {
+                "Seed": [("Seed", 0.15)],
+                "Series A": [("Seed", 0.15), ("Series A", 0.20)],
+                "Series B": [("Seed", 0.15), ("Series A", 0.20), ("Series B", 0.18)],
+                "Series C": [("Seed", 0.15), ("Series A", 0.20), ("Series B", 0.18), ("Series C", 0.15)],
+                "Growth": [("Seed", 0.15), ("Series A", 0.20), ("Series B", 0.18), ("Series C", 0.15), ("Growth", 0.12)],
+            }
+            rounds = stage_rounds.get(stage, stage_rounds["Series A"])
+
+            nodes: List[Dict[str, Any]] = []
+            links: List[Dict[str, Any]] = []
+            node_id = 0
+            # Track stakeholder ownership
+            founders_pct = 1.0
+            esop_pct = 0.0
+            investor_pcts: Dict[str, float] = {}
+
+            for round_name, dilution in rounds:
+                # Pre-round snapshot
+                pre_founders_id = node_id
+                nodes.append({"id": node_id, "name": f"Founders", "round": round_name, "stage": "pre"})
+                node_id += 1
+
+                # New investor takes dilution from everyone
+                new_inv_pct = dilution
+                # Everyone gets diluted
+                prev_founders = founders_pct
+                founders_pct *= (1 - dilution)
+                esop_pct *= (1 - dilution)
+                for inv in investor_pcts:
+                    investor_pcts[inv] *= (1 - dilution)
+
+                # Add ESOP expansion at certain rounds
+                if round_name in ("Series A", "Series B"):
+                    esop_expansion = 0.05
+                    founders_pct -= esop_expansion
+                    esop_pct += esop_expansion
+
+                investor_pcts[f"{round_name} Investors"] = new_inv_pct
+
+                # Post-round nodes and links
+                post_founders_id = node_id
+                nodes.append({"id": node_id, "name": f"Founders", "round": round_name, "stage": "post"})
+                node_id += 1
+                links.append({"source": pre_founders_id, "target": post_founders_id, "value": max(0.001, founders_pct)})
+
+                inv_node_id = node_id
+                nodes.append({"id": node_id, "name": f"{round_name} Investors", "round": round_name, "stage": "post"})
+                node_id += 1
+                links.append({"source": pre_founders_id, "target": inv_node_id, "value": max(0.001, new_inv_pct)})
+
+            return {
+                "type": "sankey",
+                "title": f"Cap Table: {name}",
+                "data": {"nodes": nodes, "links": links},
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"Cap table sankey generation failed: {e}")
+            return None
+
+    def generate_dpi_sankey(
+        self,
+        companies: List[Dict[str, Any]],
+        fund_size: float = 260_000_000,
+    ) -> Optional[Dict[str, Any]]:
+        """DPI Sankey: Fund → Investments → Exits/Unrealized NAV → LP Distributions.
+        Infers NAV from stage + time since last funding when actual NAV is unavailable.
+        """
+        if not companies:
+            return None
+        try:
+            nodes: List[Dict[str, Any]] = [{"id": "fund", "label": "Fund"}]
+            links: List[Dict[str, Any]] = []
+            total_invested = 0.0
+            total_realized = 0.0
+            total_unrealized = 0.0
+
+            for c in companies:
+                name = c.get("company") or c.get("companyName") or c.get("name") or "Unknown"
+                node_id = f"co_{name.lower().replace(' ', '_')[:20]}"
+
+                # Investment amount: actual or estimated
+                invested = ensure_numeric(
+                    c.get("investment_amount")
+                    or c.get("cost_basis")
+                    or c.get("invested"),
+                    0,
+                )
+                if invested <= 0:
+                    # Estimate: ~5-10% of total funding or proportional to fund
+                    total_funding = ensure_numeric(c.get("total_funding") or c.get("total_raised"), 0)
+                    invested = total_funding * 0.08 if total_funding > 0 else fund_size * 0.04
+                if invested <= 0:
+                    continue
+
+                nodes.append({"id": node_id, "label": name})
+                links.append({"source": "fund", "target": node_id, "value": invested})
+                total_invested += invested
+
+                # Realized exits
+                realized = ensure_numeric(
+                    c.get("realized") or c.get("distributions") or c.get("exit_proceeds"), 0
+                )
+                status = str(c.get("status") or "active").lower()
+
+                if realized > 0 or status == "exited":
+                    if realized <= 0:
+                        realized = invested * 2  # conservative exit estimate
+                    links.append({"source": node_id, "target": "realized", "value": realized, "type": "realized"})
+                    total_realized += realized
+                else:
+                    # Unrealized NAV — infer from stage + time since funding
+                    nav = self._infer_nav(c, invested)
+                    links.append({"source": node_id, "target": "unrealized", "value": nav, "type": "unrealized"})
+                    total_unrealized += nav
+
+            if not links:
+                return None
+
+            # Terminal nodes
+            if total_realized > 0:
+                nodes.append({"id": "realized", "label": "Realized Exits"})
+                nodes.append({"id": "lp_dist", "label": "LP Distributions"})
+                # After carry/fees, ~80% goes to LPs
+                lp_share = total_realized * 0.80
+                links.append({"source": "realized", "target": "lp_dist", "value": lp_share, "type": "realized"})
+            if total_unrealized > 0:
+                nodes.append({"id": "unrealized", "label": "Unrealized NAV"})
+
+            dpi = total_realized / total_invested if total_invested > 0 else 0.0
+            tvpi = (total_realized + total_unrealized) / total_invested if total_invested > 0 else 0.0
+
+            return {
+                "type": "dpi_sankey",
+                "title": f"Fund DPI Flow — DPI: {dpi:.2f}x | TVPI: {tvpi:.2f}x",
+                "data": {"nodes": nodes, "links": links},
+                "metrics": {
+                    "total_invested": total_invested,
+                    "total_realized": total_realized,
+                    "total_unrealized": total_unrealized,
+                    "dpi": round(dpi, 3),
+                    "tvpi": round(tvpi, 3),
+                },
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"DPI sankey generation failed: {e}")
+            return None
+
+    def _infer_nav(self, company: Dict[str, Any], cost_basis: float) -> float:
+        """Infer current NAV for a portfolio company from stage + time since funding.
+
+        Priority:
+        1. Explicit NAV / fair_value / current_nav
+        2. Current valuation × ownership estimate
+        3. Stage-based markup from cost basis, adjusted for time since last round
+        """
+        # 1. Explicit NAV
+        explicit = ensure_numeric(
+            company.get("nav_contribution")
+            or company.get("current_nav")
+            or company.get("fair_value"),
+            0,
+        )
+        if explicit > 0:
+            return explicit
+
+        # 2. Valuation × estimated ownership
+        valuation = ensure_numeric(
+            company.get("valuation")
+            or company.get("current_valuation_usd")
+            or company.get("inferred_valuation"),
+            0,
+        )
+        ownership = ensure_numeric(company.get("ownership_pct"), 0)
+        if valuation > 0 and ownership > 0:
+            own_frac = ownership / 100.0 if ownership > 1 else ownership
+            return valuation * own_frac
+
+        # 3. Stage-based markup × time adjustment
+        stage = str(company.get("stage") or company.get("funding_stage") or "Series A").lower()
+        # Typical step-up multiples from entry to "current fair value"
+        stage_markup = {
+            "pre-seed": 1.0, "pre seed": 1.0, "preseed": 1.0,
+            "seed": 1.3,
+            "series a": 1.8,
+            "series b": 2.2,
+            "series c": 2.0,
+            "growth": 1.5,
+            "late": 1.3,
+        }
+        base_markup = stage_markup.get(stage, 1.5)
+
+        # Time adjustment: months since last funding → compound monthly appreciation
+        months_since = ensure_numeric(company.get("months_since_funding"), 0)
+        if months_since <= 0:
+            # Try to compute from last round date
+            from datetime import datetime
+            last_round_date = company.get("last_round_date") or company.get("last_funding_date")
+            if last_round_date:
+                try:
+                    if isinstance(last_round_date, str):
+                        for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
+                            try:
+                                dt = datetime.strptime(last_round_date[:10], fmt)
+                                months_since = max(0, (datetime.now() - dt).days / 30.0)
+                                break
+                            except ValueError:
+                                continue
+                except Exception:
+                    months_since = 12  # 1 year default
+
+        if months_since <= 0:
+            months_since = 12  # default 1 year
+
+        # ~1.5% monthly appreciation for healthy startups, capped at 3x over time
+        monthly_rate = 0.015
+        time_multiplier = min(3.0, (1 + monthly_rate) ** months_since)
+
+        # If valuation exists but no ownership, use valuation relative to funding
+        if valuation > 0 and cost_basis > 0:
+            return cost_basis * (valuation / (cost_basis * 3)) * time_multiplier
+
+        return cost_basis * base_markup * time_multiplier
+
+    def generate_bull_bear_base(
+        self,
+        companies: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Bull/Bear/Base exit scenario comparison across companies.
+        Returns grouped bar chart with three scenarios per company.
+        """
+        if not companies:
+            return None
+        try:
+            labels = []
+            bear_data = []
+            base_data = []
+            bull_data = []
+
+            for c in companies:
+                name = c.get("company") or c.get("companyName") or "Unknown"
+                labels.append(name)
+
+                # Use PWERM scenarios if available
+                scenarios = c.get("pwerm_scenarios", [])
+                if scenarios:
+                    bear_val = 0
+                    base_val = 0
+                    bull_val = 0
+                    for s in scenarios:
+                        exit_val = ensure_numeric(
+                            s.get("exit_value") if isinstance(s, dict) else getattr(s, "exit_value", 0), 0
+                        )
+                        scenario_name = (
+                            s.get("scenario", "") if isinstance(s, dict) else getattr(s, "scenario", "")
+                        ).lower()
+                        if "bear" in scenario_name or "down" in scenario_name:
+                            bear_val = max(bear_val, exit_val)
+                        elif "bull" in scenario_name or "ipo" in scenario_name or "upside" in scenario_name:
+                            bull_val = max(bull_val, exit_val)
+                        else:
+                            base_val = max(base_val, exit_val)
+                    bear_data.append(round(bear_val / 1_000_000, 1))
+                    base_data.append(round(base_val / 1_000_000, 1))
+                    bull_data.append(round(bull_val / 1_000_000, 1))
+                else:
+                    # Infer from valuation
+                    val = ensure_numeric(
+                        c.get("valuation") or c.get("inferred_valuation"), 0
+                    )
+                    if val <= 0:
+                        val = ensure_numeric(
+                            c.get("revenue") or c.get("inferred_revenue"), 1_000_000
+                        ) * 10
+                    bear_data.append(round(val * 0.3 / 1_000_000, 1))
+                    base_data.append(round(val * 1.0 / 1_000_000, 1))
+                    bull_data.append(round(val * 3.0 / 1_000_000, 1))
+
+            if not labels:
+                return None
+
+            return {
+                "type": "bar",
+                "title": "Bull / Bear / Base Exit Scenarios ($M)",
+                "data": {
+                    "labels": labels,
+                    "datasets": [
+                        {"label": "Bear", "data": bear_data, "backgroundColor": "#ef4444"},
+                        {"label": "Base", "data": base_data, "backgroundColor": "#f59e0b"},
+                        {"label": "Bull", "data": bull_data, "backgroundColor": "#22c55e"},
+                    ],
+                },
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"Bull/bear/base generation failed: {e}")
+            return None
+
+    def generate_radar_comparison(
+        self,
+        companies: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Radar comparison chart: multi-dimensional scoring for team/moat/company comparison.
+        Dimensions: Technical, Domain, Execution, Sales, Market Fit, Defensibility.
+        """
+        if not companies:
+            return None
+        try:
+            dimensions = ["Technical", "Domain Expertise", "Execution", "Sales", "Market Fit", "Defensibility"]
+            subjects = []
+
+            for c in companies:
+                name = c.get("company") or c.get("companyName") or "Unknown"
+                # Use explicit scores if provided
+                explicit_scores = c.get("radar_scores") or c.get("team_scores") or c.get("moat_scores")
+                if explicit_scores and isinstance(explicit_scores, dict):
+                    scores = [ensure_numeric(explicit_scores.get(d.lower().replace(" ", "_"), 5), 5) for d in dimensions]
+                else:
+                    # Infer scores from available data
+                    scores = self._infer_radar_scores(c)
+                subjects.append({"name": name, "scores": scores})
+
+            if not subjects:
+                return None
+
+            return {
+                "type": "radar_comparison",
+                "title": "Company Comparison",
+                "data": {
+                    "dimensions": dimensions,
+                    "subjects": subjects,
+                },
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"Radar comparison generation failed: {e}")
+            return None
+
+    def _infer_radar_scores(self, company: Dict[str, Any]) -> List[float]:
+        """Infer radar scores [Technical, Domain, Execution, Sales, Market Fit, Defensibility] from company data."""
+        scores = [5.0] * 6  # default mid-range
+
+        # Technical: higher if AI company or technical product
+        desc = str(company.get("product_description") or company.get("description") or "").lower()
+        if any(kw in desc for kw in ["ai", "ml", "machine learning", "deep learning", "algorithm"]):
+            scores[0] = 7.5
+        if company.get("technical_founder"):
+            scores[0] = min(10, scores[0] + 1.5)
+
+        # Domain Expertise: higher for vertical companies
+        biz_model = str(company.get("business_model") or "").lower()
+        if "vertical" in biz_model or any(kw in desc for kw in ["healthcare", "legal", "fintech", "construction"]):
+            scores[1] = 7.5
+
+        # Execution: infer from growth rate
+        growth = ensure_numeric(company.get("growth_rate") or company.get("inferred_growth_rate"), 0)
+        if growth > 2 or (growth > 0 and growth < 1 and growth * 100 > 100):
+            scores[2] = 8.0
+        elif growth > 1 or (growth > 0 and growth < 1 and growth * 100 > 50):
+            scores[2] = 6.5
+
+        # Sales: infer from revenue and customer data
+        rev = ensure_numeric(company.get("revenue") or company.get("inferred_revenue"), 0)
+        if rev > 50_000_000:
+            scores[3] = 8.5
+        elif rev > 10_000_000:
+            scores[3] = 7.0
+        elif rev > 1_000_000:
+            scores[3] = 5.5
+
+        # Market Fit: infer from stage progression + revenue
+        stage = str(company.get("stage") or "").lower()
+        if "series c" in stage or "growth" in stage:
+            scores[4] = 8.0
+        elif "series b" in stage:
+            scores[4] = 7.0
+        elif "series a" in stage:
+            scores[4] = 5.5
+
+        # Defensibility: infer from moat data if available
+        moat = company.get("moat_score") or company.get("defensibility_score")
+        if moat:
+            scores[5] = min(10, ensure_numeric(moat, 5))
+        elif "network" in desc or "data" in desc:
+            scores[5] = 7.0
+
+        return [round(s, 1) for s in scores]
+
+    def generate_heatmap(
+        self,
+        companies: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Heatmap: multi-dimensional scoring matrix (companies × dimensions)."""
+        if not companies:
+            return None
+        try:
+            dimensions = ["Growth", "Market Size", "Defensibility", "Capital Efficiency", "Team", "Product"]
+            company_names = []
+            all_scores: List[List[float]] = []
+
+            for c in companies:
+                name = c.get("company") or c.get("companyName") or "Unknown"
+                company_names.append(name)
+
+                explicit = c.get("heatmap_scores") or c.get("dimension_scores")
+                if explicit and isinstance(explicit, dict):
+                    row = [ensure_numeric(explicit.get(d.lower().replace(" ", "_"), 5), 5) for d in dimensions]
+                else:
+                    # Infer scores
+                    growth = ensure_numeric(c.get("growth_rate") or c.get("inferred_growth_rate"), 0)
+                    growth_score = min(10, max(1, growth * 3 if growth < 3 else 8))
+                    tam = ensure_numeric(c.get("market_size") or c.get("tam"), 0)
+                    market_score = min(10, max(1, 3 + (math.log10(max(tam, 1)) - 6) * 2)) if tam > 0 else 5
+                    moat = ensure_numeric(c.get("moat_score") or c.get("defensibility_score"), 5)
+                    rev = ensure_numeric(c.get("revenue") or c.get("inferred_revenue"), 0)
+                    funding = ensure_numeric(c.get("total_funding"), 1)
+                    cap_eff = min(10, max(1, (rev / funding) * 5)) if funding > 0 and rev > 0 else 4
+                    team_score = 7 if c.get("technical_founder") else 5
+                    product_score = 6
+                    row = [round(growth_score, 1), round(market_score, 1), round(moat, 1),
+                           round(cap_eff, 1), round(team_score, 1), round(product_score, 1)]
+                all_scores.append(row)
+
+            if not company_names:
+                return None
+
+            return {
+                "type": "heatmap",
+                "title": "Company Scoring Heatmap",
+                "data": {
+                    "dimensions": dimensions,
+                    "companies": company_names,
+                    "scores": all_scores,
+                },
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"Heatmap generation failed: {e}")
+            return None
+
+    def generate_cap_table_evolution(
+        self,
+        companies: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Cap table evolution: stacked area of ownership % across funding rounds."""
+        if not companies:
+            return None
+        try:
+            company = companies[0]
+            stage = str(company.get("stage") or company.get("funding_stage") or "Series A")
+
+            stage_rounds_map = {
+                "Seed": ["Founding", "Seed"],
+                "Series A": ["Founding", "Seed", "Series A"],
+                "Series B": ["Founding", "Seed", "Series A", "Series B"],
+                "Series C": ["Founding", "Seed", "Series A", "Series B", "Series C"],
+                "Growth": ["Founding", "Seed", "Series A", "Series B", "Series C", "Growth"],
+            }
+            rounds = stage_rounds_map.get(stage, stage_rounds_map["Series A"])
+
+            # Typical dilution schedule
+            dilution_by_round = {
+                "Founding": 0.0,
+                "Seed": 0.15,
+                "Series A": 0.20,
+                "Series B": 0.18,
+                "Series C": 0.15,
+                "Growth": 0.12,
+            }
+            esop_expansion = {"Series A": 0.05, "Series B": 0.03}
+
+            evolution = []
+            founders = 1.0
+            esop = 0.0
+            investors: Dict[str, float] = {}
+
+            for round_name in rounds:
+                dilution = dilution_by_round.get(round_name, 0.15)
+                if round_name == "Founding":
+                    esop = 0.10
+                    founders = 0.90
+                    evolution.append({"round": round_name, "founders": founders, "esop": esop})
+                    continue
+
+                # Everyone diluted
+                founders *= (1 - dilution)
+                esop *= (1 - dilution)
+                for inv in investors:
+                    investors[inv] *= (1 - dilution)
+
+                # ESOP expansion
+                if round_name in esop_expansion:
+                    exp = esop_expansion[round_name]
+                    founders -= exp
+                    esop += exp
+
+                investors[f"{round_name} Investors"] = dilution
+
+                entry = {"round": round_name, "founders": round(founders, 4), "esop": round(esop, 4)}
+                for inv_name, inv_pct in investors.items():
+                    entry[inv_name.lower().replace(" ", "_")] = round(inv_pct, 4)
+                evolution.append(entry)
+
+            return {
+                "type": "cap_table_evolution",
+                "title": f"Cap Table Evolution: {company.get('company', 'Company')}",
+                "data": {"evolution": evolution},
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"Cap table evolution generation failed: {e}")
+            return None
+
+    def generate_stacked_bar(
+        self,
+        companies: List[Dict[str, Any]],
+        metric: str = "funding_by_round",
+    ) -> Optional[Dict[str, Any]]:
+        """Stacked bar chart for funding by round or revenue breakdown."""
+        if not companies:
+            return None
+        try:
+            labels = []
+            seed_data = []
+            a_data = []
+            b_data = []
+            c_data = []
+
+            for c in companies:
+                name = c.get("company") or c.get("companyName") or "Unknown"
+                labels.append(name)
+                total = ensure_numeric(c.get("total_funding") or c.get("total_raised"), 0)
+                stage = str(c.get("stage") or "Series A").lower()
+
+                # Estimate round split from stage
+                if "seed" in stage:
+                    seed_data.append(round(total / 1e6, 1))
+                    a_data.append(0)
+                    b_data.append(0)
+                    c_data.append(0)
+                elif "series a" in stage:
+                    seed_data.append(round(total * 0.2 / 1e6, 1))
+                    a_data.append(round(total * 0.8 / 1e6, 1))
+                    b_data.append(0)
+                    c_data.append(0)
+                elif "series b" in stage:
+                    seed_data.append(round(total * 0.1 / 1e6, 1))
+                    a_data.append(round(total * 0.3 / 1e6, 1))
+                    b_data.append(round(total * 0.6 / 1e6, 1))
+                    c_data.append(0)
+                else:
+                    seed_data.append(round(total * 0.05 / 1e6, 1))
+                    a_data.append(round(total * 0.15 / 1e6, 1))
+                    b_data.append(round(total * 0.30 / 1e6, 1))
+                    c_data.append(round(total * 0.50 / 1e6, 1))
+
+            if not labels:
+                return None
+
+            return {
+                "type": "bar",
+                "title": "Funding by Round ($M)",
+                "data": {
+                    "labels": labels,
+                    "datasets": [
+                        {"label": "Seed", "data": seed_data, "backgroundColor": "#94a3b8"},
+                        {"label": "Series A", "data": a_data, "backgroundColor": "#3b82f6"},
+                        {"label": "Series B", "data": b_data, "backgroundColor": "#8b5cf6"},
+                        {"label": "Series C+", "data": c_data, "backgroundColor": "#f59e0b"},
+                    ],
+                },
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"Stacked bar generation failed: {e}")
+            return None
+
+    def generate_market_map(
+        self,
+        companies: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Market map: bubble chart with market positioning.
+        X = market maturity (stage), Y = growth rate, size = revenue.
+        """
+        if not companies:
+            return None
+        try:
+            stage_x = {
+                "pre-seed": 1, "seed": 2, "series a": 3, "series b": 4,
+                "series c": 5, "growth": 6, "late": 7,
+            }
+            points = []
+            for c in companies:
+                name = c.get("company") or c.get("companyName") or "Unknown"
+                stage = str(c.get("stage") or "Series A").lower()
+                x = stage_x.get(stage, 3)
+                growth = ensure_numeric(c.get("growth_rate") or c.get("inferred_growth_rate"), 0)
+                if 0 < growth < 1:
+                    growth *= 100
+                elif growth > 10:
+                    pass  # already %
+                else:
+                    growth *= 100
+                rev = ensure_numeric(
+                    c.get("revenue") or c.get("arr") or c.get("inferred_revenue"), 1_000_000
+                )
+                sector = c.get("sector") or c.get("industry") or "Other"
+                points.append({
+                    "name": name,
+                    "x": x,
+                    "y": round(growth, 1),
+                    "z": max(5, min(30, rev / 2_000_000)),
+                    "sector": sector,
+                    "stage": stage.title(),
+                })
+
+            if not points:
+                return None
+
+            return {
+                "type": "bubble",
+                "title": "Market Map: Stage × Growth × Revenue",
+                "data": points,
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"Market map generation failed: {e}")
+            return None
+
+    def generate_nav_live(
+        self,
+        companies: List[Dict[str, Any]],
+        fund_size: float = 260_000_000,
+    ) -> Optional[Dict[str, Any]]:
+        """Live NAV dashboard: bar chart with each company's inferred NAV.
+        Uses _infer_nav for companies without explicit NAV.
+        """
+        if not companies:
+            return None
+        try:
+            labels = []
+            nav_values = []
+            cost_values = []
+
+            for c in companies:
+                name = c.get("company") or c.get("companyName") or "Unknown"
+                invested = ensure_numeric(
+                    c.get("investment_amount") or c.get("cost_basis") or c.get("invested"), 0
+                )
+                if invested <= 0:
+                    total_funding = ensure_numeric(c.get("total_funding"), 0)
+                    invested = total_funding * 0.08 if total_funding > 0 else fund_size * 0.04
+                if invested <= 0:
+                    continue
+
+                nav = self._infer_nav(c, invested)
+                labels.append(name)
+                nav_values.append(round(nav / 1_000_000, 2))
+                cost_values.append(round(invested / 1_000_000, 2))
+
+            if not labels:
+                return None
+
+            total_nav = sum(nav_values)
+            total_cost = sum(cost_values)
+
+            return {
+                "type": "bar",
+                "title": f"Live NAV by Company ($M) — Total: ${total_nav:.1f}M | MOIC: {total_nav/total_cost:.2f}x" if total_cost > 0 else "Live NAV by Company ($M)",
+                "data": {
+                    "labels": labels,
+                    "datasets": [
+                        {"label": "NAV ($M)", "data": nav_values, "backgroundColor": "#22c55e"},
+                        {"label": "Cost Basis ($M)", "data": cost_values, "backgroundColor": "#94a3b8"},
+                    ],
+                },
+                "metrics": {
+                    "total_nav": round(total_nav, 2),
+                    "total_cost": round(total_cost, 2),
+                    "moic": round(total_nav / total_cost, 3) if total_cost > 0 else 0,
+                },
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"NAV live generation failed: {e}")
+            return None
+
+    def generate_fpa_stress_test(
+        self,
+        companies: List[Dict[str, Any]],
+        scenarios: List[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """FP&A stress test forecasting: project revenue under base/stress/severe scenarios.
+        Shows impact of growth deceleration, churn increase, or market downturn.
+        """
+        if not companies:
+            return None
+        if scenarios is None:
+            scenarios = ["base", "stress", "severe"]
+        try:
+            labels = _generate_date_labels(5)
+            datasets = []
+            colors_map = {
+                "base": "#22c55e",
+                "stress": "#f59e0b",
+                "severe": "#ef4444",
+            }
+            # Scenario growth multipliers (applied to base growth)
+            scenario_multipliers = {
+                "base": 1.0,
+                "stress": 0.5,   # 50% of base growth
+                "severe": 0.0,   # zero growth (flat)
+            }
+
+            for scenario in scenarios:
+                multiplier = scenario_multipliers.get(scenario, 1.0)
+                total_revenue = []
+                for year_idx in range(5):
+                    year_total = 0.0
+                    for c in companies:
+                        rev = ensure_numeric(
+                            c.get("revenue") or c.get("arr") or c.get("inferred_revenue"), 1_000_000
+                        ) / 1_000_000
+                        growth = ensure_numeric(c.get("growth_rate") or c.get("inferred_growth_rate"), 0.3)
+                        if growth > 10:
+                            growth = growth / 100
+                        elif growth > 1:
+                            growth = growth - 1
+                        adj_growth = growth * multiplier
+                        # Additional stress: churn increase in severe
+                        if scenario == "severe" and year_idx > 1:
+                            adj_growth -= 0.05 * (year_idx - 1)
+                        projected = rev * ((1 + adj_growth) ** year_idx)
+                        year_total += max(0, projected)
+                    total_revenue.append(round(year_total, 2))
+
+                datasets.append({
+                    "label": f"{scenario.title()} Case",
+                    "data": total_revenue,
+                    "borderColor": colors_map.get(scenario, "#6b7280"),
+                    "backgroundColor": "transparent",
+                    "fill": False,
+                    "borderDash": [5, 5] if scenario != "base" else [],
+                    "tension": 0.3,
+                })
+
+            return {
+                "type": "line",
+                "title": "FP&A Stress Test — Portfolio Revenue Forecast ($M)",
+                "data": {"labels": labels, "datasets": datasets},
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"FP&A stress test generation failed: {e}")
+            return None
+
+    # ── Analytics-bridge generators ─────────────────────────────────────
+    # These take raw output from FPARegressionService, ScenarioTreeService,
+    # RevenueProjectionService etc. and transform into render-ready chart
+    # configs using the shared format helpers below.
+
+    def generate_sensitivity_tornado(
+        self,
+        sensitivity_result: Dict[str, Any],
+        title: str = "Sensitivity Analysis",
+    ) -> Optional[Dict[str, Any]]:
+        """Transform FPA sensitivity_analysis output → tornado chart config.
+
+        Expects ``sensitivity_result`` to have ``tornado_chart_data`` (list of
+        ``{variable, min_impact, max_impact, ...}``).  Falls back to
+        ``tornado_chart`` or ``results.tornado_chart`` for AnalyticsBridge
+        format.
+        """
+        if not sensitivity_result:
+            return None
+        try:
+            # Handle FPARegressionService format
+            items = sensitivity_result.get("tornado_chart_data")
+            # Handle AnalyticsBridge format
+            if not items:
+                items = sensitivity_result.get("tornado_chart")
+            if not items and isinstance(sensitivity_result.get("results"), dict):
+                items = sensitivity_result["results"].get("tornado_chart")
+            if not items:
+                return None
+            tornado_items = []
+            base_output = ensure_numeric(sensitivity_result.get("base_output") or
+                                          (sensitivity_result.get("results") or {}).get("base_case_valuation"), 0)
+            for item in items:
+                tornado_items.append({
+                    "name": item.get("variable") or item.get("factor", ""),
+                    "low": ensure_numeric(item.get("min_impact") or item.get("low_impact"), 0),
+                    "high": ensure_numeric(item.get("max_impact") or item.get("high_impact"), 0),
+                    "base": base_output,
+                })
+            return format_tornado_chart(tornado_items, title=title)
+        except Exception as e:
+            logger.warning(f"Sensitivity tornado generation failed: {e}")
+            return None
+
+    def generate_regression_line(
+        self,
+        regression_result: Dict[str, Any],
+        x_data: List[float] = None,
+        y_data: List[float] = None,
+        title: str = "Regression Analysis",
+    ) -> Optional[Dict[str, Any]]:
+        """Transform FPA linear_regression output → scatter + trendline chart.
+
+        ``regression_result`` should have ``{slope, intercept, r_squared}``.
+        If x_data/y_data are provided, plots actual points plus the fitted line.
+        """
+        if not regression_result:
+            return None
+        try:
+            slope = ensure_numeric(regression_result.get("slope"), 0)
+            intercept = ensure_numeric(regression_result.get("intercept"), 0)
+            r_squared = ensure_numeric(regression_result.get("r_squared"), 0)
+
+            datasets = []
+            x_vals = x_data or []
+            y_vals = y_data or []
+
+            if x_vals and y_vals:
+                # Scatter points of actual data
+                datasets.append({
+                    "label": "Observed",
+                    "data": [{"x": x, "y": y} for x, y in zip(x_vals, y_vals)],
+                    "type": "scatter",
+                    "backgroundColor": "#6366f1",
+                    "pointRadius": 4,
+                })
+                # Trend line
+                x_min, x_max = min(x_vals), max(x_vals)
+                datasets.append({
+                    "label": f"Fit (R²={r_squared:.2f})",
+                    "data": [
+                        {"x": x_min, "y": slope * x_min + intercept},
+                        {"x": x_max, "y": slope * x_max + intercept},
+                    ],
+                    "type": "line",
+                    "borderColor": "#ef4444",
+                    "borderWidth": 2,
+                    "pointRadius": 0,
+                    "fill": False,
+                })
+
+            return format_scatter_chart(
+                datasets=datasets,
+                title=f"{title} (R²={r_squared:.2f})",
+                x_label="X",
+                y_label="Y",
+            )
+        except Exception as e:
+            logger.warning(f"Regression line generation failed: {e}")
+            return None
+
+    def generate_monte_carlo_histogram(
+        self,
+        mc_result: Dict[str, Any],
+        variable: str = "revenue",
+        title: str = None,
+        bins: int = 30,
+    ) -> Optional[Dict[str, Any]]:
+        """Transform Monte Carlo simulation output → histogram with percentile markers.
+
+        Handles both FPARegressionService format (``{results, statistics}``)
+        and AnalyticsBridge format (``{results.sample_simulations, results.confidence_intervals}``).
+        """
+        if not mc_result:
+            return None
+        try:
+            # FPARegressionService format: list of scenario dicts
+            raw_results = mc_result.get("results", [])
+            stats = mc_result.get("statistics", {})
+
+            values = []
+            if isinstance(raw_results, list) and raw_results:
+                if isinstance(raw_results[0], dict):
+                    # Each result is a scenario dict — extract the variable
+                    values = [ensure_numeric(r.get(variable), 0) for r in raw_results
+                              if variable in r]
+                elif isinstance(raw_results[0], (int, float)):
+                    values = [float(v) for v in raw_results]
+
+            # AnalyticsBridge format: sample_simulations under results
+            if not values and isinstance(mc_result.get("results"), dict):
+                samples = mc_result["results"].get("sample_simulations", [])
+                values = [float(v) for v in samples if isinstance(v, (int, float))]
+
+            if not values:
+                return None
+
+            # Build histogram bins
+            v_min, v_max = min(values), max(values)
+            if v_max <= v_min:
+                return None
+            bin_width = (v_max - v_min) / bins
+            bin_labels = []
+            bin_counts = []
+            for i in range(bins):
+                lo = v_min + i * bin_width
+                hi = lo + bin_width
+                count = sum(1 for v in values if lo <= v < hi)
+                bin_labels.append(f"{lo / 1e6:.1f}M" if abs(lo) > 1e4 else f"{lo:.1f}")
+                bin_counts.append(count)
+
+            # Percentile markers from stats
+            percentile_annotations = {}
+            var_stats = stats.get(variable, {})
+            if not var_stats and isinstance(mc_result.get("results"), dict):
+                ci = mc_result["results"].get("confidence_intervals", {})
+                var_stats = {
+                    "p5": ci.get("10%"),
+                    "median": mc_result["results"].get("median_valuation"),
+                    "p95": ci.get("90%"),
+                }
+            for pct_key in ("p5", "median", "p95"):
+                val = ensure_numeric(var_stats.get(pct_key))
+                if val:
+                    percentile_annotations[pct_key] = val
+
+            chart_title = title or f"Monte Carlo — {variable.replace('_', ' ').title()} Distribution"
+            return {
+                "type": "bar",
+                "title": chart_title,
+                "data": {
+                    "labels": bin_labels,
+                    "datasets": [{
+                        "label": "Frequency",
+                        "data": bin_counts,
+                        "backgroundColor": "#6366f1",
+                    }],
+                },
+                "renderType": "tableau",
+                "annotations": percentile_annotations,
+            }
+        except Exception as e:
+            logger.warning(f"Monte Carlo histogram generation failed: {e}")
+            return None
+
+    def generate_revenue_forecast(
+        self,
+        projections: List[Dict[str, Any]],
+        company_name: str = "",
+        title: str = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Transform RevenueProjectionService output → dual-axis line chart.
+
+        ``projections`` is ``[{year, revenue, growth_rate}, ...]`` from
+        ``project_revenue_with_decay(return_projections=True)``.
+        """
+        if not projections:
+            return None
+        try:
+            labels = [str(p.get("year", i + 1)) for i, p in enumerate(projections)]
+            revenues = [ensure_numeric(p.get("revenue"), 0) / 1e6 for p in projections]
+            growth_rates = [ensure_numeric(p.get("growth_rate"), 0) * 100 for p in projections]
+
+            datasets = [
+                {
+                    "label": f"Revenue ($M){' — ' + company_name if company_name else ''}",
+                    "data": [round(r, 2) for r in revenues],
+                    "borderColor": "#22c55e",
+                    "backgroundColor": "rgba(34,197,94,0.1)",
+                    "fill": True,
+                    "yAxisID": "y",
+                    "tension": 0.3,
+                },
+                {
+                    "label": "Growth Rate (%)",
+                    "data": [round(g, 1) for g in growth_rates],
+                    "borderColor": "#f59e0b",
+                    "backgroundColor": "transparent",
+                    "fill": False,
+                    "yAxisID": "y1",
+                    "borderDash": [5, 5],
+                    "tension": 0.3,
+                },
+            ]
+            chart_title = title or f"Revenue Forecast{' — ' + company_name if company_name else ''}"
+            return format_line_chart(labels=labels, datasets=datasets, title=chart_title)
+        except Exception as e:
+            logger.warning(f"Revenue forecast generation failed: {e}")
+            return None
+
+    def generate_fund_scenario_comparison(
+        self,
+        scenario_bundle: Dict[str, Any],
+        title: str = "Scenario Analysis Overview",
+    ) -> Optional[Dict[str, Any]]:
+        """Transform ScenarioTreeService.to_all_charts() bundle → enriched chart set.
+
+        Returns the bundle as-is (it's already chart-ready) but ensures every
+        sub-chart has ``renderType: "tableau"`` and fills missing fields.
+        """
+        if not scenario_bundle or not isinstance(scenario_bundle, dict):
+            return None
+        try:
+            # Ensure all sub-charts have renderType
+            for key, chart in scenario_bundle.items():
+                if isinstance(chart, dict) and chart.get("type"):
+                    chart.setdefault("renderType", "tableau")
+
+            # Return as a multi-chart bundle
+            return {
+                "type": "multi_chart",
+                "title": title,
+                "charts": scenario_bundle,
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"Fund scenario comparison generation failed: {e}")
+            return None
+
+
+# ── Shared chart format helpers ─────────────────────────────────────────
+# Stateless functions that produce consistently-structured chart dicts.
+# Used by the orchestrator, memo service, and deck export service so every
+# chart goes through the same shape — no ad-hoc dict construction.
+
+
+def format_sankey_chart(
+    nodes: List[Dict], links: List[Dict], title: str = None, **kwargs
+) -> Dict[str, Any]:
+    """Format Sankey chart data consistently."""
+    chart_data: Dict[str, Any] = {
+        "type": "sankey",
+        "data": {"nodes": nodes, "links": links},
+        "renderType": "tableau",
+    }
+    if title:
+        chart_data["title"] = title
+    chart_data.update(kwargs)
+    return chart_data
+
+
+def format_side_by_side_sankey_chart(
+    company1_data: Dict[str, Any],
+    company2_data: Dict[str, Any],
+    company1_name: str,
+    company2_name: str,
+    title: str = None,
+    **kwargs,
+) -> Dict[str, Any]:
+    """Format side-by-side Sankey chart data consistently."""
+    chart_data: Dict[str, Any] = {
+        "type": "side_by_side_sankey",
+        "data": {
+            "company1_data": company1_data,
+            "company2_data": company2_data,
+            "company1_name": company1_name,
+            "company2_name": company2_name,
+        },
+        "renderType": "tableau",
+    }
+    if title:
+        chart_data["title"] = title
+    if kwargs:
+        chart_data["data"].update(kwargs)
+    return chart_data
+
+
+def format_probability_cloud_chart(
+    scenario_curves: List[Dict],
+    breakpoint_clouds: List[Dict],
+    decision_zones: List[Dict],
+    config: Dict[str, Any],
+    insights: Dict[str, Any] = None,
+    title: str = None,
+    **kwargs,
+) -> Dict[str, Any]:
+    """Format probability cloud chart data consistently."""
+    chart_data: Dict[str, Any] = {
+        "type": "probability_cloud",
+        "data": {
+            "scenario_curves": scenario_curves,
+            "breakpoint_clouds": breakpoint_clouds,
+            "decision_zones": decision_zones,
+            "config": config,
+        },
+        "renderType": "tableau",
+    }
+    if title:
+        chart_data["title"] = title
+    if insights:
+        chart_data["data"]["insights"] = insights
+    chart_data.update(kwargs)
+    return chart_data
+
+
+def format_heatmap_chart(
+    dimensions: List[str],
+    companies: List[str],
+    scores: List[List[float]],
+    weights: Dict[str, int] = None,
+    title: str = None,
+    **kwargs,
+) -> Dict[str, Any]:
+    """Format heatmap chart data consistently."""
+    chart_data: Dict[str, Any] = {
+        "type": "heatmap",
+        "data": {
+            "dimensions": dimensions,
+            "companies": companies,
+            "scores": scores,
+        },
+        "renderType": "tableau",
+    }
+    if title:
+        chart_data["title"] = title
+    if weights:
+        chart_data["data"]["weights"] = weights
+    if kwargs:
+        for key, value in kwargs.items():
+            if key.startswith("data_"):
+                chart_data["data"][key[5:]] = value
+            else:
+                chart_data[key] = value
+    return chart_data
+
+
+def format_waterfall_chart(
+    items: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format waterfall chart data consistently."""
+    return {"type": "waterfall", "data": {"items": items}, "title": title, "renderType": "tableau"}
+
+
+def format_bar_chart(
+    labels: List[str],
+    datasets: List[Dict[str, Any]],
+    title: str = None,
+) -> Dict[str, Any]:
+    """Format bar chart data consistently."""
+    return {
+        "type": "bar",
+        "data": {"labels": labels, "datasets": datasets},
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_line_chart(
+    labels: List[str],
+    datasets: List[Dict[str, Any]],
+    title: str = None,
+) -> Dict[str, Any]:
+    """Format line chart data consistently."""
+    return {
+        "type": "line",
+        "data": {"labels": labels, "datasets": datasets},
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_pie_chart(
+    labels: List[str], data: List[float], title: str = None
+) -> Dict[str, Any]:
+    """Format pie chart data consistently."""
+    return {
+        "type": "pie",
+        "data": {"labels": labels, "datasets": [{"label": "Distribution", "data": data}]},
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_treemap_chart(
+    children: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format treemap chart data consistently.
+
+    ``children`` should be ``[{name, value, ...}, ...]``.
+    """
+    return {
+        "type": "treemap",
+        "data": {"children": children},
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_scatter_chart(
+    datasets: List[Dict[str, Any]],
+    title: str = None,
+    x_label: str = "X",
+    y_label: str = "Y",
+) -> Dict[str, Any]:
+    """Format scatter chart data consistently.
+
+    Each dataset should have ``{label, data: [{x, y}, ...], ...}``.
+    """
+    return {
+        "type": "scatter",
+        "data": {"datasets": datasets},
+        "title": title,
+        "renderType": "tableau",
+        "options": {"x_label": x_label, "y_label": y_label},
+    }
+
+
+def format_radar_chart(
+    labels: List[str],
+    datasets: List[Dict[str, Any]],
+    title: str = None,
+) -> Dict[str, Any]:
+    """Format radar chart data consistently.
+
+    ``labels`` are the spoke labels; each dataset has ``{label, data: [...]}``.
+    """
+    return {
+        "type": "radar_comparison",
+        "data": {"labels": labels, "datasets": datasets},
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_tornado_chart(
+    items: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format tornado chart data consistently.
+
+    ``items`` should be ``[{name, low, high, base}, ...]``.
+    """
+    return {
+        "type": "tornado",
+        "data": {"items": items},
+        "title": title,
+        "renderType": "tableau",
+    }

@@ -2,6 +2,9 @@
 Natural Language Scenario Composer
 Takes freeform "what if" questions and builds world model scenarios
 "What happens if growth decelerates in YX in year 2, but Tundex starts a commercial pilot with a tier 1 aerospace company"
+
+Also parses multi-company growth path queries into ScenarioTree inputs:
+"What happens if Tyhex grows at 30% then 20%, or Endex grows at 140%, 160%, 100%?"
 """
 
 import logging
@@ -451,6 +454,228 @@ class NLScenarioComposer:
         # Default: no change
         return current_value
     
+    # ------------------------------------------------------------------
+    # Scenario tree growth path parsing
+    # ------------------------------------------------------------------
+
+    # Patterns for "X grows at 30% then 20%" or "X at 140%, 160%, 100%"
+    GROWTH_PATH_PATTERN = re.compile(
+        r"(\w[\w\s]*?)\s+(?:grows?|at)\s+(?:at|by)?\s*"
+        r"([\d.]+%(?:\s*(?:then|,|and)\s*[\d.]+%)*)",
+        re.IGNORECASE,
+    )
+
+    # Pattern to split comma/then-separated rates
+    RATE_SPLIT_PATTERN = re.compile(r"[\d.]+%")
+
+    # Pattern to detect branching: "or Endex grows at ..."
+    BRANCH_SPLIT_PATTERN = re.compile(
+        r"\s+or\s+",
+        re.IGNORECASE,
+    )
+
+    def parse_scenario_tree_query(
+        self,
+        query: str,
+        known_companies: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, List[Any]]]:
+        """
+        Parse a multi-company growth path query into GrowthPath objects.
+
+        Examples:
+            "What happens if Tyhex grows at 30% then 20%, or Endex grows at 140%, 160%, 100%"
+            → {"Tyhex": [GrowthPath(...)], "Endex": [GrowthPath(...)]}
+
+            "Tyhex at 30% then 20% or 50% then 40%"
+            → {"Tyhex": [GrowthPath(rates=[0.30, 0.20]), GrowthPath(rates=[0.50, 0.40])]}
+
+        Returns None if the query doesn't look like a growth path query.
+        """
+        from app.services.scenario_tree_service import GrowthPath
+
+        # Normalize
+        text = query.strip()
+        text = re.sub(r"^(what happens if|what if|if)\s+", "", text, flags=re.IGNORECASE)
+
+        # Split by "or" to find branches
+        branches = self.BRANCH_SPLIT_PATTERN.split(text)
+
+        company_paths: Dict[str, List[GrowthPath]] = {}
+        found_any = False
+
+        for branch in branches:
+            branch = branch.strip()
+            if not branch:
+                continue
+
+            match = self.GROWTH_PATH_PATTERN.search(branch)
+            if not match:
+                continue
+
+            found_any = True
+            raw_name = match.group(1).strip()
+            raw_rates = match.group(2)
+
+            # Resolve company name against known companies
+            company_name = self._resolve_company_name(raw_name, known_companies)
+
+            # Extract percentage values
+            rate_matches = self.RATE_SPLIT_PATTERN.findall(raw_rates)
+            rates = []
+            for r in rate_matches:
+                val = float(r.replace("%", "")) / 100.0
+                rates.append(val)
+
+            if not rates:
+                continue
+
+            path = GrowthPath(
+                company_name=company_name,
+                yearly_growth_rates=rates,
+                label=f"{company_name} {' → '.join(f'{r:.0%}' for r in rates)}",
+                probability=0.5,
+            )
+
+            company_paths.setdefault(company_name, []).append(path)
+
+        if not found_any:
+            return None
+
+        # Assign probabilities: if a company has N paths, each gets 1/N
+        for paths in company_paths.values():
+            n = len(paths)
+            for p in paths:
+                p.probability = 1.0 / n
+
+        return company_paths
+
+    def _resolve_company_name(
+        self,
+        raw_name: str,
+        known_companies: Optional[List[str]] = None,
+    ) -> str:
+        """Fuzzy-match a company name from query against known portfolio companies."""
+        if not known_companies:
+            return raw_name.strip().title()
+
+        raw_lower = raw_name.strip().lower()
+        for kc in known_companies:
+            if raw_lower == kc.lower() or raw_lower in kc.lower() or kc.lower() in raw_lower:
+                return kc
+        return raw_name.strip().title()
+
+    def is_scenario_tree_query(self, query: str) -> bool:
+        """Quick check: does this query look like a growth path / scenario tree query?"""
+        q = query.lower()
+        patterns = [
+            r"\d+%\s*(?:then|,)\s*\d+%",             # "30% then 20%" or "30%, 20%"
+            r"grows?\s+(?:at|by)\s+\d+%",             # "grows at 30%"
+            r"what happens if.*\d+%.*\d+%",            # "what happens if ... 30% ... 20%"
+            r"(?:growth|scenario)\s+(?:tree|path)",    # explicit "scenario tree"
+        ]
+        return any(re.search(p, q) for p in patterns)
+
+
+    def is_bull_bear_base_query(self, query: str) -> bool:
+        """Check if query is asking for bull/bear/base scenarios."""
+        q = query.lower()
+        patterns = [
+            r"bull.*bear.*base",
+            r"bear.*bull.*base",
+            r"base.*bull.*bear",
+            r"bull\s+(?:and|\/|,)\s+bear",
+            r"upside.*downside",
+            r"best.*worst.*case",
+            r"optimistic.*pessimistic",
+            r"three\s+scenario",
+            r"3\s+scenario",
+            r"scenario\s+analysis",
+        ]
+        return any(re.search(p, q) for p in patterns)
+
+    def parse_bull_bear_base_query(self, query: str, known_companies: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Parse a bull/bear/base query. Returns {companies: [str], years: int}."""
+        q = query.lower()
+        # Extract company names
+        companies = []
+        if known_companies:
+            for kc in known_companies:
+                if kc.lower() in q:
+                    companies.append(kc)
+        if not companies:
+            # Try capitalized words
+            caps = re.findall(r"([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]+)*)", query)
+            companies = [self._resolve_company_name(c, known_companies) for c in caps]
+
+        # Extract years
+        yr_match = re.search(r"(\d+)\s*(?:year|yr)", q)
+        years = int(yr_match.group(1)) if yr_match else 5
+
+        return {"companies": companies or [], "years": years}
+
+    def is_macro_shock_query(self, query: str) -> bool:
+        """Check if query is about a macro/qualitative event impact."""
+        q = query.lower()
+        shock_words = [
+            "recession", "rate hike", "interest rate", "regulation",
+            "tariff", "pandemic", "crash", "boom", "downturn",
+            "ai winter", "credit crunch", "inflation",
+            "what if the market", "what if there",
+            "macro", "geopolitical", "black swan",
+        ]
+        return any(w in q for w in shock_words)
+
+    def parse_macro_shock_query(self, query: str) -> Dict[str, Any]:
+        """Parse a macro shock query into type + magnitude."""
+        q = query.lower()
+        shock_map = {
+            "recession": "recession", "downturn": "recession",
+            "rate hike": "rate_hike", "interest rate": "rate_hike",
+            "regulation": "regulation", "regulatory": "regulation",
+            "boom": "market_boom", "bull market": "market_boom",
+            "crash": "sector_crash", "collapse": "sector_crash",
+            "tariff": "tariff", "trade war": "tariff",
+            "pandemic": "pandemic", "covid": "pandemic",
+            "ai winter": "ai_winter",
+            "credit crunch": "credit_crunch", "liquidity": "credit_crunch",
+        }
+        shock_type = "recession"  # default
+        for keyword, stype in shock_map.items():
+            if keyword in q:
+                shock_type = stype
+                break
+
+        # Magnitude
+        magnitude = 0.5  # moderate default
+        if any(w in q for w in ["severe", "major", "deep", "worst"]):
+            magnitude = 0.8
+        elif any(w in q for w in ["mild", "minor", "slight", "small"]):
+            magnitude = 0.3
+
+        # Start year
+        yr_match = re.search(r"(?:in |at |year\s*)(\d+)", q)
+        start_year = int(yr_match.group(1)) if yr_match else 1
+
+        return {"shock_type": shock_type, "magnitude": magnitude, "start_year": start_year}
+
+    def is_cash_flow_query(self, query: str) -> bool:
+        """Check if query is asking for cash flow / P&L modeling."""
+        q = query.lower()
+        return any(w in q for w in [
+            "cash flow", "p&l", "profit and loss", "runway",
+            "burn rate", "funding gap", "ebitda", "free cash flow",
+            "fcf", "opex", "operating expense",
+        ])
+
+    def is_snapshot_query(self, query: str) -> bool:
+        """Check if query is asking for a point-in-time portfolio snapshot."""
+        q = query.lower()
+        return any(w in q for w in [
+            "snapshot", "point in time", "at year", "in year",
+            "what does the portfolio look like",
+            "nav at", "where are we",
+        ])
+
     async def apply_scenario_to_matrix(
         self,
         composed_scenario: ComposedScenario,

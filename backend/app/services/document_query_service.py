@@ -394,11 +394,38 @@ class DocumentQueryService:
         if doc.get("status") == "completed":
             return {"value": extracted, "summary": "Extracted from completed document"}
 
-        # When still pending, return existing data and do NOT re-run process (avoids race with upload-triggered process)
-        if doc.get("status") == "pending":
+        # Already being processed by another call (batch endpoint, Celery, etc.)
+        # — poll until it finishes rather than returning empty data.
+        if doc.get("status") == "processing":
+            import asyncio
+            max_polls = 60  # up to ~120 seconds
+            for _ in range(max_polls):
+                await asyncio.sleep(2)
+                doc = repo.get(document_id)
+                if not doc or doc.get("status") != "processing":
+                    break
+            if doc and doc.get("status") == "completed":
+                extracted = doc.get("extracted_data") or {}
+                if isinstance(extracted, str):
+                    try:
+                        extracted = json.loads(extracted)
+                    except Exception:
+                        extracted = {}
+                return {"value": extracted, "summary": "Extracted from completed document"}
+            # Still processing after timeout — return partial
             return {
                 "value": extracted or None,
-                "summary": "Processing; extraction in progress",
+                "summary": "Document still processing after timeout",
+                "metadata": {"status": doc.get("status") if doc else "unknown"},
+            }
+
+        # For pending documents: if extracted_data already exists (Celery beat us),
+        # return it.  Otherwise fall through to process inline — the old early-return
+        # left documents stuck in pending forever when Celery wasn't running.
+        if doc.get("status") == "pending" and extracted:
+            return {
+                "value": extracted,
+                "summary": "Extracted from pending document (data already available)",
                 "metadata": {"status": "pending"},
             }
 
@@ -412,7 +439,7 @@ class DocumentQueryService:
                 doc_repo = get_document_repo()
                 from app.services.document_process_service import run_document_process
 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(
                     None,
                     lambda: run_document_process(
@@ -428,13 +455,21 @@ class DocumentQueryService:
                 if result.get("success") and result.get("result"):
                     data = result.get("result", {})
                     extracted = data.get("extracted_data", extracted)
+                    # Mark document as completed if still pending
+                    try:
+                        repo = self._doc_repo()
+                        if repo and doc.get("status") != "completed":
+                            repo.update(document_id, {"status": "completed", "extracted_data": extracted})
+                    except Exception as update_err:
+                        logger.warning("Failed to update doc status to completed for %s: %s", document_id, update_err)
                     return {"value": extracted, "summary": "Extraction completed"}
+                logger.warning("Document process returned failure for %s: %s", document_id, result.get("error", "unknown"))
                 return {
                     "value": extracted or None,
                     "metadata": {"error": result.get("error", "Processing failed")},
                 }
             except Exception as e:
-                logger.warning("Document process run failed for %s: %s", document_id, e)
+                logger.warning("Document process run failed for %s: %s", document_id, e, exc_info=True)
                 return {
                     "value": extracted or None,
                     "metadata": {"error": str(e)},

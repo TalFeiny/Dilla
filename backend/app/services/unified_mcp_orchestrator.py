@@ -122,6 +122,24 @@ except Exception as exc:  # pragma: no cover - defensive import guard
     chart_renderer = None  # type: ignore[assignment]
 
 try:
+    from app.services.chart_data_service import (
+        format_sankey_chart,
+        format_side_by_side_sankey_chart,
+        format_probability_cloud_chart,
+        format_heatmap_chart,
+        format_waterfall_chart,
+        format_bar_chart,
+        format_line_chart,
+        format_pie_chart,
+    )
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["chart_format_helpers"] = exc
+    format_sankey_chart = format_side_by_side_sankey_chart = None  # type: ignore[assignment]
+    format_probability_cloud_chart = format_heatmap_chart = None  # type: ignore[assignment]
+    format_waterfall_chart = format_bar_chart = None  # type: ignore[assignment]
+    format_line_chart = format_pie_chart = None  # type: ignore[assignment]
+
+try:
     from app.utils.formatters import DeckFormatter
 except Exception as exc:  # pragma: no cover - defensive import guard
     NON_CRITICAL_IMPORT_ERRORS["DeckFormatter"] = exc
@@ -163,6 +181,98 @@ except Exception as exc:  # pragma: no cover - defensive import guard
     NON_CRITICAL_IMPORT_ERRORS["FPAQueryClassifier"] = exc
     FPAQueryClassifier = None  # type: ignore[assignment]
 
+# --- Phase 3: Wire additional services as agent tools ---
+try:
+    from app.services.waterfall_advanced import AdvancedWaterfallCalculator
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["AdvancedWaterfallCalculator"] = exc
+    AdvancedWaterfallCalculator = None  # type: ignore[assignment]
+
+try:
+    from app.services.advanced_debt_structures_service import AdvancedDebtStructures
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["AdvancedDebtStructures"] = exc
+    AdvancedDebtStructures = None  # type: ignore[assignment]
+
+try:
+    from app.services.market_intelligence_service import MarketIntelligenceService
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["MarketIntelligenceService"] = exc
+    MarketIntelligenceService = None  # type: ignore[assignment]
+
+try:
+    from app.services.revenue_projection_service import RevenueProjectionService
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["RevenueProjectionService"] = exc
+    RevenueProjectionService = None  # type: ignore[assignment]
+
+try:
+    from app.services.financial_calculator import FinancialCalculator
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["FinancialCalculator"] = exc
+    FinancialCalculator = None  # type: ignore[assignment]
+
+try:
+    from app.services.enhanced_compliance_service import EnhancedComplianceService
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["EnhancedComplianceService"] = exc
+    EnhancedComplianceService = None  # type: ignore[assignment]
+
+try:
+    from app.services.ma_workflow_service import MAWorkflowService
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["MAWorkflowService"] = exc
+    MAWorkflowService = None  # type: ignore[assignment]
+
+try:
+    from app.services.deck_quality_validator import DeckQualityValidator
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["DeckQualityValidator"] = exc
+    DeckQualityValidator = None  # type: ignore[assignment]
+
+try:
+    from app.services.slide_content_optimizer import SlideContentOptimizer
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["SlideContentOptimizer"] = exc
+    SlideContentOptimizer = None  # type: ignore[assignment]
+
+try:
+    from app.services.formula_evaluator import FormulaEvaluator
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["FormulaEvaluator"] = exc
+    FormulaEvaluator = None  # type: ignore[assignment]
+
+try:
+    from app.services.arithmetic_engine import ArithmeticEngine
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["ArithmeticEngine"] = exc
+    ArithmeticEngine = None  # type: ignore[assignment]
+
+try:
+    from app.services.nl_matrix_controller import NLMatrixController
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["NLMatrixController"] = exc
+    NLMatrixController = None  # type: ignore[assignment]
+
+try:
+    from app.services.lightweight_memo_service import LightweightMemoService
+    from app.services.memo_templates import MEMO_TEMPLATES, INTENT_TO_TEMPLATE
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["LightweightMemoService"] = exc
+    logger.error("[MEMO] Failed to import LightweightMemoService: %s", exc, exc_info=True)
+    LightweightMemoService = None  # type: ignore[assignment]
+    MEMO_TEMPLATES = {}  # type: ignore[assignment]
+    INTENT_TO_TEMPLATE = {}  # type: ignore[assignment]
+
+try:
+    from app.services.session_state import (
+        SessionState, TaskPlanner, CompletionChecker, Scoreboard, Task as PlannedTask,
+        SessionMemo, AgentTaskTracker,
+    )
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["SessionState"] = exc
+    SessionState = TaskPlanner = CompletionChecker = Scoreboard = PlannedTask = SessionMemo = AgentTaskTracker = None  # type: ignore[assignment]
+
 MODEL_ROUTER_IMPORT_ERROR: Optional[Exception] = None
 try:
     from app.services.model_router import ModelRouter, ModelCapability, get_model_router
@@ -182,6 +292,13 @@ except Exception as import_error:
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Fund defaults — single source of truth for fallback values
+# ---------------------------------------------------------------------------
+DEFAULT_FUND_SIZE = 260_000_000  # $260M Series A-C fund
+DEFAULT_FUND_STRATEGY = "Series A-C"
+DEFAULT_FUND_YEAR = 4
+
 ORCHESTRATOR_READINESS_STATE: Dict[str, Any] = {
     "ready": False,
     "error": "UnifiedMCPOrchestrator not initialized"
@@ -199,6 +316,59 @@ def get_orchestrator_readiness() -> Dict[str, Any]:
         "ready": ORCHESTRATOR_READINESS_STATE["ready"],
         "error": ORCHESTRATOR_READINESS_STATE["error"]
     }
+
+
+# ---------------------------------------------------------------------------
+# Hydration helpers — pure functions for _hydrate_shared_data_from_companies
+# ---------------------------------------------------------------------------
+
+def _num(val: Any) -> float:
+    """Coerce a value to float, extracting .value from InferenceResult if needed."""
+    if val is None:
+        return 0.0
+    if hasattr(val, "value"):
+        val = val.value
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+_STAGE_GROWTH: Dict[str, float] = {
+    "Pre-Seed": 3.0, "Seed": 2.5, "Series A": 1.5,
+    "Series B": 0.80, "Series C": 0.50, "Series D": 0.30,
+    "Series E": 0.20, "Growth": 0.15, "IPO": 0.10,
+}
+
+_STAGE_FOUNDER_PCT: Dict[str, float] = {
+    "Pre-Seed": 0.85, "Seed": 0.70, "Series A": 0.45,
+    "Series B": 0.30, "Series C": 0.22, "Series D": 0.18,
+    "Series E": 0.15, "Growth": 0.12, "IPO": 0.08,
+}
+
+_STAGE_ROUND_COUNT: Dict[str, int] = {
+    "Pre-Seed": 1, "Seed": 1, "Series A": 2,
+    "Series B": 3, "Series C": 4, "Series D": 5,
+    "Series E": 6, "Growth": 7, "IPO": 8,
+}
+
+
+def _stage_default_growth(stage: Optional[str]) -> float:
+    if not stage:
+        return 1.0
+    return _STAGE_GROWTH.get(stage, 1.0)
+
+
+def _stage_founder_ownership(stage: Optional[str]) -> float:
+    if not stage:
+        return 0.40
+    return _STAGE_FOUNDER_PCT.get(stage, 0.40)
+
+
+def _stage_round_count(stage: Optional[str]) -> int:
+    if not stage:
+        return 2
+    return _STAGE_ROUND_COUNT.get(stage, 2)
 
 
 class OutputFormat(Enum):
@@ -468,9 +638,9 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="suggest_action",
-        description="Suggest an action item, warning, or insight.",
+        description="Suggest an action item, warning, or insight. Persisted to DB for accept/reject.",
         handler="_tool_suggest_action",
-        input_schema={"type": "str", "title": "str", "description": "str", "priority": "str?"},
+        input_schema={"type": "str", "title": "str", "description": "str", "priority": "str?", "company_id": "str?"},
     ),
     AgentTool(
         name="write_to_memo",
@@ -520,7 +690,7 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="generate_memo",
-        description="Generate investment memo or LP report from data already in shared_data. Supports memo types: investment, followon, lp_report, gp_strategy.",
+        description="Generate memo/report from data already in shared_data. Types: ic_memo, followon, lp_report, gp_strategy, comparison, bespoke_lp, fund_analysis, ownership_analysis, plan_memo. Auto-detects type from prompt if not specified.",
         handler="_tool_generate_memo",
         input_schema={"memo_type": "str?", "prompt": "str?"},
         cost_tier="expensive",
@@ -528,7 +698,7 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="run_skill",
-        description="Run a registered analysis skill by name. Available: valuation-engine, cap-table-generator, exit-modeler, scenario-generator, portfolio-analyzer, fund-metrics-calculator, followon-strategy, regression-analyzer, monte-carlo-simulator, sensitivity-analyzer, competitive-intelligence, market-sourcer.",
+        description="Run a registered analysis skill by name. Available: valuation-engine, cap-table-generator, exit-modeler, scenario-generator, portfolio-analyzer, fund-metrics-calculator, followon-strategy, regression-analyzer, monte-carlo-simulator, sensitivity-analyzer, competitive-intelligence, market-sourcer, deck-quality-validator, formula-evaluator, arithmetic-engine, company-history-analyzer, waterfall-calculator, debt-converter, market-landscape, revenue-projector, compliance-checker, ma-modeler.",
         handler="_tool_run_skill",
         input_schema={"skill": "str", "inputs": "dict?"},
         cost_tier="expensive",
@@ -579,6 +749,14 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=45_000,
     ),
     AgentTool(
+        name="generate_plan_memo",
+        description="Generate a plan memo — resumable context document capturing research findings, execution steps, and data snapshot for cross-session use.",
+        handler="_tool_generate_plan_memo",
+        input_schema={"prompt": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
         name="run_report",
         description="Generate LP quarterly report, follow-on investment memo, or GP strategy report.",
         handler="_tool_report",
@@ -586,10 +764,1569 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="expensive",
         timeout_ms=90_000,
     ),
+
+    # ------------------------------------------------------------------
+    # Phase 8: Proactive enrichment, search/extract combos, projections
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="enrich_company_proactive",
+        description="Auto-fetch and enrich a company mentioned without @. Searches web, extracts structured data, pushes suggestions to grid.",
+        handler="_tool_enrich_proactive",
+        input_schema={"company_name": "str", "push_to_grid": "bool?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="build_company_list",
+        description="Search for companies matching criteria (sector, stage, geography, revenue range) and build an enriched list. Returns structured company profiles.",
+        handler="_tool_build_company_list",
+        input_schema={"criteria": "str", "sector": "str?", "stage": "str?", "geography": "str?", "max_results": "int?"},
+        cost_tier="expensive",
+        timeout_ms=120_000,
+    ),
+    AgentTool(
+        name="run_projection",
+        description="Run revenue/ARR projection with growth decay curves, scenario bands (bull/base/bear), and time-to-milestone estimates.",
+        handler="_tool_run_projection",
+        input_schema={"company": "str?", "metric": "str?", "years": "int?", "scenarios": "bool?"},
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
+    AgentTool(
+        name="search_and_extract",
+        description="Targeted web search + structured extraction combo. Searches for specific data points (funding round, revenue, team, customers) and returns extracted structured data.",
+        handler="_tool_search_extract",
+        input_schema={"query": "str", "extract_fields": "list[str]?", "company": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="enrich_sparse_grid",
+        description="Auto-detect companies with sparse/missing data in the grid and generate suggestions to fill gaps using web search + stage benchmarks.",
+        handler="_tool_enrich_sparse_grid",
+        input_schema={"fund_id": "str?", "min_empty_fields": "int?"},
+        cost_tier="expensive",
+        timeout_ms=120_000,
+    ),
+    AgentTool(
+        name="resolve_data_gaps",
+        description="Auto-detect and fill missing company data using benchmarks + parallel searches. Run FIRST when companies have sparse data.",
+        handler="_tool_resolve_gaps",
+        input_schema={"companies": "list[str]?", "needed_fields": "list[str]?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="enrich_field",
+        description="Search for specific data fields for a company. Works with ANY column: arr, burnRate, description, headcount, grossMargin, valuation, competitors, etc. Uses column names to build targeted searches.",
+        handler="_tool_enrich_field",
+        input_schema={"company_name": "str", "fields": "list[str]", "context": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="search_field_for_companies",
+        description="Search for a specific field (e.g. founders, ARR, team_size, valuation) across multiple companies at once. Use when the user asks to fill a column or find data for several companies. Example: 'find cofounder names for Mercury, Ramp, Deel'.",
+        handler="_tool_search_field_for_companies",
+        input_schema={"field": "str", "company_names": "list[str]", "context": "str?"},
+        cost_tier="cheap",
+        timeout_ms=60_000,
+    ),
+
+    # ------------------------------------------------------------------
+    # Phase 3: 26 new tools wiring existing services
+    # ------------------------------------------------------------------
+
+    # --- Cap Table & Ownership ---
+    AgentTool(
+        name="cap_table_evolution",
+        description="Track dilution through ALL funding rounds with Sankey visualization.",
+        handler="_tool_cap_table_evolution",
+        input_schema={"company": "str", "include_sankey": "bool?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="liquidation_waterfall",
+        description="Model liquidation waterfall at specific exit values with investor distributions.",
+        handler="_tool_liquidation_waterfall",
+        input_schema={"company": "str", "exit_value": "float", "exit_type": "str?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="anti_dilution_modeling",
+        description="Model ratchet/broad-based anti-dilution scenarios on cap table.",
+        handler="_tool_anti_dilution",
+        input_schema={"company": "str", "new_round_price": "float?", "mechanism": "str?"},
+        cost_tier="expensive",
+        timeout_ms=45_000,
+    ),
+    AgentTool(
+        name="debt_conversion_modeling",
+        description="Model SAFEs, convertible notes, and debt conversion triggers.",
+        handler="_tool_debt_conversion",
+        input_schema={"company": "str", "trigger_valuation": "float?"},
+        cost_tier="expensive",
+        timeout_ms=45_000,
+    ),
+
+    # --- Scenario & Stress Testing ---
+    AgentTool(
+        name="stress_test_portfolio",
+        description="Portfolio-wide shock modeling: rates, revenue, multiples across all holdings.",
+        handler="_tool_stress_test_portfolio",
+        input_schema={"shock_type": "str", "magnitude": "float?", "affected_companies": "list[str]?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="world_model_scenario",
+        description="Multi-factor scenario with propagated effects across company/market model.",
+        handler="_tool_world_model_scenario",
+        input_schema={"company": "str", "factor_changes": "dict"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="monte_carlo_portfolio",
+        description="Monte Carlo simulation across entire portfolio with probability distributions.",
+        handler="_tool_monte_carlo_portfolio",
+        input_schema={"iterations": "int?", "variables": "dict?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="sensitivity_matrix",
+        description="2D sensitivity analysis on any two variables: revenue × multiple, growth × discount rate.",
+        handler="_tool_sensitivity_matrix",
+        input_schema={"company": "str", "var_x": "str", "var_y": "str", "range_x": "list[float]?", "range_y": "list[float]?"},
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
+
+    # --- Scenario Trees & Cash Flow Planning ---
+    AgentTool(
+        name="run_scenario_tree",
+        description="Build branching scenario tree: multi-company growth paths, round predictions, fund DPI impact per path.",
+        handler="_tool_scenario_tree",
+        input_schema={"query": "str", "companies": "list[str]?", "years": "int?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="run_cash_flow_model",
+        description="Build full P&L / cash flow model: revenue, COGS, opex, EBITDA, FCF, runway, funding gap.",
+        handler="_tool_cash_flow_model",
+        input_schema={"company": "str", "years": "int?", "growth_overrides": "list[float]?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+
+    AgentTool(
+        name="run_bull_bear_base",
+        description="Build bull/bear/base scenario analysis for one or more companies. 3-path projection with probability-weighted outcomes.",
+        handler="_tool_bull_bear_base",
+        input_schema={"companies": "list[str]", "years": "int?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="apply_macro_shock",
+        description="Apply a macro event (recession, rate hike, regulation, tariff, pandemic, ai_winter) to an existing scenario tree and see impact on portfolio NAV/DPI.",
+        handler="_tool_macro_shock",
+        input_schema={"shock_type": "str", "magnitude": "float?", "start_year": "int?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="portfolio_snapshot",
+        description="Get probability-weighted portfolio state (NAV, DPI, TVPI, per-company revenue) at a specific future year from scenario analysis.",
+        handler="_tool_portfolio_snapshot",
+        input_schema={"year": "int"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="three_scenario_cash_flow",
+        description="Build bull/base/bear P&L models side by side for a company.",
+        handler="_tool_three_scenario_cash_flow",
+        input_schema={"company": "str", "years": "int?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+
+    # --- Portfolio Operations ---
+    AgentTool(
+        name="add_company_to_portfolio",
+        description="Fetch, validate, and suggest adding a company to portfolio (requires approval).",
+        handler="_tool_add_company",
+        input_schema={"company_name": "str", "stage": "str?", "check_size": "float?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="bulk_operation",
+        description="Batch valuations, health checks, or data refreshes across portfolio.",
+        handler="_tool_bulk_operation",
+        input_schema={"operation": "str", "companies": "list[str]?"},
+        cost_tier="expensive",
+        timeout_ms=120_000,
+    ),
+    AgentTool(
+        name="portfolio_comparison",
+        description="Side-by-side comparison of N companies on specified metrics.",
+        handler="_tool_portfolio_comparison",
+        input_schema={"companies": "list[str]", "metrics": "list[str]?"},
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
+    AgentTool(
+        name="graduation_rates",
+        description="Stage progression analysis: how companies move through funding stages.",
+        handler="_tool_graduation_rates",
+        input_schema={"fund_id": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+
+    # --- Market & Intelligence ---
+    AgentTool(
+        name="market_landscape",
+        description="Competitive landscape mapping: sector, geography, stage, timing, competitors.",
+        handler="_tool_market_landscape",
+        input_schema={"sector": "str", "geography": "str?", "stage": "str?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="market_timing",
+        description="Assess market timing for entry/exit: hot, cooling, cold, or emerging.",
+        handler="_tool_market_timing",
+        input_schema={"sector": "str", "geography": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="company_history",
+        description="Full company history analysis with funding rounds, investors, DPI Sankey.",
+        handler="_tool_company_history",
+        input_schema={"company": "str", "fund_id": "str?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+
+    # --- Financial Modeling ---
+    AgentTool(
+        name="revenue_projection",
+        description="Project revenue with quality-adjusted decay curves and growth modeling.",
+        handler="_tool_revenue_projection",
+        input_schema={"company": "str", "years": "int?", "growth_rate": "float?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="fund_deployment_model",
+        description="Model fund J-curve, pacing, reserve allocation, and deployment strategy.",
+        handler="_tool_fund_deployment",
+        input_schema={"fund_id": "str?", "scenarios": "list[dict]?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="financial_calculator",
+        description="On-demand NPV, IRR, PMT, PV, FV calculations. Specify function and inputs.",
+        handler="_tool_financial_calc",
+        input_schema={"function": "str", "inputs": "dict"},
+        cost_tier="free",
+        timeout_ms=10_000,
+    ),
+    AgentTool(
+        name="fx_portfolio_impact",
+        description="Full portfolio FX exposure analysis across all non-USD holdings.",
+        handler="_tool_fx_portfolio_impact",
+        input_schema={"base_currency": "str?", "shock_pct": "float?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+
+    # --- Compliance & Reporting ---
+    AgentTool(
+        name="compliance_check",
+        description="Check filing requirements, generate Form ADV, AIFMD, KYC/AML documentation.",
+        handler="_tool_compliance_check",
+        input_schema={"check_type": "str?", "advisor_info": "dict?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="ma_workflow",
+        description="M&A deal structure analysis: synergies, integration risk, returns.",
+        handler="_tool_ma_workflow",
+        input_schema={"acquirer": "str", "target": "str", "deal_type": "str?", "deal_price": "float?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+
+    # --- Generation (varying types) ---
+    AgentTool(
+        name="generate_ic_memo",
+        description="Generate investment committee memo: thesis, market, financials, cap table, risks.",
+        handler="_tool_generate_ic_memo",
+        input_schema={"company": "str", "prompt": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="generate_followon_memo",
+        description="Generate follow-on investment analysis: position, performance, pro-rata, recommendation.",
+        handler="_tool_generate_followon_memo",
+        input_schema={"company": "str", "prompt": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="generate_lp_report",
+        description="Generate quarterly LP report: portfolio summary, per-company updates, fund metrics.",
+        handler="_tool_generate_lp_report",
+        input_schema={"fund_id": "str?", "quarter": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="generate_gp_update",
+        description="Generate GP strategy update: deployment pacing, pipeline, market views.",
+        handler="_tool_generate_gp_update",
+        input_schema={"fund_id": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="generate_comparison_report",
+        description="Generate side-by-side investment comparison report for 2+ companies.",
+        handler="_tool_generate_comparison_report",
+        input_schema={"companies": "list[str]", "prompt": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+
+    # ------------------------------------------------------------------
+    # Lightweight diligence & portfolio enrichment
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="lightweight_diligence",
+        description="Quick single-search company lookup. Use fetch_company_data only for @ or explicit deep dive.",
+        handler="_execute_lightweight_diligence",
+        input_schema={"company_name": "str"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="enrich_portfolio",
+        description="Analyze full grid: identify missing fields, compute stage/sector/geo distribution, flag gaps. Auto-persists suggestions.",
+        handler="_execute_enrich_portfolio",
+        input_schema={"fund_id": "str?"},
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
+    AgentTool(
+        name="search_companies_db",
+        description="Search 1k+ companies database by name/sector/description. Use before web fetch.",
+        handler="_tool_search_companies_db",
+        input_schema={"query": "str", "limit": "int?"},
+        cost_tier="free",
+        timeout_ms=10_000,
+    ),
+    AgentTool(
+        name="add_company_to_matrix",
+        description="Add company from rich DB to matrix grid with pre-populated data.",
+        handler="_tool_add_company_to_matrix",
+        input_schema={"company_id": "str?", "company_name": "str?"},
+        cost_tier="free",
+        timeout_ms=15_000,
+    ),
+
+    # ------------------------------------------------------------------
+    # Company list reasoning, @ cell enrichment, inline todos
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="reason_company_list",
+        description="Given a set of companies, produce ranked reasoning: why each is relevant, gaps, and next steps.",
+        handler="_tool_reason_company_list",
+        input_schema={"companies": "list[str]", "objective": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="enrich_cell",
+        description="Deep-enrich a single company cell by name (no @ prefix needed): fetch latest data, infer missing fields, return suggestion. Works with any company name from the grid.",
+        handler="_tool_enrich_cell",
+        input_schema={"company": "str", "column": "str", "current_value": "any?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="emit_todo",
+        description="Emit an inline todo/action-item into the response stream. Todos appear in chat and feed into the suggestions panel.",
+        handler="_tool_emit_todo",
+        input_schema={"title": "str", "description": "str?", "priority": "str?", "company": "str?", "due": "str?"},
+        cost_tier="free",
+        timeout_ms=5_000,
+    ),
+    AgentTool(
+        name="sync_crm",
+        description="Sync companies from matrix to CRM (Attio/Affinity via MCP). Returns sync result.",
+        handler="_tool_sync_crm",
+        input_schema={"companies": "list[str]?", "direction": "str?"},
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
+
+    # ------------------------------------------------------------------
+    # Granular company search tools — 1 Tavily search each, auto-suggest
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="search_company_funding",
+        description="Search for a company's funding history, valuation, investors, stage. 1 focused web search + extraction. Auto-suggests grid edits.",
+        handler="_tool_search_company_funding",
+        input_schema={"company_name": "str"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="search_company_product",
+        description="Search for a company's product, business model, pricing, target market. 1 focused web search + extraction. Auto-suggests grid edits.",
+        handler="_tool_search_company_product",
+        input_schema={"company_name": "str"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="search_company_team",
+        description="Search for a company's founders, leadership, team size, headcount. 1 focused web search + extraction. Auto-suggests grid edits.",
+        handler="_tool_search_company_team",
+        input_schema={"company_name": "str"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="search_company_market",
+        description="Search for a company's competitors, TAM, market position, industry trends. 1 focused web search + extraction. Auto-suggests grid edits.",
+        handler="_tool_search_company_market",
+        input_schema={"company_name": "str"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="analyze_financials",
+        description="Infer/compute financial metrics: gross margin, burn rate, runway, growth projection, Rule of 40, capital efficiency. Uses stage benchmarks + available data. Auto-suggests grid edits.",
+        handler="_tool_analyze_financials",
+        input_schema={"company_name": "str"},
+        cost_tier="free",
+        timeout_ms=10_000,
+    ),
+
+    # ------------------------------------------------------------------
+    # Batch operations — parallel execution across multiple companies
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="batch_valuate",
+        description="Run valuations across multiple companies in parallel batches of 5. Faster than individual run_valuation calls.",
+        handler="_tool_batch_valuate",
+        input_schema={"companies": "list[str]", "method": "str?"},
+        cost_tier="expensive",
+        timeout_ms=120_000,
+    ),
+    AgentTool(
+        name="batch_enrich",
+        description="Enrich multiple companies in parallel: benchmarks + web search + gap fill. Wrapper around resolve_data_gaps for explicit batch calls.",
+        handler="_tool_batch_enrich",
+        input_schema={"companies": "list[str]", "fields": "list[str]?"},
+        cost_tier="expensive",
+        timeout_ms=120_000,
+    ),
+
+    # ------------------------------------------------------------------
+    # Currency conversion — FX normalization for multi-currency portfolios
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="convert_currency",
+        description="Convert all monetary values in shared_data to target currency. Applies FX rates to revenue, valuation, funding for all companies.",
+        handler="_tool_convert_currency",
+        input_schema={"target_currency": "str", "source_currency": "str?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+
+    # ------------------------------------------------------------------
+    # CRM granular operations — search, log, pipeline
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="crm_search",
+        description="Search CRM (Attio/Affinity) for companies, deals, or notes matching a query.",
+        handler="_tool_crm_search",
+        input_schema={"query": "str", "entity_type": "str?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="crm_log_interaction",
+        description="Log a meeting, call, email, or note to CRM for a company.",
+        handler="_tool_crm_log_interaction",
+        input_schema={"company": "str", "note_type": "str", "content": "str", "title": "str?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="crm_pipeline_update",
+        description="Update deal pipeline stage in CRM. Stages: sourced, screening, dd, ic_review, term_sheet, closed, passed.",
+        handler="_tool_crm_pipeline_update",
+        input_schema={"company": "str", "stage": "str", "deal_value": "float?", "notes": "str?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    # ------------------------------------------------------------------
+    # Memo canvas — primary output tool for incremental analysis
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="write_to_memo",
+        description="Write a section to the analysis memo (prose + optional chart/table). Streams to user in real-time.",
+        handler="_tool_write_to_memo",
+        input_schema={
+            "section_title": "str?",
+            "text": "str",
+            "chart_type": "str?",
+            "chart_data": "dict?",
+            "table": "dict?",
+        },
+        cost_tier="free",
+        timeout_ms=5_000,
+    ),
+
+    # ------------------------------------------------------------------
+    # Micro-skill tools — self-contained, agent-callable portfolio loops
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="run_followon_analysis",
+        description=(
+            "Loop every company in the portfolio grid and flag who needs follow-on capital. "
+            "Checks runway vs burn against stage benchmarks. Companies with <9mo runway are "
+            "flagged URGENT; 9-15mo flagged WATCH. Auto-persists suggestions to grid badges. "
+            "Use when asked 'who needs capital', 'runway check', or 'follow-on'."
+        ),
+        handler="_tool_run_followon_analysis",
+        input_schema={"fund_id": "str?", "runway_threshold_months": "int?"},
+        cost_tier="cheap",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="run_benchmark_scan",
+        description=(
+            "Run stage benchmark analysis across ALL portfolio companies: stage fit, ARR vs benchmark, "
+            "burn rate, growth outliers, valuation coherence. Emits per-company grid suggestions for "
+            "any field that is missing or significantly out of range. Use for 'fill in missing data', "
+            "'benchmark all companies', or 'what fields are missing from my portfolio'."
+        ),
+        handler="_tool_run_portfolio_health",
+        input_schema={"fund_id": "str?", "fields": "list[str]?"},
+        cost_tier="cheap",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="enrich_sparse_companies",
+        description=(
+            "Find companies with 3+ missing core fields and enrich them: Tier 1 instant benchmarks "
+            "then Tier 2 parallel web searches to fill gaps. Emits grid suggestions with sources. "
+            "Use when grid has many blank cells or user asks 'fill in the blanks' / 'enrich my portfolio'."
+        ),
+        handler="_tool_enrich_sparse_companies",
+        input_schema={"fund_id": "str?", "companies": "list[str]?", "fields": "list[str]?", "min_missing": "int?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+
+    # ------------------------------------------------------------------
+    # Sourcing & List Engine — fast local query + scoring
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="source_companies",
+        description=(
+            "Query, filter, score, and rank companies from the database. Fast — no web calls by default. "
+            "Populate filters directly as structured JSON — do NOT pass a natural-language query string. "
+            "Filter keys (all optional): sector (str, ilike), stage (str, e.g. 'Series B'), "
+            "geography (str, matches hq_location), keyword (str, searches name+description+sector+category), "
+            "business_model (str), round_name (str), arr_min/arr_max (number), "
+            "valuation_min/valuation_max (number), funding_min/funding_max (number), "
+            "founded_after/founded_before (int year), has_arr (bool), "
+            "raised_within_months (int, companies that raised within N months), "
+            "latest_round_date_after/latest_round_date_before (str date, e.g. '2024-01-01'). "
+            "sort_by: name|arr|valuation|total_funding|growth_rate|employee_count|founded_year|burn_rate|runway. "
+            "Set enrich_top_n to run microskills (benchmarks + Tavily searches + valuations) on the top N results. "
+            "Set persist_results=true to upsert enriched results back to the DB."
+        ),
+        handler="_tool_source_companies",
+        input_schema={
+            "filters": "dict",
+            "sort_by": "str?",
+            "sort_desc": "bool?",
+            "display": "str?",
+            "max_results": "int?",
+            "target_stage": "str?",
+            "custom_weights": "dict?",
+            "enrich_top_n": "int?",
+            "persist_results": "bool?",
+        },
+        cost_tier="cheap",
+        timeout_ms=60_000,  # 15s for DB-only, up to 60s when enrich_top_n is set
+    ),
 ]
 
-# Quick lookup by name
+# Quick lookup by name (includes ALL tools — agent-visible + internal)
 AGENT_TOOL_MAP: dict[str, AgentTool] = {t.name: t for t in AGENT_TOOLS}
+
+
+# ---------------------------------------------------------------------------
+# Tool Wiring: declarative dependency graph for automatic prerequisite
+# resolution.  Each tool declares the shared_data keys it *requires* and
+# the keys it *produces*.  Before executing any tool, the wiring layer
+# checks shared_data for missing requires and recursively runs whichever
+# tool produces the missing key.  Parallel where independent.
+# ---------------------------------------------------------------------------
+
+TOOL_WIRING: dict[str, dict] = {
+    # ── Core data fetching ─────────────────────────────────────────────
+    "fetch_company_data": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "lightweight_diligence": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "search_companies_db": {
+        "requires": [],
+        "produces": [],
+    },
+    "add_company_to_matrix": {
+        "requires": [],
+        "produces": [],
+    },
+    "enrich_company_proactive": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "build_company_list": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "source_companies": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "search_and_extract": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+
+    # ── Granular company search (no prereqs, feed into companies) ──────
+    "search_company_funding": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "search_company_product": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "search_company_team": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "search_company_market": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "analyze_financials": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+
+    # ── Valuation & analysis ───────────────────────────────────────────
+    "run_valuation": {
+        "requires": ["companies"],
+        "produces": ["valuations", "scenario_analysis"],
+    },
+    "run_scenario": {
+        "requires": ["companies"],
+        "produces": ["scenario_analysis"],
+    },
+    "run_fpa": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+
+    # ── Cap table & ownership (internal — wiring-only) ─────────────────
+    "cap_table_evolution": {
+        "requires": ["companies"],
+        "produces": ["cap_table_history"],
+    },
+    "liquidation_waterfall": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+    "anti_dilution_modeling": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+    "debt_conversion_modeling": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+
+    # ── Financial modeling (internal — wiring-only) ────────────────────
+    "revenue_projection": {
+        "requires": ["companies"],
+        "produces": ["revenue_projections"],
+    },
+    "run_projection": {
+        "requires": ["companies"],
+        "produces": ["revenue_projections"],
+    },
+
+    # ── Scenario trees & cash flow ────────────────────────────────────
+    "run_scenario_tree": {
+        "requires": ["companies"],
+        "produces": ["scenario_analysis"],
+    },
+    "run_cash_flow_model": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+
+    # ── Scenario & stress testing (internal — wiring-only) ─────────────
+    "stress_test_portfolio": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+    "world_model_scenario": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+    "monte_carlo_portfolio": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+    "sensitivity_matrix": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+
+    # ── Portfolio operations ───────────────────────────────────────────
+    "run_portfolio_health": {
+        "requires": ["companies"],
+        "produces": ["portfolio_health"],
+    },
+    "run_followon_strategy": {
+        "requires": ["companies"],
+        "produces": ["followon_strategy"],
+    },
+    "run_exit_modeling": {
+        "requires": ["companies"],
+        "produces": ["exit_modeling"],
+    },
+    "run_round_modeling": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+    "run_regression": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+
+    # ── Generation ──
+    # Memo and deck declare heavier prereqs so the wiring layer auto-resolves
+    # valuations, cap tables, and scenarios BEFORE generation starts.
+    # _hydrate_shared_data_from_companies provides lightweight fallbacks for
+    # any keys the real tools fail to populate.
+    "generate_memo": {
+        "requires": ["companies", "valuations", "cap_table_history", "scenario_analysis"],
+        "produces": ["memo_artifacts"],
+    },
+    "generate_deck": {
+        "requires": ["companies", "valuations", "cap_table_history", "scenario_analysis"],
+        "produces": ["deck_slides"],
+    },
+    "generate_ic_memo": {
+        "requires": ["companies"],
+        "produces": ["memo_artifacts"],
+    },
+    "generate_followon_memo": {
+        "requires": ["companies", "followon_strategy"],
+        "produces": ["memo_artifacts"],
+    },
+    "generate_lp_report": {
+        "requires": ["companies", "fund_metrics", "portfolio_health"],
+        "produces": ["memo_artifacts"],
+    },
+    "generate_gp_update": {
+        "requires": ["companies", "fund_metrics", "portfolio_health"],
+        "produces": ["memo_artifacts"],
+    },
+    "generate_comparison_report": {
+        "requires": ["companies"],
+        "produces": ["memo_artifacts"],
+    },
+    "generate_plan_memo": {
+        "requires": ["companies"],
+        "produces": ["memo_artifacts"],
+    },
+    "run_report": {
+        "requires": ["companies"],
+        "produces": ["memo_artifacts"],
+    },
+
+    # ── Fund metrics & intelligence ────────────────────────────────────
+    "calculate_fund_metrics": {
+        "requires": [],
+        "produces": ["fund_metrics"],
+    },
+    "query_portfolio": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "query_documents": {
+        "requires": [],
+        "produces": [],
+    },
+    "portfolio_comparison": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+    "graduation_rates": {
+        "requires": [],
+        "produces": [],
+    },
+    "bulk_operation": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+    "add_company_to_portfolio": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "enrich_portfolio": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "enrich_sparse_grid": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "resolve_data_gaps": {
+        "requires": ["companies"],
+        "produces": ["companies"],
+    },
+    "enrich_cell": {
+        "requires": [],
+        "produces": [],
+    },
+
+    # ── Market & intelligence ──────────────────────────────────────────
+    "market_landscape": {
+        "requires": [],
+        "produces": [],
+    },
+    "market_timing": {
+        "requires": [],
+        "produces": [],
+    },
+    "company_history": {
+        "requires": [],
+        "produces": [],
+    },
+
+    # ── Financial calculators ──────────────────────────────────────────
+    "financial_calculator": {
+        "requires": [],
+        "produces": [],
+    },
+    "fund_deployment_model": {
+        "requires": [],
+        "produces": [],
+    },
+    "fx_check": {
+        "requires": [],
+        "produces": [],
+    },
+    "fx_portfolio_impact": {
+        "requires": [],
+        "produces": [],
+    },
+
+    # ── Compliance & M&A ───────────────────────────────────────────────
+    "compliance_check": {
+        "requires": [],
+        "produces": [],
+    },
+    "ma_workflow": {
+        "requires": [],
+        "produces": [],
+    },
+
+    # ── Misc agent tools ───────────────────────────────────────────────
+    "web_search": {
+        "requires": [],
+        "produces": [],
+    },
+    "suggest_grid_edit": {
+        "requires": [],
+        "produces": [],
+    },
+    "suggest_action": {
+        "requires": [],
+        "produces": [],
+    },
+    "write_to_memo": {
+        "requires": [],
+        "produces": [],
+    },
+    "generate_chart": {
+        "requires": [],
+        "produces": [],
+    },
+    "parse_accounts": {
+        "requires": [],
+        "produces": [],
+    },
+    "run_skill": {
+        "requires": [],
+        "produces": [],
+    },
+    "reason_company_list": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+    "emit_todo": {
+        "requires": [],
+        "produces": [],
+    },
+    "write_to_memo": {
+        "requires": [],
+        "produces": [],
+    },
+    "sync_crm": {
+        "requires": [],
+        "produces": [],
+    },
+
+    # ── Batch operations ──────────────────────────────────────────────
+    "batch_valuate": {
+        "requires": ["companies"],
+        "produces": ["valuations"],
+    },
+    "batch_enrich": {
+        "requires": [],
+        "produces": ["companies"],
+    },
+    "convert_currency": {
+        "requires": ["companies"],
+        "produces": [],
+    },
+}
+
+# Reverse index: shared_data key → which tool produces it.
+# Used by _resolve_prerequisites to know what to call for missing data.
+_PRODUCED_BY: dict[str, str] = {}
+for _tool_name, _wiring in TOOL_WIRING.items():
+    for _key in _wiring.get("produces", []):
+        if _key not in _PRODUCED_BY:
+            _PRODUCED_BY[_key] = _tool_name
+
+# ---------------------------------------------------------------------------
+# Prompt-injected vs callable-only tools.
+# _INTERNAL_TOOLS are NOT in the agent prompt (saves tokens, avoids
+# duplicates) but remain fully callable via _execute_tool() and wiring.
+# Only true duplicates/meta-dispatchers belong here — every real tool
+# is modular and the agent picks what it needs, no forced workflows.
+# ---------------------------------------------------------------------------
+
+_INTERNAL_TOOLS: set[str] = {
+    # Memo sub-types — duplicates of generate_memo(memo_type=...)
+    "generate_ic_memo",
+    "generate_followon_memo",
+    "generate_lp_report",
+    "generate_gp_update",
+    "generate_comparison_report",
+    "generate_plan_memo",
+    # Meta-dispatchers
+    "run_skill",
+    "run_report",
+    # Internal reasoning step
+    "reason_company_list",
+}
+
+# Agent-visible tools: everything NOT in _INTERNAL_TOOLS
+AGENT_VISIBLE_TOOLS: list[AgentTool] = [t for t in AGENT_TOOLS if t.name not in _INTERNAL_TOOLS]
+
+# Quick lookup for agent-visible tools only (used by agent loop)
+AGENT_VISIBLE_TOOL_MAP: dict[str, AgentTool] = {t.name: t for t in AGENT_VISIBLE_TOOLS}
+
+# Full map — every tool is callable via _execute_tool regardless of visibility
+ALL_TOOL_MAP: dict[str, AgentTool] = {t.name: t for t in AGENT_TOOLS}
+
+# ---------------------------------------------------------------------------
+# Intent-based tool scoping — EXPLICIT per-intent tool lists.
+#
+# Each intent gets exactly the 5-12 tools it actually needs.  No category
+# unions, no snowballing.  All tools remain callable via _execute_tool()
+# and wiring regardless — this only controls what appears in the agent prompt.
+#
+# Design principles:
+#   1. Every tool in a list must be plausibly the FIRST tool an agent picks.
+#   2. Prerequisite tools (e.g. fetch_company_data for run_valuation) are
+#      auto-resolved by TOOL_WIRING — they don't need to be in the prompt.
+#   3. "core" grab-bag is gone.  Each intent gets curated picks.
+#   4. When in doubt, leave a tool OUT.  The agent can't misuse what it
+#      can't see, and wiring will still pull it in when needed.
+# ---------------------------------------------------------------------------
+
+INTENT_TOOLS: dict[str, list[str]] = {
+    # --- Lookup & enrichment ---
+    "company_lookup": [
+        "fetch_company_data",       # primary action
+        "search_and_extract",       # web research fallback
+        "query_portfolio",          # check if already in portfolio
+        "lightweight_diligence",    # quick snapshot
+        "add_company_to_matrix",    # user may want to save it
+        "emit_todo",                # track follow-ups
+    ],
+    "enrichment": [
+        "enrich_cell",              # single-cell fill
+        "enrich_sparse_grid",       # bulk grid fill
+        "resolve_data_gaps",        # targeted gap filling
+        "suggest_grid_edit",        # propose edits
+        "query_portfolio",          # read current state
+        "web_search",               # supplemental research
+    ],
+    "grid_edit": [
+        "suggest_grid_edit",        # primary action
+        "enrich_cell",              # fill during edit
+        "resolve_data_gaps",        # fix gaps found during edit
+        "query_portfolio",          # read current grid
+        "suggest_action",           # propose next steps
+    ],
+
+    # --- Analysis ---
+    "valuation": [
+        "run_valuation",            # primary action (auto-fetches company)
+        "cap_table_evolution",      # ownership context
+        "run_scenario",             # exit scenarios
+        "generate_chart",           # visualize results
+        "query_portfolio",          # portfolio context
+        "analyze_financials",       # financial detail
+    ],
+    "scenario": [
+        "run_scenario",             # primary action
+        "run_scenario_tree",        # branching scenario trees
+        "run_bull_bear_base",       # bull/bear/base scenarios
+        "apply_macro_shock",        # macro event impact analysis
+        "portfolio_snapshot",       # point-in-time portfolio state
+        "three_scenario_cash_flow", # bull/base/bear P&L models
+        "run_projection",           # revenue projections
+        "run_fpa",                  # FP&A: forecast, stress test
+        "run_regression",           # regression, monte carlo, sensitivity
+        "sensitivity_matrix",       # sensitivity analysis
+        "monte_carlo_portfolio",    # probabilistic modeling
+        "run_cash_flow_model",      # P&L / cash flow modeling
+        "generate_chart",           # visualize
+        "query_portfolio",          # portfolio context
+    ],
+    "forecast": [
+        "run_fpa",                  # primary: FP&A forecast, stress test
+        "run_bull_bear_base",       # bull/bear/base scenario modeling
+        "three_scenario_cash_flow", # 3-scenario P&L
+        "run_regression",           # regression, monte carlo, sensitivity, time-series
+        "run_projection",           # revenue projections with decay
+        "run_scenario_tree",        # branching growth scenarios
+        "run_cash_flow_model",      # full P&L / cash flow model
+        "sensitivity_matrix",       # 2D sensitivity analysis
+        "monte_carlo_portfolio",    # probabilistic portfolio modeling
+        "run_scenario",             # scenario composition
+        "generate_chart",           # visualize results (tornado, histogram, etc.)
+        "query_portfolio",          # portfolio context for company data
+    ],
+    # Aliases — route to same toolset as "forecast" / "scenario"
+    "regression": [
+        "run_regression",           # primary: regression analysis
+        "run_fpa",                  # broader FP&A context
+        "run_projection",           # revenue projections
+        "generate_chart",           # visualize regression results
+        "query_portfolio",          # portfolio context
+    ],
+    "sensitivity": [
+        "sensitivity_matrix",       # primary: 2D sensitivity analysis
+        "run_regression",           # sensitivity via regression tool
+        "run_fpa",                  # broader FP&A context
+        "generate_chart",           # tornado chart visualization
+        "query_portfolio",          # portfolio context
+    ],
+    "monte_carlo": [
+        "monte_carlo_portfolio",    # primary: MC simulation
+        "run_regression",           # MC via regression tool
+        "run_projection",           # revenue projections
+        "generate_chart",           # histogram visualization
+        "query_portfolio",          # portfolio context
+    ],
+    "comparison": [
+        "query_portfolio",          # read companies to compare
+        "run_valuation",            # value each company
+        "generate_chart",           # comparison charts
+        "portfolio_comparison",     # side-by-side metrics
+        "generate_deck",            # output as deck
+        "generate_memo",            # output as memo
+    ],
+
+    # --- Generation ---
+    "memo": [
+        "generate_memo",            # primary action (auto-resolves prereqs)
+        "generate_chart",           # embed charts
+        "write_to_memo",            # append to existing memo
+        "query_portfolio",          # read company data
+        "web_search",               # supplemental research
+        "emit_todo",                # track follow-ups
+    ],
+    "deck": [
+        "generate_deck",            # primary action (auto-resolves prereqs)
+        "generate_chart",           # custom charts for slides
+        "query_portfolio",          # read company data
+        "run_valuation",            # ensure valuations exist
+        "cap_table_evolution",      # cap table slides
+        "web_search",               # supplemental research
+    ],
+
+    # --- Portfolio & fund ---
+    "portfolio": [
+        "query_portfolio",          # primary read
+        "run_portfolio_health",     # health dashboard
+        "calculate_fund_metrics",   # DPI, TVPI, IRR
+        "enrich_portfolio",         # fill missing data
+        "generate_chart",           # portfolio charts
+        "run_followon_strategy",    # follow-on analysis
+        "emit_todo",                # action items
+    ],
+    "sourcing": [
+        "source_companies",         # primary action — fast DB query + scoring
+        "query_portfolio",          # portfolio context
+        "generate_chart",           # visualize results
+        "build_company_list",       # fallback to web discovery
+        "suggest_grid_edit",        # push to grid
+    ],
+    "market": [
+        "market_landscape",         # primary action
+        "source_companies",         # fast DB lookup for market mapping
+        "market_timing",            # market timing analysis
+        "web_search",               # supplemental research
+        "search_and_extract",       # structured extraction
+        "lightweight_diligence",    # quick company scans
+        "generate_chart",           # market maps
+    ],
+
+    # --- Specialized ---
+    "fx": [
+        "convert_currency",         # single conversion
+        "fx_check",                 # rate lookup
+        "fx_portfolio_impact",      # portfolio-wide FX exposure
+        "query_portfolio",          # read portfolio for FX calc
+    ],
+
+    # --- Fallback: intentionally broader but still curated ---
+    "general": [
+        "fetch_company_data",       # most common need
+        "query_portfolio",          # read state
+        "web_search",               # research
+        "suggest_action",           # help user decide
+        "generate_chart",           # visualize anything
+        "run_valuation",            # common analysis
+        "generate_memo",            # common output
+        "emit_todo",                # track items
+    ],
+}
+
+
+def get_tools_for_intent(intent: str) -> list[AgentTool]:
+    """Return agent-visible tools for a classified intent.
+
+    Uses INTENT_TOOLS for explicit per-intent scoping.  Falls back to
+    the 'general' list for unknown intents (never dumps everything).
+    All tools remain callable via _execute_tool() and wiring regardless.
+    """
+    tool_names = INTENT_TOOLS.get(intent, INTENT_TOOLS["general"])
+    tool_set = set(tool_names)
+    # Preserve declaration order from INTENT_TOOLS for prompt consistency
+    return [
+        t for name in tool_names
+        for t in [AGENT_VISIBLE_TOOL_MAP.get(name)]
+        if t is not None
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Flexible intent classification & plan-based chaining
+# ---------------------------------------------------------------------------
+
+@dataclass
+class QueryClassification:
+    """Flexible intent classification — NOT a rigid enum.
+
+    The LLM classifies the intent as a free-form string; keyword
+    matching is only a fast-path fallback.
+    """
+    complexity: str  # "simple" | "dealflow" | "complex"
+    intent: str  # Free-form, e.g. "portfolio_overview", "company_research", etc.
+    suggested_chain: Optional[List[str]] = None  # Tool names in suggested order
+    needs_portfolio: bool = False  # Touches existing portfolio data
+    needs_external: bool = False  # Needs to fetch external (non-portfolio) company data
+    confidence: float = 1.0
+
+
+@dataclass
+class PlanStep:
+    """A single step in an execution plan."""
+    id: str
+    label: str
+    tool: str
+    inputs: Dict[str, Any] = field(default_factory=dict)
+    depends_on: List[str] = field(default_factory=list)  # Step IDs this depends on
+    status: str = "pending"  # "pending" | "running" | "done" | "failed" | "skipped"
+    output: Optional[Any] = None
+
+
+@dataclass
+class ExecutionPlan:
+    """Lightweight execution plan — can be auto-generated or from templates."""
+    intent: str
+    steps: List[PlanStep] = field(default_factory=list)
+    context: Dict[str, Any] = field(default_factory=dict)  # Accumulated results
+    source: str = "auto"  # "template" | "llm" | "auto"
+
+
+@dataclass
+class Artifact:
+    """Unified artifact produced by the agent — charts, tables, memos, etc."""
+    type: str       # "memo_section", "chart", "grid_command", "suggestion", "table", "cap_table", "scenario_result", "plan"
+    action: str     # "append", "replace", "pin", "suggest"
+    data: Dict[str, Any] = field(default_factory=dict)
+    target: Optional[str] = None  # "memo", "grid", "chat", "docs_panel"
+    requires_approval: bool = False
+
+
+@dataclass
+class SessionPlan:
+    """In-memory execution plan with lifecycle tracking.
+
+    Lives in shared_data — expires with the session.  Optionally serialized
+    to the documents table for cross-session resume (see PlanContext).
+    """
+    plan_id: str
+    intent: str
+    prompt: str                             # Original user prompt
+    steps: List[PlanStep] = field(default_factory=list)
+    status: Dict[str, str] = field(default_factory=dict)  # step_id → status
+    results: Dict[str, Any] = field(default_factory=dict)  # step_id → output
+    created_at: str = ""                    # ISO timestamp
+    updated_at: str = ""                    # ISO timestamp
+    source: str = "auto"                    # "template" | "llm" | "auto"
+
+    def __post_init__(self):
+        now = datetime.utcnow().isoformat()
+        if not self.created_at:
+            self.created_at = now
+        if not self.updated_at:
+            self.updated_at = now
+        # Ensure status map is in sync with steps
+        for step in self.steps:
+            if step.id not in self.status:
+                self.status[step.id] = step.status
+
+    def mark_running(self, step_id: str):
+        self.status[step_id] = "running"
+        for s in self.steps:
+            if s.id == step_id:
+                s.status = "running"
+        self.updated_at = datetime.utcnow().isoformat()
+
+    def mark_done(self, step_id: str, output: Any = None):
+        self.status[step_id] = "done"
+        if output is not None:
+            self.results[step_id] = output
+        for s in self.steps:
+            if s.id == step_id:
+                s.status = "done"
+                s.output = output
+        self.updated_at = datetime.utcnow().isoformat()
+
+    def mark_failed(self, step_id: str, error: str = ""):
+        self.status[step_id] = "failed"
+        self.results[step_id] = {"error": error}
+        for s in self.steps:
+            if s.id == step_id:
+                s.status = "failed"
+        self.updated_at = datetime.utcnow().isoformat()
+
+    def mark_skipped(self, step_id: str):
+        self.status[step_id] = "skipped"
+        for s in self.steps:
+            if s.id == step_id:
+                s.status = "skipped"
+        self.updated_at = datetime.utcnow().isoformat()
+
+    def next_pending(self) -> Optional[PlanStep]:
+        for s in self.steps:
+            if s.status == "pending":
+                return s
+        return None
+
+    def runnable_steps(self) -> List[PlanStep]:
+        """Return all pending steps whose dependencies are met (done/skipped)."""
+        resolved = {sid for sid, st in self.status.items() if st in ("done", "skipped")}
+        return [
+            s for s in self.steps
+            if s.status == "pending" and all(d in resolved for d in s.depends_on)
+        ]
+
+    def is_complete(self) -> bool:
+        return all(st in ("done", "skipped", "failed") for st in self.status.values())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "plan_id": self.plan_id,
+            "intent": self.intent,
+            "prompt": self.prompt,
+            "steps": [
+                {"id": s.id, "label": s.label, "tool": s.tool, "inputs": s.inputs,
+                 "depends_on": s.depends_on, "status": s.status}
+                for s in self.steps
+            ],
+            "results": {k: self._safe_serialize(v) for k, v in self.results.items()},
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "source": self.source,
+        }
+
+    @staticmethod
+    def _safe_serialize(v: Any) -> Any:
+        """Best-effort JSON-safe representation."""
+        if isinstance(v, dict):
+            return v
+        try:
+            json.dumps(v)
+            return v
+        except (TypeError, ValueError):
+            return str(v)
+
+    def persist_to_db(self, fund_id: Optional[str] = None) -> bool:
+        """Persist SessionPlan to documents table for cross-session resume."""
+        try:
+            supabase_url = settings.SUPABASE_URL
+            supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+            if not supabase_url or not supabase_key:
+                return False
+            from supabase import create_client
+            sb = create_client(supabase_url, supabase_key)
+            plan_data = self.to_dict()
+            sb.table("processed_documents").upsert({
+                "id": self.plan_id,
+                "document_type": "session_plan",
+                "title": f"Plan: {self.prompt[:80]}",
+                "fund_id": fund_id,
+                "extracted_data": plan_data,
+                "processing_status": "complete" if self.is_complete() else "in_progress",
+            }, on_conflict="id").execute()
+            logger.info(f"[PLAN] Persisted SessionPlan {self.plan_id} to DB")
+            return True
+        except Exception as e:
+            logger.warning(f"[PLAN] Failed to persist SessionPlan: {e}")
+            return False
+
+    @classmethod
+    def load_from_db(cls, plan_id: str) -> Optional["SessionPlan"]:
+        """Load a SessionPlan from the documents table."""
+        try:
+            supabase_url = settings.SUPABASE_URL
+            supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+            if not supabase_url or not supabase_key:
+                return None
+            from supabase import create_client
+            sb = create_client(supabase_url, supabase_key)
+            result = sb.table("processed_documents").select("extracted_data").eq(
+                "id", plan_id
+            ).eq("document_type", "session_plan").limit(1).execute()
+            if not result.data:
+                return None
+            plan_data = result.data[0].get("extracted_data", {})
+            steps = [
+                PlanStep(
+                    id=s["id"], label=s["label"], tool=s["tool"],
+                    inputs=s.get("inputs", {}),
+                    depends_on=s.get("depends_on", []),
+                    status=s.get("status", "pending"),
+                )
+                for s in plan_data.get("steps", [])
+            ]
+            plan = cls(
+                plan_id=plan_data.get("plan_id", plan_id),
+                intent=plan_data.get("intent", ""),
+                prompt=plan_data.get("prompt", ""),
+                steps=steps,
+                results=plan_data.get("results", {}),
+                source=plan_data.get("source", "db"),
+            )
+            return plan
+        except Exception as e:
+            logger.warning(f"[PLAN] Failed to load SessionPlan {plan_id}: {e}")
+            return None
+
+    @classmethod
+    def load_recent(cls, fund_id: Optional[str] = None, limit: int = 3) -> List["SessionPlan"]:
+        """Load recent incomplete SessionPlans for a fund."""
+        try:
+            supabase_url = settings.SUPABASE_URL
+            supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+            if not supabase_url or not supabase_key:
+                return []
+            from supabase import create_client
+            sb = create_client(supabase_url, supabase_key)
+            query = sb.table("processed_documents").select("extracted_data").eq(
+                "document_type", "session_plan"
+            ).eq("processing_status", "in_progress").order(
+                "created_at", desc=True
+            ).limit(limit)
+            if fund_id:
+                query = query.eq("fund_id", fund_id)
+            result = query.execute()
+            plans = []
+            for row in (result.data or []):
+                plan_data = row.get("extracted_data", {})
+                steps = [
+                    PlanStep(
+                        id=s["id"], label=s["label"], tool=s["tool"],
+                        inputs=s.get("inputs", {}),
+                        depends_on=s.get("depends_on", []),
+                        status=s.get("status", "pending"),
+                    )
+                    for s in plan_data.get("steps", [])
+                ]
+                plans.append(cls(
+                    plan_id=plan_data.get("plan_id", ""),
+                    intent=plan_data.get("intent", ""),
+                    prompt=plan_data.get("prompt", ""),
+                    steps=steps,
+                    results=plan_data.get("results", {}),
+                    source="db",
+                ))
+            return plans
+        except Exception as e:
+            logger.warning(f"[PLAN] Failed to load recent plans: {e}")
+            return []
+
+
+@dataclass
+class PlanContext:
+    """Accumulated knowledge that bridges plan-mode to execution-mode — and
+    across sessions when serialized to the documents table.
+
+    Within a session: lives in shared_data['plan_context'].
+    Across sessions: serialized as a single JSON blob into the existing
+    ``documents`` table with ``document_type = 'session_context'``.
+    """
+    session_id: str
+    findings: Dict[str, Any] = field(default_factory=dict)      # research results keyed by entity/topic
+    fetched_data: Dict[str, Any] = field(default_factory=dict)   # company data, metrics already retrieved
+    reasoning: List[str] = field(default_factory=list)           # chain of reasoning steps
+    entity_refs: Dict[str, str] = field(default_factory=dict)    # resolved entity names → IDs
+    artifacts: List[Dict[str, Any]] = field(default_factory=list)  # serialized Artifact dicts
+    plan: Optional[Dict[str, Any]] = None                        # serialized SessionPlan
+    updated_at: str = ""
+
+    def __post_init__(self):
+        if not self.updated_at:
+            self.updated_at = datetime.utcnow().isoformat()
+
+    def record_finding(self, key: str, value: Any):
+        self.findings[key] = value
+        self.updated_at = datetime.utcnow().isoformat()
+
+    def record_reasoning(self, step: str):
+        self.reasoning.append(step)
+        self.updated_at = datetime.utcnow().isoformat()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "findings": self.findings,
+            "fetched_data": self.fetched_data,
+            "reasoning": self.reasoning,
+            "entity_refs": self.entity_refs,
+            "artifacts": self.artifacts,
+            "plan": self.plan,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "PlanContext":
+        return cls(
+            session_id=d.get("session_id", ""),
+            findings=d.get("findings", {}),
+            fetched_data=d.get("fetched_data", {}),
+            reasoning=d.get("reasoning", []),
+            entity_refs=d.get("entity_refs", {}),
+            artifacts=d.get("artifacts", []),
+            plan=d.get("plan"),
+            updated_at=d.get("updated_at", ""),
+        )
+
+
+# Plan templates: optional guidance for the LLM, not rigid constraints.
+# Keys are common intent patterns; values are suggested tool chains.
+PLAN_TEMPLATES: Dict[str, List[str]] = {
+    "company_research": ["fetch_company_data", "run_valuation", "generate_chart"],
+    "portfolio_overview": ["query_portfolio", "run_portfolio_health", "calculate_fund_metrics", "generate_chart"],
+    "company_deep_dive": ["query_portfolio", "run_portfolio_health", "run_valuation", "run_exit_modeling", "generate_chart"],
+    "ic_memo": ["fetch_company_data", "run_valuation", "cap_table_evolution", "generate_ic_memo"],
+    "comparison": ["fetch_company_data", "run_valuation", "portfolio_comparison", "generate_comparison_report"],
+    "stress_test": ["query_portfolio", "stress_test_portfolio", "run_regression", "generate_chart"],
+    "exit_analysis": ["query_portfolio", "run_exit_modeling", "liquidation_waterfall", "generate_chart"],
+    "deck_generation": ["fetch_company_data", "run_valuation", "cap_table_evolution", "generate_deck"],
+    "lp_report": ["query_portfolio", "calculate_fund_metrics", "run_portfolio_health", "generate_lp_report"],
+    "round_modeling": ["query_portfolio", "run_round_modeling", "anti_dilution_modeling", "generate_chart"],
+    "followon_decision": ["query_portfolio", "run_followon_strategy", "run_round_modeling", "generate_followon_memo"],
+    "fund_metrics": ["calculate_fund_metrics", "query_portfolio", "generate_chart"],
+    # Phase 3: New plan templates using new tools
+    "cap_table_analysis": ["fetch_company_data", "cap_table_evolution", "liquidation_waterfall", "generate_chart"],
+    "ma_analysis": ["fetch_company_data", "ma_workflow", "run_valuation", "generate_chart"],
+    "market_research": ["market_landscape", "market_timing", "web_search", "generate_chart"],
+    "fund_deployment": ["calculate_fund_metrics", "fund_deployment_model", "revenue_projection", "generate_chart"],
+    "compliance_review": ["compliance_check", "query_portfolio", "generate_report"],
+    "scenario_analysis": ["fetch_company_data", "world_model_scenario", "sensitivity_matrix", "generate_chart"],
+    "portfolio_stress": ["query_portfolio", "stress_test_portfolio", "monte_carlo_portfolio", "generate_chart"],
+    "gp_update": ["query_portfolio", "calculate_fund_metrics", "fund_deployment_model", "generate_gp_update"],
+    # Phase 8: New plan templates
+    "proactive_enrichment": ["enrich_company_proactive", "suggest_grid_edit", "generate_chart"],
+    "company_list_building": ["build_company_list", "run_valuation", "generate_memo"],
+    "projection_analysis": ["query_portfolio", "run_projection", "generate_chart"],
+    "forecast_analysis": ["run_fpa", "run_regression", "run_projection", "sensitivity_matrix", "generate_chart"],
+    "revenue_forecast": ["query_portfolio", "run_fpa", "run_projection", "generate_chart"],
+    "monte_carlo_analysis": ["query_portfolio", "monte_carlo_portfolio", "generate_chart"],
+    "sensitivity_analysis": ["query_portfolio", "run_regression", "sensitivity_matrix", "generate_chart"],
+    "search_extract_combo": ["search_and_extract", "run_valuation", "suggest_grid_edit"],
+    "sparse_grid_enrich": ["enrich_sparse_grid", "suggest_grid_edit"],
+    "sourcing": ["source_companies", "generate_chart"],
+    "sourcing_with_web": ["source_companies", "build_company_list", "generate_memo"],
+    "market_mapping": ["source_companies", "build_company_list", "web_search", "generate_memo"],
+    # Phase 9: Gap-resolution-first templates
+    "followon_analysis": ["resolve_data_gaps", "run_valuation", "cap_table_evolution", "run_followon_strategy", "run_round_modeling", "run_projection", "generate_memo"],
+    "enrichment_first": ["resolve_data_gaps", "suggest_grid_edit", "generate_memo"],
+    "company_list_dynamic": ["build_company_list", "resolve_data_gaps", "run_valuation", "generate_memo", "generate_chart"],
+}
 
 
 @dataclass
@@ -700,6 +2437,12 @@ class UnifiedMCPOrchestrator:
         self.nl_scenario_composer = NLScenarioComposer() if NLScenarioComposer else None
         self.company_history_service = CompanyHistoryAnalysisService() if CompanyHistoryAnalysisService else None
 
+        # Phase 3: Additional services for new agent tools
+        self.market_intelligence = MarketIntelligenceService() if MarketIntelligenceService else None
+        self.ma_service = MAWorkflowService() if MAWorkflowService else None
+        self.compliance_service = EnhancedComplianceService() if EnhancedComplianceService else None
+        self.financial_calculator = FinancialCalculator() if FinancialCalculator else None
+
         # Error handler for retry + circuit breaker
         self.error_handler = global_error_handler
 
@@ -757,6 +2500,54 @@ class UnifiedMCPOrchestrator:
         except Exception as exc:
             logger.warning(f"[SERVICE_RELOAD] Unable to reload valuation_engine_service: {exc}, using original imports")
             return valuation_module.ValuationEngineService()
+
+    def _build_system_prompt(self, task_instruction: str) -> str:
+        """Build a system prompt with dynamic fund context instead of hardcoded values."""
+        fund_ctx = self.shared_data.get("fund_context", {})
+        fund_size = fund_ctx.get("fund_size", fund_ctx.get("fundSize", DEFAULT_FUND_SIZE))
+        strategy = fund_ctx.get("strategy", DEFAULT_FUND_STRATEGY)
+        remaining = fund_ctx.get("remaining_capital", fund_ctx.get("remainingCapital"))
+        fund_year = fund_ctx.get("fund_year", fund_ctx.get("fundYear", DEFAULT_FUND_YEAR))
+        check_min = fund_ctx.get("check_size_min", 5_000_000)
+        check_max = fund_ctx.get("check_size_max", 20_000_000)
+        target_ownership = fund_ctx.get("target_ownership_pct", 10)
+
+        size_str = f"${fund_size / 1e6:.0f}M" if fund_size else f"${DEFAULT_FUND_SIZE / 1e6:.0f}M"
+        fund_line = f"{size_str} {strategy} fund"
+        if remaining:
+            fund_line += f", ${remaining / 1e6:.0f}M remaining to deploy"
+        if fund_year:
+            fund_line += f", Year {fund_year}"
+
+        return (
+            f"You are an investment analyst agent for a {fund_line} "
+            f"(${check_min / 1e6:.0f}–${check_max / 1e6:.0f}M checks, target {target_ownership}% entry ownership, 1/3 reserves for follow-on). "
+            "Reason from evidence to decision — never from question to summary.\n\n"
+            "RULES:\n"
+            "- DATA FIRST: if revenue, ARR, or valuation is missing, fetch it before writing. Never write with gaps.\n"
+            "- Lead with the number or fact that changes the decision. No preamble.\n"
+            "- Mark inferred data: 'ARR ~$8M (inferred from headcount + stage, 70% confidence)'.\n"
+            "- NEVER say 'no data available' — present estimates with ranges and confidence.\n"
+            "- Every financial comparison gets a chart. Every multi-company comparison gets a table.\n"
+            "- Cite sources inline: 'ARR $8M ([TechCrunch Jan 2025](url))'. Not as a footer list.\n\n"
+            "TOOLS:\n"
+            "- Data: company-data-fetcher, market-sourcer, competitive-intelligence, search-extract-combo, sparse-grid-enricher\n"
+            "- Valuation: valuation-engine (DCF/comps/cost/milestone), pwerm-calculator, waterfall-calculator, cap-table-generator, exit-modeler, round-modeler, followon-strategy, debt-converter\n"
+            "- Analysis: scenario-generator, financial-analyzer, deal-comparer, team-comparison, monte-carlo-simulator, sensitivity-analyzer, time-series-forecaster, revenue-projector\n"
+            "- Portfolio: portfolio-analyzer, fund-metrics-calculator, bulk-valuation, fund-analyzer, followon-deep-dive\n"
+            "- Grid: nl-matrix-controller — edit cells, write enrichment back to matrix (ARR, valuation, ownership, runway)\n"
+            "- Memos (memo-writer, memo_type=...): ic_memo, followon, followon_deep_dive, lp_report, lp_quarterly_enhanced, gp_strategy, "
+            "comparison, competitive_landscape, diligence_memo, market_dynamics, team_comparison, ownership_analysis, "
+            "portfolio_construction, pipeline_review, fund_analysis, bespoke_lp, comparable_analysis, company_list, citation_report\n"
+            "- Charts (chart-generator): probability_cloud (return distribution p10–p90), waterfall (exit proceeds/NAV), "
+            "bar_comparison, scatter_multiples (multiple vs growth), cap_table_sankey, revenue_forecast, "
+            "dpi_sankey, bull_bear_base, radar_comparison (team scoring)\n"
+            "- Deck: deck-storytelling (16–18 slide investment presentation)\n\n"
+            "MEMO RULE: For formal deliverables (IC memo, LP report, comparison) — fetch data → run valuations → generate cap table THEN call memo-writer. "
+            "Use write_to_memo only for exploratory inline analysis.\n"
+            "CHART RULE: Charts are analytical tools. State what the chart reveals before rendering it.\n\n"
+            f"{task_instruction}"
+        )
 
     def _initialize_skill_registry(self) -> Dict[str, Dict[str, Any]]:
         """Initialize the skill registry with 36+ skills"""
@@ -916,6 +2707,127 @@ class UnifiedMCPOrchestrator:
                 "description": "Portfolio health: growth decay, burn/runway, funding trajectory, signals"
             },
 
+            # Phase 3: Expanded skill registry — wire remaining services
+            "deck-quality-validator": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_deck_quality_validation,
+                "description": "Validate deck quality: hardcoded defaults, estimation markers, consistency"
+            },
+            "slide-content-optimizer": {
+                "category": SkillCategory.GENERATION,
+                "handler": self._execute_slide_optimization,
+                "description": "Optimize slide text, bullets, metrics for presentation"
+            },
+            "formula-evaluator": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_formula_evaluation,
+                "description": "Evaluate Excel-like formulas with cell references and functions"
+            },
+            "arithmetic-engine": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_arithmetic,
+                "description": "Sum, avg, median, percentile, rank, stdev and other calculations"
+            },
+            "company-history-analyzer": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_company_history,
+                "description": "Full company history with funding rounds, investors, DPI Sankey"
+            },
+            "nl-matrix-controller": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_nl_matrix_command,
+                "description": "Natural language to matrix commands: show columns, filter, sort"
+            },
+            "waterfall-calculator": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_waterfall_calculation,
+                "description": "Liquidation waterfall with investor distributions at exit"
+            },
+            "debt-converter": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_debt_conversion,
+                "description": "Model SAFE/convertible note conversions and debt instruments"
+            },
+            "market-landscape": {
+                "category": SkillCategory.DATA_GATHERING,
+                "handler": self._execute_market_landscape,
+                "description": "Competitive landscape by sector, geography, stage"
+            },
+            "revenue-projector": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_revenue_projection,
+                "description": "Revenue projection with quality-adjusted decay curves"
+            },
+            "compliance-checker": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_compliance_check,
+                "description": "Filing requirements, Form ADV, regulatory calendar"
+            },
+            "ma-modeler": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_ma_modeling,
+                "description": "M&A deal modeling with synergies and integration risk"
+            },
+
+            # Phase 7: Enhanced Agent Skills — bulk ops, LP queries, team comparison
+            "bulk-valuation": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_bulk_valuation,
+                "description": "Run valuation engine across all portfolio companies in parallel"
+            },
+            "multi-enrich": {
+                "category": SkillCategory.DATA_GATHERING,
+                "handler": self._execute_multi_enrich,
+                "description": "Enrich multiple companies with dynamic Tavily searches based on data gaps"
+            },
+            "lp-query-response": {
+                "category": SkillCategory.GENERATION,
+                "handler": self._execute_lp_query_response,
+                "description": "Answer LP questions with fund data, portfolio metrics, DPI Sankey"
+            },
+            "team-comparison": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_team_comparison,
+                "description": "Compare founding teams across 2-4 companies with radar scoring"
+            },
+            "followon-deep-dive": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_followon_deep_dive,
+                "description": "Deep follow-on analysis with cap table evolution and breakpoints"
+            },
+            "competitive-landscape-memo": {
+                "category": SkillCategory.GENERATION,
+                "handler": self._execute_competitive_landscape_memo,
+                "description": "Generate competitive landscape memo with scatter positioning"
+            },
+
+            # Phase 8: Proactive enrichment, search/extract, projections, company lists
+            "proactive-enricher": {
+                "category": SkillCategory.DATA_GATHERING,
+                "handler": self._execute_proactive_enrich,
+                "description": "Auto-fetch companies mentioned without @ and push enriched data to grid"
+            },
+            "company-list-builder": {
+                "category": SkillCategory.DATA_GATHERING,
+                "handler": self._execute_company_list_search,
+                "description": "Search for companies by criteria and build enriched deal flow list"
+            },
+            "search-extract-combo": {
+                "category": SkillCategory.DATA_GATHERING,
+                "handler": self._execute_search_extract,
+                "description": "Targeted web search + structured extraction for specific data points"
+            },
+            "projection-modeler": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_projection_model,
+                "description": "Revenue/ARR projection with decay curves and scenario bands"
+            },
+            "sparse-grid-enricher": {
+                "category": SkillCategory.DATA_GATHERING,
+                "handler": self._execute_sparse_grid_enrich,
+                "description": "Auto-detect and fill sparse grid data via web search + benchmarks"
+            },
+
             # Phase 6: Grid skills - emit grid_commands for frontend to run via onRunService
             # Generated from cell_action_registry - covers all registry action_ids
             **self._build_grid_skill_registry()
@@ -1000,7 +2912,7 @@ class UnifiedMCPOrchestrator:
                     "cells": {}
                 })
         col_names = [c.get("name") or c.get("id") or c.get("label") or "" for c in columns[:30]]
-        prompt = f"""Analyze this portfolio/spreadsheet grid and return a short JSON object.
+        prompt = f"""Analyze this portfolio/spreadsheet grid.
 
 <grid_rows>
 {json.dumps(rows_summary, default=str)[:4000]}
@@ -1011,15 +2923,17 @@ class UnifiedMCPOrchestrator:
 </column_names>
 
 Identify:
-1. gaps: missing or empty key fields (e.g. valuation, ARR, revenue) and for which companies.
+1. gaps: missing or empty key fields (e.g. valuation, ARR, revenue, funding_rounds) and for which companies.
 2. outliers: values that look unusually high/low compared to the rest (with company name).
-3. suggested_actions: 1-5 concrete actions the user could take (e.g. "Run valuation for Company X", "Fill gaps for rows missing ARR", "Run PWERM for @Mercury"). Use action_ids like valuation_engine.auto, valuation_engine.pwerm, skill.company_data_fetch, gap_filler.ai_valuation, scoring.score_company where relevant.
+3. suggested_actions: 1-5 concrete actions (e.g. "Run valuation for Company X", "Enrich funding history for rows missing funding_rounds").
 
-Return ONLY valid JSON in this shape (no markdown):
-{{"gaps": [{{"company": "...", "field": "...", "suggestion": "..."}}], "outliers": [{{"company": "...", "field": "...", "value": "...", "note": "..."}}], "suggested_actions": ["...", "..."], "summary": "1-2 sentence summary"}}"""
+RESPOND WITH JUST THE JSON. NO MARKDOWN FENCES. NO EXPLANATION.
+{{"gaps": [{{"company": "...", "field": "...", "suggestion": "..."}}], "outliers": [{{"company": "...", "field": "...", "value": "...", "note": "..."}}], "suggested_actions": ["...", "..."], "summary": "1-2 sentence summary"}}
+JUST THE JSON:"""
         try:
             result = await self.model_router.get_completion(
                 prompt=prompt,
+                system_prompt="You are a JSON extraction machine. Return ONLY raw JSON. No markdown. No fences. No explanation.",
                 capability=ModelCapability.STRUCTURED,
                 max_tokens=1200,
                 temperature=0,
@@ -1027,18 +2941,38 @@ Return ONLY valid JSON in this shape (no markdown):
                 fallback_enabled=True
             )
             content = (result.get("response") or "").strip()
-            import re
-            match = re.search(r'\{[^{}]*"gaps"[^{}]*\}', content)
-            if not match:
-                match = re.search(r'\{.*\}', content, re.DOTALL)
-            if match:
-                analysis = json.loads(match.group(0))
-            else:
+            from app.services.micro_skills.search_skills import _parse_llm_json
+            analysis = _parse_llm_json(content, "grid_analyzer", "grid")
+            if not analysis or not isinstance(analysis, dict):
                 analysis = {"gaps": [], "outliers": [], "suggested_actions": [], "summary": content[:500]}
         except Exception as e:
             logger.warning(f"[GRID_ANALYZER] LLM analysis failed: {e}")
             analysis = {"gaps": [], "outliers": [], "suggested_actions": [], "summary": str(e)}
-        return {"grid_analysis": analysis}
+
+        # ── Auto-enrich: if we found gaps, run gap resolver on those companies ──
+        gap_companies = list({g.get("company", "") for g in analysis.get("gaps", []) if g.get("company")})
+        enrichment_result = None
+        if gap_companies:
+            logger.info(f"[GRID_ANALYZER] Auto-enriching {len(gap_companies)} companies with gaps: {gap_companies[:10]}")
+            try:
+                enrichment_result = await self._tool_resolve_gaps({
+                    "companies": gap_companies,
+                })
+                analysis["auto_enriched"] = {
+                    "companies": gap_companies,
+                    "fields_filled": enrichment_result.get("total_fields_filled", 0),
+                    "skills_run": enrichment_result.get("skills_run", []),
+                }
+                analysis["grid_commands"] = enrichment_result.get("grid_commands", [])
+                logger.info(f"[GRID_ANALYZER] Auto-enriched {len(gap_companies)} companies, filled {enrichment_result.get('total_fields_filled', 0)} fields")
+            except Exception as enrich_err:
+                logger.warning(f"[GRID_ANALYZER] Auto-enrich failed: {enrich_err}")
+                analysis["auto_enriched"] = {"error": str(enrich_err)}
+
+        return {
+            "grid_analysis": analysis,
+            **({"enrichment": enrichment_result} if enrichment_result else {}),
+        }
     
     async def process_request(
         self,
@@ -1312,59 +3246,166 @@ Return ONLY valid JSON in this shape (no markdown):
     # Agent Loop: complexity classifier, tool executor, ReAct loop
     # ------------------------------------------------------------------
 
-    def _assess_complexity(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
-        """Rule-based complexity assessment. No LLM call.
+    async def _classify_intent(self, prompt: str, entities: Optional[Dict[str, Any]] = None,
+                                context: Optional[Dict[str, Any]] = None,
+                                grid_fingerprint: str = "") -> QueryClassification:
+        """LLM-based intent classification with minimal keyword fast-paths.
 
-        Returns
-        -------
-        'simple'   – single metric / lookup, direct dispatch
-        'dealflow' – @company mentions → fetch new companies via skill chain
-        'complex'  – multi-step analysis, scenarios, LP reports → agent loop
+        Returns a QueryClassification with free-form intent (NOT a rigid enum).
+        Only 3 true fast-paths remain (metric regex, memo polish, memo save).
+        Everything else goes to one LLM call with full grid fingerprint context.
         """
         lower = prompt.lower().strip()
         has_at = "@" in prompt
+        company_names = (entities or {}).get("companies", [])
+        has_companies = bool(has_at or company_names)
 
-        # Simple: single metric questions
+        # --- Fast path 1: simple single-metric regex (no LLM needed) ---
         simple_patterns = [
             r"^what('s| is) (our|the|my) (dpi|tvpi|irr|nav|fund size)",
             r"^how many (companies|positions|investments)",
-            r"^(show|get|list) (portfolio|companies|fund)",
-            r"^what('s| is) .{0,20} (valuation|revenue|arr)",
+        ]
+        if any(re.match(p, lower) for p in simple_patterns):
+            return QueryClassification(
+                complexity="simple",
+                intent="metric_lookup",
+                needs_portfolio=True,
+                confidence=0.95,
+            )
+
+        # --- Fast path 2: memo polish (user refining an existing memo) ---
+        has_memo_artifacts = bool(self.shared_data.get("memo_artifacts"))
+        if has_memo_artifacts and any(s in lower for s in [
+            "refine this", "edit the memo", "change the risk",
+            "update the memo", "polish the memo", "rewrite the",
+            "fix the memo", "adjust the", "revise the",
+        ]):
+            logger.info(f"[CLASSIFY] Detected memo polish request: {prompt[:80]}")
+            return QueryClassification(
+                complexity="simple",
+                intent="memo_polish",
+                needs_portfolio=False,
+                confidence=0.9,
+            )
+
+        # --- Fast path 3: save memo ---
+        if has_memo_artifacts and any(s in lower for s in [
+            "save this memo", "save the memo", "persist this",
+            "save this report", "save the report",
+        ]):
+            logger.info(f"[CLASSIFY] Detected memo save request: {prompt[:80]}")
+            return QueryClassification(
+                complexity="simple",
+                intent="memo_save",
+                needs_portfolio=False,
+                confidence=0.95,
+            )
+
+        # --- Store feedback/corrections (but still let LLM classify) ---
+        feedback_signals = [
+            "no,", "not that", "wrong", "instead",
+            "don't", "try again", "that's not",
+            "actually,", "i meant", "not what i asked",
+        ]
+        if any(lower.startswith(s) or f" {s}" in f" {lower}" for s in feedback_signals):
+            existing_corrections = self.shared_data.get("session_corrections", [])
+            existing_corrections.append({"correction": prompt, "timestamp": datetime.now().isoformat()})
+            self.shared_data["session_corrections"] = existing_corrections[-10:]
+            logger.info(f"[CLASSIFY] Stored feedback/correction: {prompt[:80]}")
+
+        # --- LLM classification with grid fingerprint context ---
+        try:
+            tool_names = ", ".join(t.name for t in AGENT_VISIBLE_TOOLS)
+            template_names = ", ".join(PLAN_TEMPLATES.keys())
+
+            # Build grid state context for the classifier
+            state_context = grid_fingerprint or "STATE: no grid fingerprint available"
+
+            classify_prompt = f"""Classify this investment query. Return JSON only.
+
+Query: {prompt}
+Companies mentioned: {company_names or "none"}
+Has @mentions: {has_at}
+
+Grid state:
+{state_context}
+
+Available tools: {tool_names}
+Known workflow patterns: {template_names}
+
+Return:
+{{
+  "complexity": "simple|complex",
+  "intent": "<free-form intent description>",
+  "suggested_chain": ["tool1", "tool2"],
+  "needs_portfolio": true/false,
+  "needs_external": true/false,
+  "confidence": 0.0-1.0
+}}
+
+Rules:
+- "simple" = ONLY for single metric lookups that need no tools (e.g. "what is our DPI?")
+- "complex" = EVERYTHING ELSE — any query that needs enrichment, search, valuation, memo, comparison, gap filling, or analysis. When in doubt, classify as complex.
+- If grid state shows GAPS or missing data and the query relates to those companies, suggest resolve_data_gaps in chain
+- If the user asks about a company and grid shows it's missing data, suggest fetch_company_data → run_valuation
+- If the user asks for a memo/report, suggest resolve_data_gaps → run_valuation → generate_memo
+- needs_portfolio = query touches existing portfolio data
+- needs_external = query requires fetching new data from web
+- suggested_chain = ordered list of tools to call"""
+
+            result = await self.model_router.get_completion(
+                prompt=classify_prompt,
+                system_prompt="Classify investment queries. Return valid JSON only. Bias toward 'complex' — the agent loop has 80+ tools and handles everything better than a single-shot answer.",
+                capability=ModelCapability.FAST,
+                max_tokens=200,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="intent_classification",
+            )
+            content = result.get("response", "{}") if isinstance(result, dict) else str(result)
+            parsed = json.loads(content)
+
+            complexity = parsed.get("complexity", "complex")
+            # Normalize: "dealflow" → "complex" (agent loop handles both)
+            if complexity not in ("simple",):
+                complexity = "complex"
+
+            return QueryClassification(
+                complexity=complexity,
+                intent=parsed.get("intent", "unknown"),
+                suggested_chain=parsed.get("suggested_chain"),
+                needs_portfolio=parsed.get("needs_portfolio", False),
+                needs_external=parsed.get("needs_external", False),
+                confidence=parsed.get("confidence", 0.7),
+            )
+        except Exception as e:
+            logger.warning(f"[CLASSIFY] LLM classification failed: {e}, defaulting to complex")
+
+        # --- Fallback: default to complex (agent loop handles everything) ---
+        return QueryClassification(
+            complexity="complex",
+            intent="general",
+            needs_portfolio=True,
+            needs_external=has_companies,
+            confidence=0.5,
+        )
+
+    def _assess_complexity(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """Backward-compatible sync wrapper. Prefer _classify_intent() for richer data."""
+        lower = prompt.lower().strip()
+
+        simple_patterns = [
+            r"^what('s| is) (our|the|my) (dpi|tvpi|irr|nav|fund size)",
+            r"^how many (companies|positions|investments)",
         ]
         if any(re.match(p, lower) for p in simple_patterns):
             return "simple"
 
-        # Dealflow: has @mentions (new company fetch) and no multi-step keywords
-        multi_step_keywords = [
-            "compare", "stress", "forecast", "scenario",
-            "analyze portfolio", "lp report", "full analysis",
-            "concentration risk", "revalue entire",
-        ]
-        if has_at and not any(w in lower for w in multi_step_keywords):
-            return "dealflow"
+        # Default: everything goes to complex (agent loop)
+        return "complex"
 
-        # Complex: anything else — agent loop handles portfolio queries,
-        # multi-step analysis, natural language company references, etc.
-        complex_keywords = [
-            "stress test", "scenario", "forecast", "lp report",
-            "analyze", "compare", "concentration", "sensitivity",
-            "what if", "revalue", "full analysis", "portfolio health",
-            "write a", "generate report", "memo",
-            "tell me about", "how is my portfolio", "portfolio overview",
-            "portfolio summary", "follow on", "follow-on", "pro rata",
-            "exit scenario", "round modeling", "model series", "model round",
-            "comparable", "comps for", "peers of", "benchmark",
-            "pacing", "deployment", "dry powder", "capital deployed",
-            "deep dive", "status of", "update on",
-        ]
-        if any(w in lower for w in complex_keywords):
-            return "complex"
-
-        # Default: dealflow if @mentions (new fetch), otherwise agent loop
-        return "dealflow" if has_at else "complex"
-
-    async def _direct_dispatch(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Handle simple queries with one tool call, no LLM routing."""
+    async def _direct_dispatch(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Handle truly simple queries with one tool call. Returns None to upgrade to agent loop."""
         lower = prompt.lower()
         fund_ctx = self.shared_data.get("fund_context", {})
 
@@ -1375,32 +3416,676 @@ Return ONLY valid JSON in this shape (no markdown):
             })
             return {"content": self._format_fund_metrics_text(result), "format": "analysis"}
 
-        if any(w in lower for w in ["how many", "list", "show portfolio", "get portfolio"]):
-            result = await self._tool_query_portfolio({"query": prompt})
-            return {"content": result.get("summary", "No portfolio data available."), "format": "analysis"}
+        # Everything else → return None to signal upgrade to agent loop
+        logger.info(f"[DIRECT_DISPATCH] No simple handler matched, upgrading to agent loop")
+        return None
 
-        # Fallback: one LLM call to answer from context
-        return await self._single_shot_answer(prompt, context)
+    def _build_grid_context_text(self, max_rows: int = 30, max_cols: int = 15) -> str:
+        """Build a compact text representation of the portfolio grid for LLM context."""
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else grid_snapshot if isinstance(grid_snapshot, list) else []
+        if not grid_rows:
+            return ""
+
+        columns = matrix_ctx.get("columns") or []
+        col_names = [c.get("name") or c.get("id") for c in columns[:max_cols]] if columns else []
+
+        lines = [f"Portfolio Grid ({len(grid_rows)} companies):"]
+        if col_names:
+            lines.append(f"Columns: {', '.join(col_names)}")
+        lines.append("")
+
+        for row in grid_rows[:max_rows]:
+            name = row.get("companyName") or row.get("company_name") or "Unknown"
+            cells = row.get("cells") or row.get("cellValues") or {}
+            # Pick the most useful cells (cap at max_cols)
+            cell_parts = []
+            for k, v in list(cells.items())[:max_cols]:
+                if v is not None and v != "" and v != "N/A":
+                    cell_parts.append(f"{k}={v}")
+            if cell_parts:
+                lines.append(f"- {name}: {', '.join(cell_parts)}")
+            else:
+                lines.append(f"- {name}")
+
+        return "\n".join(lines)
+
+    def _build_portfolio_intelligence(self) -> str:
+        """Build dense portfolio context for LLM injection (~500-800 tokens).
+
+        Produces real portfolio analysis (not a spreadsheet dump):
+        - Per-company: description, sector, stage, geography, lead/follow
+        - Portfolio-level: sector concentration, stage distribution, geographic mix, gaps
+        """
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = (
+            grid_snapshot.get("rows", [])
+            if isinstance(grid_snapshot, dict)
+            else grid_snapshot if isinstance(grid_snapshot, list) else []
+        )
+        if not grid_rows:
+            return ""
+
+        # --- Per-company context ---
+        companies_ctx = []
+        sector_counts: dict[str, list[str]] = {}
+        stage_counts: dict[str, int] = {}
+        geo_counts: dict[str, int] = {}
+
+        for row in grid_rows:
+            name = row.get("companyName") or row.get("company_name") or "Unknown"
+            cells = row.get("cells") or row.get("cellValues") or {}
+
+            # Extract key fields from cell values (handle dict or raw)
+            def _cv(key_patterns: list[str]) -> str:
+                for k, v in cells.items():
+                    k_lower = k.lower()
+                    for pat in key_patterns:
+                        if pat in k_lower:
+                            val = v.get("value", v) if isinstance(v, dict) else v
+                            return str(val) if val and val != "N/A" else ""
+                return ""
+
+            sector = _cv(["sector", "vertical", "industry"]) or "Unknown"
+            stage = _cv(["stage", "round", "series"]) or "Unknown"
+            geo = _cv(["geo", "hq", "location", "country"]) or "Unknown"
+            description = _cv(["description", "business", "what_they_do"])
+            lead = _cv(["lead", "investment_lead"])
+            arr = _cv(["arr", "revenue"])
+            valuation = _cv(["valuation", "post_money"])
+
+            # Build per-company line
+            parts = [f"[{stage}]"]
+            if sector and sector != "Unknown":
+                parts.append(f"sector={sector}")
+            if geo and geo != "Unknown":
+                parts.append(f"geo={geo}")
+            if lead:
+                parts.append(f"lead={lead}")
+            if arr:
+                parts.append(f"arr={arr}")
+            if valuation:
+                parts.append(f"val={valuation}")
+            if description:
+                parts.append(f"— {description[:80]}")
+            companies_ctx.append(f"  {name}: {' '.join(parts)}")
+
+            # Aggregate for portfolio-level analysis
+            sector_key = sector if sector != "Unknown" else "Unclassified"
+            sector_counts.setdefault(sector_key, []).append(name)
+            stage_counts[stage] = stage_counts.get(stage, 0) + 1
+            geo_key = geo if geo != "Unknown" else "Unclassified"
+            geo_counts[geo_key] = geo_counts.get(geo_key, 0) + 1
+
+        total = len(grid_rows)
+        lines = [f"PORTFOLIO ({total} companies):"]
+        lines.extend(companies_ctx)
+
+        # --- Portfolio-level analysis ---
+        lines.append("")
+        lines.append("PORTFOLIO ANALYSIS:")
+
+        # Sector concentration
+        if sector_counts:
+            sorted_sectors = sorted(sector_counts.items(), key=lambda x: -len(x[1]))
+            sector_parts = []
+            for s, names in sorted_sectors[:5]:
+                pct = len(names) / total * 100
+                sector_parts.append(f"{s}: {len(names)} ({pct:.0f}%) [{', '.join(names[:3])}{'...' if len(names) > 3 else ''}]")
+            lines.append(f"  Sectors: {'; '.join(sector_parts)}")
+
+        # Stage distribution
+        if stage_counts:
+            stage_parts = [f"{s}: {c}" for s, c in sorted(stage_counts.items(), key=lambda x: -x[1])]
+            lines.append(f"  Stages: {', '.join(stage_parts)}")
+
+        # Geographic mix
+        if geo_counts:
+            geo_parts = [f"{g}: {c} ({c/total*100:.0f}%)" for g, c in sorted(geo_counts.items(), key=lambda x: -x[1])[:5]]
+            lines.append(f"  Geography: {', '.join(geo_parts)}")
+
+        # Gaps/flags
+        if sector_counts:
+            top_sector = sorted_sectors[0]
+            if len(top_sector[1]) / total > 0.35:
+                lines.append(f"  FLAG: Heavy concentration in {top_sector[0]} ({len(top_sector[1])}/{total} companies)")
+
+        # Auto-detect sparse columns — tells the agent what data is missing
+        sparse_fields = {"sector": 0, "description": 0, "arr": 0, "valuation": 0, "stage": 0, "headcount": 0}
+        for row in grid_rows:
+            cells = row.get("cells") or row.get("cellValues") or {}
+            for field_key in sparse_fields:
+                has_value = False
+                for k, v in cells.items():
+                    if field_key in k.lower():
+                        val = v.get("value", v) if isinstance(v, dict) else v
+                        if val and val != "N/A" and val != "Unknown" and val != "":
+                            has_value = True
+                            break
+                if not has_value:
+                    sparse_fields[field_key] += 1
+
+        sparse_alerts = []
+        for field, empty_count in sparse_fields.items():
+            if empty_count > total * 0.5:
+                sparse_alerts.append(f"{field}: {empty_count}/{total} empty")
+                self.shared_data["needs_auto_enrich"] = True
+
+        if sparse_alerts:
+            lines.append(f"  SPARSE DATA: {'; '.join(sparse_alerts)}")
+            lines.append("  → Agent should call resolve_data_gaps to auto-fill before answering user questions")
+            self.shared_data["auto_enrich_fields"] = [f for f, c in sparse_fields.items() if c > total * 0.5]
+
+        # --- Fund metrics context (TVPI, DPI, IRR, deployed) ---
+        fund_metrics = self.shared_data.get("fund_metrics", {})
+        perf = fund_metrics.get("metrics", fund_metrics) if isinstance(fund_metrics, dict) else {}
+        if perf:
+            fm_parts = []
+            if perf.get("tvpi"): fm_parts.append(f"TVPI={perf['tvpi']:.2f}x")
+            if perf.get("dpi"): fm_parts.append(f"DPI={perf['dpi']:.2f}x")
+            if perf.get("irr"): fm_parts.append(f"IRR={perf['irr']:.1f}%")
+            if perf.get("total_invested"): fm_parts.append(f"invested=${perf['total_invested']/1e6:.0f}M")
+            if perf.get("total_nav"): fm_parts.append(f"NAV=${perf['total_nav']/1e6:.0f}M")
+            if fm_parts:
+                lines.append(f"\nFUND METRICS: {', '.join(fm_parts)}")
+
+        fund_ctx = self.shared_data.get("fund_context", {})
+        if fund_ctx:
+            fc_parts = []
+            if fund_ctx.get("fund_size"): fc_parts.append(f"size=${fund_ctx['fund_size']/1e6:.0f}M")
+            if fund_ctx.get("remaining_capital"): fc_parts.append(f"remaining=${fund_ctx['remaining_capital']/1e6:.0f}M")
+            if fund_ctx.get("strategy"): fc_parts.append(f"strategy={fund_ctx['strategy']}")
+            if fc_parts and not perf:
+                lines.append(f"\nFUND CONTEXT: {', '.join(fc_parts)}")
+
+        # --- Enriched company data from shared_data (beyond grid) ---
+        sd_companies = self.shared_data.get("companies", [])
+        if sd_companies:
+            lines.append(f"\nENRICHED COMPANIES ({len(sd_companies)}):")
+            for c in sd_companies[:8]:
+                name = c.get("company") or c.get("name") or "Unknown"
+                parts = []
+                rev = c.get("revenue") or c.get("arr") or c.get("inferred_revenue")
+                if rev and isinstance(rev, (int, float)) and rev > 0:
+                    parts.append(f"rev=${rev/1e6:.1f}M")
+                val = c.get("valuation")
+                if val and isinstance(val, (int, float)) and val > 0:
+                    parts.append(f"val=${val/1e6:.0f}M")
+                growth = c.get("growth_rate") or c.get("revenue_growth_annual_pct")
+                if growth and isinstance(growth, (int, float)):
+                    g_pct = growth * 100 if growth < 5 else growth
+                    parts.append(f"growth={g_pct:.0f}%")
+                stage = c.get("stage")
+                if stage: parts.append(f"stage={stage}")
+                investors = c.get("investors") or c.get("key_investors")
+                if investors and isinstance(investors, list):
+                    inv_names = investors[:3] if isinstance(investors[0], str) else [i.get("name", "") for i in investors[:3]]
+                    parts.append(f"investors=[{', '.join(inv_names)}]")
+                desc = c.get("product_description") or c.get("description") or ""
+                if desc:
+                    parts.append(f"— {desc[:60]}")
+                lines.append(f"  {name}: {' '.join(parts)}")
+
+        # --- Available analysis data for memo enrichment ---
+        available_data_keys = []
+        for key in ("cap_table_history", "scenario_analysis", "exit_modeling",
+                     "followon_strategy", "portfolio_health", "revenue_projections",
+                     "fund_deployment"):
+            if self.shared_data.get(key):
+                available_data_keys.append(key)
+        if available_data_keys:
+            lines.append(f"\nAVAILABLE ANALYSIS: {', '.join(available_data_keys)}")
+            lines.append("  → Use these in generate_memo for rich charts and data-driven sections")
+
+        return "\n".join(lines)
+
+    async def _execute_lightweight_diligence(self, tool_input: dict) -> dict:
+        """Quick single-search company lookup. 1 Tavily search + 1 LLM extraction.
+
+        Skips StructuredDataExtractor + IntelligentGapFiller for speed.
+        Caches result in shared_data['companies'] with source='lightweight'.
+        """
+        company_name = tool_input.get("company_name") or tool_input.get("company", "")
+        if not company_name:
+            return {"error": "company_name is required"}
+
+        company_name = company_name.strip().lstrip("@")
+
+        # Check cache first
+        for c in self.shared_data.get("companies", []):
+            c_name = (c.get("name") or c.get("companyName") or "").lower()
+            if company_name.lower() == c_name or company_name.lower() in c_name:
+                return {"company": c, "source": "cached"}
+
+        # Check grid context
+        resolved = await self._resolve_company(company_name, allow_external=False)
+        if resolved:
+            return {"company": resolved, "source": "portfolio"}
+
+        # Single Tavily search
+        try:
+            search_result = await self._execute_tool("web_search", {
+                "query": f"{company_name} startup funding valuation revenue investors",
+                "search_depth": "basic",
+            })
+            search_text = json.dumps(search_result.get("results", search_result), default=str)[:4000]
+        except Exception as e:
+            logger.warning(f"[LIGHTWEIGHT_DILIGENCE] Search failed for {company_name}: {e}")
+            search_text = ""
+
+        # Single LLM extraction call
+        extraction_prompt = f"""Extract company data for {company_name} from this search result:
+
+{search_text}
+
+Return JSON with these fields (use null if unknown):
+{{
+  "name": "{company_name}",
+  "description": "What they actually do (factual, no buzzwords)",
+  "stage": "Seed/Series A/B/C/D+",
+  "revenue_estimate": "number or null",
+  "valuation": "number or null",
+  "total_funding": "number or null",
+  "team_size": "number or null",
+  "investors": ["list of known investors"],
+  "recent_news": "Most recent notable event",
+  "hq_location": "City, Country",
+  "sector": "Industry vertical"
+}}"""
+
+        try:
+            extraction = await self.model_router.get_completion(
+                prompt=extraction_prompt,
+                system_prompt="Extract factual company data. No speculation. Return valid JSON only.",
+                capability=ModelCapability.FAST,
+                max_tokens=500,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="lightweight_diligence_extract",
+            )
+            raw = extraction.get("response", "{}") if isinstance(extraction, dict) else str(extraction)
+            company_data = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception as e:
+            logger.warning(f"[LIGHTWEIGHT_DILIGENCE] Extraction failed for {company_name}: {e}")
+            company_data = {"name": company_name, "error": str(e)}
+
+        company_data["source"] = "lightweight"
+
+        # Cache in shared_data
+        async with self.shared_data_lock:
+            existing = self.shared_data.get("companies", [])
+            existing.append(company_data)
+            self.shared_data["companies"] = existing
+
+        # Auto-generate diligence memo if we got real data
+        memo_result = None
+        if not company_data.get("error"):
+            try:
+                from app.services.lightweight_memo_service import LightweightMemoService
+                memo_svc = LightweightMemoService(
+                    model_router=self.model_router,
+                    shared_data=self.shared_data,
+                )
+                memo_result = await memo_svc.generate(
+                    prompt=f"Initial diligence on {company_name}",
+                    memo_type="diligence_memo",
+                )
+                # Store in memo_artifacts
+                async with self.shared_data_lock:
+                    artifacts = self.shared_data.get("memo_artifacts", [])
+                    artifacts.append(memo_result)
+                    self.shared_data["memo_artifacts"] = artifacts
+            except Exception as e:
+                logger.warning(f"[LIGHTWEIGHT_DILIGENCE] Memo generation failed for {company_name}: {e}")
+
+        # Return memo_sections so the agent loop collector picks them up for inline display
+        memo_sections = memo_result.get("sections", []) if isinstance(memo_result, dict) else []
+        return {"company": company_data, "source": "lightweight", "memo": memo_result,
+                "memo_sections": memo_sections}
+
+    async def _execute_enrich_portfolio(self, tool_input: dict) -> dict:
+        """Read full grid, use IntelligentGapFiller to estimate missing fields per company.
+
+        Uses stage benchmarks + time since funding to infer empty cells.
+        Scores each company via score_fund_fit().
+        Returns structured summary + per-company gap report + estimates.
+        Stores in shared_data['portfolio_enrichment'].
+        """
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = (
+            grid_snapshot.get("rows", [])
+            if isinstance(grid_snapshot, dict)
+            else grid_snapshot if isinstance(grid_snapshot, list) else []
+        )
+        if not grid_rows:
+            return {"error": "No portfolio grid data available"}
+
+        # Fund context for scoring
+        fund_ctx = self.shared_data.get("fund_context", {})
+        fund_scoring_ctx = {
+            "fund_size": fund_ctx.get("fundSize") or fund_ctx.get("fund_size") or DEFAULT_FUND_SIZE,
+            "fund_year": fund_ctx.get("fundYear") or fund_ctx.get("fund_year") or 3,
+            "portfolio_count": len(grid_rows),
+            "deployed_capital": fund_ctx.get("deployedCapital") or fund_ctx.get("deployed_capital"),
+            "remaining_capital": fund_ctx.get("remainingCapital") or fund_ctx.get("remaining_capital"),
+        }
+
+        enriched_companies = []
+        gap_report = []
+        stage_dist: dict[str, int] = {}
+        sector_dist: dict[str, int] = {}
+        total_arr = 0.0
+        companies_with_arr = 0
+
+        for row in grid_rows:
+            name = row.get("companyName") or row.get("company_name") or "Unknown"
+            cells = row.get("cells") or row.get("cellValues") or {}
+
+            # Build company_data dict from cells
+            company_data: dict[str, any] = {"name": name}
+            missing_fields = []
+            for k, v in cells.items():
+                val = v.get("value", v) if isinstance(v, dict) else v
+                if val is None or val == "" or val == "N/A":
+                    missing_fields.append(k)
+                else:
+                    company_data[k] = val
+
+            stage = company_data.get("stage") or company_data.get("round") or "Unknown"
+            sector = company_data.get("sector") or company_data.get("vertical") or "Unknown"
+            stage_dist[stage] = stage_dist.get(stage, 0) + 1
+            sector_dist[sector] = sector_dist.get(sector, 0) + 1
+
+            # Track ARR
+            arr_val = company_data.get("arr") or company_data.get("revenue")
+            if arr_val:
+                try:
+                    total_arr += float(str(arr_val).replace("$", "").replace(",", "").replace("M", "e6").replace("B", "e9"))
+                    companies_with_arr += 1
+                except (ValueError, TypeError):
+                    pass
+
+            # Use IntelligentGapFiller to estimate missing values
+            inferred = {}
+            if missing_fields and self.gap_filler and stage != "Unknown":
+                try:
+                    inferred = await self.gap_filler.infer_from_stage_benchmarks(
+                        company_data=company_data,
+                        missing_fields=missing_fields,
+                    )
+                except Exception as e:
+                    logger.warning(f"[ENRICH] Gap filler failed for {name}: {e}")
+
+            # Score company fit
+            fund_fit = {}
+            if self.gap_filler:
+                try:
+                    fund_fit = self.gap_filler.score_fund_fit(
+                        company_data=company_data,
+                        inferred_data=inferred,
+                        context=fund_scoring_ctx,
+                    )
+                except Exception as e:
+                    logger.warning(f"[ENRICH] Fund fit scoring failed for {name}: {e}")
+
+            # Build enriched entry
+            inferred_summary = {}
+            for field, result in inferred.items():
+                val = result.value if hasattr(result, "value") else result
+                conf = result.confidence if hasattr(result, "confidence") else None
+                inferred_summary[field] = {"value": val, "confidence": conf}
+
+            enriched_companies.append({
+                "name": name,
+                "missing_fields": missing_fields,
+                "inferred": inferred_summary,
+                "fund_fit_score": fund_fit.get("overall_score"),
+                "fund_fit_action": fund_fit.get("action"),
+            })
+
+            if missing_fields:
+                gap_report.append({
+                    "company": name,
+                    "missing_fields": missing_fields,
+                    "count": len(missing_fields),
+                    "inferred_count": len(inferred_summary),
+                })
+
+        # --- Step 2: Cross-reference against rich companies DB ---
+        db_fill_count = 0
+        try:
+            from app.services.portfolio_service import PortfolioService
+            ps = PortfolioService()
+            for ec in enriched_companies:
+                if not ec["missing_fields"]:
+                    continue
+                db_company = await ps.get_company_by_name(ec["name"])
+                if db_company and isinstance(db_company, dict):
+                    for field in ec["missing_fields"]:
+                        db_val = db_company.get(field)
+                        if db_val and db_val not in (None, "", "N/A"):
+                            if field not in ec["inferred"]:
+                                ec["inferred"][field] = {"value": db_val, "confidence": 0.85, "source": "companies_db"}
+                                db_fill_count += 1
+        except Exception as e:
+            logger.warning(f"[ENRICH] DB cross-reference failed: {e}")
+
+        # --- Step 3: Emit suggest_grid_edit for every inferred value ---
+        from app.services.micro_skills.suggestion_emitter import FIELD_TO_COLUMN as _ENRICH_F2C
+        suggestion_count = 0
+        fund_id = fund_ctx.get("fundId") or fund_ctx.get("fund_id")
+        for ec in enriched_companies:
+            row_id = ec.get("row_id", ec["name"])
+            for field, inf in ec.get("inferred", {}).items():
+                val = inf.get("value") if isinstance(inf, dict) else inf
+                conf = inf.get("confidence", 0.5) if isinstance(inf, dict) else 0.5
+                source = inf.get("source", "stage_benchmark") if isinstance(inf, dict) else "stage_benchmark"
+                col_id = _ENRICH_F2C.get(field, field)  # Map backend field → frontend column ID
+                if val is not None and val != "":
+                    # Persist each inferred value as a pending suggestion
+                    if fund_id:
+                        try:
+                            supabase_url = settings.SUPABASE_URL
+                            supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+                            if supabase_url and supabase_key:
+                                from supabase import create_client
+                                sb = create_client(supabase_url, supabase_key)
+                                sb.table("pending_suggestions").upsert({
+                                    "fund_id": fund_id,
+                                    "company_id": row_id,
+                                    "column_id": col_id,
+                                    "suggested_value": {"value": val},
+                                    "source_service": f"agent.enrich_portfolio.{source}",
+                                    "reasoning": f"Inferred from {source} (confidence: {conf:.0%})",
+                                    "metadata": {"tool": "enrich_portfolio", "confidence": conf, "source": source},
+                                }, on_conflict="fund_id,company_id,column_id").execute()
+                                suggestion_count += 1
+                        except Exception as e:
+                            logger.warning(f"[ENRICH] Failed to persist suggestion for {ec['name']}.{field}: {e}")
+
+        # --- Step 4: Business-model-aware action suggestions ---
+        biz_model_suggestions = self._generate_business_model_suggestions(enriched_companies, fund_id)
+
+        total = len(grid_rows)
+        enrichment = {
+            "total_companies": total,
+            "stage_distribution": stage_dist,
+            "sector_distribution": sector_dist,
+            "avg_arr": total_arr / companies_with_arr if companies_with_arr else None,
+            "companies_with_arr": companies_with_arr,
+            "gap_report": sorted(gap_report, key=lambda x: -x["count"]),
+            "most_incomplete": gap_report[:5] if gap_report else [],
+            "completeness_pct": round((1 - len([g for g in gap_report if g["count"] > 0]) / total) * 100, 1) if total else 0,
+            "enriched_companies": enriched_companies,
+            "suggestions_persisted": suggestion_count,
+            "db_fills": db_fill_count,
+            "business_model_suggestions": biz_model_suggestions,
+        }
+
+        # Store in shared_data
+        async with self.shared_data_lock:
+            self.shared_data["portfolio_enrichment"] = enrichment
+
+        # Build inline memo sections summarizing enrichment results
+        memo_sections = self._build_enrichment_memo_sections(enrichment)
+        enrichment["memo_sections"] = memo_sections
+
+        return enrichment
+
+    def _generate_business_model_suggestions(self, enriched_companies: list, fund_id: Optional[str]) -> list:
+        """Generate business-model-aware action suggestions for each company.
+
+        Identifies business model from sector/description and suggests appropriate
+        analyses: CAPM for high-capex, pref stack for late-stage, debt for asset-backed, etc.
+        """
+        BIZ_MODEL_RULES = {
+            "high_capex": {
+                "keywords": ["space", "aerospace", "defense", "hardware", "manufacturing", "semiconductor",
+                             "data center", "infrastructure", "nuclear", "energy", "mining", "construction"],
+                "suggestions": [
+                    {"type": "action_item", "title": "Run CAPM-based valuation", "description": "High capex business with tangible assets — DCF with CAPM discount rate more appropriate than revenue multiples. Use risk-free rate + beta * equity risk premium.", "priority": "high"},
+                    {"type": "action_item", "title": "Asset-backed debt opportunity", "description": "Physical assets (facilities, equipment, launch vehicles) enable asset-backed lending. Model debt capacity and interest coverage ratio.", "priority": "high"},
+                    {"type": "insight", "title": "Negative gross margin trajectory", "description": "Gross margin likely negative initially due to R&D/capex, but high payoff once operational with sticky government/enterprise contracts. Model the J-curve.", "priority": "medium"},
+                    {"type": "action_item", "title": "Run preference stack analysis", "description": "Complex capital structure likely — model liquidation preferences, participation rights, and waterfall for next round.", "priority": "medium"},
+                ],
+            },
+            "european_sovereignty": {
+                "keywords": ["europe", "eu", "german", "french", "uk", "european", "sovereignty", "defense"],
+                "suggestions": [
+                    {"type": "insight", "title": "European sovereignty theme premium", "description": "Strategic importance to EU autonomy adds premium. EU defense spending increasing 2%+ of GDP. ESA budget growing. Government contract stickiness provides revenue predictability.", "priority": "high"},
+                    {"type": "action_item", "title": "Map EU funding programs", "description": "Check eligibility for EU Defence Fund, ESA contracts, Horizon Europe, IPCEI. These are non-dilutive capital sources.", "priority": "medium"},
+                ],
+            },
+            "saas_recurring": {
+                "keywords": ["saas", "software", "platform", "subscription", "recurring", "cloud"],
+                "suggestions": [
+                    {"type": "action_item", "title": "Run revenue multiples comparables", "description": "SaaS company — use ARR multiples with growth-adjusted NTM. Check Rule of 40 (growth + FCF margin).", "priority": "medium"},
+                ],
+            },
+            "marketplace": {
+                "keywords": ["marketplace", "platform", "two-sided", "exchange", "trading"],
+                "suggestions": [
+                    {"type": "action_item", "title": "Benchmark take rate", "description": "Marketplace — take rate is the key metric. Search for comparable marketplace take rates in this vertical.", "priority": "medium"},
+                ],
+            },
+        }
+
+        all_suggestions = []
+        for ec in enriched_companies:
+            name = ec.get("name", "Unknown")
+            # Build text to match against
+            sector = (ec.get("sector") or "").lower()
+            description = (ec.get("description") or "").lower()
+            geo = (ec.get("geo") or ec.get("geography") or ec.get("hq") or "").lower()
+            match_text = f"{sector} {description} {geo} {name.lower()}"
+
+            matched_models = set()
+            for model_name, rule in BIZ_MODEL_RULES.items():
+                if any(kw in match_text for kw in rule["keywords"]):
+                    matched_models.add(model_name)
+
+            for model_name in matched_models:
+                rule = BIZ_MODEL_RULES[model_name]
+                for sugg_template in rule["suggestions"]:
+                    suggestion = {
+                        **sugg_template,
+                        "company_id": name,
+                        "description": f"[{name}] {sugg_template['description']}",
+                    }
+                    all_suggestions.append(suggestion)
+
+                    # Persist to DB
+                    if fund_id:
+                        try:
+                            supabase_url = settings.SUPABASE_URL
+                            supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+                            if supabase_url and supabase_key:
+                                from supabase import create_client
+                                sb = create_client(supabase_url, supabase_key)
+                                sb.table("pending_suggestions").upsert({
+                                    "fund_id": fund_id,
+                                    "company_id": name,
+                                    "column_id": f"_action_{sugg_template['type']}",
+                                    "suggested_value": suggestion,
+                                    "source_service": f"agent.biz_model.{model_name}",
+                                    "reasoning": sugg_template["description"],
+                                    "metadata": {"tool": "enrich_portfolio", "biz_model": model_name, "priority": sugg_template["priority"]},
+                                }, on_conflict="fund_id,company_id,column_id").execute()
+                        except Exception as e:
+                            logger.warning(f"[ENRICH] Failed to persist biz model suggestion for {name}: {e}")
+
+        return all_suggestions
+
+    def _build_enrichment_memo_sections(self, enrichment: dict) -> list:
+        """Build compact memo sections summarizing portfolio enrichment for inline chat."""
+        sections: list = []
+        total = enrichment.get("total_companies", 0)
+        completeness = enrichment.get("completeness_pct", 0)
+        suggestions = enrichment.get("suggestions_persisted", 0)
+        db_fills = enrichment.get("db_fills", 0)
+
+        sections.append({"type": "heading2", "content": "Portfolio Enrichment Summary"})
+
+        overview_items = [
+            f"{total} companies analyzed",
+            f"{completeness:.0f}% data completeness",
+            f"{suggestions} field suggestions generated",
+        ]
+        if db_fills > 0:
+            overview_items.append(f"{db_fills} fields filled from company database")
+        avg_arr = enrichment.get("avg_arr")
+        if avg_arr:
+            overview_items.append(f"Average ARR: ${avg_arr / 1e6:,.1f}M")
+        sections.append({"type": "list", "items": overview_items})
+
+        # Top gaps
+        gap_report = enrichment.get("gap_report", [])
+        if gap_report:
+            sections.append({"type": "heading2", "content": "Top Data Gaps"})
+            gap_items = []
+            for g in gap_report[:5]:
+                name = g.get("company", "Unknown")
+                count = g.get("count", 0)
+                inferred = g.get("inferred_count", 0)
+                gap_items.append(f"**{name}**: {count} missing fields ({inferred} inferred)")
+            sections.append({"type": "list", "items": gap_items})
+
+        # Stage distribution
+        stage_dist = enrichment.get("stage_distribution", {})
+        if stage_dist:
+            stage_items = [f"{stage}: {count}" for stage, count in sorted(stage_dist.items(), key=lambda x: -x[1])]
+            sections.append({"type": "heading2", "content": "Stage Distribution"})
+            sections.append({"type": "list", "items": stage_items})
+
+        # Business model suggestions summary
+        biz_suggestions = enrichment.get("business_model_suggestions", [])
+        if biz_suggestions:
+            sections.append({"type": "heading2", "content": "Business Model Insights"})
+            biz_items = [f"**{s.get('title', '')}** ({s.get('company_id', '')})" for s in biz_suggestions[:6]]
+            sections.append({"type": "list", "items": biz_items})
+
+        return sections
 
     async def _single_shot_answer(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Single LLM call for simple queries that don't map to a specific tool."""
-        grid_snapshot = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
-        rows_summary = ""
-        if grid_snapshot:
-            rows = grid_snapshot.get("rows", [])
-            rows_summary = f"Portfolio has {len(rows)} companies."
+        grid_text = self._build_portfolio_intelligence()
 
         memo_ctx = self.shared_data.get("agent_context", {}).get("memo_sections", [])
         memo_text = self._serialize_memo_sections(memo_ctx, limit=10) if memo_ctx else ""
 
-        augmented = f"""Context: {rows_summary}
-{('Memo: ' + memo_text[:2000]) if memo_text else ''}
+        augmented = f"""{grid_text}
+{('Memo context: ' + memo_text[:2000]) if memo_text else ''}
 
-Question: {prompt}"""
+Question: {prompt}
+
+Answer using specific company names and numbers from the portfolio grid above."""
 
         response = await self.model_router.get_completion(
             prompt=augmented,
-            system_prompt="You are a portfolio CFO assistant. Answer concisely with specific numbers when available.",
+            system_prompt=self._build_system_prompt("Answer with specific numbers — company names, dollar amounts, multiples. When grid data is sparse, estimate using stage benchmarks and state your confidence. Never say 'no data available' — provide ranges. End with 1-2 concrete next steps."),
             capability=ModelCapability.ANALYSIS,
             max_tokens=1000,
             temperature=0.2,
@@ -1427,8 +4112,270 @@ Question: {prompt}"""
                 lines.append(f"- **{key}**: {val}")
         return "\n".join(lines)
 
-    async def _execute_tool(self, tool_name: str, tool_input: dict, max_retries: int = 2) -> dict:
-        """Dispatch to tool handler by name with timeout, retry, and error wrapping."""
+    # ------------------------------------------------------------------
+    # Tool wiring: automatic prerequisite resolution
+    # ------------------------------------------------------------------
+
+    async def _resolve_prerequisites(
+        self,
+        tool_name: str,
+        tool_input: dict,
+        _resolving: set | None = None,
+    ) -> None:
+        """Ensure all required shared_data keys exist before running *tool_name*.
+
+        For each missing key, look up which tool produces it (via _PRODUCED_BY)
+        and run that tool first.  Recursion is cycle-safe via *_resolving*.
+        Independent prerequisites are resolved in parallel.
+        """
+        wiring = TOOL_WIRING.get(tool_name)
+        if not wiring:
+            return
+
+        if _resolving is None:
+            _resolving = set()
+
+        # If "companies" is required but empty, try populating from grid context
+        requires = wiring.get("requires", [])
+        if "companies" in requires:
+            companies = self.shared_data.get("companies")
+            if not companies:
+                self._populate_companies_from_grid()
+
+        missing: list[str] = []
+        for key in requires:
+            val = self.shared_data.get(key)
+            # Treat empty lists/dicts as missing too
+            if val is None or val == [] or val == {}:
+                missing.append(key)
+
+        if not missing:
+            return
+
+        logger.info(f"[WIRING] {tool_name} missing prerequisites: {missing}")
+
+        # Group missing keys by producing tool so we can parallelize
+        producer_tasks: dict[str, list[str]] = {}  # producer_tool → [keys]
+        for key in missing:
+            producer = _PRODUCED_BY.get(key)
+            if not producer:
+                logger.debug(f"[WIRING] No producer registered for '{key}', skipping")
+                continue
+            if producer in _resolving:
+                logger.warning(f"[WIRING] Cycle detected: {producer} already resolving, skipping '{key}'")
+                continue
+            producer_tasks.setdefault(producer, []).append(key)
+
+        if not producer_tasks:
+            return
+
+        # Mark these producers as in-flight to prevent cycles
+        _resolving.add(tool_name)
+
+        async def _run_producer(producer_tool: str, keys: list[str]) -> None:
+            """Run a single producer tool to populate the given shared_data keys."""
+            logger.info(f"[WIRING] Auto-resolving {keys} via {producer_tool}")
+            # Build minimal inputs for the producer from current context
+            producer_inputs = self._build_producer_inputs(producer_tool, tool_input)
+            # Recurse: the producer may itself have prerequisites
+            await self._resolve_prerequisites(producer_tool, producer_inputs, _resolving)
+            # Now execute the producer
+            result = await self._execute_tool_raw(producer_tool, producer_inputs)
+            if isinstance(result, dict) and "error" not in result:
+                self._persist_outputs(producer_tool, result)
+            else:
+                err = result.get("error", "unknown") if isinstance(result, dict) else str(result)
+                logger.warning(f"[WIRING] Producer {producer_tool} failed: {err}")
+
+        # Run independent producers in parallel
+        await asyncio.gather(
+            *[_run_producer(p, ks) for p, ks in producer_tasks.items()],
+            return_exceptions=True,
+        )
+
+        _resolving.discard(tool_name)
+
+    def _build_producer_inputs(self, producer_tool: str, caller_inputs: dict) -> dict:
+        """Build sensible default inputs for a producer tool from context.
+
+        Uses the caller's inputs + shared_data to supply company names, fund IDs, etc.
+        """
+        inputs: dict = {}
+
+        # Extract company name from caller inputs or shared_data
+        company = (
+            caller_inputs.get("company")
+            or caller_inputs.get("company_name")
+            or caller_inputs.get("company_id")
+        )
+        if not company:
+            companies = self.shared_data.get("companies", [])
+            if companies:
+                first = companies[0]
+                company = first.get("name") or first.get("company", "")
+
+        fund_id = (
+            caller_inputs.get("fund_id")
+            or self.shared_data.get("fund_context", {}).get("fund_id")
+            or self.shared_data.get("fund_context", {}).get("fundId")
+        )
+
+        # Map producer tools to their expected input shapes
+        if producer_tool == "fetch_company_data":
+            inputs["company_name"] = company or ""
+        elif producer_tool in ("cap_table_evolution", "revenue_projection", "run_projection"):
+            inputs["company"] = company or ""
+            if producer_tool in ("revenue_projection", "run_projection"):
+                inputs["years"] = 5
+        elif producer_tool in ("run_valuation",):
+            inputs["company_id"] = company or ""
+        elif producer_tool in ("run_scenario",):
+            inputs["scenario_description"] = "base case exit scenarios"
+        elif producer_tool in ("calculate_fund_metrics",):
+            inputs["metrics"] = ["nav", "irr", "dpi", "tvpi"]
+            if fund_id:
+                inputs["fund_id"] = fund_id
+        elif producer_tool in ("run_portfolio_health",):
+            if fund_id:
+                inputs["fund_id"] = fund_id
+        elif producer_tool in ("run_followon_strategy",):
+            inputs["company"] = company or ""
+            if fund_id:
+                inputs["fund_id"] = fund_id
+        elif producer_tool in ("run_exit_modeling",):
+            inputs["company"] = company or ""
+        else:
+            # Generic: pass company if the tool schema mentions it
+            tool_def = AGENT_TOOL_MAP.get(producer_tool)
+            if tool_def:
+                schema = tool_def.input_schema or {}
+                if "company" in schema:
+                    inputs["company"] = company or ""
+                if "company_name" in schema:
+                    inputs["company_name"] = company or ""
+                if "fund_id" in schema and fund_id:
+                    inputs["fund_id"] = fund_id
+
+        return inputs
+
+    def _persist_outputs(self, tool_name: str, result: dict) -> None:
+        """Store tool outputs into shared_data based on TOOL_WIRING produces.
+
+        Handles merging logic: 'companies' lists are merged by name,
+        dict-keyed outputs (cap_table_history, revenue_projections) are
+        merged by company key, and everything else is overwritten.
+        """
+        wiring = TOOL_WIRING.get(tool_name)
+        if not wiring:
+            return
+
+        produces = wiring.get("produces", [])
+        if not produces:
+            return
+
+        for key in produces:
+            value = result.get(key)
+
+            # Many tools don't return their output under the produces key name
+            # directly — they store it in shared_data themselves (e.g.,
+            # cap_table_evolution stores to shared_data["cap_table_history"]
+            # inside its handler).  Only persist if we have an explicit value
+            # AND shared_data doesn't already have it from the handler.
+            if value is None:
+                continue
+
+            existing = self.shared_data.get(key)
+
+            if key == "companies" and isinstance(value, list):
+                # Merge company lists by name
+                if not isinstance(existing, list):
+                    existing = []
+                existing_names = {
+                    (c.get("name") or c.get("company", "")).lower()
+                    for c in existing
+                }
+                for c in value:
+                    cname = (c.get("name") or c.get("company", "")).lower()
+                    if cname and cname not in existing_names:
+                        existing.append(c)
+                        existing_names.add(cname)
+                self.shared_data[key] = existing
+            elif isinstance(value, dict) and isinstance(existing, dict):
+                # Merge dict outputs (e.g., cap_table_history keyed by company)
+                existing.update(value)
+                self.shared_data[key] = existing
+            else:
+                self.shared_data[key] = value
+
+        logger.debug(f"[WIRING] Persisted outputs for {tool_name}: {produces}")
+
+    def _populate_companies_from_grid(self) -> None:
+        """Populate shared_data['companies'] from matrix grid context.
+
+        Called by _resolve_prerequisites when 'companies' is required but
+        empty — extracts company data from the grid snapshot so downstream
+        tools have something to work with even without an explicit fetch.
+        """
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = (
+            grid_snapshot.get("rows", [])
+            if isinstance(grid_snapshot, dict)
+            else grid_snapshot if isinstance(grid_snapshot, list) else []
+        )
+        if not grid_rows:
+            return
+
+        companies: list[dict] = []
+        for row in grid_rows[:10]:
+            name = row.get("companyName") or row.get("company_name") or ""
+            cells = row.get("cells") or row.get("cellValues") or {}
+            if not name:
+                continue
+
+            def _cv(key_patterns: list[str]):
+                for k, v in cells.items():
+                    for pat in key_patterns:
+                        if pat in k.lower():
+                            val = v.get("value", v) if isinstance(v, dict) else v
+                            return val if val and val != "N/A" else None
+                return None
+
+            company_obj = {
+                "company": name, "name": name,
+                "stage": _cv(["stage", "round", "series"]),
+                "sector": _cv(["sector", "vertical", "industry"]),
+                "revenue": _cv(["arr", "revenue"]),
+                "valuation": _cv(["valuation", "post_money"]),
+                "investors": _cv(["investors", "lead_investor"]),
+                "description": _cv(["description", "business"]),
+                "growth_rate": _cv(["growth", "arr_growth"]),
+                "team_size": _cv(["headcount", "team_size", "employees"]),
+            }
+            # Clean numeric fields
+            for nf in ("revenue", "valuation", "growth_rate", "team_size"):
+                v = company_obj.get(nf)
+                if isinstance(v, str):
+                    try:
+                        company_obj[nf] = float(
+                            v.replace("$", "").replace(",", "")
+                            .replace("M", "e6").replace("B", "e9").replace("%", "")
+                        )
+                    except (ValueError, TypeError):
+                        company_obj[nf] = None
+            companies.append(company_obj)
+
+        if companies:
+            self.shared_data["companies"] = companies
+            logger.info(f"[WIRING] Auto-populated {len(companies)} companies from grid")
+
+    async def _execute_tool_raw(self, tool_name: str, tool_input: dict, max_retries: int = 2) -> dict:
+        """Low-level tool dispatch — NO prerequisite resolution (avoids recursion).
+
+        This is the original _execute_tool logic: lookup handler, run with
+        timeout + retry.  Called by both _execute_tool (after prereqs) and
+        _resolve_prerequisites (to avoid infinite loops).
+        """
         tool_def = AGENT_TOOL_MAP.get(tool_name)
         if not tool_def:
             return {"error": f"Unknown tool: {tool_name}"}
@@ -1460,6 +4407,26 @@ Question: {prompt}"""
         logger.error(f"[AGENT_TOOL] {tool_name} failed after {max_retries + 1} attempts: {last_error}")
         return {"error": f"{tool_name} failed after {max_retries + 1} attempts: {last_error}"}
 
+    async def _execute_tool(self, tool_name: str, tool_input: dict, max_retries: int = 2) -> dict:
+        """Dispatch to tool handler with automatic prerequisite resolution.
+
+        1. Check TOOL_WIRING for required shared_data keys
+        2. For any missing key, auto-run the producer tool (recursive, parallel)
+        3. Execute the actual tool
+        4. Persist outputs to shared_data per TOOL_WIRING produces
+        """
+        # Step 1+2: resolve prerequisites
+        await self._resolve_prerequisites(tool_name, tool_input)
+
+        # Step 3: execute the tool itself
+        result = await self._execute_tool_raw(tool_name, tool_input, max_retries)
+
+        # Step 4: persist outputs (only if handler didn't already)
+        if isinstance(result, dict) and "error" not in result:
+            self._persist_outputs(tool_name, result)
+
+        return result
+
     # ------------------------------------------------------------------
     # Tool handler methods — thin adapters around existing services
     # ------------------------------------------------------------------
@@ -1488,19 +4455,68 @@ Question: {prompt}"""
         return ""
 
     async def _tool_query_portfolio(self, inputs: dict) -> dict:
-        """Query/filter the portfolio grid via MatrixQueryOrchestrator."""
+        """Query/filter the portfolio grid. Primary: frontend grid context. Fallback: MatrixQueryOrchestrator."""
         try:
-            if not MATRIX_QUERY_ORCHESTRATOR_AVAILABLE or not self.matrix_query_orchestrator:
-                return {"summary": "Portfolio query service not available.", "rows": []}
-            mqo = self.matrix_query_orchestrator
+            query = inputs.get("query", "")
+            filters = inputs.get("filters") or {}
             fund_ctx = self.shared_data.get("fund_context", {})
-            grid_snapshot = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
-            result = await mqo.process_matrix_query(
-                inputs.get("query", ""),
-                fund_id=fund_ctx.get("fundId"),
-                context={"gridSnapshot": grid_snapshot, "filters": inputs.get("filters")},
-            )
-            return {"rows": result.get("rows", [])[:20], "summary": result.get("summary", "")}
+            matrix_ctx = self.shared_data.get("matrix_context") or {}
+            grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+            grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else grid_snapshot if isinstance(grid_snapshot, list) else []
+
+            # PRIMARY PATH: Read directly from the frontend grid context
+            if grid_rows:
+                rows_out = []
+                for row in grid_rows[:50]:
+                    name = row.get("companyName") or row.get("company_name") or ""
+                    cells = row.get("cells") or row.get("cellValues") or {}
+                    row_id = row.get("rowId") or row.get("row_id") or ""
+                    rows_out.append({"rowId": row_id, "companyName": name, "cells": dict(list(cells.items())[:20])})
+
+                # Apply simple filters if provided
+                if filters:
+                    stage_filter = filters.get("stage") or filters.get("investment_stage")
+                    if stage_filter:
+                        stage_lower = stage_filter.lower()
+                        rows_out = [r for r in rows_out if stage_lower in str(r.get("cells", {}).get("stage", "")).lower() or stage_lower in str(r.get("cells", {}).get("investment_stage", "")).lower()]
+                    name_filter = filters.get("name") or filters.get("company_name")
+                    if name_filter:
+                        name_lower = name_filter.lower()
+                        rows_out = [r for r in rows_out if name_lower in r.get("companyName", "").lower()]
+
+                columns = matrix_ctx.get("columns") or []
+                col_names = [c.get("name") or c.get("id") for c in columns[:20]] if columns else []
+                summary = f"Portfolio grid: {len(rows_out)} companies"
+                if col_names:
+                    summary += f", columns: {', '.join(col_names[:10])}"
+                logger.info(f"[TOOL] query_portfolio served from grid context: {len(rows_out)} rows")
+                return {"rows": rows_out[:30], "summary": summary, "columns": col_names, "source": "grid_context"}
+
+            # FALLBACK PATH: MatrixQueryOrchestrator (Supabase)
+            if MATRIX_QUERY_ORCHESTRATOR_AVAILABLE and self.matrix_query_orchestrator:
+                mqo = self.matrix_query_orchestrator
+                result = await mqo.process_matrix_query(
+                    query,
+                    fund_id=fund_ctx.get("fundId"),
+                    context={"gridSnapshot": grid_snapshot, "filters": filters},
+                )
+                return {"rows": result.get("rows", [])[:20], "summary": result.get("summary", ""), "source": "supabase"}
+
+            # LAST RESORT: Try portfolio_service (with or without fund_id)
+            try:
+                from app.services.portfolio_service import portfolio_service
+                fund_id = fund_ctx.get("fundId") or fund_ctx.get("fund_id")
+                if fund_id:
+                    portfolio = await portfolio_service.get_portfolio(fund_id)
+                else:
+                    portfolio = await portfolio_service.get_all_companies()
+                companies = portfolio.get("companies", [])
+                if companies:
+                    return {"rows": companies[:30], "summary": f"Portfolio: {len(companies)} companies from DB", "source": "portfolio_service"}
+            except Exception as ps_err:
+                logger.debug(f"[TOOL] portfolio_service fallback failed: {ps_err}")
+
+            return {"summary": "No portfolio data found. Ensure the grid is loaded or database is connected.", "rows": []}
         except Exception as e:
             logger.warning(f"[TOOL] query_portfolio failed: {e}")
             return {"summary": f"Query failed: {e}", "rows": []}
@@ -1562,7 +4578,8 @@ Question: {prompt}"""
             if not self.valuation_engine:
                 return {"error": "ValuationEngineService not available"}
             ves = self.valuation_engine
-            company_id = inputs.get("company_id", "")
+            # Accept company_id, company, or company_name
+            company_id = inputs.get("company_id") or inputs.get("company") or inputs.get("company_name", "")
             # Build company_data from grid snapshot
             grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
             company_data = {}
@@ -1597,17 +4614,38 @@ Question: {prompt}"""
                         from supabase import create_client
                         sb = create_client(supabase_url, supabase_key)
                         method_used = val_result.get("method", inputs.get("method", "auto"))
-                        sb.table("pending_suggestions").insert({
+                        sb.table("pending_suggestions").upsert({
                             "fund_id": fund_id,
                             "company_id": company_id,
-                            "column_id": "currentValuation",
-                            "suggested_value": str(val_amount),
+                            "column_id": "valuation",
+                            "suggested_value": val_amount if isinstance(val_amount, (int, float)) else str(val_amount),
                             "source_service": f"valuation_engine.{method_used}",
                             "reasoning": f"Valuation via {method_used}: {val_result.get('summary', '')}",
                             "metadata": {"tool": "run_valuation", "method": method_used},
-                        }).execute()
+                        }, on_conflict="fund_id,company_id,column_id").execute()
                 except Exception as e:
                     logger.warning(f"[TOOL] Failed to persist valuation suggestion: {e}")
+
+            # Emit suggestion in return value so frontend sees it immediately
+            if val_amount:
+                method_label = val_result.get('method', 'auto')
+                summary_text = val_result.get('summary', '')
+                val_result["suggestion"] = {
+                    "company": company_data.get("name", company_id),
+                    "column": "currentValuation",
+                    "value": val_amount if isinstance(val_amount, (int, float)) else str(val_amount),
+                    "source": f"valuation_engine.{method_label}",
+                    "reasoning": f"Valuation via {method_label}: {summary_text}",
+                }
+                val_result["grid_commands"] = [{
+                    "type": "suggest_edit",
+                    "companyName": company_data.get("name", company_id),
+                    "columnId": "valuation",
+                    "value": val_amount if isinstance(val_amount, (int, float)) else str(val_amount),
+                    "reasoning": f"Valuation via {method_label}: {summary_text}"[:200],
+                    "confidence": 0.7,
+                    "source": f"valuation_engine.{method_label}",
+                }]
 
             return val_result
         except Exception as e:
@@ -1649,6 +4687,10 @@ Question: {prompt}"""
                             {"entity": e.entity_name, "type": e.event_type, "timing": e.timing}
                             for e in composed.events
                         ]
+                        # Persist to shared_data (don't overwrite richer PWERM data)
+                        async with self.shared_data_lock:
+                            if not self.shared_data.get("scenario_analysis"):
+                                self.shared_data["scenario_analysis"] = result
                         return result
                 except Exception as nl_err:
                     logger.warning(f"[TOOL] NL scenario composition failed, falling back: {nl_err}")
@@ -1672,10 +4714,285 @@ Question: {prompt}"""
             )
             if scenario and scenario.get("id"):
                 result = await sa.execute_scenario(scenario["id"])
-                return result if isinstance(result, dict) else {"analysis": str(result)}
+                result = result if isinstance(result, dict) else {"analysis": str(result)}
+                # Persist to shared_data (don't overwrite richer PWERM data)
+                async with self.shared_data_lock:
+                    if not self.shared_data.get("scenario_analysis"):
+                        self.shared_data["scenario_analysis"] = result
+                return result
             return {"analysis": "Scenario created but could not be executed", "scenario": scenario}
         except Exception as e:
             logger.warning(f"[TOOL] scenario failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_scenario_tree(self, inputs: dict) -> dict:
+        """Build branching scenario tree from growth path queries or round planning."""
+        try:
+            from app.services.scenario_tree_service import ScenarioTreeService, GrowthPath
+            from app.services.nl_scenario_composer import NLScenarioComposer
+
+            query = inputs.get("query", "")
+            years = inputs.get("years", 5)
+
+            nl = self.nl_scenario_composer or NLScenarioComposer()
+            svc = ScenarioTreeService()
+
+            # Get known companies from shared_data
+            known = [
+                c.get("company_name", c.get("name", ""))
+                for c in self.shared_data.get("companies", [])
+            ]
+
+            # Parse the query into growth paths
+            company_paths = nl.parse_scenario_tree_query(query, known_companies=known)
+            if not company_paths:
+                return {"error": "Could not parse growth paths from query. Try: 'X grows at 30% then 20%, or Y at 50%, 40%, 30%'"}
+
+            # Resolve base company data from shared_data
+            base_data: dict = {}
+            for cname in company_paths:
+                for comp in self.shared_data.get("companies", []):
+                    if comp.get("company_name", "").lower() == cname.lower() or comp.get("name", "").lower() == cname.lower():
+                        base_data[cname] = comp
+                        break
+                if cname not in base_data:
+                    base_data[cname] = {"company_name": cname, "revenue": 1_000_000, "stage": "Series A"}
+
+            fund_ctx = self.shared_data.get("fund_context", {})
+            fund_context = {
+                "fund_size": fund_ctx.get("fundSize", 260_000_000),
+                "total_invested": fund_ctx.get("totalInvested", 0),
+                "distributions": fund_ctx.get("distributions", 0),
+            }
+
+            tree = svc.build_tree(company_paths, base_data, fund_context, years=years)
+            tree_chart = svc.tree_to_chart_data(tree)
+            paths_chart = svc.paths_to_line_chart_data(tree, metric="revenue")
+            memo_sections = svc.tree_to_memo_sections(tree)
+
+            # Fund-level DPI evaluation: evaluate tree paths in context of full portfolio
+            fund_level_results = []
+            try:
+                from app.services.fund_modeling_service import fund_modeling_service
+                portfolio = self.shared_data.get("companies", [])
+                fund_level_results = fund_modeling_service.evaluate_scenario_tree_on_fund(
+                    tree_paths=tree_chart["data"]["paths"],
+                    portfolio_companies=portfolio,
+                    fund_size=fund_context.get("fund_size", 260_000_000),
+                    total_invested=fund_context.get("total_invested", 0),
+                )
+            except Exception as dpi_err:
+                logger.warning(f"[TOOL] scenario_tree DPI evaluation failed: {dpi_err}")
+
+            result = {
+                "tree_chart": tree_chart,
+                "paths_chart": paths_chart,
+                "memo_sections": memo_sections,
+                "expected_tvpi": tree_chart["data"]["expected_tvpi"],
+                "sensitivity": tree_chart["data"]["sensitivity"],
+                "num_paths": len(tree.paths),
+                "companies": tree.companies,
+                "fund_level_dpi": fund_level_results,
+            }
+
+            # Store all chart variants so chart dispatch can serve them
+            all_charts = svc.to_all_charts(tree)
+
+            async with self.shared_data_lock:
+                self.shared_data["scenario_analysis"] = result
+                self.shared_data["scenario_tree"] = tree
+                self.shared_data["scenario_all_charts"] = all_charts
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] scenario_tree failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_cash_flow_model(self, inputs: dict) -> dict:
+        """Build full P&L / cash flow model for a company."""
+        try:
+            from app.services.cash_flow_planning_service import CashFlowPlanningService
+
+            svc = CashFlowPlanningService()
+            company_name = inputs.get("company", "")
+            years = inputs.get("years", 5)
+            growth_overrides = inputs.get("growth_overrides")
+
+            # Resolve company from shared_data
+            company_data = None
+            for comp in self.shared_data.get("companies", []):
+                if comp.get("company_name", "").lower() == company_name.lower() or comp.get("name", "").lower() == company_name.lower():
+                    company_data = comp
+                    break
+
+            if not company_data:
+                company_data = {"company_name": company_name, "revenue": 1_000_000, "stage": "Series A"}
+
+            model = svc.build_cash_flow_model(company_data, years=years, growth_overrides=growth_overrides)
+            runway = svc.calculate_runway(model)
+            funding_gap = svc.calculate_funding_gap(model)
+            memo_sections = svc.to_memo_sections(company_name, model)
+
+            # Waterfall for most recent projected year
+            waterfall_chart = svc.to_waterfall_chart_data(model[-1]) if model else None
+
+            return {
+                "cash_flow_model": model,
+                "runway": runway,
+                "funding_gap": funding_gap,
+                "waterfall_chart": waterfall_chart,
+                "memo_sections": memo_sections,
+                "company": company_name,
+            }
+        except Exception as e:
+            logger.warning(f"[TOOL] cash_flow_model failed: {e}")
+            return {"error": str(e)}
+
+
+    async def _tool_bull_bear_base(self, inputs: dict) -> dict:
+        """Build bull/bear/base scenarios for one or more companies."""
+        try:
+            from app.services.scenario_tree_service import ScenarioTreeService
+
+            svc = ScenarioTreeService()
+            companies = inputs.get("companies", [])
+            years = inputs.get("years", 5)
+
+            # Resolve company data
+            companies_data = {}
+            for cname in companies:
+                for comp in self.shared_data.get("companies", []):
+                    if comp.get("company_name", "").lower() == cname.lower() or comp.get("name", "").lower() == cname.lower():
+                        companies_data[cname] = comp
+                        break
+                if cname not in companies_data:
+                    companies_data[cname] = {"company_name": cname, "revenue": 1_000_000, "stage": "Series A"}
+
+            fund_ctx = self.shared_data.get("fund_context", {})
+            fund_context = {
+                "fund_size": fund_ctx.get("fundSize", 260_000_000),
+                "total_invested": fund_ctx.get("totalInvested", 0),
+                "distributions": fund_ctx.get("distributions", 0),
+            }
+
+            if len(companies_data) == 1:
+                cn = list(companies_data.keys())[0]
+                tree = svc.build_bull_bear_base(cn, companies_data[cn], fund_context, years=years)
+            else:
+                tree = svc.build_portfolio_scenarios(companies_data, fund_context, years=years)
+
+            charts = svc.to_all_charts(tree)
+            memo = svc.tree_to_memo_sections(tree)
+
+            # Fund-level DPI evaluation across full portfolio
+            fund_level_results = []
+            try:
+                from app.services.fund_modeling_service import fund_modeling_service
+                tree_chart = charts.get("scenario_tree", {})
+                paths_data = tree_chart.get("data", {}).get("paths", []) if isinstance(tree_chart, dict) else []
+                portfolio = self.shared_data.get("companies", [])
+                fund_level_results = fund_modeling_service.evaluate_scenario_tree_on_fund(
+                    tree_paths=paths_data,
+                    portfolio_companies=portfolio,
+                    fund_size=fund_context.get("fund_size", 260_000_000),
+                    total_invested=fund_context.get("total_invested", 0),
+                )
+            except Exception as dpi_err:
+                logger.warning(f"[TOOL] bull_bear_base DPI evaluation failed: {dpi_err}")
+
+            result = {**charts, "memo_sections": memo, "companies": tree.companies, "num_paths": len(tree.paths), "fund_level_dpi": fund_level_results}
+
+            async with self.shared_data_lock:
+                self.shared_data["scenario_analysis"] = result
+                self.shared_data["scenario_tree"] = tree
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] bull_bear_base failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_macro_shock(self, inputs: dict) -> dict:
+        """Apply macro shock to existing scenario tree."""
+        try:
+            from app.services.scenario_tree_service import ScenarioTreeService
+
+            tree = self.shared_data.get("scenario_tree")
+            if not tree:
+                return {"error": "No scenario tree found. Run bull_bear_base or scenario_tree first."}
+
+            svc = ScenarioTreeService()
+            shock_type = inputs.get("shock_type", "recession")
+            magnitude = inputs.get("magnitude", 0.5)
+            start_year = inputs.get("start_year", 1)
+
+            shocked_tree = svc.apply_macro_shock(tree, shock_type, magnitude=magnitude, start_year=start_year)
+            charts = svc.to_all_charts(shocked_tree)
+            memo = svc.tree_to_memo_sections(shocked_tree)
+
+            ev_before = tree.expected_value
+            ev_after = shocked_tree.expected_value
+
+            impact = {
+                "shock_type": shock_type,
+                "magnitude": magnitude,
+                "nav_change_pct": ((ev_after.nav - ev_before.nav) / ev_before.nav * 100) if ev_before and ev_before.nav else 0,
+                "tvpi_change": (ev_after.tvpi - ev_before.tvpi) if ev_before else 0,
+            }
+
+            result = {**charts, "memo_sections": memo, "impact": impact}
+
+            async with self.shared_data_lock:
+                self.shared_data["scenario_analysis"] = result
+                self.shared_data["scenario_tree"] = shocked_tree
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] macro_shock failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_portfolio_snapshot(self, inputs: dict) -> dict:
+        """Get point-in-time portfolio snapshot from scenario tree."""
+        try:
+            from app.services.scenario_tree_service import ScenarioTreeService
+
+            tree = self.shared_data.get("scenario_tree")
+            if not tree:
+                return {"error": "No scenario tree found. Run bull_bear_base or scenario_tree first."}
+
+            svc = ScenarioTreeService()
+            year = inputs.get("year", 3)
+            snapshot = svc.snapshot_at_year(tree, year)
+
+            return {"snapshot": snapshot, "year": year}
+        except Exception as e:
+            logger.warning(f"[TOOL] portfolio_snapshot failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_three_scenario_cash_flow(self, inputs: dict) -> dict:
+        """Build bull/base/bear P&L models side by side."""
+        try:
+            from app.services.cash_flow_planning_service import CashFlowPlanningService
+
+            svc = CashFlowPlanningService()
+            company_name = inputs.get("company", "")
+            years = inputs.get("years", 5)
+
+            company_data = None
+            for comp in self.shared_data.get("companies", []):
+                if comp.get("company_name", "").lower() == company_name.lower() or comp.get("name", "").lower() == company_name.lower():
+                    company_data = comp
+                    break
+            if not company_data:
+                company_data = {"company_name": company_name, "revenue": 1_000_000, "stage": "Series A"}
+
+            models = svc.build_three_scenario_model(company_data, years=years)
+            memo_sections = []
+            for scenario_name, model in models.items():
+                memo_sections.extend(svc.to_memo_sections(f"{company_name} ({scenario_name.title()})", model))
+
+            return {"models": models, "memo_sections": memo_sections, "company": company_name}
+        except Exception as e:
+            logger.warning(f"[TOOL] three_scenario_cash_flow failed: {e}")
             return {"error": str(e)}
 
     async def _tool_chart(self, inputs: dict) -> dict:
@@ -1699,7 +5016,43 @@ Question: {prompt}"""
                     "total_funding": self._extract_numeric(cells, "totalFunding"),
                 })
 
+            # --- Merge enriched shared_data["companies"] into grid-extracted rows ---
+            # The grid snapshot may have zeros/blanks for fields the agent already
+            # fetched via search/fetch tools.  Overlay enriched values so charts
+            # reflect the latest data the agent gathered.
+            sd_companies = self.shared_data.get("companies", [])
+            if sd_companies:
+                _enriched_by_name: Dict[str, Dict] = {}
+                for sc in sd_companies:
+                    _ename = (sc.get("company") or sc.get("name") or "").strip().lower()
+                    if _ename:
+                        _enriched_by_name[_ename] = sc
+
+                _FIELD_MAP = {
+                    "revenue": ("revenue", "arr", "inferred_revenue"),
+                    "valuation": ("valuation", "current_valuation", "inferred_valuation"),
+                    "growth_rate": ("revenue_growth", "growth_rate", "yoy_growth"),
+                    "total_funding": ("total_funding", "funding_total"),
+                    "funding_stage": ("funding_stage", "stage", "latest_round"),
+                }
+                for comp in companies:
+                    _ckey = (comp.get("name") or "").strip().lower()
+                    enriched = _enriched_by_name.get(_ckey)
+                    if not enriched:
+                        continue
+                    for dest, src_keys in _FIELD_MAP.items():
+                        # Only overlay if the grid value is missing/zero
+                        existing = comp.get(dest)
+                        if existing and existing != 0 and existing != "":
+                            continue
+                        for sk in src_keys:
+                            val = enriched.get(sk)
+                            if val is not None and val != 0 and val != "":
+                                comp[dest] = val
+                                break
+
             chart_dispatch = {
+                # ── Existing generators ──
                 "revenue_multiples_scatter": lambda: cds.generate_revenue_multiples_scatter(grid),
                 "revenue_multiple_scatter": lambda: cds.generate_revenue_multiple_scatter(companies),
                 "revenue_treemap": lambda: cds.generate_revenue_treemap(companies),
@@ -1709,6 +5062,34 @@ Question: {prompt}"""
                 "cashflow": lambda: cds.generate_cashflow_projection(companies),
                 "velocity_ranking": lambda: cds.generate_product_velocity_ranking(companies),
                 "next_round_treemap": lambda: cds.generate_next_round_treemap(companies),
+                # ── Newly wired generators (audit fix) ──
+                "waterfall": lambda: cds.generate_waterfall(companies),
+                "bar_comparison": lambda: cds.generate_bar_comparison(companies),
+                "scatter_multiples": lambda: cds.generate_revenue_multiple_scatter(companies),
+                "cap_table_sankey": lambda: cds.generate_cap_table_sankey(companies),
+                "revenue_forecast": lambda: cds.generate_path_to_100m(companies),  # alias
+                "dpi_sankey": lambda: cds.generate_dpi_sankey(companies),
+                "bull_bear_base": lambda: cds.generate_bull_bear_base(companies),
+                "radar_comparison": lambda: cds.generate_radar_comparison(companies),
+                # ── Fund-level & advanced charts ──
+                "heatmap": lambda: cds.generate_heatmap(companies),
+                "cap_table_evolution": lambda: cds.generate_cap_table_evolution(companies),
+                "stacked_bar": lambda: cds.generate_stacked_bar(companies),
+                "market_map": lambda: cds.generate_market_map(companies),
+                "nav_live": lambda: cds.generate_nav_live(companies),
+                "fpa_stress_test": lambda: cds.generate_fpa_stress_test(companies),
+                # ── Analytics-bridge charts (use stored results from shared_data) ──
+                "sensitivity_tornado": lambda: cds.generate_sensitivity_tornado(
+                    self.shared_data.get("fpa_result", {})),
+                "regression_line": lambda: cds.generate_regression_line(
+                    self.shared_data.get("fpa_result", {})),
+                "monte_carlo_histogram": lambda: cds.generate_monte_carlo_histogram(
+                    self.shared_data.get("monte_carlo_result", {})),
+                "revenue_forecast_decay": lambda: cds.generate_revenue_forecast(
+                    self.shared_data.get("revenue_projections", {}).get(
+                        (companies[0].get("name", "") if companies else ""), [])),
+                "fund_scenarios": lambda: cds.generate_fund_scenario_comparison(
+                    self.shared_data.get("scenario_all_charts", {})),
             }
 
             generator = chart_dispatch.get(chart_type)
@@ -1755,6 +5136,266 @@ Question: {prompt}"""
             logger.warning(f"[TOOL] web_search failed: {e}")
             return {"results": [], "error": str(e)}
 
+    async def _tool_search_companies_db(self, inputs: dict) -> dict:
+        """Search the rich 1k+ companies database for existing data before web fetching."""
+        query = inputs.get("query", "")
+        if not query:
+            return {"error": "query is required"}
+        try:
+            from app.services.portfolio_service import PortfolioService
+            ps = PortfolioService()
+            result = await ps.search_companies_db(query, limit=inputs.get("limit", 10))
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] search_companies_db failed: {e}")
+            return {"companies": [], "error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Sourcing Engine: fast DB query + math scoring, no LLM / no web
+    # ------------------------------------------------------------------
+    async def _tool_source_companies(self, inputs: dict) -> dict:
+        """Query, filter, score, and rank companies from the database.
+
+        Fast path — works on existing data (no web calls by default).
+        Optional enrich_top_n runs microskills on top N results.
+        The LLM populates filters directly as structured JSON — no NL parsing.
+        1. query_companies() — Supabase query with filters
+        2. score_companies() — pure math scoring
+        3. Optional microskills enrichment on top N
+        4. Optional persistence back to DB
+        5. Pick display mode and format response
+        """
+        from app.services.sourcing_service import (
+            query_companies, score_companies,
+            pick_display_mode, format_as_markdown_table,
+        )
+
+        filters = inputs.get("filters") or {}
+        max_results = min(inputs.get("max_results") or 50, 200)
+        sort_by = inputs.get("sort_by", "score")
+        sort_desc = inputs.get("sort_desc", True)
+        target_stage = inputs.get("target_stage")
+        custom_weights = inputs.get("custom_weights")
+        display = inputs.get("display")
+        enrich_top_n = inputs.get("enrich_top_n", 0)  # enrich top N results via microskills
+        persist_results = inputs.get("persist_results", False)
+
+        try:
+            # Extract target_stage from filters if not provided directly
+            if not target_stage and filters.get("stage"):
+                target_stage = filters["stage"]
+
+            # Query DB
+            fund_id = getattr(self, "fund_id", None)
+            db_result = await query_companies(
+                filters=filters,
+                sort_by=sort_by if sort_by != "score" else "name",
+                sort_desc=sort_desc,
+                limit=max_results * 2,  # fetch more, score will trim
+                fund_id=fund_id,
+            )
+
+            companies = db_result.get("companies", [])
+
+            # Score
+            scored = score_companies(
+                companies,
+                weights=custom_weights,
+                target_stage=target_stage,
+            )
+
+            # Trim to max_results
+            scored = scored[:max_results]
+
+            # Optional microskills enrichment on top N results
+            _enrichment_info = None
+            _enrich_grid_cmds = []
+            if enrich_top_n and enrich_top_n > 0 and scored:
+                try:
+                    from app.services.micro_skills.gap_resolver import resolve_gaps
+
+                    to_enrich = scored[:min(enrich_top_n, len(scored))]
+                    fund_ctx = self.shared_data.get("fund_context", {})
+                    _fund_id = fund_ctx.get("fundId", "")
+
+                    async def tavily_fn(query: str) -> dict:
+                        return await self._tavily_search(query)
+
+                    async def llm_fn(prompt: str, system: str) -> str:
+                        r = await self.model_router.get_completion(
+                            prompt=prompt, system_prompt=system,
+                            capability=ModelCapability.FAST,
+                            max_tokens=400, temperature=0.0,
+                            json_mode=True, caller_context="sourcing_enrich",
+                        )
+                        return r.get("response", "{}") if isinstance(r, dict) else str(r)
+
+                    enrich_result = await resolve_gaps(
+                        companies=to_enrich,
+                        fund_id=_fund_id,
+                        tavily_search_fn=tavily_fn if self.tavily_api_key else None,
+                        llm_extract_fn=llm_fn,
+                    )
+
+                    _enrichment_info = {
+                        "enriched_count": len(to_enrich),
+                        "fields_filled": enrich_result.get("total_fields_filled", 0),
+                        "skills_run": enrich_result.get("skills_run", []),
+                    }
+                    _enrich_grid_cmds = enrich_result.get("grid_commands", [])
+
+                    # Re-score after enrichment (new data may change scores)
+                    scored = score_companies(scored, weights=custom_weights, target_stage=target_stage)
+                    scored = scored[:max_results]
+
+                    logger.info(
+                        "[source_companies] enriched top %d: %d fields filled via %s",
+                        len(to_enrich),
+                        enrich_result.get("total_fields_filled", 0),
+                        enrich_result.get("skills_run", []),
+                    )
+                except Exception as e:
+                    logger.warning(f"[source_companies] microskills enrichment failed: {e}")
+
+            # Optional persistence of sourced results
+            _persisted_count = 0
+            if persist_results and scored:
+                try:
+                    from app.services.sourcing_service import upsert_sourced_companies
+                    _persisted_count = await upsert_sourced_companies(scored, fund_id=fund_id)
+                except Exception as e:
+                    logger.warning(f"[source_companies] persist failed: {e}")
+
+            # Pick display mode and format
+            mode = pick_display_mode(len(scored), display)
+
+            result = {
+                "companies": scored,
+                "count": len(scored),
+                "display_mode": mode,
+                "query_parsed": filters,
+            }
+
+            # Summary line
+            stage_str = f" {target_stage}" if target_stage else ""
+            sector_str = f" {filters.get('sector', '')}" if filters.get('sector') else ""
+            top_name = scored[0]["name"] if scored else "none"
+            top_score = scored[0].get("score", 0) if scored else 0
+            result["summary"] = (
+                f"Found {len(scored)}{stage_str}{sector_str} companies. "
+                f"Top scorer: {top_name} ({top_score}/100)."
+            )
+
+            # Table format for table/ranked_list modes
+            if mode in ("table", "ranked_list"):
+                result["table"] = format_as_markdown_table(scored, include_score=True)
+
+            # For grid_rows mode, emit add_row commands
+            if mode == "grid_rows":
+                result["grid_commands"] = [
+                    {
+                        "action": "add_row",
+                        "company": c.get("name", ""),
+                        "company_id": c.get("company_id", ""),
+                        "data": {
+                            "sector": c.get("sector", ""),
+                            "stage": c.get("stage", ""),
+                            "arr": c.get("arr"),
+                            "valuation": c.get("valuation"),
+                            "totalFunding": c.get("total_funding"),
+                            "growthRate": c.get("growth_rate"),
+                            "employeeCount": c.get("employee_count"),
+                            "hq": c.get("hq", ""),
+                            "businessModel": c.get("business_model", ""),
+                            "foundedYear": c.get("founded"),
+                            "tam": c.get("tam"),
+                            "burnRate": c.get("burn_rate"),
+                            "runwayMonths": c.get("runway_months"),
+                            "latestRoundDate": c.get("latest_round_date", ""),
+                        },
+                    }
+                    for c in scored
+                ]
+
+            # Attach enrichment and persistence metadata
+            if _enrichment_info:
+                result["enrichment"] = _enrichment_info
+            if _enrich_grid_cmds:
+                result["grid_commands"] = result.get("grid_commands", []) + _enrich_grid_cmds
+            if _persisted_count:
+                result["persisted_count"] = _persisted_count
+
+            return result
+
+        except Exception as e:
+            logger.error(f"[TOOL] source_companies failed: {e}")
+            return {"companies": [], "count": 0, "error": str(e)}
+
+    async def _tool_add_company_to_matrix(self, inputs: dict) -> dict:
+        """Add a company from the rich DB to the portfolio matrix grid."""
+        company_id = inputs.get("company_id", "")
+        company_name = inputs.get("company_name", "")
+        if not company_id and not company_name:
+            return {"error": "company_id or company_name is required"}
+        try:
+            from app.services.portfolio_service import PortfolioService
+            ps = PortfolioService()
+            # Search by name if no ID
+            if not company_id:
+                result = await ps.search_companies_db(company_name, limit=1)
+                companies = result.get("companies", [])
+                if not companies:
+                    return {"error": f"Company '{company_name}' not found in database. Use fetch_company_data instead."}
+                company = companies[0]
+            else:
+                # Direct lookup by ID
+                client = ps._client()
+                if client:
+                    resp = client.table("companies").select("*").eq("id", company_id).limit(1).execute()
+                    if resp.data:
+                        company = resp.data[0]
+                    else:
+                        return {"error": f"Company ID '{company_id}' not found"}
+                else:
+                    return {"error": "Database unavailable"}
+
+            # Emit grid commands to add this company to the matrix
+            grid_commands = []
+            field_mapping = {
+                "arr": company.get("arr") or company.get("current_arr_usd"),
+                "valuation": company.get("valuation") or company.get("current_valuation_usd") or company.get("last_valuation_usd"),
+                "stage": company.get("stage"),
+                "sector": company.get("sector"),
+                "totalFunding": company.get("total_funding") or company.get("total_funding_usd"),
+                "growthRate": company.get("growth_rate"),
+                "employeeCount": company.get("employee_count"),
+                "burnRate": company.get("burn_rate") or company.get("burn_rate_monthly_usd"),
+                "runwayMonths": company.get("runway_months"),
+                "hq": company.get("hq") or company.get("hq_location"),
+                "description": company.get("description"),
+                "businessModel": company.get("business_model"),
+            }
+
+            row_id = company.get("name", company_name)
+            for col, val in field_mapping.items():
+                if val is not None and val != "" and val != "N/A":
+                    grid_commands.append({
+                        "action": "edit",
+                        "rowId": row_id,
+                        "columnId": col,
+                        "value": val,
+                        "reasoning": f"Pre-populated from companies database",
+                    })
+
+            return {
+                "company": company,
+                "grid_commands": grid_commands,
+                "message": f"Added {row_id} to matrix with {len(grid_commands)} pre-populated fields from database",
+            }
+        except Exception as e:
+            logger.warning(f"[TOOL] add_company_to_matrix failed: {e}")
+            return {"error": str(e)}
+
     async def _tool_suggest_edit(self, inputs: dict) -> dict:
         """Return grid command AND persist to pending_suggestions for the accept/reject flow."""
         company_id = inputs.get("company")
@@ -1771,68 +5412,633 @@ Question: {prompt}"""
                 if supabase_url and supabase_key:
                     from supabase import create_client
                     sb = create_client(supabase_url, supabase_key)
-                    sb.table("pending_suggestions").insert({
+                    sb.table("pending_suggestions").upsert({
                         "fund_id": fund_id,
                         "company_id": company_id,
                         "column_id": column_id,
-                        "suggested_value": json.dumps(value) if not isinstance(value, str) else value,
+                        "suggested_value": value,
                         "source_service": "agent.suggest_edit",
                         "reasoning": reasoning,
                         "metadata": {"tool": "suggest_grid_edit"},
-                    }).execute()
+                    }, on_conflict="fund_id,company_id,column_id").execute()
             except Exception as e:
                 logger.warning(f"[TOOL] Failed to persist suggestion: {e}")
 
         return {
-            "grid_command": {
+            "grid_commands": [{
                 "action": "edit",
                 "rowId": company_id,
                 "columnId": column_id,
                 "value": value,
                 "reasoning": reasoning,
-            }
+            }]
         }
 
     async def _tool_suggest_action(self, inputs: dict) -> dict:
-        """Return an action suggestion (insight / warning / action item)."""
+        """Return an action suggestion (insight / warning / action item) AND persist to pending_suggestions."""
         VALID_TYPES = {"insight", "warning", "action_item", "follow_up"}
         suggestion_type = inputs.get("type", "insight")
         if suggestion_type not in VALID_TYPES:
             return {"error": f"Invalid suggestion type '{suggestion_type}'. Must be one of: {VALID_TYPES}"}
-        return {
-            "suggestion": {
-                "type": suggestion_type,
-                "title": inputs.get("title", ""),
-                "description": inputs.get("description", ""),
-                "priority": inputs.get("priority", "medium"),
-            }
+
+        suggestion = {
+            "type": suggestion_type,
+            "title": inputs.get("title", ""),
+            "description": inputs.get("description", ""),
+            "priority": inputs.get("priority", "medium"),
+            "company_id": inputs.get("company_id", ""),
         }
+
+        # Persist to pending_suggestions so it survives page refresh
+        fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+        company_id = inputs.get("company_id", "") or inputs.get("company", "")
+        if fund_id:
+            try:
+                supabase_url = settings.SUPABASE_URL
+                supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+                if supabase_url and supabase_key:
+                    from supabase import create_client
+                    sb = create_client(supabase_url, supabase_key)
+                    sb.table("pending_suggestions").upsert({
+                        "fund_id": fund_id,
+                        "company_id": company_id or "portfolio",
+                        "column_id": f"_action_{suggestion_type}",
+                        "suggested_value": suggestion,
+                        "source_service": "agent.suggest_action",
+                        "reasoning": inputs.get("description", ""),
+                        "metadata": {"tool": "suggest_action", "priority": inputs.get("priority", "medium")},
+                    }, on_conflict="fund_id,company_id,column_id").execute()
+            except Exception as e:
+                logger.warning(f"[TOOL] Failed to persist action suggestion: {e}")
+
+        return {"suggestion": suggestion}
 
     async def _tool_write_memo(self, inputs: dict) -> dict:
         """Return memo sections for the frontend to append. No DB write here."""
         return {"memo_sections": inputs.get("sections", [])}
 
+    # Mapping from fetched company data fields to grid column IDs
+    _FIELD_TO_GRID_COLUMN: Dict[str, str] = {
+        "description": "description",
+        "product_description": "description",
+        "arr": "arr",
+        "revenue": "arr",
+        "inferred_revenue": "arr",
+        "valuation": "valuation",
+        "funding_stage": "stage",
+        "total_funding": "total_funding",
+        "gross_margin": "gross_margin",
+        "business_model": "business_model",
+        "team_size": "team_size",
+        "target_market": "target_market",
+        "pricing_model": "pricing_model",
+        "category": "sector",
+        "revenue_growth": "revenue_growth",
+        "hq_location": "hq_location",
+        "founded_year": "founded_year",
+        "investors": "investors",
+        "fund_fit_score": "fund_fit_score",
+    }
+
+    def _auto_suggest_grid_edits(self, company_data: dict) -> list:
+        """Compare fetched company data with grid snapshot and emit grid_commands for empty/stale cells.
+
+        Returns a list of grid_command dicts ready to be collected as side effects.
+        Also persists each suggestion to pending_suggestions in Supabase.
+        """
+        grid_commands: list = []
+        company_name = (company_data.get("company") or company_data.get("name") or "").strip()
+        if not company_name:
+            return grid_commands
+
+        # Find matching row in grid snapshot
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else (
+            grid_snapshot if isinstance(grid_snapshot, list) else []
+        )
+
+        matched_row = None
+        matched_row_id = company_name  # fallback: use name as rowId
+        for row in grid_rows:
+            row_name = (row.get("companyName") or row.get("company_name") or "").lower()
+            if company_name.lower() in row_name or row_name in company_name.lower():
+                matched_row = row
+                matched_row_id = row.get("rowId") or row.get("row_id") or company_name
+                break
+
+        existing_cells = {}
+        if matched_row:
+            existing_cells = matched_row.get("cells") or matched_row.get("cellValues") or {}
+
+        # Track which grid columns we've already suggested (avoid duplicates)
+        suggested_columns: set = set()
+        fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+
+        for data_field, grid_col in self._FIELD_TO_GRID_COLUMN.items():
+            if grid_col in suggested_columns:
+                continue
+            value = company_data.get(data_field)
+            if value is None:
+                continue
+            # Skip empty strings/lists
+            if isinstance(value, str) and not value.strip():
+                continue
+            if isinstance(value, list) and len(value) == 0:
+                continue
+
+            # Check if grid cell is empty or missing
+            current = existing_cells.get(grid_col)
+            is_empty = current is None or current == "" or current == 0
+            if not is_empty:
+                continue
+
+            suggested_columns.add(grid_col)
+
+            # Format investors list as comma-separated string
+            display_value = ", ".join(value) if isinstance(value, list) else value
+
+            reasoning = f"From web search: {data_field} for {company_name}"
+
+            gc = {
+                "action": "edit",
+                "rowId": matched_row_id,
+                "columnId": grid_col,
+                "value": display_value,
+                "reasoning": reasoning,
+                "source_service": "agent.auto_enrich",
+                "auto_apply": True,  # Bypass suggestion queue — agent enrichment applies directly
+            }
+            grid_commands.append(gc)
+
+        if grid_commands:
+            logger.info(f"[AUTO_SUGGEST] Generated {len(grid_commands)} grid suggestions for {company_name}")
+
+        return grid_commands
+
     async def _tool_fetch_company(self, inputs: dict) -> dict:
-        """Wrap existing _execute_company_fetch — dealflow pipeline stays intact."""
+        """Wrap existing _execute_company_fetch — dealflow pipeline stays intact.
+        Returns rich fields for agent enrichment + inline memo_sections.
+        AUTO-EMITS suggest_grid_edit for every empty grid cell where we have data."""
         try:
             result = await self._execute_company_fetch({
                 "company": inputs["company_name"],
                 "prompt_handle": f"@{inputs['company_name']}",
             })
             companies = result.get("companies", [])
-            compress_keys = [
-                "name", "description", "revenue", "arr", "valuation",
+            # Return enrichment-relevant fields so agent can suggest_grid_edit
+            enrich_keys = [
+                "name", "company", "description", "product_description",
+                "revenue", "arr", "inferred_revenue", "valuation",
                 "funding_stage", "total_funding", "investors",
+                "gross_margin", "business_model", "team_size",
+                "target_market", "pricing_model", "category",
+                "revenue_growth", "hq_location", "founded_year",
+                "fund_fit_score", "optimal_check_size",
             ]
-            return {
-                "companies": [
-                    {k: c.get(k) for k in compress_keys}
-                    for c in companies[:3]
-                ]
+            compressed = []
+            for c in companies[:3]:
+                row = {k: c.get(k) for k in enrich_keys if c.get(k) is not None}
+                # Include key_metrics sub-dict if present
+                km = c.get("key_metrics")
+                if isinstance(km, dict):
+                    row["key_metrics"] = km
+                compressed.append(row)
+
+            # Generate inline memo sections from fetched data
+            memo_sections = self._build_company_memo_sections(compressed)
+
+            # AUTO-SUGGEST: Compare with grid and emit grid_commands for empty cells
+            all_grid_commands: list = []
+            for c in compressed:
+                cmds = self._auto_suggest_grid_edits(c)
+                all_grid_commands.extend(cmds)
+
+            out: Dict[str, Any] = {
+                "companies": compressed,
+                "memo_sections": memo_sections,
             }
+            if all_grid_commands:
+                out["grid_commands"] = all_grid_commands
+                out["auto_suggestions_count"] = len(all_grid_commands)
+
+            # Clear fetched companies from pending enrichment lists
+            async with self.shared_data_lock:
+                for c in compressed:
+                    _cname_lower = (c.get("company") or c.get("name") or "").lower().strip("@")
+                    if not _cname_lower:
+                        continue
+                    for _list_key in ("proactive_enrich_companies", "sparse_enrich_companies"):
+                        _current = self.shared_data.get(_list_key, [])
+                        if _current:
+                            self.shared_data[_list_key] = [
+                                x for x in _current if x.lower().strip("@") != _cname_lower
+                            ]
+
+            return out
         except Exception as e:
             logger.warning(f"[TOOL] fetch_company failed: {e}")
             return {"companies": [], "error": str(e)}
+
+    def _build_company_memo_sections(self, companies: list) -> list:
+        """Build compact memo sections from company data for inline chat display."""
+        sections: list = []
+        for c in companies:
+            name = c.get("company") or c.get("name") or "Unknown"
+            sections.append({"type": "heading2", "content": name})
+
+            desc = c.get("product_description") or c.get("description")
+            if desc:
+                sections.append({"type": "paragraph", "content": desc})
+
+            # Key metrics as a compact list
+            items = []
+            val = c.get("valuation")
+            rev = c.get("revenue") or c.get("arr") or c.get("inferred_revenue")
+            if val and isinstance(val, (int, float)):
+                items.append(f"Valuation: ${val / 1e6:,.1f}M")
+            if rev and isinstance(rev, (int, float)):
+                items.append(f"Revenue: ${rev / 1e6:,.1f}M")
+            gm = c.get("gross_margin")
+            if gm is None:
+                km = c.get("key_metrics") or {}
+                gm = km.get("gross_margin")
+            if gm and isinstance(gm, (int, float)):
+                items.append(f"Gross Margin: {gm * 100 if gm < 1 else gm:.0f}%")
+            funding = c.get("total_funding")
+            if funding and isinstance(funding, (int, float)):
+                items.append(f"Total Funding: ${funding / 1e6:,.1f}M")
+            stage = c.get("funding_stage")
+            if stage:
+                items.append(f"Stage: {stage}")
+            model = c.get("business_model")
+            if model:
+                items.append(f"Business Model: {model}")
+            team = c.get("team_size")
+            if team:
+                items.append(f"Team Size: {team}")
+            fit = c.get("fund_fit_score")
+            if fit:
+                items.append(f"Fund Fit: {fit}/100")
+
+            if items:
+                sections.append({"type": "list", "items": items})
+
+        return sections
+
+    # ------------------------------------------------------------------
+    # Granular search tools — 1 Tavily search each, auto-suggest grid edits
+    # ------------------------------------------------------------------
+
+    async def _granular_search_and_extract(
+        self,
+        company_name: str,
+        search_suffix: str,
+        extract_fields: Dict[str, str],
+        extraction_instructions: str,
+    ) -> dict:
+        """Shared helper for granular search tools.
+
+        1. Single Tavily search with `company_name + search_suffix`
+        2. LLM extraction for specific fields
+        3. Auto-suggest grid edits for extracted data
+
+        Args:
+            company_name: Company to search for
+            search_suffix: Appended to company name for the search query
+            extract_fields: JSON schema fields to extract {field_name: type_hint}
+            extraction_instructions: Extra guidance for the LLM extractor
+        """
+        company_name = company_name.strip().lstrip("@")
+        if not company_name:
+            return {"error": "company_name is required"}
+
+        # Single Tavily search
+        try:
+            search_result = await self._execute_tool("web_search", {
+                "query": f"{company_name} {search_suffix}",
+                "search_depth": "basic",
+            })
+            search_text = json.dumps(search_result.get("results", search_result), default=str)[:4000]
+        except Exception as e:
+            logger.warning(f"[GRANULAR_SEARCH] Search failed for {company_name} ({search_suffix}): {e}")
+            search_text = ""
+
+        if not search_text or search_text == "[]":
+            return {"company_name": company_name, "fields": {}, "message": "No search results found"}
+
+        # Build extraction schema
+        fields_json = json.dumps(extract_fields, indent=2)
+        extraction_prompt = f"""Extract data for {company_name} from this search result:
+
+{search_text}
+
+{extraction_instructions}
+
+Return JSON with ONLY these fields (use null if unknown):
+{fields_json}"""
+
+        try:
+            extraction = await self.model_router.get_completion(
+                prompt=extraction_prompt,
+                system_prompt="Extract factual company data. No speculation. Return valid JSON only.",
+                capability=ModelCapability.FAST,
+                max_tokens=400,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="granular_search_extract",
+            )
+            raw = extraction.get("response", "{}") if isinstance(extraction, dict) else str(extraction)
+            extracted = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception as e:
+            logger.warning(f"[GRANULAR_SEARCH] Extraction failed for {company_name}: {e}")
+            return {"company_name": company_name, "fields": {}, "error": str(e)}
+
+        # Filter out null values
+        fields = {k: v for k, v in extracted.items() if v is not None}
+
+        # Auto-suggest grid edits
+        grid_commands = self._auto_suggest_grid_edits({"name": company_name, **fields})
+
+        # Build memo sections for this search
+        items = []
+        for k, v in fields.items():
+            if isinstance(v, list):
+                v = ", ".join(str(x) for x in v)
+            if isinstance(v, (int, float)) and v > 1_000_000:
+                items.append(f"**{k.replace('_', ' ').title()}**: ${v / 1e6:,.1f}M")
+            elif isinstance(v, float) and v < 1:
+                items.append(f"**{k.replace('_', ' ').title()}**: {v * 100:.0f}%")
+            else:
+                items.append(f"**{k.replace('_', ' ').title()}**: {v}")
+
+        memo_sections = []
+        if items:
+            memo_sections = [
+                {"type": "heading2", "content": f"{company_name} — {search_suffix.split()[0].title()}"},
+                {"type": "list", "items": items},
+            ]
+
+        # Merge extracted fields into shared_data["companies"] so downstream
+        # tools (valuation, cap table, follow-on) can access accumulated data.
+        async with self.shared_data_lock:
+            companies = self.shared_data.get("companies", [])
+            existing = next(
+                (c for c in companies if c.get("name", "").lower() == company_name.lower()),
+                None,
+            )
+            if existing:
+                # Merge new fields into existing entry (don't overwrite with None)
+                for k, v in fields.items():
+                    if v is not None:
+                        existing[k] = v
+            else:
+                companies.append({"name": company_name, **fields})
+            self.shared_data["companies"] = companies
+
+            # Clear this company from pending enrichment lists so the agent
+            # doesn't re-process it on subsequent iterations.
+            _cname_lower = company_name.lower().strip("@")
+            for _list_key in ("proactive_enrich_companies", "sparse_enrich_companies"):
+                _current = self.shared_data.get(_list_key, [])
+                if _current:
+                    self.shared_data[_list_key] = [
+                        c for c in _current if c.lower().strip("@") != _cname_lower
+                    ]
+
+        out: Dict[str, Any] = {
+            "company_name": company_name,
+            "fields": fields,
+            "memo_sections": memo_sections,
+        }
+        if grid_commands:
+            out["grid_commands"] = grid_commands
+            out["auto_suggestions_count"] = len(grid_commands)
+
+        return out
+
+    async def _tool_search_company_funding(self, inputs: dict) -> dict:
+        """Search for funding, valuation, investors, stage. 1 Tavily search."""
+        return await self._granular_search_and_extract(
+            company_name=inputs.get("company_name", ""),
+            search_suffix="funding round valuation investors Series stage",
+            extract_fields={
+                "valuation": "number or null (in USD)",
+                "total_funding": "number or null (in USD)",
+                "funding_stage": "string: Seed/Series A/B/C/D+",
+                "investors": "list of investor names",
+                "last_round_amount": "number or null (in USD)",
+                "last_round_date": "string YYYY-MM or null",
+                "reporting_currency": "string: original currency code (USD/GBP/EUR/etc) before conversion, or null",
+            },
+            extraction_instructions="Focus on the most recent funding round. Convert all amounts to USD but preserve the original reporting currency in reporting_currency field.",
+        )
+
+    async def _tool_search_company_product(self, inputs: dict) -> dict:
+        """Search for product, business model, pricing, target market. 1 Tavily search."""
+        return await self._granular_search_and_extract(
+            company_name=inputs.get("company_name", ""),
+            search_suffix="product description business model pricing customers",
+            extract_fields={
+                "description": "string: what they actually do (factual, no buzzwords)",
+                "business_model": "string: SaaS/Marketplace/Hardware/Services/etc",
+                "pricing_model": "string: per-seat/usage-based/enterprise/freemium/etc",
+                "target_market": "string: who they sell to",
+                "category": "string: industry sector",
+            },
+            extraction_instructions="Describe EXACTLY what the company does. NO buzzwords like 'AI-powered platform'.",
+        )
+
+    async def _tool_search_company_team(self, inputs: dict) -> dict:
+        """Search for founders, leadership, team size. 1 Tavily search."""
+        return await self._granular_search_and_extract(
+            company_name=inputs.get("company_name", ""),
+            search_suffix="founder CEO CTO team size employees headcount",
+            extract_fields={
+                "team_size": "number or null (total employees)",
+                "founders": "list of founder names",
+                "ceo": "string or null",
+                "cto": "string or null",
+                "founded_year": "number YYYY or null",
+                "hq_location": "string: City, Country",
+                "hq_country": "string: 2-letter ISO country code (US/GB/DE/FR/IL/SG/etc) or null",
+            },
+            extraction_instructions="Look for LinkedIn data, Crunchbase profiles, About pages. Extract the country as a 2-letter ISO code.",
+        )
+
+    async def _tool_search_company_market(self, inputs: dict) -> dict:
+        """Search for competitors, TAM, market position. 1 Tavily search."""
+        return await self._granular_search_and_extract(
+            company_name=inputs.get("company_name", ""),
+            search_suffix="competitors market size TAM alternatives industry",
+            extract_fields={
+                "competitors": "list of competitor company names",
+                "tam_estimate": "number or null (total addressable market in USD)",
+                "market_position": "string: leader/challenger/niche/emerging",
+                "category": "string: industry sector",
+            },
+            extraction_instructions="Focus on direct competitors and market sizing. Use real numbers.",
+        )
+
+    # ------------------------------------------------------------------
+    # Financial analysis services (gross margin, burn, growth projections)
+    # ------------------------------------------------------------------
+
+    async def _tool_analyze_financials(self, inputs: dict) -> dict:
+        """Analyze/infer financial metrics for a company using stage benchmarks + available data.
+
+        Computes: gross margin estimate, burn rate, runway, growth projection, unit economics.
+        Returns grid_commands for any fields it can fill.
+        """
+        company_name = (inputs.get("company_name") or inputs.get("company", "")).strip().lstrip("@")
+        if not company_name:
+            return {"error": "company_name is required"}
+
+        # Gather all available data from shared_data + grid
+        company_data: Dict[str, Any] = {"name": company_name}
+
+        # Check cached company data
+        for c in self.shared_data.get("companies", []):
+            c_name = (c.get("name") or c.get("company") or "").lower()
+            if company_name.lower() in c_name or c_name in company_name.lower():
+                company_data.update(c)
+                break
+
+        # Check grid context
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else (
+            grid_snapshot if isinstance(grid_snapshot, list) else []
+        )
+        for row in grid_rows:
+            row_name = (row.get("companyName") or row.get("company_name") or "").lower()
+            if company_name.lower() in row_name or row_name in company_name.lower():
+                cells = row.get("cells") or row.get("cellValues") or {}
+                for k, v in cells.items():
+                    if v is not None and v != "" and k not in company_data:
+                        company_data[k] = v
+                break
+
+        # Stage benchmarks for inference
+        stage = (company_data.get("funding_stage") or company_data.get("stage") or "").lower()
+        STAGE_BENCHMARKS = {
+            "seed": {"gross_margin": 0.60, "burn_monthly": 150_000, "growth_yoy": 3.0, "team_size": 12, "revenue_multiple": 50},
+            "series a": {"gross_margin": 0.65, "burn_monthly": 400_000, "growth_yoy": 2.5, "team_size": 40, "revenue_multiple": 30},
+            "series b": {"gross_margin": 0.70, "burn_monthly": 1_200_000, "growth_yoy": 1.5, "team_size": 150, "revenue_multiple": 15},
+            "series c": {"gross_margin": 0.72, "burn_monthly": 3_000_000, "growth_yoy": 0.8, "team_size": 400, "revenue_multiple": 10},
+            "series d": {"gross_margin": 0.75, "burn_monthly": 5_000_000, "growth_yoy": 0.5, "team_size": 800, "revenue_multiple": 8},
+        }
+        benchmarks = STAGE_BENCHMARKS.get(stage, STAGE_BENCHMARKS.get("series a", {}))
+
+        # Business model adjustments
+        bm = (company_data.get("business_model") or "").lower()
+        if "saas" in bm:
+            benchmarks["gross_margin"] = min(benchmarks.get("gross_margin", 0.65) + 0.05, 0.85)
+        elif "marketplace" in bm:
+            benchmarks["gross_margin"] = min(benchmarks.get("gross_margin", 0.65) + 0.10, 0.90)
+        elif "hardware" in bm or "manufacturing" in bm:
+            benchmarks["gross_margin"] = max(benchmarks.get("gross_margin", 0.65) - 0.25, 0.20)
+        elif "services" in bm or "consulting" in bm:
+            benchmarks["gross_margin"] = max(benchmarks.get("gross_margin", 0.65) - 0.15, 0.35)
+
+        # Compute metrics
+        revenue = company_data.get("arr") or company_data.get("revenue") or company_data.get("inferred_revenue") or 0
+        total_funding = company_data.get("total_funding") or 0
+        team_size = company_data.get("team_size") or benchmarks.get("team_size", 40)
+
+        # Gross margin: use actual if available, otherwise benchmark
+        gross_margin = company_data.get("gross_margin")
+        gm_source = "actual"
+        if gross_margin is None:
+            gross_margin = benchmarks.get("gross_margin", 0.65)
+            gm_source = f"benchmark ({stage or 'Series A'} + {bm or 'general'})"
+
+        # Burn rate: estimate from team size + overhead
+        avg_salary = 120_000  # USD annual avg for tech companies
+        if company_data.get("hq_location", "").lower() in ("san francisco", "new york", "london"):
+            avg_salary = 150_000
+        annual_people_cost = team_size * avg_salary
+        burn_monthly = company_data.get("burn_rate") or (annual_people_cost / 12 * 1.4)  # 1.4x for non-people costs
+        burn_source = "actual" if company_data.get("burn_rate") else "estimated (team × avg salary × 1.4)"
+
+        # Runway
+        cash_on_hand = total_funding * 0.5 if total_funding else 0  # assume ~50% deployed
+        runway_months = int(cash_on_hand / burn_monthly) if burn_monthly > 0 else 0
+
+        # Growth projection: 3-year forecast
+        growth_yoy = company_data.get("revenue_growth") or benchmarks.get("growth_yoy", 1.5)
+        if isinstance(growth_yoy, (int, float)) and growth_yoy > 10:
+            growth_yoy = growth_yoy / 100  # convert percentage to decimal
+        projections = []
+        proj_rev = revenue if revenue > 0 else (burn_monthly * 12 * 0.3)  # assume 30% of burn if no revenue data
+        for year in range(1, 4):
+            proj_rev = proj_rev * (1 + growth_yoy)
+            projections.append({"year": year, "projected_revenue": round(proj_rev)})
+
+        # Rule of 40 (SaaS metric)
+        rule_of_40 = None
+        if revenue > 0 and gross_margin:
+            implied_margin = (revenue * gross_margin - burn_monthly * 12) / revenue if revenue else 0
+            rule_of_40 = round((growth_yoy * 100) + (implied_margin * 100), 1)
+
+        # Capital efficiency
+        capital_efficiency = revenue / total_funding if total_funding > 0 and revenue > 0 else None
+
+        analysis = {
+            "company": company_name,
+            "stage": stage or "unknown",
+            "business_model": bm or "unknown",
+            "gross_margin": round(gross_margin, 3),
+            "gross_margin_source": gm_source,
+            "burn_rate_monthly": round(burn_monthly),
+            "burn_source": burn_source,
+            "runway_months": runway_months,
+            "revenue": revenue,
+            "growth_yoy": round(growth_yoy, 3),
+            "projections": projections,
+            "rule_of_40": rule_of_40,
+            "capital_efficiency": round(capital_efficiency, 3) if capital_efficiency else None,
+            "team_size": team_size,
+        }
+
+        # Auto-suggest grid edits for computed fields
+        suggest_data = {
+            "name": company_name,
+            "gross_margin": gross_margin,
+            "revenue_growth": growth_yoy,
+        }
+        if not company_data.get("burn_rate"):
+            suggest_data["burn_rate"] = round(burn_monthly)
+        grid_commands = self._auto_suggest_grid_edits(suggest_data)
+
+        # Build memo sections
+        memo_items = [
+            f"**Gross Margin**: {gross_margin * 100:.0f}% ({gm_source})",
+            f"**Monthly Burn**: ${burn_monthly / 1000:,.0f}K ({burn_source})",
+            f"**Runway**: ~{runway_months} months",
+            f"**Growth**: {growth_yoy * 100:.0f}% YoY",
+        ]
+        if rule_of_40 is not None:
+            memo_items.append(f"**Rule of 40**: {rule_of_40}")
+        if capital_efficiency is not None:
+            memo_items.append(f"**Capital Efficiency**: {capital_efficiency:.2f}x")
+        for p in projections:
+            memo_items.append(f"**Year {p['year']} Revenue**: ${p['projected_revenue'] / 1e6:,.1f}M")
+
+        memo_sections = [
+            {"type": "heading2", "content": f"{company_name} — Financial Analysis"},
+            {"type": "list", "items": memo_items},
+        ]
+
+        out: Dict[str, Any] = {
+            "analysis": analysis,
+            "memo_sections": memo_sections,
+        }
+        if grid_commands:
+            out["grid_commands"] = grid_commands
+            out["auto_suggestions_count"] = len(grid_commands)
+
+        return out
 
     async def _tool_fpa(self, inputs: dict) -> dict:
         """Run FP&A analysis via NL→parse→classify→build→execute pipeline."""
@@ -1873,6 +6079,11 @@ Question: {prompt}"""
                             },
                         },
                     ]
+
+            # Store in shared_data so chart dispatch and memo service can reach it
+            async with self.shared_data_lock:
+                self.shared_data["fpa_result"] = fpa_result
+
             return fpa_result
         except Exception as e:
             logger.warning(f"[TOOL] fpa failed: {e}")
@@ -1954,9 +6165,8 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
         Returns full deck with slides, theme, charts.
         """
         try:
-            companies = self.shared_data.get("companies", [])
-            if not companies:
-                return {"error": "No companies in shared_data. Fetch company data first or query portfolio."}
+            # Prerequisites (companies, cap_table_history, etc.) are auto-resolved
+            # by the tool wiring layer in _execute_tool before this handler runs.
             result = await self._execute_deck_generation(inputs)
             return result
         except Exception as e:
@@ -1964,20 +6174,34 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             return {"error": str(e), "format": "deck", "slides": []}
 
     async def _tool_generate_memo(self, inputs: dict) -> dict:
-        """Invoke memo-writer skill from agent loop.
+        """Invoke lightweight memo pipeline from agent loop.
 
-        Supports memo types: investment, followon, lp_report, gp_strategy.
+        Supports all memo types: ic_memo, followon, lp_report, gp_strategy,
+        comparison, bespoke_lp, fund_analysis, ownership_analysis, plan_memo.
         Returns structured document sections for MemoEditor.
+
+        Prerequisites are auto-resolved by TOOL_WIRING before this handler
+        runs.  The wiring layer calls run_valuation, cap_table_evolution, and
+        run_scenario in parallel to populate shared_data with real analysis.
+        _hydrate_shared_data_from_companies provides lightweight fallbacks
+        for any keys the real tools fail to produce.  The agent never needs
+        to manually chain these — one generate_memo call does everything.
         """
         try:
-            companies = self.shared_data.get("companies", [])
-            if not companies:
-                return {"error": "No companies in shared_data. Fetch company data first or query portfolio."}
-            # Pass memo_type and prompt through to the skill
+            memo_type = inputs.get("memo_type", "investment")
+
+            # Log what the wiring layer pre-populated so debugging is easy
+            _prereq_sources = {
+                k: ("real" if self.shared_data.get(k, {}).get("_source") != "hydrated_from_companies" else "hydrated")
+                for k in ("valuations", "cap_table_history", "scenario_analysis")
+                if self.shared_data.get(k)
+            }
+            if _prereq_sources:
+                logger.info(f"[MEMO] Prerequisite data sources: {_prereq_sources}")
+
             memo_inputs = {
-                "memo_type": inputs.get("memo_type", "investment"),
+                "memo_type": memo_type,
                 "prompt": inputs.get("prompt", self.shared_data.get("original_prompt", "")),
-                "use_shared_data": True,
             }
             result = await self._execute_memo_generation(memo_inputs)
             # Also return memo sections as side effects for the streaming pipeline
@@ -2103,6 +6327,938 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
         })
 
     # ------------------------------------------------------------------
+    # Phase 3: New tool handlers — wiring existing services
+    # ------------------------------------------------------------------
+
+    # --- Cap Table & Ownership ---
+
+    async def _ensure_funding_rounds(self, company_data: dict) -> bool:
+        """Ensure company_data has funding_rounds, reconstructing if needed.
+
+        Tries gap_filler.generate_stage_based_funding_rounds first (uses stage
+        benchmarks), then falls back to micro_skills.reconstruct_funding_history
+        which can leverage last_round_amount + total_funding for scaling.
+
+        Mutates company_data in-place. Returns True if rounds exist after call.
+        """
+        existing = company_data.get("funding_rounds") or company_data.get("funding_history") or []
+        if existing:
+            return True
+
+        name = company_data.get("name", "unknown")
+        stage = company_data.get("stage", "")
+
+        # Attempt 1: gap_filler's stage-based synthesis (sync, fast)
+        try:
+            synthetic = self.gap_filler.generate_stage_based_funding_rounds(company_data)
+            if synthetic:
+                company_data["funding_rounds"] = synthetic
+                company_data["funding_data_source"] = "stage_inferred"
+                logger.info(f"[CAP_TABLE_FALLBACK] gap_filler generated {len(synthetic)} rounds for {name} (stage={stage})")
+                return True
+        except Exception as e:
+            logger.warning(f"[CAP_TABLE_FALLBACK] gap_filler failed for {name}: {e}")
+
+        # Attempt 2: micro-skill reconstruct_funding_history (async, uses last_round_amount)
+        try:
+            from app.services.micro_skills.benchmark_skills import reconstruct_funding_history
+            result = await reconstruct_funding_history(company_data)
+            rounds = result.field_updates.get("funding_rounds", []) if result and result.field_updates else []
+            if rounds:
+                company_data["funding_rounds"] = rounds
+                company_data["funding_data_source"] = "reconstructed"
+                logger.info(f"[CAP_TABLE_FALLBACK] reconstruct_funding_history built {len(rounds)} rounds for {name} (stage={stage}, confidence={result.confidence})")
+                return True
+        except Exception as e:
+            logger.warning(f"[CAP_TABLE_FALLBACK] reconstruct_funding_history failed for {name}: {e}")
+
+        return False
+
+    def _persist_cap_table(self, portfolio_id: str, company_id: str, company_name: str, result: dict, funding_data_source: str = "synthetic"):
+        """Upsert cap table result to Supabase for persistence across sessions."""
+        try:
+            from app.core.database import get_supabase_service
+            sb = get_supabase_service()
+            if not sb:
+                return
+            client = sb.get_client() if hasattr(sb, 'get_client') else sb
+            if not client:
+                return
+            row = {
+                "portfolio_id": portfolio_id,
+                "company_id": company_id,
+                "company_name": company_name,
+                "cap_table_json": result.get("current_cap_table", {}),
+                "sankey_data": result.get("sankey_data"),
+                "waterfall_data": result.get("waterfall_data"),
+                "ownership_summary": result.get("ownership_summary"),
+                "founder_ownership": result.get("founder_ownership"),
+                "total_raised": result.get("total_raised"),
+                "num_rounds": result.get("num_rounds"),
+                "source": funding_data_source,
+                "funding_data_source": funding_data_source,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            client.table("company_cap_tables").upsert(row, on_conflict="portfolio_id,company_id").execute()
+            logger.info(f"[CAP_TABLE_PERSIST] Upserted cap table for {company_name} (source={funding_data_source})")
+        except Exception as e:
+            logger.warning(f"[CAP_TABLE_PERSIST] Failed for {company_name}: {e}")
+
+    def _load_cached_cap_table(self, portfolio_id: str, company_id: str) -> dict | None:
+        """Load persisted cap table from Supabase if it exists."""
+        try:
+            from app.core.database import get_supabase_service
+            sb = get_supabase_service()
+            if not sb:
+                return None
+            client = sb.get_client() if hasattr(sb, 'get_client') else sb
+            if not client:
+                return None
+            result = client.table("company_cap_tables").select("*").eq("portfolio_id", portfolio_id).eq("company_id", company_id).limit(1).execute()
+            if result.data:
+                row = result.data[0]
+                return {
+                    "current_cap_table": row.get("cap_table_json", {}),
+                    "sankey_data": row.get("sankey_data"),
+                    "waterfall_data": row.get("waterfall_data"),
+                    "ownership_summary": row.get("ownership_summary"),
+                    "founder_ownership": row.get("founder_ownership"),
+                    "total_raised": row.get("total_raised"),
+                    "num_rounds": row.get("num_rounds"),
+                    "source": row.get("source"),
+                    "company": row.get("company_name", ""),
+                    "cached": True,
+                }
+        except Exception as e:
+            logger.warning(f"[CAP_TABLE_CACHE] Load failed: {e}")
+        return None
+
+    async def _tool_cap_table_evolution(self, inputs: dict) -> dict:
+        """Track dilution through all funding rounds with Sankey visualization."""
+        try:
+            company_name = inputs.get("company", "")
+            force_recalc = inputs.get("force_recalculate", False)
+            company_data = await self._resolve_company(company_name)
+            if not company_data:
+                return {"error": f"Could not resolve company: {company_name}"}
+
+            portfolio_id = company_data.get("portfolio_id") or inputs.get("portfolio_id") or ""
+            company_id = company_data.get("company_id") or company_data.get("id") or ""
+
+            # Check cache first (skip if force recalculate)
+            if not force_recalc and portfolio_id and company_id:
+                cached = self._load_cached_cap_table(portfolio_id, company_id)
+                if cached:
+                    logger.info(f"[TOOL] cap_table_evolution: using cached result for {company_name}")
+                    # Still store in shared_data for downstream use
+                    async with self.shared_data_lock:
+                        cap_hist = self.shared_data.get("cap_table_history")
+                        if not isinstance(cap_hist, dict):
+                            cap_hist = {}
+                        cap_hist[cached.get("company", company_name)] = cached
+                        self.shared_data["cap_table_history"] = cap_hist
+                    return cached
+
+            # Ensure funding rounds exist — reconstruct from stage/benchmarks if needed
+            await self._ensure_funding_rounds(company_data)
+            funding_rounds = company_data.get("funding_rounds") or company_data.get("funding_history") or []
+            if not funding_rounds:
+                return {"error": f"No funding round data available for {company_name}. Need at least a 'stage' field to reconstruct."}
+
+            # Pass the full company_data dict (method accepts Dict or List)
+            result = self.cap_table_service.calculate_full_cap_table_history(company_data)
+
+            result["company"] = company_data.get("name") or company_name
+
+            # Persist to shared_data so downstream memo/chart generation can use it
+            company_key = result["company"]
+            async with self.shared_data_lock:
+                cap_hist = self.shared_data.get("cap_table_history")
+                if not isinstance(cap_hist, dict):
+                    cap_hist = {}
+                cap_hist[company_key] = result
+                self.shared_data["cap_table_history"] = cap_hist
+            logger.info(f"[TOOL] cap_table_evolution: stored cap_table_history for {company_key}")
+
+            # Persist to Supabase for cross-session caching
+            funding_source = company_data.get("funding_data_source", "extracted")
+            if portfolio_id and company_id:
+                self._persist_cap_table(portfolio_id, company_id, company_key, result, funding_source)
+
+                # Emit founderOwnership as a pending suggestion so it shows in the grid
+                founder_own = result.get("founder_ownership")
+                if founder_own is not None:
+                    self._write_pending_suggestion(
+                        fund_id=portfolio_id,
+                        company_id=company_id,
+                        column_id="founderOwnership",
+                        suggested_value=founder_own,
+                        source_service="cap_table_evolution",
+                        reasoning=f"Founder ownership after {result.get('num_rounds', '?')} rounds: {founder_own*100:.1f}%",
+                    )
+
+            return result
+        except Exception as e:
+            logger.error(f"[TOOL] cap_table_evolution error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_liquidation_waterfall(self, inputs: dict) -> dict:
+        """Model liquidation waterfall at specific exit values."""
+        try:
+            company_name = inputs.get("company", "")
+            exit_value = float(inputs.get("exit_value", 0))
+            exit_type_str = inputs.get("exit_type", "strategic_ma")
+
+            company_data = await self._resolve_company(company_name)
+            if not company_data:
+                return {"error": f"Could not resolve company: {company_name}"}
+
+            if AdvancedWaterfallCalculator is None:
+                return {"error": "AdvancedWaterfallCalculator not available"}
+
+            # Ensure funding rounds exist — reconstruct if needed
+            await self._ensure_funding_rounds(company_data)
+
+            # Build investor terms from funding data
+            from app.services.waterfall_advanced import LiquidationTerms, ExitType
+            funding_rounds = company_data.get("funding_rounds") or company_data.get("funding_history") or []
+            investors = []
+            for rnd in funding_rounds:
+                investors.append(LiquidationTerms(
+                    investor_name=rnd.get("lead_investor") or rnd.get("investor") or f"Series {rnd.get('round', 'Unknown')} Investor",
+                    amount_invested=Decimal(str(rnd.get("amount") or rnd.get("funding_amount") or 0)),
+                    series=rnd.get("round") or rnd.get("series") or "Unknown",
+                ))
+
+            if not investors:
+                return {"error": f"No investor data to model waterfall for {company_name}"}
+
+            calc = AdvancedWaterfallCalculator(investors=investors)
+            et = ExitType.STRATEGIC_MA
+            try:
+                et = ExitType[exit_type_str.upper()]
+            except (KeyError, AttributeError):
+                pass
+
+            result = calc.calculate_waterfall(
+                exit_value=Decimal(str(exit_value)),
+                exit_type=et,
+            )
+            result["company"] = company_data.get("name") or company_name
+            result["exit_value_input"] = exit_value
+            return result
+        except Exception as e:
+            logger.error(f"[TOOL] liquidation_waterfall error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_anti_dilution(self, inputs: dict) -> dict:
+        """Model anti-dilution scenarios on cap table."""
+        try:
+            company_name = inputs.get("company", "")
+            mechanism = inputs.get("mechanism", "weighted_average")
+            new_round_price = inputs.get("new_round_price")
+
+            company_data = await self._resolve_company(company_name)
+            if not company_data:
+                return {"error": f"Could not resolve company: {company_name}"}
+
+            if not self.advanced_cap_table:
+                return {"error": "AdvancedCapTable service not available"}
+
+            # Ensure funding rounds exist — reconstruct if needed
+            await self._ensure_funding_rounds(company_data)
+
+            funding_rounds = company_data.get("funding_rounds") or company_data.get("funding_history") or []
+            result = self.advanced_cap_table.apply_anti_dilution(
+                funding_rounds=funding_rounds,
+                new_round_price=new_round_price,
+                anti_dilution_type=mechanism,
+                company_name=company_data.get("name") or company_name,
+            )
+            result["company"] = company_data.get("name") or company_name
+            return result if isinstance(result, dict) else {"result": result}
+        except Exception as e:
+            logger.error(f"[TOOL] anti_dilution error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_debt_conversion(self, inputs: dict) -> dict:
+        """Model SAFEs, convertible notes, and debt conversion triggers."""
+        try:
+            company_name = inputs.get("company", "")
+            trigger_valuation = inputs.get("trigger_valuation")
+
+            company_data = await self._resolve_company(company_name)
+            if not company_data:
+                return {"error": f"Could not resolve company: {company_name}"}
+
+            if AdvancedDebtStructures is None:
+                return {"error": "AdvancedDebtStructures service not available"}
+
+            debt_service = AdvancedDebtStructures()
+            debt_structure = debt_service.analyze_debt_structure(company_data)
+
+            result = {"company": company_data.get("name") or company_name, "debt_structure": {}}
+            if hasattr(debt_structure, "__dict__"):
+                result["debt_structure"] = {k: v for k, v in debt_structure.__dict__.items() if not k.startswith("_")}
+            elif isinstance(debt_structure, dict):
+                result["debt_structure"] = debt_structure
+
+            if trigger_valuation:
+                conversion = debt_service.calculate_conversion_scenarios(
+                    debt_structure=debt_structure,
+                    exit_valuation=float(trigger_valuation),
+                )
+                result["conversion_scenarios"] = conversion if isinstance(conversion, dict) else {"result": conversion}
+
+            return result
+        except Exception as e:
+            logger.error(f"[TOOL] debt_conversion error: {e}")
+            return {"error": str(e)}
+
+    # --- Scenario & Stress Testing ---
+
+    async def _tool_stress_test_portfolio(self, inputs: dict) -> dict:
+        """Portfolio-wide shock modeling across all holdings."""
+        try:
+            from app.services.scenario_analyzer import ScenarioAnalyzer, ScenarioType
+            sa = ScenarioAnalyzer()
+
+            shock_type = inputs.get("shock_type", "revenue_decline")
+            magnitude = float(inputs.get("magnitude", 0.3))
+            affected = inputs.get("affected_companies")
+
+            # Get portfolio companies
+            companies = self.shared_data.get("companies", [])
+            if not companies:
+                portfolio_result = await self._execute_tool("query_portfolio", {"query": "all companies"})
+                companies = portfolio_result.get("companies", []) if isinstance(portfolio_result, dict) else []
+
+            if affected:
+                affected_lower = [a.lower().strip().lstrip("@") for a in affected]
+                companies = [c for c in companies if (c.get("name") or c.get("company_name") or "").lower() in affected_lower]
+
+            results = []
+            for company in companies[:20]:  # Cap at 20
+                c_name = company.get("name") or company.get("company_name") or "Unknown"
+                try:
+                    scenario = await sa.create_scenario(
+                        model_id=company.get("id", c_name),
+                        scenario_name=f"{shock_type} stress: {magnitude:.0%}",
+                        scenario_type=ScenarioType.STRESS,
+                        description=f"Apply {shock_type} shock of {magnitude:.0%} to {c_name}",
+                    )
+                    if scenario and scenario.get("id"):
+                        exec_result = await sa.execute_scenario(scenario["id"])
+                        results.append({"company": c_name, "impact": exec_result if isinstance(exec_result, dict) else {"analysis": str(exec_result)}})
+                    else:
+                        results.append({"company": c_name, "impact": {"note": "Scenario created but not executed"}})
+                except Exception as ce:
+                    results.append({"company": c_name, "error": str(ce)})
+
+            return {
+                "shock_type": shock_type,
+                "magnitude": magnitude,
+                "companies_tested": len(results),
+                "results": results,
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] stress_test_portfolio error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_world_model_scenario(self, inputs: dict) -> dict:
+        """Multi-factor scenario with propagated effects."""
+        try:
+            company_name = inputs.get("company", "")
+            factor_changes = inputs.get("factor_changes", {})
+
+            company_data = await self._resolve_company(company_name)
+            if not company_data:
+                return {"error": f"Could not resolve company: {company_name}"}
+
+            from app.services.world_model_builder import WorldModelBuilder
+            wm = WorldModelBuilder()
+
+            # Build world model for the company
+            model = await wm.build_company_world_model(
+                company_data=company_data,
+                model_name=f"{company_data.get('name', company_name)} scenario",
+            )
+
+            result = {"company": company_data.get("name") or company_name, "world_model": model}
+
+            # Execute model with factor changes if provided
+            if model and model.get("model_id") and factor_changes:
+                exec_result = await wm.execute_model(model["model_id"])
+                result["execution"] = exec_result if isinstance(exec_result, dict) else {"result": str(exec_result)}
+
+            return result
+        except Exception as e:
+            logger.error(f"[TOOL] world_model_scenario error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_monte_carlo_portfolio(self, inputs: dict) -> dict:
+        """Monte Carlo simulation across entire portfolio."""
+        try:
+            if FPARegressionService is None:
+                return {"error": "FPARegressionService not available"}
+
+            fpa = FPARegressionService()
+            iterations = int(inputs.get("iterations", 1000))
+            variables = inputs.get("variables", {})
+
+            companies = self.shared_data.get("companies", [])
+            if not companies:
+                portfolio_result = await self._execute_tool("query_portfolio", {"query": "all companies"})
+                companies = portfolio_result.get("companies", []) if isinstance(portfolio_result, dict) else []
+
+            results = []
+            for company in companies[:15]:  # Cap at 15
+                c_name = company.get("name") or company.get("company_name") or "Unknown"
+                revenue = ensure_numeric(company.get("revenue") or company.get("arr") or company.get("inferred_revenue"), 0)
+                growth = ensure_numeric(company.get("growth_rate") or company.get("revenue_growth"), 0.5)
+                try:
+                    mc_result = await fpa.monte_carlo_simulation(
+                        base_case={"revenue": revenue, "growth_rate": growth, **variables},
+                        variable_distributions={"revenue_growth": {"type": "normal", "mean": growth, "std": growth * 0.3}},
+                        iterations=iterations,
+                    )
+                    results.append({"company": c_name, "simulation": mc_result if isinstance(mc_result, dict) else {"result": mc_result}})
+                except Exception as ce:
+                    results.append({"company": c_name, "error": str(ce)})
+
+            mc_portfolio_result = {"iterations": iterations, "companies_simulated": len(results), "results": results}
+
+            # Store in shared_data so chart dispatch and memo service can reach it
+            async with self.shared_data_lock:
+                self.shared_data["monte_carlo_result"] = mc_portfolio_result
+
+            return mc_portfolio_result
+        except Exception as e:
+            logger.error(f"[TOOL] monte_carlo_portfolio error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_sensitivity_matrix(self, inputs: dict) -> dict:
+        """2D sensitivity analysis on two variables."""
+        try:
+            if FPARegressionService is None:
+                return {"error": "FPARegressionService not available"}
+
+            fpa = FPARegressionService()
+            company_name = inputs.get("company", "")
+            var_x = inputs.get("var_x", "revenue_growth")
+            var_y = inputs.get("var_y", "exit_multiple")
+            range_x = inputs.get("range_x") or [-0.3, -0.15, 0, 0.15, 0.3]
+            range_y = inputs.get("range_y") or [5, 8, 10, 15, 20]
+
+            company_data = await self._resolve_company(company_name) if company_name else {}
+            base_case = {
+                "revenue": ensure_numeric((company_data or {}).get("revenue") or (company_data or {}).get("arr"), 10_000_000),
+                "growth_rate": ensure_numeric((company_data or {}).get("growth_rate"), 0.5),
+                "exit_multiple": 10,
+            }
+
+            result = await fpa.sensitivity_analysis(
+                base_case=base_case,
+                sensitive_variables=[var_x, var_y],
+                sensitivity_ranges={var_x: (min(range_x), max(range_x)), var_y: (min(range_y), max(range_y))},
+            )
+            return {
+                "company": (company_data or {}).get("name") or company_name,
+                "var_x": var_x, "var_y": var_y,
+                "sensitivity": result if isinstance(result, dict) else {"result": result},
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] sensitivity_matrix error: {e}")
+            return {"error": str(e)}
+
+    AgentTool(
+        name="run_bull_bear_base",
+        description="Build bull/bear/base scenario analysis for one or more companies. 3-path projection with probability-weighted outcomes.",
+        handler="_tool_bull_bear_base",
+        input_schema={"companies": "list[str]", "years": "int?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="apply_macro_shock",
+        description="Apply a macro event (recession, rate hike, regulation, tariff, pandemic, ai_winter) to an existing scenario tree and see impact on portfolio NAV/DPI.",
+        handler="_tool_macro_shock",
+        input_schema={"shock_type": "str", "magnitude": "float?", "start_year": "int?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="portfolio_snapshot",
+        description="Get probability-weighted portfolio state (NAV, DPI, TVPI, per-company revenue) at a specific future year from scenario analysis.",
+        handler="_tool_portfolio_snapshot",
+        input_schema={"year": "int"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="three_scenario_cash_flow",
+        description="Build bull/base/bear P&L models side by side for a company.",
+        handler="_tool_three_scenario_cash_flow",
+        input_schema={"company": "str", "years": "int?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+
+    # --- Portfolio Operations ---
+
+    async def _tool_add_company(self, inputs: dict) -> dict:
+        """Fetch, validate, and suggest adding a company to portfolio."""
+        try:
+            company_name = inputs.get("company_name", "")
+            stage = inputs.get("stage")
+            check_size = inputs.get("check_size")
+
+            # Fetch company data from web
+            fetch_result = await self._execute_tool("fetch_company_data", {"companies": [company_name]})
+            companies = self.shared_data.get("companies", [])
+            fetched = None
+            for c in companies:
+                if (c.get("name") or c.get("company_name") or "").lower() == company_name.lower().strip().lstrip("@"):
+                    fetched = c
+                    break
+
+            if not fetched:
+                return {"error": f"Could not fetch data for {company_name}"}
+
+            # Return as suggestion requiring approval
+            return {
+                "action": "suggest_add_company",
+                "requires_approval": True,
+                "company": fetched,
+                "suggested_stage": stage or fetched.get("stage"),
+                "suggested_check_size": check_size,
+                "summary": f"Add {fetched.get('name', company_name)} to portfolio — {fetched.get('description', 'No description')}",
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] add_company error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_bulk_operation(self, inputs: dict) -> dict:
+        """Batch valuations, health checks, or data refreshes."""
+        try:
+            operation = inputs.get("operation", "health_check")
+            company_names = inputs.get("companies")
+
+            companies = self.shared_data.get("companies", [])
+            if company_names:
+                names_lower = [n.lower().strip().lstrip("@") for n in company_names]
+                companies = [c for c in companies if (c.get("name") or c.get("company_name") or "").lower() in names_lower]
+
+            if not companies:
+                portfolio_result = await self._execute_tool("query_portfolio", {"query": "all companies"})
+                companies = portfolio_result.get("companies", []) if isinstance(portfolio_result, dict) else []
+
+            op_map = {
+                "health_check": "_execute_company_health_dashboard",
+                "valuation": "_execute_valuation",
+                "data_refresh": "_tool_fetch_company",
+            }
+            handler_name = op_map.get(operation, "_execute_company_health_dashboard")
+            handler = getattr(self, handler_name, None)
+
+            results = []
+            for company in companies[:20]:
+                c_name = company.get("name") or company.get("company_name") or "Unknown"
+                try:
+                    r = await handler({"company": c_name, "company_name": c_name, "context": company})
+                    results.append({"company": c_name, "result": r if isinstance(r, dict) else {"data": r}})
+                except Exception as ce:
+                    results.append({"company": c_name, "error": str(ce)})
+
+            return {"operation": operation, "companies_processed": len(results), "results": results}
+        except Exception as e:
+            logger.error(f"[TOOL] bulk_operation error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_portfolio_comparison(self, inputs: dict) -> dict:
+        """Side-by-side comparison of N companies on specified metrics."""
+        try:
+            company_names = inputs.get("companies", [])
+            metrics = inputs.get("metrics") or ["revenue", "valuation", "growth_rate", "stage", "burn_rate"]
+
+            comparisons = []
+            for name in company_names[:10]:
+                company_data = await self._resolve_company(name)
+                if company_data:
+                    row = {"company": company_data.get("name") or name}
+                    for m in metrics:
+                        val = company_data.get(m)
+                        if val is None:
+                            val = company_data.get(f"inferred_{m}")
+                        if hasattr(val, "value"):
+                            val = val.value
+                        row[m] = val
+                    comparisons.append(row)
+                else:
+                    comparisons.append({"company": name, "error": "not_found"})
+
+            return {"metrics": metrics, "companies": comparisons}
+        except Exception as e:
+            logger.error(f"[TOOL] portfolio_comparison error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_graduation_rates(self, inputs: dict) -> dict:
+        """Stage progression analysis across portfolio."""
+        try:
+            companies = self.shared_data.get("companies", [])
+            if not companies:
+                portfolio_result = await self._execute_tool("query_portfolio", {"query": "all companies"})
+                companies = portfolio_result.get("companies", []) if isinstance(portfolio_result, dict) else []
+
+            stage_counts = {}
+            progressions = []
+            for c in companies:
+                stage = c.get("stage") or c.get("funding_stage") or "Unknown"
+                stage_counts[stage] = stage_counts.get(stage, 0) + 1
+                rounds = c.get("funding_rounds") or c.get("funding_history") or []
+                if len(rounds) > 1:
+                    progressions.append({
+                        "company": c.get("name") or c.get("company_name") or "Unknown",
+                        "stages": [r.get("round") or r.get("series") for r in rounds],
+                        "total_rounds": len(rounds),
+                    })
+
+            return {
+                "stage_distribution": stage_counts,
+                "total_companies": len(companies),
+                "companies_with_progression": len(progressions),
+                "progressions": progressions[:20],
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] graduation_rates error: {e}")
+            return {"error": str(e)}
+
+    # --- Market & Intelligence ---
+
+    async def _tool_market_landscape(self, inputs: dict) -> dict:
+        """Competitive landscape mapping via MarketIntelligenceService."""
+        try:
+            if not self.market_intelligence:
+                return {"error": "MarketIntelligenceService not available"}
+
+            sector = inputs.get("sector", "")
+            geography = inputs.get("geography")
+            stage = inputs.get("stage")
+
+            landscape = await self.market_intelligence.generate_sector_landscape(sector=sector, geography=geography)
+            result = landscape.__dict__ if hasattr(landscape, "__dict__") else landscape if isinstance(landscape, dict) else {"landscape": str(landscape)}
+
+            # Also find hot companies
+            try:
+                hot = await self.market_intelligence.find_companies_by_geography_sector(
+                    geography=geography or "US", sector=sector, stage=stage,
+                )
+                result["hot_companies"] = [
+                    h.__dict__ if hasattr(h, "__dict__") else h for h in (hot or [])[:10]
+                ]
+            except Exception:
+                pass
+
+            return result
+        except Exception as e:
+            logger.error(f"[TOOL] market_landscape error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_market_timing(self, inputs: dict) -> dict:
+        """Assess market timing for entry/exit."""
+        try:
+            if not self.market_intelligence:
+                return {"error": "MarketIntelligenceService not available"}
+
+            sector = inputs.get("sector", "")
+            geography = inputs.get("geography")
+
+            timing = await self.market_intelligence.analyze_market_timing(sector=sector, geography=geography)
+            return timing if isinstance(timing, dict) else {"timing": timing}
+        except Exception as e:
+            logger.error(f"[TOOL] market_timing error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_company_history(self, inputs: dict) -> dict:
+        """Full company history analysis with DPI Sankey."""
+        try:
+            company_name = inputs.get("company", "")
+            fund_id = inputs.get("fund_id") or self.shared_data.get("fund_context", {}).get("fund_id")
+
+            company_data = await self._resolve_company(company_name)
+            if not company_data:
+                return {"error": f"Could not resolve company: {company_name}"}
+
+            if self.company_history_service:
+                company_id = company_data.get("id") or company_data.get("company_id")
+                if company_id:
+                    result = await self.company_history_service.analyze_full_history(
+                        company_id=company_id, fund_id=fund_id,
+                    )
+                    return result if isinstance(result, dict) else {"history": result}
+
+            # Fallback: return what we have
+            return {
+                "company": company_data.get("name") or company_name,
+                "funding_rounds": company_data.get("funding_rounds") or company_data.get("funding_history") or [],
+                "stage": company_data.get("stage"),
+                "source": "cached_data",
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] company_history error: {e}")
+            return {"error": str(e)}
+
+    # --- Financial Modeling ---
+
+    async def _tool_revenue_projection(self, inputs: dict) -> dict:
+        """Project revenue with quality-adjusted decay curves."""
+        try:
+            if RevenueProjectionService is None:
+                return {"error": "RevenueProjectionService not available"}
+
+            company_name = inputs.get("company", "")
+            years = int(inputs.get("years", 5))
+            growth_override = inputs.get("growth_rate")
+
+            company_data = await self._resolve_company(company_name) if company_name else {}
+            company_data = company_data or {}
+
+            revenue = ensure_numeric(
+                company_data.get("revenue") or company_data.get("arr") or company_data.get("inferred_revenue"), 1_000_000
+            )
+            growth = float(growth_override) if growth_override else ensure_numeric(company_data.get("growth_rate"), 0.5)
+
+            projections = RevenueProjectionService.project_revenue_with_decay(
+                base_revenue=revenue,
+                initial_growth=growth,
+                years=years,
+                quality_score=ensure_numeric(company_data.get("quality_score"), 1.0),
+                stage=company_data.get("stage"),
+                investor_quality=company_data.get("investor_quality"),
+                geography=company_data.get("geography") or company_data.get("location"),
+                sector=company_data.get("business_model") or company_data.get("category") or company_data.get("sector"),
+                company_age_years=company_data.get("company_age_years"),
+                market_size_tam=ensure_numeric(company_data.get("market_size_tam") or company_data.get("tam"), None),
+                return_projections=True,
+            )
+            result = {
+                "company": company_data.get("name") or company_name,
+                "base_revenue": revenue,
+                "initial_growth": growth,
+                "years": years,
+                "projections": projections,
+            }
+
+            # Persist to shared_data so downstream memo/chart generation can use it
+            company_key = result["company"]
+            async with self.shared_data_lock:
+                rev_proj = self.shared_data.get("revenue_projections")
+                if not isinstance(rev_proj, dict):
+                    rev_proj = {}
+                rev_proj[company_key] = result
+                self.shared_data["revenue_projections"] = rev_proj
+            logger.info(f"[TOOL] revenue_projection: stored revenue_projections for {company_key}")
+
+            return result
+        except Exception as e:
+            logger.error(f"[TOOL] revenue_projection error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fund_deployment(self, inputs: dict) -> dict:
+        """Model fund J-curve, pacing, reserve allocation."""
+        try:
+            if not self.fund_modeling:
+                return {"error": "FundModelingService not available"}
+
+            fund_id = inputs.get("fund_id") or self.shared_data.get("fund_context", {}).get("fund_id")
+            scenarios = inputs.get("scenarios") or [{"name": "base_case"}]
+
+            result = await self.fund_modeling.model_fund_scenarios(
+                fund_data={"fund_id": fund_id, **self.shared_data.get("fund_context", {})},
+                scenarios=scenarios,
+            ) if hasattr(self.fund_modeling, "model_fund_scenarios") else await self.fund_modeling.model_fund(
+                fund_id=fund_id, scenarios=scenarios,
+            )
+            return result if isinstance(result, dict) else {"result": result}
+        except Exception as e:
+            logger.error(f"[TOOL] fund_deployment error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_financial_calc(self, inputs: dict) -> dict:
+        """On-demand NPV, IRR, PMT, PV, FV calculations."""
+        try:
+            if not self.financial_calculator:
+                return {"error": "FinancialCalculator not available"}
+
+            calc = self.financial_calculator
+            func_name = inputs.get("function", "npv").lower()
+            calc_inputs = inputs.get("inputs", {})
+
+            dispatch = {
+                "npv": lambda: calc.npv(rate=float(calc_inputs.get("rate", 0.1)), cash_flows=calc_inputs.get("cash_flows", [])),
+                "irr": lambda: calc.irr(cash_flows=calc_inputs.get("cash_flows", [])),
+                "pv": lambda: calc.pv(rate=float(calc_inputs.get("rate", 0.1)), nper=int(calc_inputs.get("nper", 10)), pmt=float(calc_inputs.get("pmt", 0)), fv=float(calc_inputs.get("fv", 0))),
+                "fv": lambda: calc.fv(rate=float(calc_inputs.get("rate", 0.1)), nper=int(calc_inputs.get("nper", 10)), pmt=float(calc_inputs.get("pmt", 0)), pv=float(calc_inputs.get("pv", 0))),
+                "pmt": lambda: calc.pmt(rate=float(calc_inputs.get("rate", 0.1)), nper=int(calc_inputs.get("nper", 10)), pv=float(calc_inputs.get("pv", 0))),
+            }
+
+            handler = dispatch.get(func_name)
+            if not handler:
+                return {"error": f"Unknown function: {func_name}. Available: {list(dispatch.keys())}"}
+
+            result = handler()
+            return {"function": func_name, "inputs": calc_inputs, "result": result}
+        except Exception as e:
+            logger.error(f"[TOOL] financial_calc error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fx_portfolio_impact(self, inputs: dict) -> dict:
+        """Full portfolio FX exposure analysis across all non-USD holdings."""
+        try:
+            base_currency = inputs.get("base_currency", "USD")
+            shock_pct = float(inputs.get("shock_pct", 0.1))
+
+            companies = self.shared_data.get("companies", [])
+            if not companies:
+                portfolio_result = await self._execute_tool("query_portfolio", {"query": "all companies"})
+                companies = portfolio_result.get("companies", []) if isinstance(portfolio_result, dict) else []
+
+            fx_exposures = []
+            for c in companies:
+                currency = c.get("currency") or c.get("reporting_currency") or "USD"
+                if currency.upper() != base_currency.upper():
+                    revenue = ensure_numeric(c.get("revenue") or c.get("arr") or c.get("inferred_revenue"), 0)
+                    fx_exposures.append({
+                        "company": c.get("name") or c.get("company_name") or "Unknown",
+                        "currency": currency,
+                        "revenue": revenue,
+                        "impact_at_shock": revenue * shock_pct,
+                    })
+
+            total_exposure = sum(e["revenue"] for e in fx_exposures)
+            total_impact = sum(e["impact_at_shock"] for e in fx_exposures)
+
+            return {
+                "base_currency": base_currency,
+                "shock_pct": shock_pct,
+                "total_fx_exposure": total_exposure,
+                "total_impact": total_impact,
+                "companies_exposed": len(fx_exposures),
+                "exposures": fx_exposures,
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] fx_portfolio_impact error: {e}")
+            return {"error": str(e)}
+
+    # --- Compliance & Reporting ---
+
+    async def _tool_compliance_check(self, inputs: dict) -> dict:
+        """Check filing requirements, generate compliance documents."""
+        try:
+            if not self.compliance_service:
+                return {"error": "EnhancedComplianceService not available"}
+
+            check_type = inputs.get("check_type", "filing_requirements")
+            advisor_info = inputs.get("advisor_info") or self.shared_data.get("fund_context", {})
+
+            if check_type == "form_adv":
+                result = self.compliance_service.generate_form_adv(firm_info=advisor_info)
+            elif check_type == "regulatory_calendar":
+                result = self.compliance_service.generate_regulatory_calendar(fund_info=advisor_info)
+            else:
+                fund_id = advisor_info.get("fund_id") or advisor_info.get("fundId") or "default"
+                result = self.compliance_service.check_compliance_status(fund_id=fund_id)
+
+            return result if isinstance(result, dict) else {"result": result}
+        except Exception as e:
+            logger.error(f"[TOOL] compliance_check error: {e}")
+            return {"error": str(e)}
+
+    async def _tool_ma_workflow(self, inputs: dict) -> dict:
+        """M&A deal structure analysis: synergies, integration risk, returns."""
+        try:
+            if not self.ma_service:
+                return {"error": "MAWorkflowService not available"}
+
+            acquirer = inputs.get("acquirer", "")
+            target = inputs.get("target", "")
+            deal_rationale = inputs.get("deal_type")
+
+            result = await self.ma_service.model_acquisition(
+                acquirer=acquirer, target=target, deal_rationale=deal_rationale,
+            )
+
+            # Also get synergy estimate
+            synergies = {}
+            try:
+                synergies = await self.ma_service.calculate_synergy_value(acquirer=acquirer, target=target)
+            except Exception:
+                pass
+
+            output = result.__dict__ if hasattr(result, "__dict__") else result if isinstance(result, dict) else {"valuation": result}
+            if synergies:
+                output["synergies"] = synergies if isinstance(synergies, dict) else {"value": synergies}
+            return output
+        except Exception as e:
+            logger.error(f"[TOOL] ma_workflow error: {e}")
+            return {"error": str(e)}
+
+    # --- Generation (varying types) ---
+
+    async def _tool_generate_ic_memo(self, inputs: dict) -> dict:
+        """Generate investment committee memo."""
+        return await self._execute_memo_generation({
+            "memo_type": "ic_memo",
+            "prompt": inputs.get("prompt", "Generate IC memo"),
+        })
+
+    async def _tool_generate_followon_memo(self, inputs: dict) -> dict:
+        """Generate follow-on investment analysis."""
+        return await self._execute_memo_generation({
+            "memo_type": "followon",
+            "prompt": inputs.get("prompt", "Generate follow-on memo"),
+        })
+
+    async def _tool_generate_lp_report(self, inputs: dict) -> dict:
+        """Generate quarterly LP report."""
+        return await self._execute_memo_generation({
+            "memo_type": "lp_report",
+            "prompt": inputs.get("prompt", "Generate LP quarterly report"),
+        })
+
+    async def _tool_generate_gp_update(self, inputs: dict) -> dict:
+        """Generate GP strategy update."""
+        return await self._execute_memo_generation({
+            "memo_type": "gp_strategy",
+            "prompt": inputs.get("prompt", "Generate GP strategy update"),
+        })
+
+    async def _tool_generate_comparison_report(self, inputs: dict) -> dict:
+        """Generate side-by-side investment comparison report."""
+        company_names = inputs.get("companies", [])
+
+        # Resolve all companies first
+        for name in company_names:
+            await self._resolve_company(name)
+
+        return await self._execute_memo_generation({
+            "memo_type": "comparison",
+            "prompt": inputs.get("prompt", f"Compare {', '.join(company_names)}"),
+        })
+
+    async def _tool_generate_plan_memo(self, inputs: dict) -> dict:
+        """Generate a plan memo — resumable context document for cross-session use.
+
+        Plan memos are both human-readable AND machine-resumable: they contain
+        narrative sections alongside a structured context snapshot (JSON) that
+        a future session can hydrate shared_data from.
+        """
+        return await self._execute_memo_generation({
+            "memo_type": "plan_memo",
+            "prompt": inputs.get("prompt", self.shared_data.get("original_prompt", "Generate plan")),
+        })
+
+    # ------------------------------------------------------------------
     # Feedback loop — read back corrections
     # ------------------------------------------------------------------
 
@@ -2220,6 +7376,33 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             "calculate_fund_metrics → query_portfolio → run_portfolio_health → run_skill(fund-analyzer) → generate_chart → synthesize",
             "Portfolio construction and capital deployment analysis.",
         ),
+        (
+            "portfolio_enrichment_valuation",
+            ["enrich", "run numbers", "value the portfolio", "value all companies",
+             "run capm", "run dcf", "portfolio valuation", "fill in the data",
+             "fill gaps", "enrich portfolio", "run valuations", "bulk valuation",
+             "missing data", "calculate valuations", "fundraising analysis",
+             "run some numbers", "value my portfolio", "enrich all",
+             "pwerm", "capm", "run some", "valuations", "value these",
+             "run valuation", "compute valuation", "calculate valuation"],
+            "query_portfolio → resolve_data_gaps → call_tools(run_valuation × ALL portfolio companies IN PARALLEL, batches of 5) → generate_chart(type=bar, title='Portfolio Valuations') → generate_memo → synthesize",
+            "Enrich all portfolio companies with gap-filled data, then run valuations for EVERY company. CRITICAL: resolve_data_gaps first to populate missing fields, then run_valuation for each company — do NOT skip companies. Process all 23+ companies, not just 1.",
+        ),
+        ("lp_query", ["what's our dpi", "lp update", "quarterly update", "what is our tvpi", "what is our irr", "distributions"], "calculate_fund_metrics → run_skill(lp-query-response) → synthesize", "LP questions."),
+        ("team_comparison", ["compare teams", "team comparison", "founding team", "compare founders"], "fetch_company_data(all) → run_skill(team-comparison) → synthesize", "Team comparison."),
+        ("competitive_landscape", ["competitive landscape", "competitors", "competitive analysis", "market map", "landscape"], "fetch_company_data → web_search(competitors) → run_skill(competitive-landscape-memo) → synthesize", "Competitive landscape."),
+        ("followon_deep_dive", ["follow-on deep dive", "cap table evolution", "breakpoint analysis", "follow-on analysis"], "fetch_company_data → run_skill(followon-deep-dive) → synthesize", "Follow-on deep dive."),
+        ("comparable_search", ["find comparables", "comparable companies", "similar companies", "comps", "find peers", "comp set"], "fetch_company_data → web_search(comps) → synthesize", "Find comparables."),
+        ("sourcing", [
+            "show me", "rank my", "score my", "sort my", "filter my",
+            "list my", "find series", "series a companies", "series b companies", "series c companies",
+            "top companies", "best companies", "capital efficiency", "source companies",
+            "sourcing list", "pipeline by", "rank by", "scored by", "sorted by",
+            "companies above", "companies with", "companies in the database",
+            "what do we have", "what companies", "show companies",
+        ], "source_companies(query) → synthesize", "Fast DB sourcing: query + score + rank from existing data."),
+        ("company_list_build", ["build a list", "company list", "deal flow list", "find new companies", "startups in", "market map of", "discover companies"], "web_search(sector) → fetch_company_data(multiple) → enrich_portfolio → synthesize", "Build company list via web search."),
+        ("bulk_enrichment", ["enrich all", "bulk enrich", "enrich the grid", "fill in everything", "enrich my companies", "refresh all data"], "enrich_portfolio → run_skill(multi-enrich) → synthesize", "Bulk enrich."),
     ]
 
     def _classify_query_intent(self, prompt: str) -> Optional[Dict[str, Any]]:
@@ -2241,6 +7424,174 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
         return None
 
     # ------------------------------------------------------------------
+    # Session plan lifecycle (Phase 7)
+    # ------------------------------------------------------------------
+
+    def _create_session_plan(
+        self, prompt: str, steps: List[Dict[str, Any]], intent: str = "", source: str = "auto",
+    ) -> SessionPlan:
+        """Build a SessionPlan from raw step dicts (e.g. from _generate_cheap_plan)."""
+        import uuid
+        plan_steps = [
+            PlanStep(
+                id=s.get("id", str(i)),
+                label=s.get("label", ""),
+                tool=s.get("tool", ""),
+                inputs=s.get("input", s.get("inputs", {})),
+                depends_on=s.get("depends_on", []),
+                status="pending",
+            )
+            for i, s in enumerate(steps)
+        ]
+        plan = SessionPlan(
+            plan_id=str(uuid.uuid4())[:8],
+            intent=intent,
+            prompt=prompt,
+            steps=plan_steps,
+            source=source,
+        )
+        self.shared_data["session_plan"] = plan
+        logger.info(f"[SESSION_PLAN] Created plan {plan.plan_id} with {len(plan_steps)} steps")
+        return plan
+
+    def _get_session_plan(self) -> Optional[SessionPlan]:
+        return self.shared_data.get("session_plan")
+
+    def _skip_plan_step(self, step_id: str) -> bool:
+        """Skip a plan step (e.g. user drags to reorder/skip in frontend)."""
+        plan = self._get_session_plan()
+        if not plan:
+            return False
+        plan.mark_skipped(step_id)
+        logger.info(f"[SESSION_PLAN] Skipped step {step_id}")
+        return True
+
+    def _get_or_create_plan_context(self, session_id: str = "") -> PlanContext:
+        """Get the current plan context or create a new one."""
+        existing = self.shared_data.get("plan_context")
+        if isinstance(existing, PlanContext):
+            return existing
+        ctx = PlanContext(session_id=session_id or str(id(self)))
+        self.shared_data["plan_context"] = ctx
+        return ctx
+
+    async def _save_plan_context_to_documents(self, plan_context: PlanContext, fund_id: str = "") -> bool:
+        """Persist plan context to the documents table for cross-session resume."""
+        try:
+            from app.core.database import get_supabase_service
+            client = get_supabase_service().get_client()
+            if not client:
+                logger.warning("[PLAN_CONTEXT] Supabase unavailable — context not persisted")
+                return False
+
+            plan = self._get_session_plan()
+            if plan:
+                plan_context.plan = plan.to_dict()
+
+            doc_data = {
+                "title": f"Session Context — {plan_context.session_id[:8]}",
+                "document_type": "session_context",
+                "content": json.dumps(plan_context.to_dict()),
+                "metadata": {
+                    "session_id": plan_context.session_id,
+                    "updated_at": plan_context.updated_at,
+                    "has_plan": plan is not None,
+                    "entity_count": len(plan_context.entity_refs),
+                },
+            }
+            if fund_id:
+                doc_data["fund_id"] = fund_id
+
+            existing = client.table("documents").select("id").eq(
+                "document_type", "session_context"
+            ).eq("metadata->>session_id", plan_context.session_id).limit(1).execute()
+
+            if existing.data:
+                client.table("documents").update(doc_data).eq("id", existing.data[0]["id"]).execute()
+                logger.info(f"[PLAN_CONTEXT] Updated context doc for session {plan_context.session_id[:8]}")
+            else:
+                client.table("documents").insert(doc_data).execute()
+                logger.info(f"[PLAN_CONTEXT] Saved new context doc for session {plan_context.session_id[:8]}")
+            return True
+        except Exception as e:
+            logger.warning(f"[PLAN_CONTEXT] Failed to persist context: {e}")
+            return False
+
+    async def _load_plan_context_from_documents(self, session_id: str = "") -> Optional[PlanContext]:
+        """Load the most recent plan context from the documents table."""
+        try:
+            from app.core.database import get_supabase_service
+            client = get_supabase_service().get_client()
+            if not client:
+                return None
+
+            query = client.table("documents").select("content, metadata").eq(
+                "document_type", "session_context"
+            )
+            if session_id:
+                query = query.eq("metadata->>session_id", session_id)
+            result = query.order("updated_at", desc=True).limit(1).execute()
+
+            if not result.data:
+                return None
+
+            content = result.data[0].get("content", "{}")
+            ctx_dict = json.loads(content) if isinstance(content, str) else content
+            ctx = PlanContext.from_dict(ctx_dict)
+            self.shared_data["plan_context"] = ctx
+            logger.info(f"[PLAN_CONTEXT] Loaded context for session {ctx.session_id[:8]} "
+                        f"({len(ctx.findings)} findings, {len(ctx.reasoning)} reasoning steps)")
+
+            if ctx.plan:
+                restored_steps = ctx.plan.get("steps", [])
+                plan = self._create_session_plan(
+                    prompt=ctx.plan.get("prompt", ""),
+                    steps=restored_steps,
+                    intent=ctx.plan.get("intent", ""),
+                    source="restored",
+                )
+                for s in plan.steps:
+                    saved_status = ctx.plan.get("results", {}).get(s.id)
+                    if saved_status:
+                        plan.results[s.id] = saved_status
+                logger.info(f"[PLAN_CONTEXT] Restored plan {plan.plan_id} with {len(plan.steps)} steps")
+
+            return ctx
+        except Exception as e:
+            logger.warning(f"[PLAN_CONTEXT] Failed to load context: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Parallel tool execution (Phase 8)
+    # ------------------------------------------------------------------
+
+    async def _execute_tools_parallel(
+        self, steps: List[PlanStep], plan: Optional[SessionPlan] = None,
+    ) -> List[Dict[str, Any]]:
+        """Execute multiple independent PlanSteps in parallel via asyncio.gather."""
+        if not steps:
+            return []
+
+        async def _run_one(step: PlanStep) -> Dict[str, Any]:
+            if plan:
+                plan.mark_running(step.id)
+            try:
+                result = await self._execute_tool(step.tool, step.inputs)
+                if plan:
+                    if "error" in result:
+                        plan.mark_failed(step.id, result["error"])
+                    else:
+                        plan.mark_done(step.id, result)
+                return {"tool": step.tool, "input": step.inputs, "output": result, "step_id": step.id}
+            except Exception as e:
+                if plan:
+                    plan.mark_failed(step.id, str(e))
+                return {"tool": step.tool, "input": step.inputs, "output": {"error": str(e)}, "step_id": step.id}
+
+        results = await asyncio.gather(*[_run_one(s) for s in steps], return_exceptions=False)
+        return list(results)
+
+    # ------------------------------------------------------------------
     # Lightweight plan mode (cheap model)
     # ------------------------------------------------------------------
 
@@ -2258,43 +7609,93 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
         ]
         if any(w in lower for w in expensive_triggers):
             return True
-        # 2+ @mentions with a complex verb → needs plan
+        # 2+ company references with a complex verb → needs plan
         at_mentions = re.findall(r"@\w+", prompt)
+        # Also count grid company names mentioned without @
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_names = matrix_ctx.get("companyNames") or matrix_ctx.get("company_names") or []
+        grid_count = sum(1 for gn in grid_names if gn and len(gn) >= 3 and re.search(r'\b' + re.escape(gn) + r'\b', prompt, re.IGNORECASE))
+        total_company_refs = len(at_mentions) + grid_count
         complex_verbs = ["compare", "analyze", "deck", "memo", "report", "forecast", "stress"]
-        if len(at_mentions) >= 2 and any(v in lower for v in complex_verbs):
+        if total_company_refs >= 2 and any(v in lower for v in complex_verbs):
             return True
         return False
 
-    async def _generate_cheap_plan(self, prompt: str) -> List[Dict[str, Any]]:
-        """Generate plan with cheap model. Uses intent classifier for guidance."""
-        tool_descriptions = "\n".join(f"- {t.name}: {t.description}" for t in AGENT_TOOLS)
-        intent = self._classify_query_intent(prompt)
+    async def _generate_cheap_plan(
+        self, prompt: str, classification: Optional[QueryClassification] = None,
+    ) -> List[Dict[str, Any]]:
+        """Generate an execution plan via cheap model — the agent's inner monologue.
+
+        The plan reads like reasoning: "I need to do X, which involves Y, then Z."
+        Each step maps to a concrete tool call so the plan flows directly into action.
+
+        Uses QueryClassification (Phase 2) when available; falls back to legacy
+        intent classifier.
+        """
+        _plan_intent = classification.intent if classification else "general"
+        _plan_tools = get_tools_for_intent(_plan_intent)
+        tool_descriptions = "\n".join(f"- {t.name}: {t.description}" for t in _plan_tools)
+
+        # Build intent guidance from classification or legacy
         intent_hint = ""
-        if intent:
+        if classification and classification.suggested_chain:
+            chain_str = " → ".join(classification.suggested_chain)
             intent_hint = (
-                f"\nDetected intent: {intent['intent']}\n"
-                f"Suggested chain: {intent['chain']}\n"
+                f"\nClassified intent: {classification.intent}\n"
+                f"Suggested chain: {chain_str}\n"
+                f"Needs portfolio data: {classification.needs_portfolio}\n"
+                f"Needs external lookup: {classification.needs_external}\n"
                 f"Adapt this chain to the specific request.\n"
             )
+        else:
+            intent = self._classify_query_intent(prompt)
+            if intent:
+                intent_hint = (
+                    f"\nDetected intent: {intent['intent']}\n"
+                    f"Suggested chain: {intent['chain']}\n"
+                    f"Adapt this chain to the specific request.\n"
+                )
 
-        plan_prompt = (
-            f"Break this into 3-6 steps using these tools:\n{tool_descriptions}\n"
-            f"{intent_hint}"
-            f"Task: {prompt}\n"
-            'Return JSON array: [{"id":"1","label":"short description","tool":"tool_name","input":{}}]'
-        )
+        plan_prompt = f"""Think step-by-step about what's needed, then produce 3-6 action steps.
+
+Task: {prompt}
+
+Available tools:
+{tool_descriptions}
+{intent_hint}
+Return JSON array where each step is a clear action:
+[{{"id":"1","label":"what this step does and why","tool":"tool_name","input":{{...}},"depends_on":[]}}]
+
+Rules:
+- Each label should explain WHAT and WHY (e.g. "Fetch Ramp data from web — need financials for valuation")
+- depends_on lists step IDs that must complete first (empty = can run immediately)
+- Steps with no dependencies on each other CAN run in parallel
+- If the task mentions companies not in portfolio, include a fetch_company_data step
+- Keep it practical — 3-6 steps max"""
+
         try:
             plan_response = await self.model_router.get_completion(
                 prompt=plan_prompt,
-                system_prompt="Return a JSON array of execution steps. Include tool name and input params. Be brief.",
+                system_prompt="You are a portfolio analysis agent planning your work. Return a JSON array of execution steps. Each step is a clear action with a tool call. Be specific about inputs.",
                 capability=ModelCapability.FAST,
-                max_tokens=400,
+                max_tokens=500,
                 temperature=0.0,
                 json_mode=True,
                 caller_context="plan_generation",
             )
             content = plan_response.get("response", "[]") if isinstance(plan_response, dict) else str(plan_response)
-            steps = json.loads(content)
+            parsed = json.loads(content)
+            # Handle both array and object responses (Anthropic json_mode
+            # prefills '{' which forces the model to return an object)
+            if isinstance(parsed, dict):
+                # Extract the array from common wrapper keys
+                steps = parsed.get("steps") or parsed.get("plan") or parsed.get("actions") or []
+                if not isinstance(steps, list):
+                    steps = []
+            elif isinstance(parsed, list):
+                steps = parsed
+            else:
+                steps = []
             return [
                 {
                     "id": s.get("id", str(i)),
@@ -2302,11 +7703,26 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
                     "status": "pending",
                     "tool": s.get("tool", ""),
                     "input": s.get("input", {}),
+                    "depends_on": s.get("depends_on", []),
                 }
                 for i, s in enumerate(steps)
+                if isinstance(s, dict)
             ]
         except Exception as e:
             logger.warning(f"[PLAN] Cheap plan generation failed: {e}")
+            # Fallback: build plan from classification template if available
+            if classification and classification.suggested_chain:
+                return [
+                    {
+                        "id": str(i),
+                        "label": tool_name,
+                        "status": "pending",
+                        "tool": tool_name,
+                        "input": {},
+                        "depends_on": [str(i - 1)] if i > 0 else [],
+                    }
+                    for i, tool_name in enumerate(classification.suggested_chain)
+                ]
             return []
 
     # ------------------------------------------------------------------
@@ -2316,6 +7732,123 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
     def _truncate(self, text: str, max_chars: int) -> str:
         """Truncate text for LLM context compression."""
         return text[:max_chars] + "..." if len(text) > max_chars else text
+
+    def _summarize_tool_results(self, tool_results: list[dict]) -> str:
+        """Structured metric extraction from tool results.
+
+        Instead of blind JSON truncation that loses data for bulk operations,
+        extract the key metrics the agent needs: company name, which fields
+        were populated, key values, and error status. Keeps ALL results
+        (not just last 6) in compact form.
+        """
+        _DATA_TOOLS = {
+            "fetch_company_data", "search_company_funding", "search_company_product",
+            "search_company_team", "search_company_market", "run_valuation",
+            "resolve_data_gaps", "analyze_financials", "lightweight_diligence",
+            "build_company_list", "query_portfolio",
+        }
+
+        summaries = []
+        for r in tool_results:
+            tool = r.get("tool", "unknown")
+            output = r.get("output", {})
+            if not isinstance(output, dict):
+                output = {"raw": str(output)[:200]}
+
+            has_error = "error" in output
+            entry: dict = {"tool": tool, "ok": not has_error}
+
+            if has_error:
+                entry["error"] = str(output.get("error", ""))[:200]
+                summaries.append(entry)
+                continue
+
+            # --- Structured extraction per tool type ---
+            if tool in ("fetch_company_data", "lightweight_diligence"):
+                companies = output.get("companies", [])
+                if companies:
+                    comp_summaries = []
+                    for c in companies[:10]:
+                        name = c.get("company") or c.get("name") or "?"
+                        cs: dict = {"name": name}
+                        # Key financial metrics
+                        for fk in ("revenue", "arr", "valuation", "total_funding", "growth_rate", "team_size"):
+                            v = c.get(fk) or c.get(f"inferred_{fk}")
+                            if v and v != 0:
+                                cs[fk] = v
+                        # Quality signals
+                        for qk in ("stage", "sector", "category", "reporting_currency",
+                                    "hq_location", "hq_country", "business_model"):
+                            v = c.get(qk)
+                            if v and v not in ("Unknown", "N/A", ""):
+                                cs[qk] = v
+                        # Inferred field list
+                        inferred = [k.replace("inferred_", "") for k in c
+                                    if k.startswith("inferred_") and c[k] and c[k] != 0]
+                        if inferred:
+                            cs["inferred_fields"] = inferred
+                        comp_summaries.append(cs)
+                    entry["companies"] = comp_summaries
+                    entry["count"] = len(companies)
+                else:
+                    entry["summary"] = self._truncate(json.dumps(output), 500)
+
+            elif tool == "run_valuation":
+                for vk in ("company", "company_name", "valuation", "methodology",
+                            "revenue_multiple", "implied_valuation", "confidence"):
+                    v = output.get(vk)
+                    if v is not None:
+                        entry[vk] = v
+                # Extract scenario results compactly
+                scenarios = output.get("scenarios") or output.get("pwerm_scenarios")
+                if scenarios and isinstance(scenarios, list):
+                    entry["scenarios"] = len(scenarios)
+
+            elif tool in ("search_company_funding", "search_company_product",
+                           "search_company_team", "search_company_market"):
+                # Granular search results — extract just the structured fields
+                for k, v in output.items():
+                    if k in ("raw_search_results", "search_results", "sources"):
+                        continue  # Skip raw search payloads
+                    if v and v not in (None, "", "N/A", "Unknown", [], {}):
+                        if isinstance(v, str) and len(v) > 150:
+                            entry[k] = v[:150] + "..."
+                        else:
+                            entry[k] = v
+
+            elif tool in ("resolve_data_gaps", "build_company_list"):
+                # Bulk operations — summarize per company
+                companies = output.get("companies", [])
+                if companies:
+                    entry["count"] = len(companies)
+                    entry["names"] = [c.get("company") or c.get("name") or "?" for c in companies[:20]]
+                    # Count fields filled
+                    filled = sum(1 for c in companies
+                                 for k in ("revenue", "valuation", "stage", "sector")
+                                 if c.get(k) or c.get(f"inferred_{k}"))
+                    entry["fields_filled"] = filled
+                else:
+                    entry["summary"] = self._truncate(json.dumps(output), 400)
+
+            elif tool in _DATA_TOOLS:
+                entry["summary"] = self._truncate(json.dumps(output), 1500)
+
+            else:
+                # Non-data tools — compact summary
+                entry["summary"] = self._truncate(json.dumps(output), 600)
+
+            summaries.append(entry)
+
+        # For very large result sets, keep all but compress older entries
+        if len(summaries) > 12:
+            # Keep full detail for last 8, compress earlier ones to one-liners
+            compressed = []
+            for s in summaries[:-8]:
+                compressed.append({"tool": s["tool"], "ok": s.get("ok", True),
+                                    "count": s.get("count", 1)})
+            return json.dumps(compressed + summaries[-8:])
+
+        return json.dumps(summaries)
 
     def _extract_citations_from_results(self, tool_results: List[dict]) -> List[dict]:
         """Extract citations from tool results for the response."""
@@ -2344,39 +7877,71 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
 
     async def _run_agent_loop(
         self, prompt: str, context: Optional[Dict[str, Any]] = None, memo_text: str = "",
-        max_iterations: int = 10, approved_plan: bool = False, entities: Optional[Dict[str, Any]] = None
+        max_iterations: int = 10, approved_plan: bool = False, entities: Optional[Dict[str, Any]] = None,
+        classification: Optional[QueryClassification] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """ReAct loop: reason → act → reflect. Cheap model for routing, full model for synthesis."""
+        """ReAct loop: reason → act → reflect. Cheap model for routing, full model for synthesis.
 
-        # Check if this needs plan approval first (skip if user already approved)
-        if not approved_plan and self._needs_plan(prompt):
-            plan = await self._generate_cheap_plan(prompt)
-            yield {
-                "type": "complete",
-                "result": {
-                    "content": "",
-                    "format": "analysis",
-                    "plan_steps": plan,
-                    "awaiting_approval": True,
-                },
-            }
-            return
+        When a QueryClassification is provided, its intent and suggested_chain
+        guide the REASON step so the agent can produce clear, actionable plans.
+        """
+
+        # Plan mode: opt-in only. User must explicitly request a plan (e.g. "plan: ...")
+        # before we gate execution behind approval. Never auto-trigger on keywords.
+        if approved_plan is False and context and context.get("plan_mode"):
+            plan = await self._generate_cheap_plan(prompt, classification=classification)
+            if plan:
+                plan_artifact = Artifact(
+                    type="plan", action="suggest", target="chat",
+                    data={"steps": plan, "prompt": prompt}, requires_approval=True,
+                )
+                yield {
+                    "type": "complete",
+                    "result": {
+                        "content": "",
+                        "format": "analysis",
+                        "plan_steps": plan,
+                        "awaiting_approval": True,
+                        "artifacts": [{"type": plan_artifact.type, "action": plan_artifact.action,
+                                       "data": plan_artifact.data, "target": plan_artifact.target,
+                                       "requires_approval": plan_artifact.requires_approval}],
+                    },
+                }
+                return
 
         tool_results: List[dict] = []
         memo_sections: List[dict] = []
+        _streamed_memo_ids: set = set()  # Track IDs already yielded to frontend
         grid_commands: List[dict] = []
         suggestions: List[dict] = []
+        todo_items: List[dict] = []
         charts: List[dict] = []
         plan_steps: List[dict] = []
         failed_tools: set = set()
 
+        # SessionState: read-only lens on shared_data (Phase 1)
+        state = SessionState(self.shared_data) if SessionState else None
+
+        # SessionMemo: compressed findings for context between LLM calls
+        session_memo = SessionMemo() if SessionMemo else None
+
         # Recover plan steps from approved plan (sent back by frontend)
         plan_steps_from_approval: List[dict] = []
+        session_plan: Optional[SessionPlan] = None
+        plan_ctx: PlanContext = self._get_or_create_plan_context()
         if approved_plan and context:
             plan_steps_from_approval = context.get("plan_steps", []) or []
             if plan_steps_from_approval:
-                max_iterations = min(max_iterations, len(plan_steps_from_approval) + 2)
-                logger.info(f"[AGENT_LOOP] Executing approved plan with {len(plan_steps_from_approval)} steps")
+                # Build a SessionPlan so we get lifecycle tracking + parallel execution
+                session_plan = self._create_session_plan(
+                    prompt=prompt,
+                    steps=plan_steps_from_approval,
+                    intent=classification.intent if classification else "approved_plan",
+                    source="approved",
+                )
+                max_iterations = min(max_iterations, len(plan_steps_from_approval) + 4)
+                logger.info(f"[AGENT_LOOP] Executing approved plan {session_plan.plan_id} "
+                            f"with {len(plan_steps_from_approval)} steps")
 
         # Restore working memory from previous turns so follow-up queries have context
         prior_memory = self.shared_data.get("agent_context", {}).get("working_memory", [])
@@ -2385,14 +7950,151 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
                 tool_results.append({"tool": mem.get("tool", "prior"), "input": {}, "output": mem.get("summary", "")})
             logger.info(f"[AGENT_LOOP] Restored {len(prior_memory)} prior tool results from working_memory")
 
-        # Build compact tool catalog for LLM (~600 tokens)
-        tool_catalog = "\n".join(f"- {t.name}: {t.description}" for t in AGENT_TOOLS)
+        # Build intent-scoped tool catalog — only relevant categories
+        _intent = classification.intent if classification else "general"
+        _scoped_tools = get_tools_for_intent(_intent)
+        tool_catalog = "\n".join(f"- {t.name}: {t.description}" for t in _scoped_tools)
 
-        ROUTE_MAX_TOKENS = 300
+        ROUTE_MAX_TOKENS = 500
         REFLECT_MAX_TOKENS = 150
-        SYNTH_MAX_TOKENS = 2000
+        SYNTH_MAX_TOKENS = 4000
+
+        # Track correction count at loop start for mid-loop interruption detection
+        _correction_count_at_start = len(self.shared_data.get("session_corrections", []))
+
+        # ── Extract structured goals from user request (LLM-driven, no keywords) ──
+        _company_names_json = json.dumps((entities or {}).get('companies', []))
+        _goal_extraction_prompt = (
+            f"User request: {prompt}\n"
+            f"Companies mentioned: {_company_names_json}\n\n"
+            "Extract the concrete goals the user wants achieved. Each goal should map to a tool outcome.\n"
+            "Each goal: {\"id\": \"short_slug\", \"description\": \"what must be true when done\", \"check\": \"scoreboard check\"}\n\n"
+            "MEMO RULE — when to include memo_count > 0:\n"
+            "ALWAYS include a memo goal when the request involves:\n"
+            "- Analysis, comparison, review, assessment, or evaluation of companies/portfolio\n"
+            "- Questions about performance, winners/losers, financing needs, runway, health\n"
+            "- Any multi-company or portfolio-level question that requires synthesis\n"
+            "- Anything that takes more than a single data lookup to answer\n"
+            "- Explicit memo/report/deck/write-up requests\n\n"
+            "Only SKIP memo goals for:\n"
+            "- Single data lookups (\"what is X's revenue?\")\n"
+            "- Simple enrichment without analysis (\"fill gaps\", \"enrich\")\n\n"
+            "DEFAULT: If in doubt, INCLUDE the memo goal. Users expect written deliverables, not chat dumps.\n\n"
+            "Examples:\n"
+            '- "portfolio performance and financing needs" -> [{"id":"enrich","description":"Fetch data for all portfolio companies","check":"fetch_count > 0"},{"id":"analyze","description":"Run valuations and metrics","check":"valuation_count > 0"},{"id":"write_memo","description":"Write analysis memo with findings","check":"memo_count > 0"}]\n'
+            '- "analyze @Ramp" -> [{"id":"enrich_ramp","description":"Fetch and enrich Ramp data","check":"fetch_count > 0"},{"id":"valuate_ramp","description":"Run valuation on Ramp","check":"valuation_count > 0"},{"id":"write_memo","description":"Generate investment memo for Ramp","check":"memo_count > 0"}]\n'
+            '- "who are the winners and losers" -> [{"id":"enrich","description":"Fetch portfolio data","check":"fetch_count > 0"},{"id":"write_memo","description":"Write winner/loser analysis","check":"memo_count > 0"}]\n'
+            '- "what is Mercury\'s revenue?" -> [{"id":"quick_look","description":"Look up Mercury revenue","check":"fetch_count > 0"}]\n\n'
+            "RESPOND WITH JUST THE JSON ARRAY. NO MARKDOWN. NO EXPLANATION. NO PROSE. 1-5 goals max.\n"
+            "JUST THE JSON ARRAY:"
+        )
+
+        try:
+            _goal_response = await self.model_router.get_completion(
+                prompt=_goal_extraction_prompt,
+                system_prompt="You are a JSON extraction machine. Return ONLY a raw JSON array. No markdown fences. No ```json. No explanation. Just [{...}]. NOTHING ELSE.",
+                capability=ModelCapability.FAST,
+                max_tokens=300,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="agent_loop_goal_extraction",
+            )
+            _goal_text = _goal_response.get("response", "[]") if isinstance(_goal_response, dict) else str(_goal_response)
+            # Use robust JSON parser that handles fences, prose, partial arrays
+            from app.services.micro_skills.search_skills import _parse_llm_json
+            _parsed = _parse_llm_json(_goal_text, "goal_extraction", "goals")
+            if isinstance(_parsed, list):
+                _extracted_goals = _parsed
+            elif isinstance(_parsed, dict):
+                _extracted_goals = _parsed.get("goals", []) if isinstance(_parsed.get("goals"), list) else [_parsed]
+            else:
+                _extracted_goals = []
+        except Exception as e:
+            logger.warning(f"[AGENT_LOOP] Goal extraction failed: {e}")
+            _extracted_goals = []
+
+        _goals_text = "\n".join(f"  - [{g.get('id', '?')}] {g.get('description', '?')}" for g in _extracted_goals)
+        logger.info(f"[AGENT_LOOP] Extracted {len(_extracted_goals)} goals:\n{_goals_text}")
+
+        # ── TaskLedger: built from TaskPlanner output (not keywords) ────────
+        from app.services.session_state import TaskLedger
+        # Placeholder — populated from plan tasks after TaskPlanner runs below
+        ledger = TaskLedger([])
+
+        # ── TaskPlanner: LLM-powered task decomposition (Phase 2) ────────
+        # Primary: async LLM decomposition with full tool catalog + fingerprint.
+        # Fallback: classification-based chain → entity-based defaults.
+        _deterministic_plan: Optional[List] = None
+        _completion_criteria: list[dict] = []
+
+        if TaskPlanner and not session_plan and not approved_plan:
+            # First try: async LLM decomposition (one call → full task DAG)
+            try:
+                _decomp_result = await TaskPlanner.plan_async(
+                    prompt=prompt,
+                    state=state,
+                    entities=entities,
+                    goals=_extracted_goals,
+                    model_router=self.model_router if hasattr(self, 'model_router') else None,
+                )
+                if _decomp_result:
+                    _deterministic_plan, _completion_criteria = _decomp_result
+                    logger.info(
+                        f"[AGENT_LOOP] LLM decomposition produced {len(_deterministic_plan)} tasks "
+                        f"with {len(_completion_criteria)} completion criteria"
+                    )
+                    # Merge LLM completion criteria into extracted goals
+                    if _completion_criteria:
+                        _existing_checks = {g.get("check") for g in _extracted_goals}
+                        for cc in _completion_criteria:
+                            if cc.get("check") and cc["check"] not in _existing_checks:
+                                _extracted_goals.append(cc)
+            except Exception as e:
+                logger.warning(f"[AGENT_LOOP] LLM decomposition failed: {e}")
+
+            # Second try: classification chain fallback
+            if not _deterministic_plan:
+                try:
+                    _deterministic_plan = TaskPlanner.plan(
+                        prompt=prompt,
+                        state=state,
+                        entities=entities,
+                        classification=classification,
+                        goals=_extracted_goals,
+                    )
+                except Exception as e:
+                    logger.warning(f"[AGENT_LOOP] TaskPlanner fallback failed: {e}")
+                    _deterministic_plan = None
+
+        if _deterministic_plan:
+            _source = "llm_decomposition" if _completion_criteria else "classification_chain"
+            logger.info(f"[AGENT_LOOP] TaskPlanner ({_source}) produced {len(_deterministic_plan)} tasks — skipping LLM REASON")
+            # Convert to SessionPlan for lifecycle tracking
+            _det_steps = [
+                {"id": t.id, "label": t.label, "tool": t.tool,
+                 "input": t.inputs, "depends_on": t.depends_on}
+                for t in _deterministic_plan
+            ]
+            session_plan = self._create_session_plan(
+                prompt=prompt, steps=_det_steps,
+                intent=classification.intent if classification else _source,
+                source=_source,
+            )
+            max_iterations = min(max_iterations, len(_deterministic_plan) + 4)
+
+            # ── Build TaskLedger from the ACTUAL plan (not keywords) ──
+            ledger = TaskLedger.from_plan_tasks(_deterministic_plan)
+            logger.info(f"[AGENT_LOOP] TaskLedger from plan: {ledger.pending_summary()}")
 
         for i in range(max_iterations):
+            # Check for new corrections (chat interruptions) since loop started
+            current_corrections = self.shared_data.get("session_corrections", [])
+            if len(current_corrections) > _correction_count_at_start:
+                new_corrections = current_corrections[_correction_count_at_start:]
+                logger.info(f"[AGENT_LOOP] {len(new_corrections)} new correction(s) received mid-loop — adapting")
+                _correction_count_at_start = len(current_corrections)
+                # The corrections are already injected into route_prompt via correction_guidance
+
             # Budget enforcement
             if hasattr(self, 'model_router') and hasattr(self.model_router, 'budget') and self.model_router.budget:
                 budget = self.model_router.budget
@@ -2404,38 +8106,79 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
                     logger.info(f"[AGENT_LOOP] {warning}")
 
             # --- REASON (cheap model) ---
-            results_summary = json.dumps([
-                {
-                    "tool": r["tool"],
-                    "ok": "error" not in r.get("output", {}),
-                    "summary": self._truncate(json.dumps(r.get("output", {})), 200),
-                }
-                for r in tool_results
-            ]) if tool_results else "[]"
+            # Structured metric extraction from tool results — instead of blind
+            # JSON truncation, pull out the key fields the agent needs to reason
+            # about. This prevents earlier results from being lost and gives
+            # quality signals (actual vs inferred, which fields were populated).
+            results_summary = self._summarize_tool_results(tool_results) if tool_results else "[]"
 
             # Exclude tools that previously failed in this loop
             active_catalog = "\n".join(
-                f"- {t.name}: {t.description}" for t in AGENT_TOOLS if t.name not in failed_tools
+                f"- {t.name}: {t.description}" for t in _scoped_tools if t.name not in failed_tools
             ) if failed_tools else tool_catalog
 
-            # Build context about what's available in shared_data
-            sd_companies = self.shared_data.get("companies", [])
-            sd_summary = f"shared_data has {len(sd_companies)} companies" if sd_companies else "shared_data is empty"
+            # Build dense portfolio state — per-company field checklist with
+            # jurisdiction map, sector concentrations, and analysis manifest.
+            # The fingerprint merges grid rows + enriched companies into one view
+            # so the agent can see its own progress and what's still missing.
+            if state:
+                sd_summary = state.fingerprint()
+                # Append stale analysis markers so agent knows what to re-fetch
+                stale_keys = [k.replace("_stale_", "") for k in self.shared_data if k.startswith("_stale_")]
+                if stale_keys:
+                    sd_summary += f"\nSTALE (from prior request, needs refresh): {', '.join(stale_keys)}"
+            else:
+                portfolio_intel = self._build_portfolio_intelligence()
+                sd_summary = portfolio_intel if portfolio_intel else "STATE: empty — no companies in grid or shared_data"
 
-            # Classify the query intent for guided routing
-            intent = self._classify_query_intent(prompt)
+            # Build intent guidance from classification — persist through ALL iterations
+            # so the LLM always knows what it should be doing + grid state
             intent_guidance = ""
-            if intent and i == 0:  # Only inject on first iteration
-                intent_guidance = (
-                    f"\nDETECTED INTENT: {intent['intent']}\n"
-                    f"SUGGESTED CHAIN: {intent['chain']}\n"
-                    f"CONTEXT: {intent['description']}\n"
-                    f"Follow this chain unless the results so far indicate a different path.\n"
-                )
+            if True:  # No iteration gate — always inject intent + fingerprint
+                if classification and classification.suggested_chain:
+                    chain_str = " → ".join(classification.suggested_chain)
+                    intent_guidance = (
+                        f"\nINTENT: {classification.intent} (confidence: {classification.confidence:.0%})\n"
+                        f"SUGGESTED CHAIN: {chain_str}\n"
+                        f"NEEDS PORTFOLIO DATA: {classification.needs_portfolio}\n"
+                        f"NEEDS EXTERNAL LOOKUP: {classification.needs_external}\n"
+                        f"Use this as guidance — adapt based on results.\n"
+                    )
+                else:
+                    # Legacy fallback
+                    intent = self._classify_query_intent(prompt)
+                    if intent:
+                        intent_guidance = (
+                            f"\nDETECTED INTENT: {intent['intent']}\n"
+                            f"SUGGESTED CHAIN: {intent['chain']}\n"
+                            f"CONTEXT: {intent['description']}\n"
+                            f"Follow this chain unless the results so far indicate a different path.\n"
+                        )
 
-            # If we have plan_steps from an approved plan, follow them
+            # If we have a SessionPlan, use dependency-aware guidance
             plan_guidance = ""
-            if approved_plan and plan_steps_from_approval and i < len(plan_steps_from_approval):
+            if session_plan and not session_plan.is_complete():
+                runnable = session_plan.runnable_steps()
+                if runnable:
+                    if len(runnable) > 1:
+                        # Multiple independent steps — guide LLM to call them in parallel
+                        tools_desc = ", ".join(
+                            f"{s.tool}({json.dumps(s.inputs)})" for s in runnable
+                        )
+                        plan_guidance = (
+                            f"\nAPPROVED PLAN — {len(runnable)} independent steps ready:\n"
+                            f"{tools_desc}\n"
+                            f"Use call_tools to execute them in parallel.\n"
+                        )
+                    else:
+                        s = runnable[0]
+                        plan_guidance = (
+                            f"\nAPPROVED PLAN — Execute next step: {s.label}\n"
+                            f"Tool: {s.tool}, Input: {json.dumps(s.inputs)}\n"
+                            f"Execute this step now.\n"
+                        )
+            elif approved_plan and plan_steps_from_approval and i < len(plan_steps_from_approval):
+                # Fallback: raw plan_steps without SessionPlan
                 step = plan_steps_from_approval[i]
                 plan_guidance = (
                     f"\nAPPROVED PLAN — Execute step {i+1}: {step.get('label', '')}\n"
@@ -2443,36 +8186,113 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
                     f"Execute this step now.\n"
                 )
 
+            # Inject session corrections (chat feedback) into reasoning
+            session_corrections = self.shared_data.get("session_corrections", [])
+            correction_guidance = ""
+            if session_corrections:
+                recent = session_corrections[-3:]  # Last 3 corrections
+                correction_texts = [c["correction"] for c in recent]
+                correction_guidance = (
+                    f"\nUSER CORRECTIONS (adjust your approach accordingly):\n"
+                    + "\n".join(f"- {ct}" for ct in correction_texts)
+                    + "\n"
+                )
+
+            # Company context — directives, not hints
+            auto_enrich_guidance = ""
+            _enrich_parts: list = []
+
+            if self.shared_data.get("needs_auto_enrich"):
+                sparse_fields = self.shared_data.get("auto_enrich_fields", [])
+                _enrich_parts.append(
+                    f"MISSING DATA: {', '.join(sparse_fields)} fields are sparse — call resolve_data_gaps NOW before answering."
+                )
+
+            new_mentions = self.shared_data.get("mentioned_new_companies", [])
+            if new_mentions:
+                _enrich_parts.append(
+                    f"UNKNOWN COMPANIES: {', '.join(new_mentions)} are not in the grid — call fetch_company_data NOW."
+                )
+
+            sparse_mentions = self.shared_data.get("mentioned_sparse_companies", [])
+            if sparse_mentions:
+                _enrich_parts.append(
+                    f"SPARSE COMPANIES: {', '.join(sparse_mentions)} have thin grid data — call resolve_data_gaps NOW."
+                )
+
+            if _enrich_parts:
+                auto_enrich_guidance = (
+                    "\nDATA DIRECTIVES (act on these before anything else):\n"
+                    + "\n".join(f"- {p}" for p in _enrich_parts) + "\n"
+                )
+
+            # Freshness-aware skip guidance — tell the LLM which companies already have data
+            skip_guidance = ""
+            if state:
+                extracted_names = (entities or {}).get("companies", []) or list(state.grid_company_names)
+                if extracted_names:
+                    fresh = [n for n in extracted_names if not state.company_needs(n).get("fetch")]
+                    if fresh:
+                        skip_guidance = (
+                            f"\nFRESH DATA (skip fetch, go straight to valuation/analysis):\n"
+                            f"  {', '.join(fresh)}\n"
+                        )
+
+            # Build goals status for this iteration — use TaskLedger for per-task tracking
+            _goals_status = f"\nTASK PROGRESS:\n{ledger.pending_summary()}\n"
+
+            # Inject compressed memo instead of raw results when available
+            _memo_context = session_memo.context(max_tokens=800) if session_memo and session_memo.entries else ""
+            _results_display = _memo_context if _memo_context else f"Results so far: {results_summary}"
+
+            # Task tracker + memo canvas state for agent awareness
+            _task_state = ""
+            if AgentTaskTracker:
+                _tracker = AgentTaskTracker(self.shared_data)
+                if _tracker.tasks:
+                    _task_state = f"\nTASK STATE: {_tracker.summary_for_context()}\n"
+            _memo_canvas_state = ""
+            _n_memo = len(memo_sections) + len(self.shared_data.get("memo_sections", []))
+            if _n_memo:
+                _memo_canvas_state = f"MEMO CANVAS: {_n_memo} sections already written — do NOT call write_to_memo for sections tools already emitted\n"
+
+            # Build tool call history for dedup awareness
+            _tool_history = ""
+            if tool_results:
+                _tool_calls_so_far = [f"  - {r['tool']}({json.dumps(r.get('input', {}))[:120]})" for r in tool_results]
+                _tool_history = "\nTOOLS ALREADY CALLED (do NOT repeat these):\n" + "\n".join(_tool_calls_so_far) + "\n"
+
             route_prompt = f"""Task: {prompt}
 
 Available tools:
 {active_catalog}
 
-State: {sd_summary}
-Results so far: {results_summary}
-{intent_guidance}{plan_guidance}
-WORKFLOW PATTERNS:
-- Portfolio overview ("tell me about my portfolio"): query_portfolio → run_portfolio_health → calculate_fund_metrics → generate_chart
-- Company deep dive ("analyze @Ramp"): query_portfolio → run_portfolio_health → run_valuation → run_exit_modeling → generate_chart
-- Comparables / peers: query_portfolio → web_search(competitors) → fetch_company_data → run_skill(deal-comparer) → generate_chart
-- Follow-on / pro-rata: query_portfolio → run_followon_strategy → run_round_modeling → generate_chart
-- Exit scenarios: query_portfolio → run_exit_modeling → generate_chart(probability_cloud)
-- Fund metrics (DPI/TVPI/IRR): calculate_fund_metrics → generate_chart
-- Stress test / what-if: query_portfolio → run_scenario → run_regression(type=sensitivity) → generate_chart
-- Round modeling / dilution: query_portfolio → run_round_modeling → run_skill(cap-table-generator) → generate_chart
-- Portfolio construction / pacing: calculate_fund_metrics → query_portfolio → run_portfolio_health → run_skill(fund-analyzer)
-- Fetch NEW company from web: fetch_company_data → run_valuation → run_skill(cap-table-generator)
-- Generate deck: (gather data first) → generate_deck
-- Generate memo/report: (gather data first) → run_report(type=lp_report|followon_memo|gp_strategy) or generate_memo
-- run_skill can invoke: valuation-engine, cap-table-generator, exit-modeler, scenario-generator, portfolio-analyzer, fund-metrics-calculator, followon-strategy, deal-comparer, regression-analyzer, monte-carlo-simulator, sensitivity-analyzer, market-sourcer, competitive-intelligence
+State:
+{sd_summary}{auto_enrich_guidance}{skip_guidance}
+{_task_state}{_memo_canvas_state}
+{_results_display}
+{_goals_status}{intent_guidance}{plan_guidance}{correction_guidance}{_tool_history}
+RULES:
+1. Look at State — what data exists? What's missing for the user's request?
+2. Pick tool(s) from the list above to close the gap. Prerequisites auto-resolve.
+3. Run independent calls in parallel. Never say "no data" — use tools to get it.
+4. NEVER repeat a tool call that already ran — check TOOLS ALREADY CALLED above.
+5. After data tools finish, ALWAYS write results somewhere persistent:
+   - Use generate_memo or write_to_memo to write analysis to the memo (context bridge for future turns)
+   - Use nl-matrix-controller to push extracted values (ARR, valuation, runway) back into the grid
+   - The memo is NOT optional — it preserves context across agent turns
+6. Charts go in the memo, not the chat. Generate charts as part of memo/analysis output.
+7. You are done when: data is fetched AND written to memo AND grid values updated.
+   Do NOT say "done" if you only searched/fetched but never wrote to memo or grid.
 
-Pick the NEXT tool to call, or say done if the task is complete.
-Return JSON: {{"action":"call_tool"|"done","tool":"name","input":{{...}},"reasoning":"1 sentence"}}"""
+For a SINGLE tool: {{"action":"call_tool","tool":"name","input":{{...}},"reasoning":"1 sentence"}}
+For PARALLEL tools: {{"action":"call_tools","tools":[{{"tool":"name","input":{{...}}}},{{"tool":"name2","input":{{...}}}}],"reasoning":"1 sentence"}}
+When done: {{"action":"done"}}"""
 
             route_response = await self.model_router.get_completion(
                 prompt=route_prompt,
-                system_prompt="You are a portfolio CFO agent. Pick the next tool to achieve the user's goal. Chain tools in logical order. Return valid JSON only.",
-                capability=ModelCapability.FAST,
+                system_prompt=self._build_system_prompt("Pick the next tool(s). Return valid JSON only."),
+                capability=ModelCapability.ANALYSIS,
                 max_tokens=ROUTE_MAX_TOKENS,
                 temperature=0.0,
                 json_mode=True,
@@ -2495,55 +8315,371 @@ Return JSON: {{"action":"call_tool"|"done","tool":"name","input":{{...}},"reason
                     action = {"action": "done"}
 
             if action.get("action") == "done":
-                break
+                # ── STRUCTURAL: Can't be "done" if you haven't started ──
+                # Fall back to portfolio company names when no @mentions extracted
+                extracted_names = (entities or {}).get("companies", [])
+                if not extracted_names:
+                    grid_company_names = (
+                        self.shared_data.get("matrix_context", {}).get("companyNames")
+                        or self.shared_data.get("matrix_context", {}).get("company_names")
+                        or []
+                    )
+                    if grid_company_names:
+                        extracted_names = list(grid_company_names)
 
-            tool_name = action.get("tool", "")
-            tool_input = action.get("input", {})
+                # Safety: can't quit on iteration 0 without calling a single tool.
+                # Use TaskLedger to dispatch ALL pending tasks in parallel.
+                if i == 0 and not tool_results:
+                    # ── Memo short-circuit: if we already have company data and
+                    # the request is analytical, jump straight to generate_memo
+                    # instead of re-running the whole data-gathering chain. ──
+                    _chain = classification.suggested_chain if classification and classification.suggested_chain else []
+                    _memo_intents = {
+                        "memo_writing", "memo_generation", "report_writing",
+                        "portfolio_analysis", "company_analysis", "performance_review",
+                        "financing_analysis", "deal_analysis", "comparison",
+                    }
+                    _has_companies = bool(self.shared_data.get("companies"))
+                    _intent = classification.intent if classification else ""
+                    # Also check if the prompt is analytical (multi-company, portfolio-level)
+                    _lower_prompt = prompt.lower()
+                    _is_analytical = any(kw in _lower_prompt for kw in [
+                        "analyz", "performance", "winner", "loser", "financ",
+                        "runway", "burn", "health", "review", "assess", "evaluat",
+                        "compare", "rank", "score", "bridge", "follow-on", "debt",
+                    ])
+                    if (
+                        _has_companies
+                        and (_intent in _memo_intents or _is_analytical or "generate_memo" in (_chain or []))
+                    ):
+                        _memo_type = None
+                        _lower = prompt.lower()
+                        if "followon" in _lower or "follow-on" in _lower or "pro rata" in _lower:
+                            _memo_type = "followon"
+                        elif "lp report" in _lower or "quarterly" in _lower:
+                            _memo_type = "lp_report"
+                        elif "gp" in _lower and ("strategy" in _lower or "update" in _lower):
+                            _memo_type = "gp_strategy"
+                        elif "comparison" in _lower or "compare" in _lower:
+                            _memo_type = "comparison"
+                        _memo_input: Dict[str, Any] = {"prompt": prompt}
+                        if _memo_type:
+                            _memo_input["memo_type"] = _memo_type
+                        action = {
+                            "action": "call_tool",
+                            "tool": "generate_memo",
+                            "input": _memo_input,
+                            "reasoning": f"Shared data already has {len(self.shared_data['companies'])} companies — generating memo directly (intent: {_intent})",
+                        }
+                        logger.info(
+                            f"[AGENT_LOOP] Memo short-circuit: jumping to generate_memo with "
+                            f"{len(self.shared_data['companies'])} companies"
+                        )
+                    else:
+                        # Use TaskLedger to fire ALL pending goals in parallel
+                        pending_actions = ledger.next_actions()
+                        if len(pending_actions) > 1:
+                            action = {
+                                "action": "call_tools",
+                                "tools": pending_actions,
+                                "reasoning": f"Executing {len(pending_actions)} pending tasks in parallel",
+                            }
+                            logger.info(f"[AGENT_LOOP] Iter 0 quit blocked — dispatching {len(pending_actions)} ledger tasks in parallel")
+                        elif len(pending_actions) == 1:
+                            action = {
+                                "action": "call_tool",
+                                **pending_actions[0],
+                                "reasoning": "Executing pending task",
+                            }
+                            logger.info(f"[AGENT_LOOP] Iter 0 quit blocked — dispatching 1 ledger task: {pending_actions[0]['tool']}")
+                        else:
+                            action = {
+                                "action": "call_tool",
+                                "tool": "query_portfolio",
+                                "input": {"query": prompt},
+                                "reasoning": "Fallback — no pending ledger tasks",
+                            }
+                            logger.info("[AGENT_LOOP] Iter 0 quit blocked — fallback to query_portfolio")
+                else:
+                    break
+
+            # --- Determine tool(s) to execute ---
             reasoning = action.get("reasoning", "")
 
-            step = {"id": f"step-{i}", "label": f"{tool_name}: {reasoning}", "status": "running"}
-            plan_steps.append(step)
+            # Support both single tool and parallel tools
+            if action.get("action") == "call_tools" and action.get("tools"):
+                # Parallel: multiple independent tools
+                raw_tools = action["tools"]
+                tool_calls = [
+                    {"tool": t.get("tool", ""), "input": t.get("input", {})}
+                    for t in raw_tools if t.get("tool")
+                ]
+            else:
+                # Single tool (existing behavior)
+                tool_calls = [{"tool": action.get("tool", ""), "input": action.get("input", {})}]
+
+            # Build PlanSteps for parallel execution (or single)
+            iter_steps: List[PlanStep] = []
+            for j, tc in enumerate(tool_calls):
+                step_id = f"step-{i}-{j}" if len(tool_calls) > 1 else f"step-{i}"
+                ps = PlanStep(
+                    id=step_id,
+                    label=f"{tc['tool']}: {reasoning}",
+                    tool=tc["tool"],
+                    inputs=tc["input"],
+                    status="pending",
+                )
+                iter_steps.append(ps)
+                plan_steps.append({"id": step_id, "label": ps.label, "status": "running"})
+
+            parallel_label = " + ".join(tc["tool"] for tc in tool_calls)
             yield {
                 "type": "progress",
                 "stage": "agent_step",
-                "message": reasoning,
+                "message": f"{parallel_label}: {reasoning}" if len(tool_calls) > 1 else reasoning,
                 "plan_steps": plan_steps,
             }
 
-            # --- ACT (Python service call, no LLM) ---
-            result = await self._execute_tool(tool_name, tool_input)
-            tool_results.append({"tool": tool_name, "input": tool_input, "output": result})
+            # --- ACT (Python service call(s), no LLM) ---
+            if len(iter_steps) > 1:
+                # Parallel execution via asyncio.gather
+                iter_results = await self._execute_tools_parallel(iter_steps, plan=session_plan)
+            else:
+                # Single tool — direct call (preserves existing behaviour)
+                single_step = iter_steps[0]
+                result = await self._execute_tool(single_step.tool, single_step.inputs)
+                if session_plan:
+                    if "error" in result:
+                        session_plan.mark_failed(single_step.id, result.get("error", ""))
+                    else:
+                        session_plan.mark_done(single_step.id, result)
+                iter_results = [{"tool": single_step.tool, "input": single_step.inputs,
+                                 "output": result, "step_id": single_step.id}]
 
-            # Collect side effects
-            if "memo_sections" in result:
-                memo_sections.extend(result["memo_sections"])
-            if "grid_command" in result:
-                grid_commands.append(result["grid_command"])
-            if "chart_config" in result:
-                charts.append(result["chart_config"])
-            if "suggestion" in result:
-                suggestions.append(result["suggestion"])
+            # Invalidate fingerprint cache after tool execution
+            if state:
+                state.mark_dirty()
 
-            if "error" in result:
-                failed_tools.add(tool_name)
-                logger.warning(f"[AGENT] Tool {tool_name} failed, excluding from future iterations: {result['error']}")
-            step["status"] = "done" if "error" not in result else "failed"
+            # Process results from all tool(s) in this iteration
+            last_tool_name = ""
+            last_result: Dict[str, Any] = {}
+            for tr in iter_results:
+                tool_results.append(tr)
+                t_name = tr["tool"]
+                t_result = tr.get("output", {})
+                last_tool_name = t_name
+                last_result = t_result
+
+                # Collect side effects and stream memo sections to frontend
+                if isinstance(t_result, dict):
+                    if "memo_sections" in t_result:
+                        for ms in t_result["memo_sections"]:
+                            # Normalize: ensure id exists
+                            if "id" not in ms:
+                                ms["id"] = f"auto_{len(memo_sections)}"
+                            memo_sections.append(ms)
+                            # Stream each section to frontend in real-time
+                            _streamed_memo_ids.add(ms.get("id", id(ms)))
+                            yield {"type": "memo_section", "section": ms}
+                    if "chart_data" in t_result and isinstance(t_result["chart_data"], list):
+                        for cd in t_result["chart_data"]:
+                            charts.append(cd)
+                            yield {"type": "chart_data", "chart": cd}
+                    if "grid_command" in t_result:
+                        grid_commands.append(t_result["grid_command"])
+                    if "grid_commands" in t_result and isinstance(t_result["grid_commands"], list):
+                        grid_commands.extend(t_result["grid_commands"])
+                    if "chart_config" in t_result:
+                        charts.append(t_result["chart_config"])
+                    if "suggestion" in t_result:
+                        suggestions.append(t_result["suggestion"])
+                    if "todo" in t_result:
+                        todo_items.append(t_result["todo"])
+
+                # NOTE: Do NOT persist grid_commands to DB here — the frontend handles
+                # persistence via handleGridCommandsFromBackend → addServiceSuggestion().
+                # The suggest_grid_edit tool already persists its own suggestions directly.
+                # Writing here too caused duplicate suggestions in pending_suggestions.
+
+                # Propagate analysis outputs from tool results to shared_data
+                # so downstream tools (memo, synthesis) can find them
+                if isinstance(t_result, dict):
+                    _analysis_keys = [
+                        "valuation", "cap_tables", "scenario_analysis",
+                        "exit_modeling", "followon_strategy", "reserve_forecast",
+                        "fund_metrics", "portfolio_health", "fund_scenarios",
+                        "regression_analysis", "forecast_results",
+                    ]
+                    for _ak in _analysis_keys:
+                        if _ak in t_result and t_result[_ak]:
+                            self.shared_data[_ak] = t_result[_ak]
+
+                if isinstance(t_result, dict) and "error" in t_result:
+                    failed_tools.add(t_name)
+                    logger.warning(f"[AGENT] Tool {t_name} failed, excluding from future iterations: {t_result['error']}")
+
+                # Record into PlanContext
+                plan_ctx.record_finding(f"{t_name}_{tr.get('step_id', i)}", self._truncate(json.dumps(t_result), 1500))
+
+                # Compress tool result into SessionMemo (context anti-rot)
+                if session_memo:
+                    session_memo.add(
+                        tool=t_name,
+                        inputs=tr.get("input", {}),
+                        result=t_result if isinstance(t_result, dict) else {"result": str(t_result)[:200]},
+                    )
+
+            # Update TaskLedger with this iteration's results
+            ledger.update(iter_results)
+            logger.info(f"[AGENT_LOOP] Ledger after iter {i}: {ledger.pending_summary()}")
+
+            # Update plan_steps statuses for frontend
+            for ps_dict in plan_steps:
+                for tr in iter_results:
+                    if ps_dict["id"] == tr.get("step_id"):
+                        out = tr.get("output", {})
+                        ps_dict["status"] = "failed" if (isinstance(out, dict) and "error" in out) else "done"
+
             yield {
                 "type": "progress",
                 "stage": "agent_step",
-                "message": f"{tool_name} complete",
+                "message": f"{parallel_label} complete" if len(tool_calls) > 1 else f"{last_tool_name} complete",
                 "plan_steps": plan_steps,
             }
 
-            # --- REFLECT (cheap model) ---
+            # --- Check if SessionPlan is fully resolved (skip REASON/REFLECT) ---
+            if session_plan and session_plan.is_complete():
+                logger.info(f"[AGENT_LOOP] SessionPlan {session_plan.plan_id} fully resolved")
+                # Persist completed plan to DB
+                fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+                session_plan.persist_to_db(fund_id=fund_id)
+                break
+
+            # --- REFLECT (Python-first, LLM fallback) ---
+            # Hard rule: if no tools have run yet, skip reflection and force another iteration
+            if not tool_results:
+                logger.info(f"[AGENT_LOOP] No tools called yet (iter {i}), skipping reflect — forcing tool execution")
+                continue
+
+            # Build scoreboard from tool_results (pure Python)
+            if Scoreboard:
+                _scoreboard = Scoreboard.from_tool_results(tool_results)
+                _portfolio_size = state.portfolio_size if state else len(
+                    self.shared_data.get("matrix_context", {}).get("companyNames")
+                    or self.shared_data.get("matrix_context", {}).get("company_names")
+                    or []
+                )
+            else:
+                _scoreboard = None
+                _portfolio_size = 0
+
+            # Phase 2: TaskLedger completion check (deterministic, zero LLM tokens)
+            # Only gate on ledger if it was populated from an actual plan
+            if ledger.goals and ledger.is_complete():
+                logger.info(f"[REFLECT_PY] All {len(ledger.goals)} plan tasks complete — breaking loop")
+                break
+            if ledger.goals:
+                pending = ledger.pending_goals()
+                ready = ledger.next_actions()
+                logger.info(
+                    f"[REFLECT_PY] iter={i} — {len(pending)} pending, "
+                    f"{len(ready)} ready: {[g.id for g in pending]}"
+                )
+                continue  # ledger is tracking — skip LLM reflection unless stale
+
+            # ── Fallback: LLM-based reflection (only when CompletionChecker unavailable) ──
+            # Prefer the pre-built Scoreboard which counts side-effect
+            # memo_sections from tool outputs.  Also take max with the live
+            # memo_sections list to capture sections from non-tool paths.
+            if _scoreboard:
+                fetch_count = _scoreboard.fetch_count
+                valuation_count = _scoreboard.valuation_count
+                chart_count = _scoreboard.chart_count
+                suggest_count = _scoreboard.suggest_count
+                auto_suggest_count = _scoreboard.auto_suggest_count
+                memo_section_count = max(_scoreboard.memo_section_count, len(memo_sections))
+                memo_count = _scoreboard.memo_count
+                if memo_section_count >= 2 and memo_count == 0:
+                    memo_count = 1
+                portfolio_size = _portfolio_size
+            else:
+                suggest_count = sum(1 for r in tool_results if r["tool"] in ("suggest_grid_edit", "suggest_action"))
+                auto_suggest_count = sum(
+                    r.get("output", {}).get("auto_suggestions_count", 0)
+                    for r in tool_results
+                    if isinstance(r.get("output"), dict)
+                )
+                valuation_count = sum(1 for r in tool_results if r["tool"] == "run_valuation")
+                fetch_count = sum(1 for r in tool_results if r["tool"] in ("fetch_company_data", "resolve_data_gaps"))
+                memo_section_count = len(memo_sections)
+                memo_tool_count = sum(1 for r in tool_results if r["tool"] in ("generate_memo", "run_report", "write_to_memo"))
+                memo_count = memo_tool_count if memo_tool_count else (1 if memo_section_count >= 2 else 0)
+                chart_count = sum(1 for r in tool_results if r["tool"] == "generate_chart")
+                grid_company_names = (
+                    self.shared_data.get("matrix_context", {}).get("companyNames")
+                    or self.shared_data.get("matrix_context", {}).get("company_names")
+                    or []
+                )
+                portfolio_size = len(grid_company_names)
+
+            _goals_checklist = ""
+            if _extracted_goals:
+                _goals_checklist = "GOALS TO ACHIEVE:\n" + "\n".join(
+                    f"  - [{g.get('id')}] {g.get('description')} (check: {g.get('check', 'N/A')})"
+                    for g in _extracted_goals
+                ) + "\n\n"
+
+            # Detect redundant tool calls
+            _tool_call_counts: Dict[str, int] = {}
+            for r in tool_results:
+                _tool_call_counts[r["tool"]] = _tool_call_counts.get(r["tool"], 0) + 1
+            _repeated_tools = [f"{t}(x{c})" for t, c in _tool_call_counts.items() if c >= 2]
+            _dedup_warning = ""
+            if _repeated_tools:
+                _dedup_warning = (
+                    f"\nWARNING: These tools were called multiple times: {', '.join(_repeated_tools)}. "
+                    "STOP repeating them. Either use generate_memo to write findings, or say done.\n"
+                )
+
+            # Check if we have data but no memo — force escalation
+            _has_data_no_memo = fetch_count > 0 and memo_count == 0 and memo_section_count == 0
+            _escalation_hint = ""
+            if _has_data_no_memo:
+                _escalation_hint = (
+                    "\nIMPORTANT: Data has been fetched but NO memo/analysis has been written yet. "
+                    "The memo is the context bridge — call generate_memo or write_to_memo NOW. "
+                    "Do NOT mark as sufficient without writing to the memo.\n"
+                )
+
             reflect_prompt = f"""Task: {prompt}
-Latest result from {tool_name}: {self._truncate(json.dumps(result), 300)}
-All results: {len(tool_results)} tools called.
-Is this sufficient to answer the task? Return JSON: {{"sufficient":true|false,"reason":"1 sentence"}}"""
+Tools called so far: {', '.join(r['tool'] for r in tool_results)}
+Latest tool: {last_tool_name}
+Result summary: {self._truncate(json.dumps(last_result), 1500)}
+{_dedup_warning}{_escalation_hint}
+{_goals_checklist}SCOREBOARD:
+- Portfolio companies: {portfolio_size}
+- Companies fetched/enriched: {fetch_count}
+- Valuations run: {valuation_count}
+- Memos generated: {memo_count}
+- Memo sections (auto-emitted from tools): {memo_section_count}
+- Charts generated: {chart_count}
+- Suggestions emitted: {suggest_count + auto_suggest_count}
+
+Look at the user's request and the scoreboard. Is the request fully satisfied?
+- CRITICAL: If fetch_count > 0 but memo_count is 0 and memo_section_count is 0, it is NOT sufficient.
+  The user expects a written deliverable in the memo, not a chat dump.
+- If memo sections > 0, the memo already has content from tools — do NOT loop to write more sections.
+- If the user asked for valuations but valuation_count is 0, that's not satisfied.
+- If the user asked about the whole portfolio but only some companies were processed, that's not satisfied.
+- resolve_data_gaps fills gaps but does NOT count as a valuation — you still need run_valuation.
+- NEVER mark as sufficient if the same tool was called 3+ times — you're stuck in a loop.
+  Call generate_memo to write what you have, then say done.
+
+{{"sufficient":true|false,"reason":"1 sentence","missing":"what tool to call next if not sufficient"}}"""
 
             reflect_response = await self.model_router.get_completion(
                 prompt=reflect_prompt,
-                system_prompt="Decide if we have enough data. Return JSON only.",
+                system_prompt="You are a completion checker. Look at the user's request and the scoreboard numbers. Is the request fully satisfied? Return JSON only.",
                 capability=ModelCapability.FAST,
                 max_tokens=REFLECT_MAX_TOKENS,
                 temperature=0.0,
@@ -2556,47 +8692,225 @@ Is this sufficient to answer the task? Return JSON: {{"sufficient":true|false,"r
                 reflection = json.loads(reflect_text)
             except json.JSONDecodeError as e:
                 logger.warning(f"[AGENT] Reflect JSON parse failed (iter {i}): {e}\nRaw text: {reflect_text[:500]}")
-                reflection = {"sufficient": i >= 2}
+                reflection = {"sufficient": False, "reason": "JSON parse failed, continuing"}
+
+            logger.info(f"[REFLECT] iter={i} sufficient={reflection.get('sufficient')} reason={reflection.get('reason', '')}")
+
+            # ── Anti-loop: force memo generation if stuck ──
+            # If we've done 3+ iterations with data but no memo, force generate_memo
+            _any_repeated = any(c >= 3 for c in _tool_call_counts.values())
+            if i >= 2 and fetch_count > 0 and memo_count == 0 and memo_section_count == 0:
+                logger.warning(f"[REFLECT] iter={i} — data fetched but no memo after {i+1} iterations, forcing generate_memo")
+                action = {
+                    "action": "call_tool",
+                    "tool": "generate_memo",
+                    "input": {"prompt": prompt},
+                    "reasoning": f"Forced memo generation — {fetch_count} fetches but 0 memo sections after {i+1} iterations",
+                }
+                # Don't break — let the tool execute in the next iteration
+                continue
+            elif _any_repeated and i >= 2:
+                logger.warning(f"[REFLECT] iter={i} — tool loop detected ({_repeated_tools}), forcing done")
+                break
 
             if reflection.get("sufficient"):
                 break
 
         # --- SYNTHESIZE (full model, one call) ---
+        # When grid_commands are the primary output, enrich synth context with
+        # a human-readable summary so the synthesizer can produce meaningful prose
+        # alongside the grid mutations (composite response).
+        grid_summary_ctx = ""
+        if grid_commands:
+            edit_cmds = [c for c in grid_commands if c.get("action") == "edit"]
+            run_cmds = [c for c in grid_commands if c.get("action") == "run"]
+            parts = []
+            if edit_cmds:
+                parts.append(f"Set {len(edit_cmds)} cell value(s) in the grid")
+            if run_cmds:
+                action_ids = list({c.get("actionId", "unknown") for c in run_cmds})
+                parts.append(f"Queued {len(run_cmds)} service run(s): {', '.join(action_ids)}")
+            grid_summary_ctx = f'\nGrid operations performed: {"; ".join(parts)}.'
+
         synth_context = json.dumps([
             {
                 "tool": r["tool"],
-                "output": self._truncate(json.dumps(r.get("output", {})), 500),
+                "output": self._truncate(json.dumps(r.get("output", {})), 3000),
             }
             for r in tool_results
-        ])
+        ]) + grid_summary_ctx
 
-        # Inject corrections from feedback loop (reuse entities from caller to avoid extra LLM call)
-        first_company = ((entities or {}).get("companies") or [None])[0]
+        # Inject corrections from feedback loop — fall back to grid companies when no @mentions
+        entity_companies = (entities or {}).get("companies", [])
+        if not entity_companies:
+            entity_companies = list(
+                self.shared_data.get("matrix_context", {}).get("companyNames")
+                or self.shared_data.get("matrix_context", {}).get("company_names")
+                or []
+            )
+        first_company = entity_companies[0] if entity_companies else None
         corrections = await self._get_recent_corrections(prompt, first_company)
         correction_ctx = ""
         if corrections:
             correction_ctx = f"\n\nUser has previously corrected: {'; '.join(corrections[:3])}\nAdjust your response accordingly."
 
         memo_context = f"\nWorking memo context:\n{memo_text[:2000]}\n" if memo_text else ""
-        synth_prompt = f"""User asked: {prompt}{memo_context}
-Tool results: {synth_context}{correction_ctx}
-Write a clear, concise answer. Use markdown. Reference specific numbers. If charts were generated, describe what they show."""
 
-        synthesis_response = await self.model_router.get_completion(
-            prompt=synth_prompt,
-            system_prompt="You are a portfolio CFO assistant. Write concise analysis with specific numbers.",
-            capability=ModelCapability.ANALYSIS,
-            max_tokens=SYNTH_MAX_TOKENS,
-            temperature=0.3,
-            caller_context="agent_loop_synthesize",
-        )
-        synthesis = synthesis_response.get("response", "") if isinstance(synthesis_response, dict) else str(synthesis_response)
+        # Inject portfolio intelligence context so synthesis sees actual portfolio data
+        portfolio_text = self._build_portfolio_intelligence()
+        portfolio_context = f"\n\nPortfolio Context:\n{portfolio_text}\n" if portfolio_text.strip() else ""
+
+        # Determine if we should use lightweight memo (structured docs) vs raw text
+        has_company_data = bool(self.shared_data.get("companies"))
+        has_portfolio_data = bool(self.shared_data.get("portfolio_enrichment") or self.shared_data.get("fund_metrics"))
+        use_memo_format = has_company_data or has_portfolio_data
+
+        if use_memo_format:
+            # Concise chat summary — detailed analysis goes into memo sections
+            synth_prompt = f"""User asked: {prompt}{memo_context}{portfolio_context}
+Tool results:
+{synth_context}{correction_ctx}
+
+Write 2-3 short paragraphs answering the user's question with specific numbers from the tool results.
+Rules:
+- NO markdown tables, bullet lists, headers, or metric dumps
+- NO filler: never start with "Based on my analysis", "Let me break this down", "Here's what I found"
+- Start with the most important finding or number
+- Only cite numbers that appear in the tool results — do not invent figures
+- The frontend separately renders metric cards, charts, and cap tables — do NOT repeat those metrics
+- Focus on: investment narrative, one key insight, one risk or open question
+
+ABSOLUTE RULES:
+- NEVER write "cannot be completed", "no data available", "data retrieval returned no results"
+- If you have estimates/benchmarks, present them with confidence levels
+- If you have partial data, show what you have and flag what's estimated
+- Present ranges (low/mid/high) rather than saying "unknown"
+- Always show SOMETHING — even stage benchmarks are more useful than "no data"
+- Format: "Based on [source] (confidence: X%): [value]"
+
+Example: 'Mercury generates ~$150M ARR growing 80% YoY with 65% gross margins, positioning it as a strong Series C candidate at ~$1.5B. The key risk is margin compression as they expand into lending.'"""
+
+            synthesis_response = await self.model_router.get_completion(
+                prompt=synth_prompt,
+                system_prompt="You are a portfolio CFO. Write 2-3 concise paragraphs of flowing prose — narrative only. The frontend renders structured data (cards, charts, cap tables) separately, so never repeat raw metrics. Only use numbers from the tool results. NEVER say 'I don't have data', 'cannot be completed', 'no data available', or 'Based on my analysis'. If data is estimated, say 'estimated at' with confidence. Start with the key finding. End with one actionable insight or open question.",
+                capability=ModelCapability.ANALYSIS,
+                max_tokens=2000,
+                temperature=0.3,
+                caller_context="agent_loop_synthesize_brief",
+            )
+            synthesis = synthesis_response.get("response", "") if isinstance(synthesis_response, dict) else str(synthesis_response)
+
+            # Memo strategy: always run LightweightMemoService for template-driven
+            # narratives + charts. Progressive tool sections are supplementary data.
+            tool_emitted_sections = list(memo_sections)  # save tool-emitted sections
+            _memo_artifact_appended = False  # track whether we already added to memo_artifacts
+            try:
+                from app.services.lightweight_memo_service import LightweightMemoService
+                memo_svc = LightweightMemoService(model_router=self.model_router, shared_data=self.shared_data)
+                yield {
+                    "type": "progress",
+                    "stage": "memo_generation",
+                    "message": "Generating investment memo narratives...",
+                }
+                memo_result = await asyncio.wait_for(
+                    memo_svc.generate(prompt=prompt),
+                    timeout=120,  # 2 minutes max for full memo generation
+                )
+                if memo_result and memo_result.get("sections"):
+                    # Use LightweightMemoService output as the primary memo
+                    memo_sections.clear()
+                    memo_sections.extend(memo_result["sections"])
+                    # Append tool-emitted sections that aren't already covered
+                    # (charts, metrics from tools that the template didn't generate)
+                    if tool_emitted_sections:
+                        memo_sections.append({"type": "heading2", "content": "Additional Data"})
+                        memo_sections.extend(tool_emitted_sections)
+                    # Add synthesis as final section
+                    memo_sections.append({"type": "heading2", "content": "Summary"})
+                    memo_sections.append({"type": "paragraph", "content": synthesis})
+                    async with self.shared_data_lock:
+                        artifacts = self.shared_data.get("memo_artifacts", [])
+                        artifacts.append(memo_result)
+                        self.shared_data["memo_artifacts"] = artifacts
+                    _memo_artifact_appended = True
+                    logger.info(f"[AGENT_LOOP] Full memo via LightweightMemoService: {len(memo_sections)} sections")
+                elif tool_emitted_sections:
+                    # LightweightMemoService returned nothing — fall back to tool sections
+                    memo_sections.append({"type": "heading2", "content": "Summary"})
+                    memo_sections.append({"type": "paragraph", "content": synthesis})
+                    logger.info(f"[AGENT_LOOP] Fallback to tool-accumulated memo: {len(memo_sections)} sections")
+            except asyncio.TimeoutError:
+                logger.warning("[AGENT_LOOP] Lightweight memo generation timed out after 120s — falling back to tool sections")
+                if tool_emitted_sections:
+                    memo_sections.append({"type": "heading2", "content": "Summary"})
+                    memo_sections.append({"type": "paragraph", "content": synthesis})
+            except Exception as e:
+                logger.warning(f"[AGENT_LOOP] Lightweight memo generation failed: {e}")
+                if tool_emitted_sections:
+                    memo_sections.append({"type": "heading2", "content": "Summary"})
+                    memo_sections.append({"type": "paragraph", "content": synthesis})
+            # Only append a second artifact if LightweightMemoService didn't
+            # already write one (avoids double-appending the same memo).
+            if not _memo_artifact_appended:
+                async with self.shared_data_lock:
+                    artifacts = self.shared_data.get("memo_artifacts", [])
+                    if memo_sections:
+                        artifacts.append({
+                            "format": "docs",
+                            "title": f"Analysis: {prompt[:60]}",
+                            "sections": memo_sections,
+                            "memo_type": "full",
+                            "metadata": {
+                                "section_count": len(memo_sections),
+                                "generated_at": datetime.now().isoformat(),
+                                "source": "tool_accumulated",
+                            },
+                        })
+                        self.shared_data["memo_artifacts"] = artifacts
+        else:
+            synth_prompt = f"""User asked: {prompt}{memo_context}{portfolio_context}
+Tool results:
+{synth_context}{correction_ctx}
+
+Write a thorough analysis as flowing prose. Structure:
+1. Direct answer (1 paragraph) — lead with the key number or finding
+2. Analysis (1-2 paragraphs) — weave metrics into narrative sentences
+3. Risks & outlook (1 paragraph) — specific risks with quantified impact where possible
+Rules:
+- NO markdown tables, bullet lists, or metric dumps — the frontend renders those separately
+- NO filler phrases: never start with "Based on", "Let me", "Here's what", "I'd be happy to"
+- Only cite numbers that appear in the tool results — do not invent or round aggressively
+- When exact data is missing, say "estimated at [value] (confidence: X%)" with your reasoning
+- Write like a professional investment memo, not a chatbot response
+
+ABSOLUTE RULES:
+- NEVER write "cannot be completed", "no data available", "data retrieval returned no results"
+- If you have estimates/benchmarks, present them with confidence levels
+- Present ranges (low/mid/high) rather than saying "unknown"
+- Always show SOMETHING — stage benchmarks > "no data"."""
+
+            synthesis_response = await self.model_router.get_completion(
+                prompt=synth_prompt,
+                system_prompt="You are an investment analyst. Write professional analysis as flowing prose. Only use numbers from tool results — never invent figures. If data is estimated, state confidence level. The frontend renders tables, charts, and metric cards separately — do not duplicate them in prose. Start with the most important finding. NEVER say 'I don't have data', 'cannot be completed', or 'no data available' — present estimates with confidence ranges instead.",
+                capability=ModelCapability.ANALYSIS,
+                max_tokens=SYNTH_MAX_TOKENS,
+                temperature=0.3,
+                caller_context="agent_loop_synthesize",
+            )
+            synthesis = synthesis_response.get("response", "") if isinstance(synthesis_response, dict) else str(synthesis_response)
 
         # Build condensed working memory for session continuity
-        working_memory = [
-            {"tool": r["tool"], "summary": self._truncate(json.dumps(r.get("output", {})), 300)}
-            for r in tool_results
-        ]
+        # Use SessionMemo entries (compressed) instead of raw JSON (bloated)
+        if session_memo and session_memo.entries:
+            working_memory = [
+                {"tool": "session_memo", "summary": entry}
+                for entry in session_memo.entries
+            ]
+        else:
+            working_memory = [
+                {"tool": r["tool"], "summary": self._truncate(json.dumps(r.get("output", {})), 1000)}
+                for r in tool_results
+            ]
 
         # Detect output format from tool results — deck/memo take priority over analysis
         detected_format = "analysis"
@@ -2615,6 +8929,54 @@ Write a clear, concise answer. Use markdown. Reference specific numbers. If char
                     extra_result_fields["sections"] = out["sections"]
                     if out.get("title"):
                         extra_result_fields["title"] = out["title"]
+                    if out.get("memo_type"):
+                        extra_result_fields["memo_type"] = out["memo_type"]
+                    if out.get("is_resumable"):
+                        extra_result_fields["is_resumable"] = True
+
+        # If memo_sections were generated (lightweight memo), promote to docs format
+        if memo_sections and detected_format == "analysis":
+            detected_format = "docs"
+            extra_result_fields["sections"] = memo_sections
+            # Extract title from first heading section
+            for ms in memo_sections:
+                if ms.get("type") == "heading1":
+                    extra_result_fields["title"] = ms.get("content", "Analysis")
+                    break
+
+        # Collect memo artifacts accumulated during this request
+        memo_artifacts = self.shared_data.get("memo_artifacts", [])
+
+        # Finalize PlanContext with reasoning + working memory
+        plan_ctx.record_reasoning(f"synthesized {len(tool_results)} tool results")
+        plan_ctx_dict = plan_ctx.to_dict() if plan_ctx else None
+
+        # Build serialized SessionPlan state for frontend
+        session_plan_dict = session_plan.to_dict() if session_plan else None
+
+        # Build artifacts list for frontend rendering
+        result_artifacts: List[Dict[str, Any]] = []
+        chart_target = "memo" if detected_format in ("docs", "document") else "chat"
+        # When sections are already carried in the docs-format result, the
+        # frontend will render them directly — don't duplicate as individual
+        # memo_section artifacts (they were either already streamed in
+        # real-time or are part of the docs payload).
+        _sections_in_result = "sections" in extra_result_fields
+        # Convert charts to memo-compatible sections for fallback memo_updates
+        charts_as_memo = [{"type": "chart", "chart": c, "id": f"chart_{i}"} for i, c in enumerate(charts)]
+        for chart in charts:
+            result_artifacts.append({"type": "chart", "action": "append", "data": chart, "target": chart_target})
+        for gc in grid_commands:
+            result_artifacts.append({"type": "grid_command", "action": "replace", "data": gc, "target": "grid"})
+        for sg in suggestions:
+            result_artifacts.append({"type": "suggestion", "action": "suggest", "data": sg, "target": "chat"})
+        if not _sections_in_result:
+            for ms in memo_sections:
+                ms_id = ms.get("id", id(ms))
+                if ms_id not in _streamed_memo_ids:
+                    result_artifacts.append({"type": "memo_section", "action": "append", "data": ms, "target": "memo"})
+        for td in todo_items:
+            result_artifacts.append({"type": "todo", "action": "suggest", "data": td, "target": "chat"})
 
         yield {
             "type": "complete",
@@ -2624,11 +8986,23 @@ Write a clear, concise answer. Use markdown. Reference specific numbers. If char
                 **extra_result_fields,
                 "grid_commands": grid_commands,
                 "suggestions": suggestions,
-                "memo_updates": {"action": "append", "sections": memo_sections} if memo_sections else None,
+                "todos": todo_items if todo_items else None,
+                # Always send memo_updates so frontend writes to memo, not just chat.
+                # When sections are in result, send them as replace; otherwise append non-streamed ones.
+                "memo_updates": (
+                    {"action": "replace", "sections": memo_sections} if _sections_in_result and memo_sections
+                    else ({"action": "append", "sections": [s for s in memo_sections if s.get("id", id(s)) not in _streamed_memo_ids]}
+                          if memo_sections and any(s.get("id", id(s)) not in _streamed_memo_ids for s in memo_sections)
+                          else ({"action": "append", "sections": charts_as_memo} if charts else None))
+                ),
                 "plan_steps": plan_steps,
                 "charts": charts,
                 "citations": self._extract_citations_from_results(tool_results),
                 "working_memory": working_memory,
+                "memo_artifacts": memo_artifacts if memo_artifacts else None,
+                "artifacts": result_artifacts if result_artifacts else None,
+                "session_plan": session_plan_dict,
+                "plan_context": plan_ctx_dict,
             },
         }
 
@@ -2678,6 +9052,14 @@ Write a clear, concise answer. Use markdown. Reference specific numbers. If char
                     if agent_ctx:
                         self.shared_data['agent_context'] = agent_ctx
                         logger.info(f"[AGENT_CONTEXT] Stored agent context: {list(agent_ctx.keys())}")
+                    # Restore analysis manifest from prior request — marks which derived
+                    # data was computed so the agent knows what to re-fetch vs skip
+                    analysis_manifest = context.get('analysis_manifest')
+                    if analysis_manifest and isinstance(analysis_manifest, dict):
+                        from app.services.session_state import SessionState as _SS
+                        _ss = _SS(self.shared_data)
+                        _ss.restore_manifest(analysis_manifest)
+                        logger.info(f"[MANIFEST] Restored analysis manifest: {list(analysis_manifest.keys())}")
                 logger.info(f"[CONTEXT] Stored fund context with keys: {list(context.keys())}")
                 # Log key fund parameters if available
                 if 'fund_size' in context:
@@ -2725,6 +9107,52 @@ Write a clear, concise answer. Use markdown. Reference specific numbers. If char
                 else:
                     logger.info(f"[ENTITY_EXTRACTION] No fund context extracted from entities")
             
+            # ---- Plan resumption: detect "resume plan" intent and hydrate shared_data ----
+            plan_resume_signals = [
+                "resume plan", "continue the plan", "do this plan",
+                "execute the plan", "pick up where", "resume where",
+            ]
+            if any(s in prompt.lower() for s in plan_resume_signals):
+                await self._try_load_and_hydrate_plan()
+
+            # ---- Entity context: classify mentioned companies for agent awareness ----
+            # NOTE: No auto-triggering — the agent decides when/whether to fetch.
+            # We just categorize companies as new vs in-grid for agent context.
+            extracted_companies = entities.get("companies", [])
+            matrix_ctx = self.shared_data.get("matrix_context") or {}
+            grid_company_names = [n.lower() for n in (matrix_ctx.get("companyNames") or [])]
+            fund_id = (context or {}).get("fundId") or (context or {}).get("fund_id")
+
+            if extracted_companies:
+                new_companies = []
+                sparse_companies = []
+                for comp_name in extracted_companies:
+                    clean_name = comp_name.replace("@", "").strip().lower()
+                    if clean_name and clean_name not in grid_company_names:
+                        new_companies.append(comp_name.replace("@", "").strip())
+                    elif clean_name in grid_company_names:
+                        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+                        grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else []
+                        for row in grid_rows:
+                            row_name = (row.get("companyName") or row.get("company_name") or "").lower()
+                            if clean_name in row_name or row_name in clean_name:
+                                cells = row.get("cells") or row.get("cellValues") or {}
+                                empty_count = sum(1 for v in cells.values()
+                                                  if (v.get("value") if isinstance(v, dict) else v) in (None, "", "N/A"))
+                                if empty_count >= 3:
+                                    sparse_companies.append(comp_name.replace("@", "").strip())
+                                break
+
+                # Store as context hints, not forced actions
+                if new_companies:
+                    logger.info(f"[ENTITY_CONTEXT] New companies (not in grid): {new_companies}")
+                    async with self.shared_data_lock:
+                        self.shared_data["mentioned_new_companies"] = new_companies
+                if sparse_companies:
+                    logger.info(f"[ENTITY_CONTEXT] Sparse grid data for: {sparse_companies}")
+                    async with self.shared_data_lock:
+                        self.shared_data["mentioned_sparse_companies"] = sparse_companies
+
             # ---- Complexity gate: route to agent loop, direct dispatch, or existing pipeline ----
             # Also read memo context from agent_context for augmentation
             memo_ctx = self.shared_data.get("agent_context", {}).get("memo_sections", [])
@@ -2733,36 +9161,104 @@ Write a clear, concise answer. Use markdown. Reference specific numbers. If char
                 if memo_text:
                     logger.info(f"[MEMO_CONTEXT] Injected {len(memo_ctx)} memo sections ({len(memo_text)} chars) into context")
 
-            complexity = self._assess_complexity(prompt, context)
-            logger.info(f"[ORCHESTRATOR] Complexity assessment: {complexity}")
+            # --- Build grid fingerprint BEFORE classification ---
+            # SessionState provides a dense ~400 token map of what's filled/missing/inferred
+            _session_state = SessionState(self.shared_data) if SessionState else None
+            grid_fingerprint = _session_state.fingerprint() if _session_state else ""
+            if grid_fingerprint:
+                logger.info(f"[FINGERPRINT] Built grid fingerprint ({len(grid_fingerprint)} chars) for classifier")
 
-            if complexity == "simple":
-                result = await self._direct_dispatch(prompt, context)
+            # --- Phase 2: LLM-based intent classification (with grid context) ---
+            classification = await self._classify_intent(
+                prompt, entities=entities, context=context, grid_fingerprint=grid_fingerprint
+            )
+            logger.info(
+                f"[ORCHESTRATOR] Classification: complexity={classification.complexity}, "
+                f"intent={classification.intent}, needs_portfolio={classification.needs_portfolio}, "
+                f"needs_external={classification.needs_external}, confidence={classification.confidence}"
+            )
+            # Store classification for downstream use
+            async with self.shared_data_lock:
+                self.shared_data["classification"] = {
+                    "complexity": classification.complexity,
+                    "intent": classification.intent,
+                    "suggested_chain": classification.suggested_chain,
+                    "needs_portfolio": classification.needs_portfolio,
+                    "needs_external": classification.needs_external,
+                    "confidence": classification.confidence,
+                }
+
+            # --- Fast path: memo polish (1 cheap LLM call) ---
+            if classification.intent == "memo_polish":
+                result = await self._handle_memo_polish(prompt)
                 budget_summary = self.model_router.end_budget() or {}
                 yield {
                     "type": "complete",
                     "result": result,
                     "success": True,
-                    "metadata": {"budget": budget_summary, "complexity": "simple"},
+                    "metadata": {"budget": budget_summary, "complexity": "simple", "intent": "memo_polish"},
                 }
                 return
 
-            if complexity == "complex":
+            # --- Fast path: save memo to documents ---
+            if classification.intent == "memo_save":
+                result = await self._handle_memo_save()
+                budget_summary = self.model_router.end_budget() or {}
+                yield {
+                    "type": "complete",
+                    "result": result,
+                    "success": True,
+                    "metadata": {"budget": budget_summary, "complexity": "simple", "intent": "memo_save"},
+                }
+                return
+
+            if classification.complexity == "simple":
+                # Try direct dispatch — returns None if it can't handle it
+                result = await self._direct_dispatch(prompt, context)
+                if result is not None:
+                    budget_summary = self.model_router.end_budget() or {}
+                    yield {
+                        "type": "complete",
+                        "result": result,
+                        "success": True,
+                        "metadata": {"budget": budget_summary, "complexity": "simple", "intent": classification.intent},
+                    }
+                    return
+                # Direct dispatch couldn't handle it → upgrade to complex
+                logger.info("[ORCHESTRATOR] Upgrading simple→complex: direct dispatch returned None")
+                classification.complexity = "complex"
+
+            if classification.complexity == "complex":
                 memo_ctx = self.shared_data.get("agent_context", {}).get("memo_sections", [])
                 memo_text = self._serialize_memo_sections(memo_ctx) if memo_ctx else ""
                 approved_plan = bool(context.get("approved_plan")) if context else False
                 async for event in self._run_agent_loop(
-                    prompt, context, memo_text=memo_text, approved_plan=approved_plan, entities=entities
+                    prompt, context, memo_text=memo_text, approved_plan=approved_plan,
+                    entities=entities, classification=classification,
                 ):
                     yield event
                 self.model_router.end_budget()
                 return
 
-            # complexity == "dealflow" → fall through to existing skill chain pipeline
+            # Fallback: any remaining classification (e.g. legacy "dealflow") → skill chain pipeline
+            # This should rarely be reached since the LLM classifier now returns "simple" or "complex"
+            logger.info(f"[ORCHESTRATOR] Fallthrough to skill chain pipeline: complexity={classification.complexity}")
 
             # Phase 2: Planning for complex prompts
-            planning_triggers = ["all", "full", "complete", "do everything", "all 5", "full analysis", "step by step", "comprehensive", "detailed analysis"]
-            grid_action_triggers = ["run valuation", "value @", "value for", "run pwerm", "pwerm for", "value acme", "value mercury"]
+            planning_triggers = [
+                "all", "full", "complete", "do everything", "all 5", "full analysis",
+                "step by step", "comprehensive", "detailed analysis",
+                # Fund-wide / multi-company valuation triggers
+                "value the fund", "value all", "value every", "value entire",
+                "fill in everything", "fill in every", "fill everything",
+                "run valuation on all", "run valuation for all",
+                "run pwerm on all", "run pwerm for all",
+                "value the portfolio", "value entire portfolio",
+            ]
+            grid_action_triggers = [
+                "run valuation", "value @", "value for", "run pwerm", "pwerm for",
+                "run dcf", "dcf for", "value acme", "value mercury",
+            ]
             lower_prompt = prompt.lower()
             matrix_ctx = context.get("matrix_context") or context.get("matrixContext") if context else {}
             has_matrix = bool(matrix_ctx and (matrix_ctx.get("rowIds") or matrix_ctx.get("row_ids")))
@@ -2890,15 +9386,21 @@ Write a clear, concise answer. Use markdown. Reference specific numbers. If char
             # End budget tracking and capture summary
             budget_summary = self.model_router.end_budget() or {}
 
+            # Build analysis manifest for state persistence across requests
+            from app.services.session_state import SessionState as _SS
+            _manifest = _SS(self.shared_data).analysis_manifest()
+
             # Yield single complete result
             yield {
                 "type": "complete",
                 "result": formatted_result,
                 "success": True,
+                "analysis_manifest": _manifest,
                 "metadata": {
                     "streaming_disabled": True,
                     "format": output_format,
                     "skills_executed": len(skill_chain),
+                    "tools_used": [node.skill for node in skill_chain],
                     "budget": budget_summary,
                 }
             }
@@ -2910,6 +9412,44 @@ Write a clear, concise answer. Use markdown. Reference specific numbers. If char
                 "type": "error",
                 "error": str(e)
             }
+
+    async def process_request_complete(
+        self,
+        prompt: str,
+        output_format: str = "analysis",
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Buffer all streaming chunks and return a single atomic payload.
+
+        Wraps ``process_request_stream()`` so the frontend receives ONE
+        response with all artifacts (suggestions, charts, grid_commands,
+        memo_sections) rather than partial streaming events.
+
+        Progress events are condensed into a ``status_log`` list.
+        """
+        final_result: Dict[str, Any] = {}
+        status_log: List[str] = []
+        all_suggestions: List[Dict[str, Any]] = []
+        all_grid_commands: List[Dict[str, Any]] = []
+        all_charts: List[Dict[str, Any]] = []
+
+        async for event in self.process_request_stream(prompt, output_format, context):
+            event_type = event.get("type", "")
+            if event_type == "progress":
+                status_log.append(event.get("message", ""))
+            elif event_type == "complete":
+                final_result = event
+            elif event_type == "error":
+                final_result = event
+
+        # Enrich the final payload with any accumulated artifacts
+        if final_result.get("type") == "complete":
+            result = final_result.get("result", {})
+            if isinstance(result, dict):
+                result.setdefault("status_log", status_log)
+            final_result["result"] = result
+
+        return final_result
 
     async def _execute_planning(
         self, prompt: str, output_format: str, entities: Dict[str, Any]
@@ -2945,10 +9485,16 @@ Return a JSON array of steps. Each step:
 }}
 
 Map tool_to_use to one of: company-data-fetcher, valuation-engine, cap-table-generator, deal-comparer, exit-modeler, deck-storytelling, portfolio-analyzer, fund-metrics-calculator, followon-strategy, round-modeler, report-generator, scenario-analyzer, memo-generator, excel-generator, portfolio-scenario-modeler, company-health-dashboard, grid-run-valuation, grid-run-pwerm, grid-run-document-extract.
+CRITICAL: When valuing the whole fund or all companies ("value the fund", "fill in everything", "value all"):
+1. FIRST enrich each company with "company-data-fetcher" (fetches real data: revenue, gross margin, growth, burn, headcount, etc.)
+2. THEN run "grid-run-valuation" for all companies (uses enriched data, not guesses)
+This is the SAME enrichment pipeline that runs when a user @mentions a company. Always enrich before valuing.
+
 When the user asks to run valuation, value a company, run PWERM, or run pwerm for specific companies, use tool_to_use "grid-run-valuation" or "grid-run-pwerm" with the companies list in the "companies" field.
 When the user asks to extract a document for a company (e.g. "extract document for @Acme"), use tool_to_use "grid-run-document-extract" with the company in the "companies" field.
 When the user asks about follow-on, pro-rata, dilution, or whether to follow on, use "followon-strategy".
 When the user asks to model a next round (Series D, etc.), use "round-modeler".
+When the user asks about cap table or ownership, use "cap-table-generator".
 When the user asks to generate a report (LP quarterly, follow-on memo, GP deck), use "report-generator".
 When the user asks "what if" or scenario questions, use "scenario-analyzer".
 When the user asks to generate a memo or document, use "memo-generator".
@@ -3068,25 +9614,36 @@ Return ONLY the JSON array, no other text."""
                 ))
         else:
             logger.warning(f"[SKILL_BUILDER] ⚠️  No companies found in entities - company-data-fetcher will NOT be added")
-            # FORCE-ADD company-data-fetcher if deck format is requested and we can extract company names from prompt
-            if output_format == "deck" or "deck" in prompt.lower():
+            # FORCE-ADD company-data-fetcher if deck/docs format is requested and we can extract company names from prompt
+            if output_format in ("deck", "docs") or "deck" in prompt.lower():
                 logger.info(f"[SKILL_BUILDER] 📊 Deck format requested but no companies in entities - attempting to extract from prompt")
                 # Try to extract @mentions from prompt as fallback
                 import re
                 at_mentions = re.findall(r'@(\w+)', prompt)
-                if at_mentions:
-                    logger.info(f"[SKILL_BUILDER] 📊 Found @mentions in prompt: {at_mentions}")
-                    for company in at_mentions:
-                        logger.info(f"[SKILL_BUILDER] ✅ Force-adding company-data-fetcher for '@{company}' from @mention")
+                # Also match against known grid company names (no @ required)
+                matrix_ctx = self.shared_data.get("matrix_context") or {}
+                grid_names = matrix_ctx.get("companyNames") or matrix_ctx.get("company_names") or []
+                grid_matches = []
+                at_set = {m.lower() for m in at_mentions}
+                for gname in grid_names:
+                    if gname and len(gname) >= 3 and gname.lower() not in at_set:
+                        if re.search(r'\b' + re.escape(gname) + r'\b', prompt, re.IGNORECASE):
+                            grid_matches.append(gname)
+                all_matches = at_mentions + grid_matches
+                if all_matches:
+                    logger.info(f"[SKILL_BUILDER] 📊 Found companies in prompt: @mentions={at_mentions}, grid_matches={grid_matches}")
+                    for company in all_matches:
+                        src = "@mention" if company in at_mentions else "grid match"
+                        logger.info(f"[SKILL_BUILDER] ✅ Force-adding company-data-fetcher for '{company}' ({src})")
                         chain.append(SkillChainNode(
                             skill="company-data-fetcher",
-                            purpose=f"Fetch data for {company} (from @mention)",
+                            purpose=f"Fetch data for {company} ({src})",
                             inputs={"company": company, "prompt_handle": company},
                             parallel_group=0
                         ))
-                    entities["companies"] = at_mentions  # Update entities for later use
+                    entities["companies"] = all_matches  # Update entities for later use
                 else:
-                    logger.warning(f"[SKILL_BUILDER] ⚠️  No @mentions found either - company-data-fetcher will NOT be added")
+                    logger.warning(f"[SKILL_BUILDER] ⚠️  No @mentions or grid matches found - company-data-fetcher will NOT be added")
         
         # Phase 1: Analysis (parallel where possible)
         logger.info(f"[SKILL_BUILDER] 🔬 Phase 1: Analysis")
@@ -3122,9 +9679,10 @@ Return ONLY the JSON array, no other text."""
         else:
             logger.warning(f"[SKILL_BUILDER] ⚠️  No companies in entities - skipping cap-table-generator")
         
-        # ALWAYS do valuations for investment decisions
+        # ALWAYS do valuations for investment decisions (skip if already added by keyword match above)
         companies_count = len(entities.get("companies", []))
-        if companies_count > 0:
+        already_has_valuation = any(n.skill == "valuation-engine" for n in chain)
+        if companies_count > 0 and not already_has_valuation:
             logger.info(f"[SKILL_BUILDER] 🔬 Adding valuation-engine ({companies_count} companies found)")
             chain.append(SkillChainNode(
                 skill="valuation-engine",
@@ -3132,6 +9690,8 @@ Return ONLY the JSON array, no other text."""
                 inputs={"use_shared_data": True},
                 parallel_group=1
             ))
+        elif already_has_valuation:
+            logger.info(f"[SKILL_BUILDER] ⏭️  valuation-engine already in chain, skipping duplicate")
         else:
             logger.warning(f"[SKILL_BUILDER] ⚠️  No companies in entities - skipping valuation-engine")
         
@@ -3337,7 +9897,27 @@ Return ONLY the JSON array, no other text."""
             ))
             logger.info(f"[SKILL_BUILDER] 🎨 ✅ Added deck-storytelling to chain. Chain length now: {len(chain)}")
         elif output_format == "docs":
-            logger.info(f"[SKILL_BUILDER] 📝 Adding memo-writer (output_format=docs)")
+            logger.info(f"[SKILL_BUILDER] 📝 Adding memo upstream services + memo-writer (output_format=docs)")
+
+            # Fix 2: Ensure the skills that produce scenario_analysis, cap_table_history,
+            # and revenue_projections are in the chain (at group 2) even when they weren't
+            # added by Phase 1 keyword matching.  These mirror what deck uses at group 1.
+            existing_skills = {n.skill for n in chain}
+            memo_upstream = [
+                ("valuation-engine",    "Calculate valuations + PWERM scenarios for memo"),
+                ("cap-table-generator", "Build cap table history for memo sankey"),
+                ("exit-modeler",        "Model exit scenarios for memo probability cloud"),
+            ]
+            for skill_name, purpose in memo_upstream:
+                if skill_name not in existing_skills:
+                    chain.append(SkillChainNode(
+                        skill=skill_name,
+                        purpose=purpose,
+                        inputs={"use_shared_data": True},
+                        parallel_group=2,
+                    ))
+                    logger.info(f"[SKILL_BUILDER] 📝   Added {skill_name} at group 2 for memo")
+
             chain.append(SkillChainNode(
                 skill="memo-writer",
                 purpose="Generate investment memo with charts",
@@ -3793,14 +10373,99 @@ Return ONLY the JSON array, no other text."""
             fund_params['tvpi'] = float(tvpi_match.group(1))
         
         return fund_params
-    
+
+    async def _resolve_company(self, ref: str, allow_external: bool = True) -> Optional[Dict[str, Any]]:
+        """Resolve a company reference by name, @mention, or ID.
+
+        Resolution order:
+        1. shared_data (already fetched this session)
+        2. Grid context (frontend matrix rows)
+        3. Portfolio DB by name (fuzzy match via portfolio_service)
+        4. Lightweight fetch (1 search, cheap — default for non-@ mentions)
+        5. Full external web fetch (4 searches — only for @ mentions or explicit deep dive)
+
+        Any company name should be resolvable — portfolio is checked first,
+        then lightweight, then full fetch. No gatekeeping.
+        """
+        from difflib import SequenceMatcher
+
+        ref_clean = ref.strip().lstrip("@").lower()
+        if not ref_clean:
+            return None
+
+        is_at_mention = ref.strip().startswith("@")
+
+        # 1. Check shared_data companies (already fetched this session)
+        for c in self.shared_data.get("companies", []):
+            c_name = (c.get("name") or c.get("companyName") or "").lower()
+            if ref_clean == c_name or ref_clean in c_name:
+                return c
+
+        # 2. Check grid context rows
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else grid_snapshot if isinstance(grid_snapshot, list) else []
+        best_grid_match = None
+        best_grid_score = 0.0
+        for row in grid_rows:
+            row_name = (row.get("companyName") or row.get("company_name") or "").lower()
+            if ref_clean == row_name:
+                return {"name": row.get("companyName") or row.get("company_name"), "source": "grid", **row.get("cells", {})}
+            score = SequenceMatcher(None, ref_clean, row_name).ratio()
+            if ref_clean in row_name or row_name in ref_clean:
+                score = max(score, 0.85)
+            if score > best_grid_score:
+                best_grid_score = score
+                best_grid_match = row
+
+        if best_grid_match and best_grid_score > 0.6:
+            return {"name": best_grid_match.get("companyName") or best_grid_match.get("company_name"), "source": "grid", **best_grid_match.get("cells", {})}
+
+        # 3. Check portfolio DB
+        try:
+            from app.services.portfolio_service import portfolio_service
+            fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+            result = await portfolio_service.get_company_by_name(ref_clean, fund_id=fund_id)
+            if result:
+                return {**result, "source": "portfolio_db"}
+        except Exception as e:
+            logger.debug(f"_resolve_company DB fallback failed: {e}")
+
+        # 4. Lightweight fetch first (1 search, cached automatically)
+        if allow_external and not is_at_mention:
+            try:
+                logger.info(f"[RESOLVE_COMPANY] '{ref_clean}' not in portfolio — trying lightweight fetch")
+                result = await self._execute_lightweight_diligence({"company_name": ref_clean})
+                if result and not result.get("error") and result.get("company"):
+                    return {**result["company"], "source": "lightweight"}
+            except Exception as e:
+                logger.debug(f"_resolve_company lightweight fetch failed: {e}")
+
+        # 5. Full external web fetch — for @ mentions or when lightweight failed
+        if allow_external:
+            try:
+                logger.info(f"[RESOLVE_COMPANY] '{ref_clean}' — full web fetch (@ mention or lightweight failed)")
+                result = await self._execute_tool("fetch_company_data", {"companies": [ref_clean]})
+                if result and not result.get("error"):
+                    fetched = result.get("companies", [])
+                    if fetched:
+                        async with self.shared_data_lock:
+                            existing = self.shared_data.get("companies", [])
+                            existing.extend(fetched)
+                            self.shared_data["companies"] = existing
+                        return {**fetched[0], "source": "external_fetch"}
+            except Exception as e:
+                logger.debug(f"_resolve_company external fetch failed: {e}")
+
+        return None
+
     async def _extract_entities(self, prompt: str) -> Dict[str, Any]:
         """Extract companies, funds, and other entities from prompt using LLM"""
         import re
         
-        # Quick regex for @mentions as fallback
-        company_pattern = r'@(\w+)'
-        at_mentions = list(dict.fromkeys(re.findall(company_pattern, prompt)))
+        # Quick regex for @mentions — supports multi-word names like @Safe Intelligence
+        company_pattern = r'@([\w][\w\s]*[\w]|[\w]+)'
+        at_mentions = list(dict.fromkeys(m.strip() for m in re.findall(company_pattern, prompt)))
         
         # Use Claude to semantically extract entities
         extraction_prompt = f"""Extract the following information from this investment prompt:
@@ -3812,19 +10477,24 @@ Return ONLY the JSON array, no other text."""
 Return a JSON object with:
 {{
   "companies": ["company1", "company2"],  // Company names mentioned (use @ handles if present, otherwise company names)
-  "fund_size": 150000000,  // Fund size in USD (e.g., "150M fund" = 150000000, "1.5B fund" = 1500000000)
-  "remaining_capital": 100000000,  // Remaining to deploy in USD (e.g., "100M to deploy")
-  "dpi": 0.5,  // Current DPI if mentioned (e.g., "0.5 DPI")
+  "fund_size": 150000000,  // Fund size in USD
+  "remaining_capital": 100000000,  // Remaining to deploy in USD
+  "dpi": 0.5,  // Current DPI if mentioned
   "tvpi": 2.5,  // Current TVPI if mentioned
-  "portfolio_size": 16,  // Number of portfolio companies (e.g., "16 portfolio companies")
-  "exits": 2,  // Number of exits (e.g., "2 exited")
-  "fund_year": 3,  // What year of the fund (e.g., "year 3")
-  "fund_quarter": 2,  // What quarter (e.g., "Q2")
-  "deployed_capital": 50000000,  // How much deployed (calculate from fund_size - remaining if not explicit)
-  "check_size_range": [5000000, 15000000],  // Check size range if mentioned (e.g., "$5-15M checks")
-  "target_ownership": 0.12,  // Target ownership % if mentioned (e.g., "12% ownership target")
-  "is_lead": false,  // Whether they lead rounds (e.g., "we lead rounds")
-  "stage_focus": ["Series B"]  // Fund stage focus if mentioned (e.g., "series B fund" = ["Series B"], "seed fund" = ["Seed"], "series A-B fund" = ["Series A", "Series B"])
+  "portfolio_size": 16,  // Number of portfolio companies
+  "exits": 2,  // Number of exits
+  "fund_year": 3,  // What year of the fund
+  "fund_quarter": 2,  // What quarter
+  "deployed_capital": 50000000,  // How much deployed
+  "check_size_range": [5000000, 15000000],  // Check size range if mentioned
+  "target_ownership": 0.12,  // Target ownership % as decimal
+  "is_lead": false,  // Whether they lead rounds
+  "stage_focus": ["Series B"],  // Fund stage focus
+  "metrics_requested": ["irr", "dpi"],  // Specific metrics the user wants (irr, dpi, nav, tvpi, burn, runway, arr, mrr, revenue, valuation, multiple)
+  "time_period": "Q3 2024",  // Time reference ("last quarter", "Q3 2024", "since Series B", "YTD", "trailing 12 months")
+  "scenario_params": {{"rate_change_bps": 200, "revenue_change_pct": -0.30}},  // Scenario parameters if a what-if query
+  "report_type": "ic_memo",  // If generation requested: ic_memo, followon_memo, lp_report, gp_update, comparison, deck
+  "exit_value": 5000000000  // Target exit value if mentioned (e.g., "exit at $5B")
 }}
 
 RULES:
@@ -3832,8 +10502,11 @@ RULES:
 2. ALL percentages as decimals (0.12 for 12%)
 3. If a value is not mentioned, use null (not 0)
 4. Be flexible - "456m fund with 276m left" means fund_size=456000000, remaining_capital=276000000
-5. Extract company names even without @ symbols
+5. Extract company names even without @ symbols — natural language names count
 6. Return ONLY the JSON, no explanation.
+7. metrics_requested: only include metrics explicitly asked for or strongly implied
+8. scenario_params: only populate for what-if / stress test / scenario queries
+9. report_type: only populate when user explicitly asks for a document/memo/report/deck
 
 CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
 • If a handle like "@Dex" is ambiguous, you MUST pick the single most likely company based on the request context and the fund profile (stage focus, typical check size, sector thesis, geography). Do NOT list multiple options; select one and proceed.
@@ -3988,17 +10661,24 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
         # Clean company name for search
         search_name = self._clean_company_name_for_search(company)
         logger.info(f"[COMPANY_FETCH] Cleaned '{company}' → '{search_name}' for search")
-        
+
         try:
-            # FOCUSED SEARCH QUERIES - Only essential company info
-            search_queries = [
-                f'"{search_name}" startup company funding valuation revenue',  # Use quotes for exact match
-                f'"{search_name}" company business model team founders', 
-                f'"{search_name}" Series A B C funding round investors',
-                f'"{search_name}" founder CEO CTO LinkedIn profile background',
-                f'"{search_name}" pricing plans cost per user enterprise',
-                f'"{search_name}" competitors alternatives versus vs comparison'
-            ]
+            # Phase 4A: Dynamic search depth based on existing data gaps
+            existing_data = inputs.get('existing_data', {})
+            gaps = self._identify_data_gaps(existing_data) if existing_data else []
+            if gaps:
+                search_queries = self._build_gap_specific_queries(search_name, gaps)
+                logger.info(f"[COMPANY_FETCH] Dynamic search: {len(gaps)} gaps → {len(search_queries)} queries: {gaps}")
+            else:
+                # FOCUSED SEARCH QUERIES - Only essential company info
+                search_queries = [
+                    f'"{search_name}" startup company funding valuation revenue',  # Use quotes for exact match
+                    f'"{search_name}" company business model team founders',
+                    f'"{search_name}" Series A B C funding round investors',
+                    f'"{search_name}" founder CEO CTO LinkedIn profile background',
+                    f'"{search_name}" pricing plans cost per user enterprise',
+                    f'"{search_name}" competitors alternatives versus vs comparison'
+                ]
             
             tasks = [self._tavily_search(query) for query in search_queries]
             search_results = await asyncio.gather(*tasks)
@@ -4782,6 +11462,15 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
                 "data": deepcopy(extracted_data)
             }
 
+            # Persist enriched data to companies table (non-blocking best-effort)
+            try:
+                await self._persist_company_to_db(
+                    extracted_data,
+                    fund_id=inputs.get("fund_id"),
+                )
+            except Exception as persist_err:
+                logger.warning(f"[COMPANY_FETCH] DB persist failed (non-blocking): {persist_err}")
+
             # CRITICAL FIX: Initialize key_metrics dict to prevent downstream errors
             if extracted_data and isinstance(extracted_data, dict):
                 if "key_metrics" not in extracted_data or extracted_data["key_metrics"] is None:
@@ -4799,6 +11488,8 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
                 extracted_data['company'] = company
             
             if extracted_data and isinstance(extracted_data, dict) and extracted_data.get('company'):
+                # Stamp fetch time for freshness gating
+                extracted_data["_fetched_at"] = datetime.now().astimezone().isoformat()
                 # Validate data before returning to prevent None errors downstream
                 validated_data = validate_company_data(deepcopy(extracted_data))
                 logger.info(
@@ -5187,7 +11878,70 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
                                        max(ensure_numeric(company_data.get("valuation"), valuation_result.fair_value), 1),
                                        0)
                 }
-            
+
+                # Persist valuation to pending_suggestions so it appears in the grid
+                fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+                if fund_id and valuation_result.fair_value:
+                    # Resolve company UUID from grid snapshot
+                    matrix_ctx = self.shared_data.get("matrix_context") or {}
+                    grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+                    grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else (
+                        grid_snapshot if isinstance(grid_snapshot, list) else []
+                    )
+                    company_uuid = None
+                    for row in grid_rows:
+                        row_name = (row.get("companyName") or row.get("company_name") or "").lower()
+                        if company_name.lower() in row_name or row_name in company_name.lower():
+                            company_uuid = row.get("companyId") or row.get("rowId") or row.get("row_id")
+                            break
+                    # Also check company_data for a stored id
+                    if not company_uuid:
+                        company_uuid = company_data.get("company_id") or company_data.get("id")
+                    if company_uuid:
+                        try:
+                            supabase_url = settings.SUPABASE_URL
+                            supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+                            if supabase_url and supabase_key:
+                                from supabase import create_client
+                                sb = create_client(supabase_url, supabase_key)
+                                method_used = valuation_result.method_used or "auto"
+                                sb.table("pending_suggestions").upsert({
+                                    "fund_id": fund_id,
+                                    "company_id": company_uuid,
+                                    "column_id": "valuation",
+                                    "suggested_value": valuation_result.fair_value,
+                                    "source_service": f"valuation_engine.{method_used}",
+                                    "reasoning": f"Valuation via {method_used}: {valuation_result.explanation or ''}",
+                                    "metadata": {"tool": "execute_valuation", "method": method_used, "confidence": valuation_result.confidence},
+                                }, on_conflict="fund_id,company_id,column_id").execute()
+                                # Also persist inferred ARR if revenue was calculated
+                                if revenue and revenue > 0:
+                                    sb.table("pending_suggestions").upsert({
+                                        "fund_id": fund_id,
+                                        "company_id": company_uuid,
+                                        "column_id": "arr",
+                                        "suggested_value": revenue,
+                                        "source_service": f"valuation_engine.{method_used}",
+                                        "reasoning": f"ARR inferred during {method_used} valuation (confidence: {valuation_result.confidence:.0%})",
+                                        "metadata": {"tool": "execute_valuation", "method": method_used, "confidence": valuation_result.confidence},
+                                    }, on_conflict="fund_id,company_id,column_id").execute()
+                                logger.info(f"[VALUATION_PERSIST] Persisted valuation suggestion for {company_name} ({company_uuid})")
+                        except Exception as e:
+                            logger.warning(f"[VALUATION_PERSIST] Failed to persist valuation for {company_name}: {e}")
+
+            # Write valuation results to shared_data so downstream consumers
+            # (memo service, synthesis) can access them without re-running
+            self.shared_data["valuation_results"] = valuation_results
+            # Also enrich company objects with their valuation data
+            for company_data in self.shared_data.get("companies", []):
+                cname = company_data.get("company", "Unknown")
+                val_data = valuation_results.get(cname)
+                if val_data:
+                    company_data["computed_valuation"] = val_data.get("fair_value")
+                    company_data["valuation_method"] = val_data.get("method")
+                    company_data["valuation_confidence"] = val_data.get("confidence")
+                    company_data["valuation_explanation"] = val_data.get("explanation")
+
             return {"valuation": valuation_results, "success": True}
             
         except Exception as e:
@@ -5418,9 +12172,47 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
                     company["waterfall_breakpoints"] = waterfall_breakpoints
                 
                 pwerm_results[company_name] = pwerm_calc
-            
+
+                # Persist PWERM valuation to pending_suggestions
+                fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+                weighted_val = pwerm_calc.get("weighted_valuation")
+                if fund_id and weighted_val:
+                    matrix_ctx = self.shared_data.get("matrix_context") or {}
+                    grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+                    grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else (
+                        grid_snapshot if isinstance(grid_snapshot, list) else []
+                    )
+                    company_uuid = None
+                    for row in grid_rows:
+                        row_name = (row.get("companyName") or row.get("company_name") or "").lower()
+                        if company_name.lower() in row_name or row_name in company_name.lower():
+                            company_uuid = row.get("companyId") or row.get("rowId") or row.get("row_id")
+                            break
+                    if not company_uuid:
+                        company_uuid = company.get("company_id") or company.get("id")
+                    if company_uuid:
+                        try:
+                            supabase_url = settings.SUPABASE_URL
+                            supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+                            if supabase_url and supabase_key:
+                                from supabase import create_client
+                                sb = create_client(supabase_url, supabase_key)
+                                num_scenarios = len(pwerm_calc.get("scenarios", []))
+                                sb.table("pending_suggestions").upsert({
+                                    "fund_id": fund_id,
+                                    "company_id": company_uuid,
+                                    "column_id": "valuation",
+                                    "suggested_value": weighted_val,
+                                    "source_service": "valuation_engine.pwerm",
+                                    "reasoning": f"PWERM analysis with {num_scenarios} scenarios",
+                                    "metadata": {"tool": "execute_pwerm", "method": "pwerm", "scenarios": num_scenarios},
+                                }, on_conflict="fund_id,company_id,column_id").execute()
+                                logger.info(f"[PWERM_PERSIST] Persisted PWERM suggestion for {company_name} ({company_uuid}): {weighted_val}")
+                        except Exception as e:
+                            logger.warning(f"[PWERM_PERSIST] Failed to persist PWERM for {company_name}: {e}")
+
             return {"pwerm": pwerm_results, "success": True}
-            
+
         except Exception as e:
             logger.error(f"PWERM calculation error: {e}")
             return {"error": str(e), "success": False}
@@ -6371,7 +13163,7 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
         
         scores['team'] = min(max(team_score, 0), 100)
         
-        # 5. FUND FIT ANALYSIS - Alignment with $260M fund strategy
+        # 5. FUND FIT ANALYSIS - Alignment with fund strategy
         fund_fit_score = 50
         fund_fit_reasons = []
         
@@ -6387,7 +13179,7 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
         
         # Ownership analysis
         if valuation > 0:
-            # Assume $5-10M initial check from $260M fund
+            # Assume $5-10M initial check based on fund size
             for check_size in [7_000_000, 10_000_000, 5_000_000]:
                 # Calculate ownership based on post-money valuation
                 implied_ownership = (check_size / (valuation + check_size)) * 100
@@ -8210,7 +15002,7 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
             weighted_score = sum(scores[dim] * weights[dim] for dim in dimensions) / total_weight if total_weight > 0 else 0
             
             # Create heatmap chart data for single company using helper
-            heatmap_chart_data = self._format_heatmap_chart(
+            heatmap_chart_data = format_heatmap_chart(
                 dimensions=dimensions,
                 companies=[company_name],
                 scores=[[scores[dim] for dim in dimensions]],
@@ -8307,7 +15099,7 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
             weighted_scores["company_b"] = weighted_scores["company_b"] / total_weight if total_weight > 0 else 0
             
             # Create heatmap chart data using helper
-            heatmap_chart_data = self._format_heatmap_chart(
+            heatmap_chart_data = format_heatmap_chart(
                 dimensions=list(scores.keys()),
                 companies=[company_a.get('company', 'Company A'), company_b.get('company', 'Company B')],
                 scores=[[scores[dim]["company_a"] for dim in scores.keys()], 
@@ -8747,7 +15539,7 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
             logger.warning(f"[CHECK_SIZE] IntelligentGapFiller service failed: {e}, using fallback calculation")
         
         # Fallback: Use position sizing based on fund parameters (only if service unavailable)
-        fund_size = fund_context.get('fund_size', 260_000_000)
+        fund_size = fund_context.get('fund_size', DEFAULT_FUND_SIZE)
         is_lead = fund_context.get('is_lead', False) or fund_context.get('lead_investor', False)
         
         # Position sizing based on fund economics
@@ -10302,7 +17094,7 @@ Return a JSON with this structure:
                     return default
                 return default
             
-            baseline_fund_size = 260_000_000
+            baseline_fund_size = DEFAULT_FUND_SIZE
             baseline_deployed_ratio = 0.4
             baseline_remaining_ratio = 0.6
             
@@ -11148,7 +17940,7 @@ Return a JSON with this structure:
                             # Try to convert to dict format
                             if isinstance(chart_data, list) and len(chart_data) > 0:
                                 logger.info(f"[DECK_GEN] Converting list to chart format at {path}")
-                                chart_data = self._format_bar_chart(
+                                chart_data = format_bar_chart(
                                     labels=[f'Item {i+1}' for i in range(len(chart_data))],
                                     datasets=[{'label': 'Data', 'data': chart_data}]
                                 )
@@ -11994,7 +18786,7 @@ Return a JSON with this structure:
                 
                 try:
                     # Format chart data properly for frontend
-                    chart_data = self._format_line_chart(
+                    chart_data = format_line_chart(
                         labels=self._generate_date_labels(projection_years=6),
                         datasets=datasets,
                         title="ARR Growth Projection"
@@ -12512,7 +19304,7 @@ Return a JSON with this structure:
                         # Generate comprehensive analysis for all companies in one call
                         "comprehensive_analysis_raw": await self._generate_comprehensive_business_analysis(companies),
                         "chart_data": {
-                            **self._format_bar_chart(
+                            **format_bar_chart(
                                 labels=["ACV ($K)", "LTV/CAC", "Gross Margin %", "YoY Growth %"],
                                 datasets=[
                                     {
@@ -13054,7 +19846,7 @@ Return a JSON with this structure:
                     pie_chart_data = None
                     if current_ownership_labels and current_ownership_values:
                         logger.info(f"[CAP_TABLE] Creating pie chart for {company_name} with {len(current_ownership_labels)} segments")
-                        pie_chart_data = self._format_pie_chart(
+                        pie_chart_data = format_pie_chart(
                             labels=current_ownership_labels,
                             data=current_ownership_values,
                             title=f"Current Ownership - {company_name}"
@@ -13145,7 +19937,7 @@ Return a JSON with this structure:
                                 
                                 # If we have data, create the pie chart
                                 if fallback_labels and fallback_values:
-                                    pie_chart_data = self._format_pie_chart(
+                                    pie_chart_data = format_pie_chart(
                                         labels=fallback_labels,
                                         data=fallback_values,
                                         title=f"Current Ownership - {company_name}"
@@ -13170,7 +19962,7 @@ Return a JSON with this structure:
                             else:  # Seed
                                 est_founders, est_investors, est_employees = 85, 5, 10
                             
-                            pie_chart_data = self._format_pie_chart(
+                            pie_chart_data = format_pie_chart(
                                 labels=["Founders", "Investors", "Employees"],
                                 data=[est_founders, est_investors, est_employees],
                                 title=f"Estimated Ownership - {company_name}"
@@ -13351,7 +20143,7 @@ Return a JSON with this structure:
                             }
                         
                         # Create waterfall chart data showing ownership evolution
-                        waterfall_data = self._format_bar_chart(
+                        waterfall_data = format_bar_chart(
                             labels=list(ownership_scenarios.keys()),
                             datasets=[
                                 {
@@ -13421,7 +20213,7 @@ Return a JSON with this structure:
                         # Create future_pie_charts array from ownership scenarios
                         future_pie_charts = []
                         for scenario_name, scenario_data in ownership_scenarios.items():
-                            pie_chart = self._format_pie_chart(
+                            pie_chart = format_pie_chart(
                                 labels=["Our Fund", "Founders", "Employees", "Other Investors"],
                                 data=[
                                     scenario_data["our_ownership"],
@@ -13783,7 +20575,7 @@ Return a JSON with this structure:
                             )
                             
                             # Format side-by-side Sankey chart data properly for frontend using helper
-                            side_by_side_sankey_chart = self._format_side_by_side_sankey_chart(
+                            side_by_side_sankey_chart = format_side_by_side_sankey_chart(
                                 company1_data=company1_enhanced_sankey,
                                 company2_data=company2_enhanced_sankey,
                                 company1_name=company1.get("company", "Company 1"),
@@ -14866,7 +21658,7 @@ Return a JSON with this structure:
                         
                         # Get ACTUAL fund context from API request, not hardcoded
                         fund_context = self.shared_data.get('fund_context', {})
-                        actual_fund_size = fund_context.get('fund_size', 260_000_000)  # Default to $260M if not provided
+                        actual_fund_size = fund_context.get('fund_size', DEFAULT_FUND_SIZE)
                         actual_current_dpi = fund_context.get('current_dpi', fund_context.get('dpi', 0.0))
                         
                         for exit_val in realistic_exits:
@@ -15410,7 +22202,7 @@ Return a JSON with this structure:
                         })
                     
                     # Always add the probability cloud chart
-                    probability_cloud_chart = self._format_probability_cloud_chart(
+                    probability_cloud_chart = format_probability_cloud_chart(
                         scenario_curves=probability_cloud_data['scenario_curves'],
                         breakpoint_clouds=probability_cloud_data.get('breakpoint_clouds', []),
                         decision_zones=probability_cloud_data.get('decision_zones', []),
@@ -15482,7 +22274,7 @@ Return a JSON with this structure:
                         first_company = companies[0]
                         check_size = self._get_optimal_check_size(first_company, fund_context)
                         probability_cloud_data = self._generate_probability_cloud_data(first_company, check_size)
-                        probability_chart = self._format_probability_cloud_chart(
+                        probability_chart = format_probability_cloud_chart(
                             scenario_curves=probability_cloud_data.get('scenario_curves', []),
                             breakpoint_clouds=probability_cloud_data.get('breakpoint_clouds', []),
                             decision_zones=probability_cloud_data.get('decision_zones', []),
@@ -15672,8 +22464,8 @@ Return a JSON with this structure:
                 
                 if not fund_size:
                     # Fall back to default $260M fund assumptions to keep deck generation resilient
-                    fund_size = 260_000_000
-                    logger.info("[FUND_IMPACT] No fund context provided - falling back to default $260M fund")
+                    fund_size = DEFAULT_FUND_SIZE
+                    logger.info(f"[FUND_IMPACT] No fund context provided - falling back to default ${DEFAULT_FUND_SIZE/1e6:.0f}M fund")
                 
                 if deployed_capital is None and remaining_capital is None:
                     deployed_capital = fund_size * 0.4
@@ -15684,7 +22476,7 @@ Return a JSON with this structure:
                     remaining_capital = fund_size - deployed_capital
                 
                 # CRITICAL FIX: Ensure fund_size and remaining_capital are valid before division in logger
-                safe_fund_size_log = fund_size if fund_size and fund_size > 0 else 260_000_000
+                safe_fund_size_log = fund_size if fund_size and fund_size > 0 else DEFAULT_FUND_SIZE
                 safe_remaining_capital_log = remaining_capital if remaining_capital and remaining_capital > 0 else 0
                 logger.info(f"[FUND_IMPACT] Using fund context: ${safe_fund_size_log/1e6:.0f}M fund, ${safe_remaining_capital_log/1e6:.0f}M remaining")
                 portfolio_size = fund_context.get('portfolio_size', fund_context.get('portfolio_count', 18))  # Real portfolio size
@@ -15693,7 +22485,7 @@ Return a JSON with this structure:
                 fund_year = fund_context.get('fund_year', 4)  # Year 4 of fund
                 
                 # CRITICAL FIX: Ensure fund_size and remaining_capital are valid before division in logger
-                safe_fund_size = fund_size if fund_size and fund_size > 0 else 260_000_000
+                safe_fund_size = fund_size if fund_size and fund_size > 0 else DEFAULT_FUND_SIZE
                 safe_remaining_capital = remaining_capital if remaining_capital and remaining_capital > 0 else 0
                 logger.info(f"[FUND_IMPACT] Using fund context: ${safe_fund_size/1e6:.0f}M fund, ${safe_remaining_capital/1e6:.0f}M remaining, {portfolio_size} investments, {current_dpi:.1f}x current DPI")
                 
@@ -16348,7 +23140,7 @@ Return a JSON with this structure:
                     # Don't add slide if no links
                 else:
                     # Format Sankey chart data properly for frontend using helper
-                    sankey_chart_data = self._format_sankey_chart(
+                    sankey_chart_data = format_sankey_chart(
                         nodes=nodes,
                         links=links,
                         title="Fund DPI Impact Flow"
@@ -16844,7 +23636,7 @@ Return a JSON with this structure:
                 
                 # Get fund context BEFORE the loop - fix variable scope issue
                 fund_context = self.shared_data.get('fund_context', {})
-                fund_size = fund_context.get('fund_size', 260_000_000)  # Use fund size from prompt with default (260M as per CLAUDE.md)
+                fund_size = fund_context.get('fund_size', DEFAULT_FUND_SIZE)
                 remaining_to_deploy = fund_context.get('remaining_capital', fund_size * 0.6)  # Default to 60% of fund if not specified
                 
                 for company in companies[:2]:
@@ -17175,15 +23967,681 @@ Return a JSON with this structure:
             logger.error(f"Excel generation error: {e}")
             return {"error": str(e), "format": "spreadsheet"}
     
-    async def _execute_memo_generation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate investment memo with real modeling data and embedded charts.
+    async def _populate_memo_service_data(self) -> None:
+        """Populate shared_data with the service outputs that LightweightMemoService expects.
 
-        Pulls from shared_data populated by earlier skills (company fetch, valuation,
-        scenario analysis, follow-on strategy) so the memo contains actual numbers,
-        not placeholder text.  Returns ``format: 'docs'`` with structured sections
-        that the frontend Docs page can render — including ``type: 'chart'`` sections
-        for TableauLevelCharts.
+        Mirrors what _execute_deck_generation does per-company (PWERM, cap table
+        evolution, return curves) and stores results under the keys that memo
+        templates declare as optional_data:
+          - shared_data["scenario_analysis"]
+          - shared_data["cap_table_history"]
+          - shared_data["revenue_projections"]
+
+        Skips any sub-step that already has data so this is idempotent when the
+        skill chain ran upstream services first.
         """
+        try:
+            companies = self.shared_data.get("companies", [])
+            companies = [c for c in companies if c and isinstance(c, dict) and c.get("company")]
+            if not companies:
+                logger.debug("[MEMO] _populate_memo_service_data: no companies, skipping")
+                return
+
+            fund_context = self.shared_data.get("fund_context") or {}
+            cap_table_history: Dict[str, Any] = dict(self.shared_data.get("cap_table_history") or {})
+            scenario_analysis: Dict[str, Any] = dict(self.shared_data.get("scenario_analysis") or {})
+            revenue_projections: Dict[str, Any] = dict(self.shared_data.get("revenue_projections") or {})
+
+            for company in companies:
+                company_name = company.get("company", "Unknown")
+                try:
+                    # ── PWERM + cap-table evolution ──────────────────────────────
+                    if not company.get("pwerm_scenarios"):
+                        stage = self._determine_accurate_stage(company)
+                        company_stage = self._get_stage_enum(stage)
+                        revenue = (
+                            self._get_field_safe(company, "revenue")
+                            or self._get_field_safe(company, "inferred_revenue")
+                            or 0
+                        )
+                        valuation = (
+                            self._get_field_safe(company, "valuation")
+                            or self._get_field_safe(company, "inferred_valuation")
+                            or 0
+                        )
+                        growth_rate = self._get_field_safe(company, "growth_rate") or 2.0
+                        inferred_val = self._get_field_safe(company, "inferred_valuation") or 0
+
+                        val_request = ValuationRequest(
+                            company_name=company_name,
+                            stage=company_stage,
+                            revenue=revenue,
+                            growth_rate=growth_rate,
+                            last_round_valuation=valuation if valuation > 0 else None,
+                            inferred_valuation=inferred_val,
+                            total_raised=self._get_field_safe(company, "total_funding"),
+                        )
+
+                        pwerm_result = await self.valuation_engine._calculate_pwerm(val_request)
+                        full_scenarios = pwerm_result.scenarios or []
+
+                        if full_scenarios:
+                            check_size = self._get_optimal_check_size(company, fund_context)
+                            post_money = valuation + check_size
+                            our_investment = {
+                                "amount": check_size,
+                                "ownership": check_size / post_money if post_money > 0 else 0.08,
+                            }
+                            for scenario in full_scenarios:
+                                self.valuation_engine.model_cap_table_evolution(
+                                    scenario, company, our_investment
+                                )
+                            self.valuation_engine.generate_return_curves(full_scenarios, our_investment)
+
+                            company["pwerm_scenarios"] = full_scenarios
+                            company["pwerm_valuation"] = pwerm_result.fair_value
+                            company["exit_scenarios"] = self.valuation_engine.generate_simple_scenarios(val_request)
+                            company["full_exit_distribution"] = [
+                                {
+                                    "scenario": s.scenario,
+                                    "probability": s.probability,
+                                    "exit_value": s.exit_value,
+                                    "time_to_exit": s.time_to_exit,
+                                    "moic": s.moic,
+                                }
+                                for s in full_scenarios
+                            ]
+
+                            scenario_analysis[company_name] = {
+                                "scenarios": company["full_exit_distribution"],
+                                "pwerm_valuation": pwerm_result.fair_value,
+                            }
+                            logger.info(
+                                "[MEMO] Populated PWERM for %s: %d scenarios, value $%s",
+                                company_name, len(full_scenarios), f"{pwerm_result.fair_value:,.0f}",
+                            )
+
+                    # ── Cap table history ─────────────────────────────────────────
+                    if company_name not in cap_table_history:
+                        try:
+                            cap_hist = self.cap_table_service.calculate_full_cap_table_history(company)
+                            if cap_hist:
+                                cap_table_history[company_name] = cap_hist
+                                logger.info("[MEMO] Populated cap_table_history for %s", company_name)
+                        except Exception as ct_err:
+                            logger.warning("[MEMO] cap_table_history failed for %s: %s", company_name, ct_err)
+
+                    # ── Revenue projections ───────────────────────────────────────
+                    if company_name not in revenue_projections:
+                        try:
+                            self._ensure_growth_metrics(company)
+                            revenue_projections[company_name] = {
+                                "current_revenue": (
+                                    self._get_field_safe(company, "revenue")
+                                    or self._get_field_safe(company, "inferred_revenue")
+                                    or 0
+                                ),
+                                "growth_rate": self._get_field_safe(company, "growth_rate") or 2.0,
+                                "projected_growth_rate": company.get("projected_growth_rate"),
+                                "growth_metrics": company.get("growth_metrics"),
+                            }
+                        except Exception as rp_err:
+                            logger.warning("[MEMO] revenue_projections failed for %s: %s", company_name, rp_err)
+
+                except Exception as company_err:
+                    logger.error("[MEMO] _populate_memo_service_data failed for %s: %s", company_name, company_err, exc_info=True)
+
+            # ── Fund-level chart data ─────────────────────────────────────
+            # Compute aggregated charts that memo templates need but that the
+            # per-company loop above cannot produce (DPI Sankey, NAV waterfall,
+            # heatmap, bar comparison).  These use the same ChartDataService
+            # helpers the matrix viewport already relies on.
+            fund_metrics: Dict[str, Any] = dict(self.shared_data.get("fund_metrics") or {})
+            try:
+                from app.services.chart_data_service import ChartDataService
+                cds = ChartDataService()
+                fund_size = ensure_numeric(
+                    fund_context.get("fund_size") or fund_context.get("total_committed"),
+                    260_000_000,
+                )
+                # Normalise company dicts so CDS generators see numeric revenue
+                for _co in companies:
+                    if not ensure_numeric(_co.get("revenue")):
+                        _inferred = ensure_numeric(_co.get("inferred_revenue"))
+                        if _inferred:
+                            _co["revenue"] = _inferred
+
+                if "dpi_sankey" not in fund_metrics:
+                    try:
+                        fund_metrics["dpi_sankey"] = cds.generate_dpi_sankey(companies, fund_size)
+                    except Exception as exc:
+                        logger.warning("[MEMO] fund dpi_sankey failed: %s", exc)
+
+                if "waterfall" not in fund_metrics:
+                    try:
+                        fund_metrics["waterfall"] = cds.generate_waterfall(companies)
+                    except Exception as exc:
+                        logger.warning("[MEMO] fund waterfall failed: %s", exc)
+
+                if "nav_live" not in fund_metrics:
+                    try:
+                        fund_metrics["nav_live"] = cds.generate_nav_live(companies)
+                    except Exception as exc:
+                        logger.warning("[MEMO] fund nav_live failed: %s", exc)
+
+                if "heatmap" not in fund_metrics:
+                    try:
+                        fund_metrics["heatmap"] = cds.generate_heatmap(companies)
+                    except Exception as exc:
+                        logger.warning("[MEMO] fund heatmap failed: %s", exc)
+
+            except Exception as fund_exc:
+                logger.warning("[MEMO] fund-level chart generation failed: %s", fund_exc)
+
+            # Write back to shared_data
+            async with self.shared_data_lock:
+                if scenario_analysis:
+                    self.shared_data["scenario_analysis"] = scenario_analysis
+                if cap_table_history:
+                    self.shared_data["cap_table_history"] = cap_table_history
+                if revenue_projections:
+                    self.shared_data["revenue_projections"] = revenue_projections
+                if fund_metrics:
+                    self.shared_data["fund_metrics"] = fund_metrics
+
+            logger.info(
+                "[MEMO] _populate_memo_service_data done: scenario_analysis=%s, cap_table_history=%s, revenue_projections=%s, fund_metrics=%s",
+                list(scenario_analysis.keys()),
+                list(cap_table_history.keys()),
+                list(revenue_projections.keys()),
+                list(fund_metrics.keys()),
+            )
+
+        except Exception as e:
+            logger.error("[MEMO] _populate_memo_service_data outer error (non-fatal): %s", e, exc_info=True)
+
+    async def _load_companies_for_memo(self) -> None:
+        """Pull portfolio companies from DB into shared_data["companies"] if not already present.
+
+        Uses PortfolioService.get_portfolio() when a fund_id is available.
+        Normalises DB rows to the same schema that the @ fetch flow produces so
+        that LightweightMemoService can treat them identically.
+        """
+        if self.shared_data.get("companies"):
+            return  # already populated by @ fetch — nothing to do
+
+        fund_id = self.shared_data.get("fund_context", {}).get("fund_id")
+        if not fund_id:
+            logger.debug("[MEMO] _load_companies_for_memo: no fund_id, skipping DB load")
+            return
+
+        try:
+            from app.services.portfolio_service import PortfolioService
+            ps = PortfolioService()
+            portfolio = await ps.get_portfolio(fund_id)
+            db_companies = portfolio.get("companies", [])
+            if not db_companies:
+                logger.debug("[MEMO] _load_companies_for_memo: no companies in DB for fund %s", fund_id)
+                return
+
+            # Normalise DB rows → shared_data schema
+            normalised: List[Dict[str, Any]] = []
+            for row in db_companies:
+                arr = row.get("arr")
+                valuation = row.get("valuation") or row.get("current_valuation")
+                normalised.append({
+                    "company": row.get("companyName") or row.get("name", "Unknown"),
+                    "stage": row.get("stage", ""),
+                    "sector": row.get("sector", ""),
+                    "revenue": arr,
+                    "inferred_revenue": arr,
+                    "valuation": valuation,
+                    "inferred_valuation": valuation,
+                    "burn_rate": row.get("burn_rate"),
+                    "runway_months": row.get("runway_months"),
+                    "team_size": row.get("employee_count"),
+                    "growth_rate": row.get("growth_rate"),
+                    "total_funding": row.get("initial_investment"),
+                    "ownership_percentage": row.get("ownership_percentage"),
+                    "investment_status": row.get("investment_status"),
+                    "_source": "portfolio_db",
+                })
+
+            async with self.shared_data_lock:
+                self.shared_data["companies"] = normalised
+
+            logger.info("[MEMO] _load_companies_for_memo: loaded %d companies from DB", len(normalised))
+
+        except Exception as e:
+            logger.warning("[MEMO] _load_companies_for_memo failed (non-fatal): %s", e)
+
+    async def _enrich_companies(self, companies: List[Dict[str, Any]], depth: str = "benchmark") -> None:
+        """Fan-out enrichment across all companies via asyncio.gather.
+
+        depth="benchmark" (Tier 1, no network): runs stage_benchmark_fill,
+        time_adjusted_estimate, reconstruct_funding_history concurrently for
+        every company.  Results are merged back in-place.
+
+        depth="search" (Tier 2): additionally calls gap_resolver for companies
+        that still have sparse data after the benchmark pass.
+        """
+        if not companies:
+            return
+
+        try:
+            from app.services.micro_skills.benchmark_skills import (
+                stage_benchmark_fill,
+                time_adjusted_estimate,
+                reconstruct_funding_history,
+            )
+        except ImportError as e:
+            logger.warning("[MEMO] benchmark_skills import failed: %s", e)
+            return
+
+        async def _enrich_one(company: Dict[str, Any]) -> None:
+            try:
+                ctx: Dict[str, Any] = {}
+                r1 = await stage_benchmark_fill(company, ctx)
+                if r1 and r1.updates:
+                    for k, v in r1.updates.items():
+                        if company.get(k) is None:
+                            company[k] = v
+
+                r2 = await time_adjusted_estimate(company, ctx)
+                if r2 and r2.updates:
+                    for k, v in r2.updates.items():
+                        if company.get(k) is None:
+                            company[k] = v
+
+                r3 = await reconstruct_funding_history(company, ctx)
+                if r3 and r3.updates:
+                    for k, v in r3.updates.items():
+                        if company.get(k) is None:
+                            company[k] = v
+            except Exception as enrich_err:
+                logger.debug("[MEMO] enrich_one failed for %s: %s", company.get("company"), enrich_err)
+
+        await asyncio.gather(*[_enrich_one(c) for c in companies], return_exceptions=True)
+        logger.info("[MEMO] _enrich_companies: enriched %d companies (depth=%s)", len(companies), depth)
+
+        if depth == "search":
+            try:
+                from app.services.micro_skills.gap_resolver import resolve_gaps
+                sparse = [c for c in companies if not c.get("revenue") and not c.get("inferred_revenue")]
+                if sparse:
+                    await asyncio.gather(*[resolve_gaps(c, {}) for c in sparse], return_exceptions=True)
+                    logger.info("[MEMO] _enrich_companies: gap_resolver ran for %d sparse companies", len(sparse))
+            except ImportError:
+                pass
+
+    async def _run_portfolio_analysis(self) -> None:
+        """Aggregate fund-level metrics across all companies in shared_data.
+
+        Computes:
+        - fund_nav: sum of ownership% × valuation across all positions
+        - cohort groups: companies bucketed by entry stage
+        - what-if scenarios: base / bear / bull fund MOIC
+        - at_risk list: companies with runway < 6 months
+
+        Results written to shared_data["portfolio_health"] and
+        shared_data["fund_scenarios"] so memo templates can consume them.
+        """
+        companies = self.shared_data.get("companies", [])
+        if not companies:
+            return
+
+        fund_ctx = self.shared_data.get("fund_context", {})
+        fund_size = ensure_numeric(fund_ctx.get("fund_size") or fund_ctx.get("total_committed"), 260_000_000)
+
+        cohorts: Dict[str, List[Dict]] = {}
+        total_nav = 0.0
+        total_invested = 0.0
+        at_risk: List[str] = []
+        company_analytics: Dict[str, Any] = {}
+        company_returns: Dict[str, Any] = {}
+
+        for c in companies:
+            name = c.get("company", "Unknown")
+            stage = c.get("stage", "Unknown")
+            arr = ensure_numeric(c.get("revenue") or c.get("inferred_revenue") or c.get("arr"))
+            valuation = ensure_numeric(c.get("valuation") or c.get("inferred_valuation"))
+            ownership_pct = ensure_numeric(c.get("ownership_percentage"), 0.08)  # default 8%
+            invested = ensure_numeric(c.get("initial_investment") or c.get("total_funding") or (valuation * 0.1))
+            growth = ensure_numeric(c.get("growth_rate"), 0)
+            runway = ensure_numeric(c.get("runway_months"), 18)
+
+            nav = valuation * (ownership_pct / 100.0 if ownership_pct > 1 else ownership_pct)
+            cost_basis = invested * (ownership_pct / 100.0 if ownership_pct > 1 else ownership_pct)
+            moic = (nav / cost_basis) if cost_basis > 0 else 1.0
+
+            total_nav += nav
+            total_invested += cost_basis
+
+            if runway < 6:
+                at_risk.append(name)
+
+            cohort_key = stage if stage else "Unknown"
+            cohorts.setdefault(cohort_key, []).append(c)
+
+            company_analytics[name] = {
+                "company_name": name,
+                "current_arr": arr,
+                "growth_rate": growth,
+                "estimated_runway_months": runway,
+                "valuation": valuation,
+                "ownership_pct": ownership_pct,
+                "nav": nav,
+            }
+            company_returns[name] = {
+                "moic": round(moic, 2),
+                "nav_contribution": nav,
+                "cost_basis": cost_basis,
+            }
+
+        # Fund-level scenarios
+        fund_tvpi = total_nav / total_invested if total_invested > 0 else 1.0
+        bear_moic = fund_tvpi * 0.5
+        bull_moic = fund_tvpi * 2.0
+
+        portfolio_health = {
+            "total_nav": total_nav,
+            "total_invested": total_invested,
+            "fund_tvpi": round(fund_tvpi, 2),
+            "at_risk_companies": at_risk,
+            "company_analytics": company_analytics,
+            "company_returns": company_returns,
+            "cohort_breakdown": {k: len(v) for k, v in cohorts.items()},
+        }
+
+        fund_scenarios = {
+            "portfolio_scenarios": [
+                {"scenario_name": "Bear", "fund_moic": round(bear_moic, 2),
+                 "description": "Market downturn, 50% valuation haircut"},
+                {"scenario_name": "Base", "fund_moic": round(fund_tvpi, 2),
+                 "description": "Current marks, status quo"},
+                {"scenario_name": "Bull", "fund_moic": round(bull_moic, 2),
+                 "description": "Market expansion, 2x current valuations"},
+            ],
+            "fund_size": fund_size,
+            "total_nav": total_nav,
+        }
+
+        # Build exit_pipeline list for portfolio_review template
+        exit_pipeline_list = []
+        for c in companies:
+            n = c.get("company", "Unknown")
+            cr = company_returns.get(n) or {}
+            moic_v = cr.get("moic", 0)
+            nav_v = company_analytics.get(n, {}).get("nav", 0)
+            next_timing = ensure_numeric((c.get("next_round") or {}).get("next_round_timing"), 24)
+            if moic_v >= 3.0 and next_timing <= 18:
+                exit_pipeline_list.append({
+                    "company": n,
+                    "expected_moic": moic_v,
+                    "expected_proceeds_m": round(nav_v / 1e6, 2),
+                    "months_to_exit": int(next_timing),
+                })
+
+        # portfolio_analysis: unified key consumed by portfolio_review template + chart builders
+        portfolio_analysis = {
+            "total_nav_m": round(total_nav / 1e6, 2),
+            "total_invested_m": round(total_invested / 1e6, 2),
+            "fund_moic": round(fund_tvpi, 2),
+            "company_count": len(companies),
+            "company_returns": company_returns,
+            "company_analytics": company_analytics,
+            "cohorts": {k: len(v) for k, v in cohorts.items()},
+            "at_risk": at_risk,
+            "exit_pipeline": sorted(exit_pipeline_list, key=lambda x: x["expected_proceeds_m"], reverse=True),
+            "fund_scenarios": {
+                "bear": {"fund_moic": round(bear_moic, 2), "total_proceeds_m": round(total_nav * 0.5 / 1e6, 2)},
+                "base": {"fund_moic": round(fund_tvpi, 2), "total_proceeds_m": round(total_nav / 1e6, 2)},
+                "bull": {"fund_moic": round(bull_moic, 2), "total_proceeds_m": round(total_nav * 2.0 / 1e6, 2)},
+            },
+        }
+
+        async with self.shared_data_lock:
+            self.shared_data["portfolio_health"] = portfolio_health
+            self.shared_data["fund_scenarios"] = fund_scenarios
+            self.shared_data["portfolio_analysis"] = portfolio_analysis
+            self.shared_data.setdefault("fund_metrics", {}).update({
+                "metrics": {
+                    "total_nav": total_nav,
+                    "total_invested": total_invested,
+                    "tvpi": round(fund_tvpi, 2),
+                    "total_committed": fund_size,
+                },
+                "investments": [
+                    {
+                        "company_name": name,
+                        "nav_contribution": analytics["nav"],
+                        "invested": analytics.get("nav", 0) / max(company_returns.get(name, {}).get("moic", 1), 0.01),
+                        "current_nav": analytics["nav"],
+                    }
+                    for name, analytics in company_analytics.items()
+                ],
+            })
+
+        logger.info(
+            "[MEMO] _run_portfolio_analysis: %d companies, NAV=$%s, TVPI=%.2fx, at_risk=%s, exit_pipeline=%d",
+            len(companies), f"{total_nav / 1e6:,.1f}M", fund_tvpi, at_risk, len(exit_pipeline_list),
+        )
+
+    async def _execute_memo_generation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate investment memo using the lightweight 3-shot pipeline.
+
+        Shot 1 (no LLM): Detect type → select template → audit data
+        Shot 2 (1 LLM call): Generate all narrative sections at once
+        Shot 3 (no LLM): Inject charts/tables from shared_data artifacts
+
+        Returns ``format: 'docs'`` with structured sections for the frontend.
+        Falls back to legacy generation if LightweightMemoService unavailable.
+        """
+        try:
+            prompt = inputs.get("prompt", "") or self.shared_data.get("original_prompt", "")
+            memo_type = inputs.get("memo_type")
+
+            # Step 0: Load portfolio companies from DB if not already fetched via @
+            try:
+                await asyncio.wait_for(self._load_companies_for_memo(), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.warning("[MEMO] _load_companies_for_memo timed out")
+
+            # Step 0b: Enrich sparse DB companies with stage benchmarks (Tier 1, no network)
+            _all_companies = self.shared_data.get("companies", [])
+            _db_sourced = [c for c in _all_companies if c.get("_source") == "portfolio_db"]
+            if _db_sourced:
+                try:
+                    await asyncio.wait_for(
+                        self._enrich_companies(_db_sourced, depth="benchmark"),
+                        timeout=10.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("[MEMO] _enrich_companies timed out")
+
+            # Step 0c: Fund-level aggregation (NAV, cohorts, scenarios) for portfolio memos
+            if len(self.shared_data.get("companies", [])) > 1:
+                try:
+                    await asyncio.wait_for(self._run_portfolio_analysis(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    logger.warning("[MEMO] _run_portfolio_analysis timed out")
+
+            # Pre-flight: derive any missing secondary keys from companies
+            # Use timeout to prevent hydration from blocking memo generation
+            try:
+                await asyncio.wait_for(
+                    self._hydrate_shared_data_from_companies(),
+                    timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[MEMO] Hydration timed out after 10s — proceeding with available data")
+
+            # Fix 1: Run the same upstream services that deck uses so LightweightMemoService
+            # has scenario_analysis, cap_table_history, and revenue_projections in shared_data.
+            await self._populate_memo_service_data()
+
+            # Use lightweight pipeline if available
+            if LightweightMemoService is not None:
+                memo_svc = LightweightMemoService(self.model_router, self.shared_data)
+
+                # Wrap memo generation in a timeout to prevent infinite hangs
+                try:
+                    result = await asyncio.wait_for(
+                        memo_svc.generate(prompt, memo_type),
+                        timeout=180.0,  # 3 minutes max for memo generation
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("[MEMO] Memo generation timed out after 180s")
+                    return {
+                        "error": "Memo generation timed out. Try again or simplify the request.",
+                        "format": "docs",
+                        "sections": [],
+                        "title": "Memo Generation Timed Out",
+                    }
+
+                # Store memo as session artifact for draggable context
+                # Use wait_for to prevent lock contention from hanging
+                try:
+                    async with asyncio.timeout(5.0):
+                        async with self.shared_data_lock:
+                            if "memo_artifacts" not in self.shared_data:
+                                self.shared_data["memo_artifacts"] = []
+                            self.shared_data["memo_artifacts"].append({
+                                "memo_type": result.get("memo_type", "unknown"),
+                                "title": result.get("title", "Untitled"),
+                                "generated_at": result.get("metadata", {}).get("generated_at"),
+                                "is_resumable": result.get("is_resumable", False),
+                                "section_count": len(result.get("sections", [])),
+                            })
+                except (asyncio.TimeoutError, Exception) as lock_err:
+                    logger.warning("[MEMO] Lock acquisition for memo_artifacts timed out: %s", lock_err)
+
+                # Auto-save resumable plan memos to documents table
+                if result.get("is_resumable"):
+                    await self._save_plan_memo(result)
+
+                return result
+
+            # --- Legacy fallback (original monolithic generation) ---
+            logger.warning("[MEMO] LightweightMemoService unavailable, using legacy generation")
+            return await self._execute_memo_generation_legacy(inputs)
+
+        except Exception as e:
+            logger.error(f"Memo generation error: {e}", exc_info=True)
+            return {"error": str(e), "format": "docs", "sections": [], "title": "Memo Generation Failed"}
+
+    async def _try_load_and_hydrate_plan(self) -> None:
+        """Attempt to load the most recent plan memo and hydrate shared_data.
+
+        Called when the user's prompt signals plan-resume intent.
+        Silently no-ops if no plans are found or database is unavailable.
+        """
+        try:
+            from app.core.adapters import get_document_repo
+            doc_repo = get_document_repo()
+            if doc_repo is None:
+                return
+
+            plans = LightweightMemoService.load_recent_plans(doc_repo, limit=1)
+            if not plans:
+                logger.info("[PLAN] No saved plans found for resumption")
+                return
+
+            plan = plans[0]
+            async with self.shared_data_lock:
+                LightweightMemoService.hydrate_shared_data(plan, self.shared_data)
+            logger.info(
+                "[PLAN] Resumed plan '%s' (id=%s) — shared_data hydrated",
+                plan.get("title"),
+                plan.get("id"),
+            )
+        except Exception as e:
+            logger.warning("[PLAN] Plan loading failed (non-fatal): %s", e)
+
+    async def _save_plan_memo(self, memo: Dict[str, Any]) -> None:
+        """Auto-save a resumable plan memo to the documents table. Never raises."""
+        try:
+            from app.core.adapters import get_document_repo
+            doc_repo = get_document_repo()
+            if doc_repo is None:
+                logger.debug("[MEMO] No document_repo — plan memo not persisted")
+                return
+            LightweightMemoService.save_to_documents(memo, doc_repo)
+        except Exception as e:
+            logger.warning("[MEMO] Auto-save plan memo failed (non-fatal): %s", e)
+
+    async def _save_memo_to_documents(self, memo: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Explicitly save a memo (any type) to the documents table."""
+        try:
+            from app.core.adapters import get_document_repo
+            doc_repo = get_document_repo()
+            if doc_repo is None:
+                return None
+            return LightweightMemoService.save_to_documents(memo, doc_repo)
+        except Exception as e:
+            logger.error("[MEMO] Explicit memo save failed: %s", e, exc_info=True)
+            return None
+
+    async def _handle_memo_polish(self, user_feedback: str) -> Dict[str, Any]:
+        """Fast path: polish the most recent memo with user feedback (1 LLM call)."""
+        try:
+            # Retrieve the last generated memo from agent_context
+            agent_ctx = self.shared_data.get("agent_context", {})
+            memo_sections = agent_ctx.get("memo_sections", [])
+            if not memo_sections:
+                return {"content": "No memo in context to refine. Generate a memo first.", "format": "analysis"}
+
+            # Reconstruct a minimal memo dict for the polish method
+            last_memo = {
+                "sections": memo_sections,
+                "title": "Current Memo",
+                "memo_type": "unknown",
+            }
+
+            if LightweightMemoService is not None:
+                memo_svc = LightweightMemoService(self.model_router, self.shared_data)
+                polished = await memo_svc.polish(last_memo, user_feedback)
+                return {
+                    "format": "docs",
+                    "sections": polished.get("sections", []),
+                    "title": polished.get("title", "Refined Memo"),
+                    "memo_type": polished.get("memo_type", "unknown"),
+                }
+
+            return {"content": "Memo service unavailable for polish.", "format": "analysis"}
+        except Exception as e:
+            logger.error("[MEMO] Polish failed: %s", e, exc_info=True)
+            return {"content": f"Failed to refine memo: {e}", "format": "analysis"}
+
+    async def _handle_memo_save(self) -> Dict[str, Any]:
+        """Fast path: save the most recent memo to the documents table."""
+        try:
+            agent_ctx = self.shared_data.get("agent_context", {})
+            memo_sections = agent_ctx.get("memo_sections", [])
+            if not memo_sections:
+                return {"content": "No memo in context to save.", "format": "analysis"}
+
+            # Build memo dict from context
+            artifacts = self.shared_data.get("memo_artifacts", [])
+            last_artifact = artifacts[-1] if artifacts else {}
+            memo = {
+                "sections": memo_sections,
+                "title": last_artifact.get("title", "Saved Memo"),
+                "memo_type": last_artifact.get("memo_type", "generated_memo"),
+                "is_resumable": last_artifact.get("is_resumable", False),
+                "metadata": {"generated_at": last_artifact.get("generated_at")},
+            }
+
+            row = await self._save_memo_to_documents(memo)
+            if row:
+                return {"content": f"Memo saved successfully (id: {row.get('id')}).", "format": "analysis"}
+            return {"content": "Could not save memo — database unavailable.", "format": "analysis"}
+        except Exception as e:
+            logger.error("[MEMO] Save action failed: %s", e, exc_info=True)
+            return {"content": f"Failed to save memo: {e}", "format": "analysis"}
+
+    async def _execute_memo_generation_legacy(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Legacy monolithic memo generation — kept as fallback."""
         try:
             companies = self.shared_data.get("companies", [])
             fund_context = self.shared_data.get("fund_context", {})
@@ -17794,7 +25252,7 @@ Return a JSON with this structure:
 
         except Exception as e:
             logger.error(f"Memo generation error: {e}", exc_info=True)
-            return {"error": str(e), "format": "docs"}
+            return {"error": str(e), "format": "docs", "sections": [], "title": "Memo Generation Failed"}
     
     async def _execute_chart_generation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Generate charts and visualizations"""
@@ -18001,6 +25459,9 @@ Return a JSON with this structure:
 
                 cap_tables[company_name] = cap_table
             
+            # Write cap table data to shared_data so memo templates can find it
+            self.shared_data["cap_table_history"] = cap_tables
+
             return {
                 "cap_tables": cap_tables,
                 "company_count": len(cap_tables),
@@ -18481,21 +25942,23 @@ Return a JSON with this structure:
     async def _execute_report_generation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Generate LP quarterly, follow-on memo, or GP strategy report.
 
-        Reuses _execute_memo_generation with appropriate context, then wraps
-        for PDF export if requested.
+        Uses the lightweight memo pipeline with explicit memo_type routing.
         """
         try:
             prompt = inputs.get("prompt", "") or self.shared_data.get("original_prompt", "")
-            report_type = inputs.get("report_type", "investment_analysis")
+            report_type = inputs.get("report_type") or inputs.get("type", "investment")
 
-            # Auto-detect report type from prompt
-            prompt_lower = prompt.lower()
-            if any(kw in prompt_lower for kw in ["lp report", "lp quarterly", "quarterly report"]):
-                report_type = "lp_quarterly"
-            elif any(kw in prompt_lower for kw in ["follow-on memo", "followon memo"]):
-                report_type = "followon_memo"
-            elif any(kw in prompt_lower for kw in ["gp deck", "gp strategy"]):
-                report_type = "gp_strategy"
+            # Map report types to memo template IDs
+            report_type_map = {
+                "lp_quarterly": "lp_report",
+                "lp_report": "lp_report",
+                "followon_memo": "followon",
+                "followon": "followon",
+                "gp_strategy": "gp_strategy",
+                "gp_update": "gp_strategy",
+                "investment_analysis": "ic_memo",
+            }
+            memo_type = report_type_map.get(report_type, report_type)
 
             # Ensure prerequisite data is in shared_data
             fund_id = self.shared_data.get("fund_context", {}).get("fund_id")
@@ -18503,8 +25966,11 @@ Return a JSON with this structure:
                 metrics = await self.fund_modeling.calculate_fund_metrics(fund_id)
                 self.shared_data["fund_metrics"] = metrics
 
-            # Generate the memo (which now produces rich docs with charts)
-            memo_result = await self._execute_memo_generation({"prompt": prompt})
+            # Route through unified memo generation (lightweight pipeline)
+            memo_result = await self._execute_memo_generation({
+                "prompt": prompt,
+                "memo_type": memo_type,
+            })
 
             # Tag with report type for frontend/export
             if isinstance(memo_result, dict):
@@ -18812,6 +26278,111 @@ Return a JSON with this structure:
         except Exception as e:
             logger.error(f"Company health dashboard error: {e}", exc_info=True)
             return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Phase 3: New skill execution handlers
+    # ------------------------------------------------------------------
+
+    async def _execute_deck_quality_validation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate deck quality: hardcoded defaults, estimation markers, consistency."""
+        try:
+            if DeckQualityValidator is None:
+                return {"error": "DeckQualityValidator not available"}
+            validator = DeckQualityValidator()
+            deck = inputs.get("deck") or self.shared_data.get("deck") or {}
+            passed, gates = validator.validate_deck(deck)
+            return {
+                "passed": passed,
+                "gates": [g.__dict__ if hasattr(g, "__dict__") else g for g in gates] if gates else [],
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _execute_slide_optimization(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Optimize slide text, bullets, metrics for presentation."""
+        try:
+            if SlideContentOptimizer is None:
+                return {"error": "SlideContentOptimizer not available"}
+            optimizer = SlideContentOptimizer()
+            content = inputs.get("content") or inputs.get("text") or {}
+            constraints = inputs.get("constraints") or {}
+            result = optimizer.optimize_text_content(content=content, constraints=constraints)
+            return result if isinstance(result, dict) else {"optimized": result}
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _execute_formula_evaluation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Evaluate Excel-like formulas with cell references and functions."""
+        try:
+            if FormulaEvaluator is None:
+                return {"error": "FormulaEvaluator not available"}
+            evaluator = FormulaEvaluator()
+            formula = inputs.get("formula") or inputs.get("expression", "")
+            # Set cell values if provided
+            cells = inputs.get("cells") or {}
+            for ref, val in cells.items():
+                evaluator.set_cell_value(ref, val)
+            result = evaluator.evaluate(formula)
+            return {"formula": formula, "result": result}
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _execute_arithmetic(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Sum, avg, median, percentile, rank, stdev and other calculations."""
+        try:
+            if ArithmeticEngine is None:
+                return {"error": "ArithmeticEngine not available"}
+            engine = ArithmeticEngine()
+            operation = inputs.get("operation", "sum")
+            values = inputs.get("values", [])
+            fn = getattr(engine, operation, None)
+            if not fn:
+                return {"error": f"Unknown operation: {operation}. Available: sum, average, median, min, max, stdev, variance, count"}
+            result = fn(*values)
+            return {"operation": operation, "values": values, "result": result}
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _execute_company_history(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Full company history with funding rounds, investors, DPI Sankey."""
+        return await self._tool_company_history(inputs)
+
+    async def _execute_nl_matrix_command(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Natural language to matrix commands."""
+        try:
+            if NLMatrixController is None:
+                return {"error": "NLMatrixController not available"}
+            controller = NLMatrixController()
+            command = inputs.get("command") or inputs.get("query", "")
+            fund_id = inputs.get("fund_id") or self.shared_data.get("fund_context", {}).get("fund_id")
+            result = controller.process_nl_command(command=command, fund_id=fund_id)
+            return result if isinstance(result, dict) else {"result": result}
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _execute_waterfall_calculation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Liquidation waterfall with investor distributions at exit."""
+        return await self._tool_liquidation_waterfall(inputs)
+
+    async def _execute_debt_conversion(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Model SAFE/convertible note conversions."""
+        return await self._tool_debt_conversion(inputs)
+
+    async def _execute_market_landscape(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Competitive landscape by sector, geography, stage."""
+        return await self._tool_market_landscape(inputs)
+
+    async def _execute_revenue_projection(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Revenue projection with quality-adjusted decay curves."""
+        return await self._tool_revenue_projection(inputs)
+
+    async def _execute_compliance_check(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Filing requirements, Form ADV, regulatory calendar."""
+        return await self._tool_compliance_check(inputs)
+
+    async def _execute_ma_modeling(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """M&A deal modeling with synergies and integration risk."""
+        return await self._tool_ma_workflow(inputs)
 
     async def _execute_stage_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze companies across different funding stages"""
@@ -19204,7 +26775,13 @@ Return a JSON with this structure:
     
     def _build_grid_commands(self, final_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Build grid_commands from shared_data companies + results and from grid-run-* skill output.
-        Pre-computes name->rowId map for O(1) lookups instead of O(n) per company."""
+        Pre-computes name->rowId map for O(1) lookups instead of O(n) per company.
+
+        Commands carry execution metadata for frontend workflow chaining:
+        - group: execution order (0=edits first, 1+=run services sequentially)
+        - depends_on: list of (rowId:actionId) keys this command needs completed first
+        - provides: key this command's result can be referenced by
+        """
         commands: List[Dict[str, Any]] = []
         matrix_ctx = self.shared_data.get("matrix_context") or final_data.get("matrix_context") or {}
         if not matrix_ctx or not (matrix_ctx.get("rowIds") or matrix_ctx.get("row_ids")):
@@ -19222,35 +26799,159 @@ Return a JSON with this structure:
                 if i < len(row_ids) and cn:
                     name_to_row[cn.strip().lower()] = row_ids[i]
 
+            # Column lookups for all enrichable metrics
+            col_burn = self._column_id_for_field(matrix_ctx, "burnRate") or self._column_id_for_field(matrix_ctx, "burn_rate")
+            col_runway = self._column_id_for_field(matrix_ctx, "runway") or self._column_id_for_field(matrix_ctx, "runwayMonths")
+            col_cash = self._column_id_for_field(matrix_ctx, "cashInBank") or self._column_id_for_field(matrix_ctx, "cash_in_bank")
+            col_gross_margin = self._column_id_for_field(matrix_ctx, "grossMargin") or self._column_id_for_field(matrix_ctx, "gross_margin")
+            col_growth_annual = self._column_id_for_field(matrix_ctx, "revenueGrowthAnnual") or self._column_id_for_field(matrix_ctx, "growth_rate")
+            col_growth_monthly = self._column_id_for_field(matrix_ctx, "revenueGrowthMonthly")
+            col_headcount = self._column_id_for_field(matrix_ctx, "headcount")
+            col_sector = self._column_id_for_field(matrix_ctx, "sector")
+            col_tam = self._column_id_for_field(matrix_ctx, "tamUsd") or self._column_id_for_field(matrix_ctx, "tam_usd")
+            col_sam = self._column_id_for_field(matrix_ctx, "samUsd") or self._column_id_for_field(matrix_ctx, "sam_usd")
+            col_som = self._column_id_for_field(matrix_ctx, "somUsd") or self._column_id_for_field(matrix_ctx, "som_usd")
+
             for company in companies:
                 name = company.get("company") or company.get("company_name") or ""
                 name_clean = name.replace("@", "").strip().lower()
-                # O(1) exact match, then O(n) substring only if needed
+                # O(1) exact match, then O(n) bidirectional substring match
                 row_id = name_to_row.get(name_clean)
                 if not row_id:
                     for cn_key, rid in name_to_row.items():
-                        if name_clean in cn_key:
+                        if name_clean in cn_key or cn_key in name_clean:
                             row_id = rid
                             break
                 if not row_id:
+                    logger.warning(f"[GRID_COMMANDS] No row match for '{name}' — skipping grid commands for this company")
                     continue
+
+                # Business model / sector context for reasoning
+                biz_model = company.get("business_model") or company.get("sector") or "unknown"
+                stage = company.get("funding_stage") or company.get("stage") or ""
+                source = company.get("_source_skill") or "company-data-fetcher"
+
+                # Helper: emit edit command with reasoning + source metadata
+                def _emit(col_id, value, metric_label="", reasoning=""):
+                    if col_id and value is not None:
+                        is_inferred = "inferred" in str(reasoning).lower() or metric_label.startswith("Inferred")
+                        commands.append({
+                            "action": "edit",
+                            "rowId": row_id,
+                            "columnId": col_id,
+                            "value": value,
+                            "group": 0,  # Edits always execute first
+                            "source_service": source,
+                            "reasoning": reasoning or f"Enriched from {source}: {metric_label} for {name}",
+                            "confidence": 0.5 if is_inferred else 0.75,
+                            "metadata": {
+                                "source_service": source,
+                                "metric": metric_label,
+                                "business_model": biz_model,
+                                "stage": stage,
+                                "is_inferred": is_inferred,
+                            },
+                        })
+
+                # Core financials
                 val = company.get("valuation") or company.get("inferred_valuation") or company.get("fair_value")
-                if val is not None and col_valuation:
-                    commands.append({"action": "edit", "rowId": row_id, "columnId": col_valuation, "value": val})
-                arr = company.get("arr") or company.get("inferred_arr") or company.get("revenue")
-                if arr is not None and col_arr:
-                    commands.append({"action": "edit", "rowId": row_id, "columnId": col_arr, "value": arr})
-                if arr is not None and col_revenue and col_revenue != col_arr:
-                    commands.append({"action": "edit", "rowId": row_id, "columnId": col_revenue, "value": arr})
-        # Deduplicate: keep last command per (rowId, columnId) to avoid redundant writes
+                _emit(col_valuation, val, "Valuation",
+                      company.get("valuation_reasoning") or f"{'Inferred' if company.get('inferred_valuation') else 'Extracted'} valuation for {name}")
+                arr = company.get("arr") or company.get("inferred_arr") or company.get("revenue") or company.get("inferred_revenue")
+                _emit(col_arr, arr, "ARR",
+                      company.get("revenue_reasoning") or f"{'Inferred' if company.get('inferred_arr') or company.get('inferred_revenue') else 'Extracted'} revenue for {name}")
+                if col_revenue and col_revenue != col_arr:
+                    _emit(col_revenue, arr, "Revenue")
+
+                # Operational metrics — from enrichment + business model inference
+                burn = company.get("burn_rate") or company.get("burn_rate_monthly") or company.get("inferred_burn_rate")
+                _emit(col_burn, burn, "Burn Rate",
+                      f"{'Inferred from ' + biz_model + ' model' if company.get('inferred_burn_rate') else 'Extracted'} burn rate")
+                runway = company.get("runway_months") or company.get("runway") or company.get("inferred_runway")
+                _emit(col_runway, runway, "Runway",
+                      f"{'Cash/burn inference' if company.get('inferred_runway') else 'Extracted'} runway in months")
+                cash = company.get("cash_balance") or company.get("cash_in_bank") or company.get("inferred_cash")
+                _emit(col_cash, cash, "Cash Balance")
+                gm = company.get("gross_margin") or company.get("inferred_gross_margin")
+                _emit(col_gross_margin, gm, "Gross Margin",
+                      company.get("gross_margin_reasoning") or f"{'Inferred from ' + biz_model + ' business model' if company.get('inferred_gross_margin') else 'Extracted'} gross margin")
+                growth = company.get("growth_rate") or company.get("revenue_growth_annual_pct") or company.get("inferred_growth_rate")
+                _emit(col_growth_annual, growth, "Annual Growth",
+                      f"{'Stage-based inference (' + stage + ')' if company.get('inferred_growth_rate') else 'Extracted'} annual growth rate")
+                _emit(col_growth_monthly, company.get("revenue_growth_monthly_pct") or company.get("monthly_growth"), "Monthly Growth")
+                headcount = company.get("headcount") or company.get("team_size") or company.get("inferred_headcount")
+                _emit(col_headcount, headcount, "Headcount",
+                      f"{'Inferred from stage + funding' if company.get('inferred_headcount') else 'Extracted'} headcount")
+                _emit(col_sector, company.get("sector") or company.get("industry"), "Sector")
+                _emit(col_tam, company.get("tam_usd") or company.get("tam"), "TAM")
+                _emit(col_sam, company.get("sam_usd") or company.get("sam"), "SAM")
+                _emit(col_som, company.get("som_usd") or company.get("som"), "SOM")
+        # Merge skill-emitted grid commands and annotate with execution groups
         existing = self.shared_data.get("grid_commands") or []
+        # Annotate existing run commands with sequential group ordering
+        # so frontend chains them: group 0 = edits, group 1+ = run services per row
+        run_group_counter = 1
+        run_group_by_action: Dict[str, int] = {}
+        for cmd in existing:
+            if cmd.get("action") == "run":
+                action_id = cmd.get("actionId", "")
+                if action_id not in run_group_by_action:
+                    run_group_by_action[action_id] = run_group_counter
+                    run_group_counter += 1
+                cmd.setdefault("group", run_group_by_action[action_id])
+                # Mark what this command provides so next group can depend on it
+                cmd.setdefault("provides", f"{cmd.get('rowId')}:{action_id}")
+            elif "group" not in cmd:
+                cmd["group"] = 0  # Default edits to group 0
+
+        # Wire up dependencies: group N+1 run commands depend on group N for same row
+        sorted_actions = sorted(run_group_by_action.items(), key=lambda x: x[1])
+        for idx in range(1, len(sorted_actions)):
+            prev_action = sorted_actions[idx - 1][0]
+            cur_action = sorted_actions[idx][0]
+            for cmd in existing:
+                if cmd.get("action") == "run" and cmd.get("actionId") == cur_action:
+                    row_id = cmd.get("rowId")
+                    cmd["depends_on"] = [f"{row_id}:{prev_action}"]
+
         all_cmds = commands + existing
+        # Deduplicate: keep last command per (rowId, columnId, action) to avoid redundant writes
         seen: Dict[str, int] = {}
         for i, cmd in enumerate(all_cmds):
             key = f"{cmd.get('rowId')}:{cmd.get('columnId')}:{cmd.get('action')}"
             seen[key] = i
-        return [all_cmds[i] for i in sorted(seen.values())]
-    
+        deduped = [all_cmds[i] for i in sorted(seen.values())]
+        # Sort by group for deterministic frontend execution order
+        deduped.sort(key=lambda c: (c.get("group", 0), c.get("action") != "edit"))
+        return deduped
+
+    def _persist_suggestions_to_db(self, grid_commands: List[Dict[str, Any]], fund_id: Optional[str] = None) -> int:
+        """Persist grid edit commands directly to pending_suggestions. No frontend roundtrip."""
+        if not grid_commands or not fund_id:
+            return 0
+        edit_cmds = [c for c in grid_commands if c.get("action") == "edit" and c.get("rowId") and c.get("columnId") and c.get("value") is not None]
+        if not edit_cmds:
+            return 0
+        try:
+            from app.core.database import get_supabase_service
+            client = get_supabase_service().get_client()
+            rows = [{
+                "fund_id": fund_id,
+                "company_id": cmd["rowId"],
+                "column_id": cmd["columnId"],
+                "suggested_value": cmd["value"] if isinstance(cmd["value"], dict) else {"value": cmd["value"]},
+                "source_service": cmd.get("source_service", "agent"),
+                "reasoning": cmd.get("reasoning"),
+                "metadata": cmd.get("metadata"),
+            } for cmd in edit_cmds]
+            result = client.table("pending_suggestions").upsert(rows, on_conflict="fund_id,company_id,column_id").execute()
+            count = len(result.data) if result.data else 0
+            logger.info(f"[PERSIST_SUGGESTIONS] Wrote {count}/{len(edit_cmds)} suggestions for fund {fund_id}")
+            return count
+        except Exception as e:
+            logger.warning(f"[PERSIST_SUGGESTIONS] DB write failed: {e}")
+            return 0
+
     async def _format_output(
         self,
         results: Dict[str, Any],
@@ -19443,6 +27144,10 @@ Return a JSON with this structure:
         # Phase 2: Prepare plan_steps and grid_commands for frontend
         plan_steps = final_data.get("plan_steps", [])
         grid_commands = self._build_grid_commands(final_data)
+        # NOTE: Do NOT persist suggestions directly here — the frontend handles persistence
+        # via handleGridCommandsFromBackend → addServiceSuggestion(). Writing here AND returning
+        # grid_commands in the response causes double suggestions in the pending_suggestions table.
+        fund_id = (self.shared_data.get("fund_context") or {}).get("fund_id") or (self.shared_data.get("matrix_context") or {}).get("fundId")
         def _add_plan_steps(out: Dict[str, Any]) -> Dict[str, Any]:
             if plan_steps:
                 out["plan_steps"] = [
@@ -19550,6 +27255,10 @@ Return a JSON with this structure:
         The memo-writer skill returns {format: "docs", title, date, sections, metadata}.
         This method extracts that result and wraps it so the frontend receives
         structured sections via memo_updates for the MemoEditor component.
+
+        Regardless of section source, real chart sections are injected from
+        enrichment data (scenario_analysis, cap_table_history, exit_modeling,
+        fund_metrics) so memos get the same visualizations as deck slides.
         """
         # 1. Check if memo-writer skill produced a result keyed by skill name
         memo_result = data.get("memo-writer") or data.get("memo-generator")
@@ -19569,11 +27278,41 @@ Return a JSON with this structure:
             if sections:
                 logger.info(f"[FORMAT_DOCS] ✅ Found top-level sections: {len(sections)} sections")
             else:
-                logger.warning(f"[FORMAT_DOCS] ⚠️ No memo sections found — building minimal fallback from analysis data")
-                # 3. Fallback: build lightweight sections from company data
-                sections = self._build_fallback_memo_sections(data)
+                logger.info(f"[FORMAT_DOCS] No memo sections — building from enrichment data")
+                sections = [{"type": "heading1", "content": "Investment Analysis"}]
                 title = "Investment Analysis"
-                metadata = {"fallback": True, "section_count": len(sections)}
+                metadata = {"section_count": 0}
+
+        # 3. Inject real charts from enrichment data (same data the deck pipeline uses)
+        chart_sections = self._build_chart_sections_from_data(data)
+        if chart_sections:
+            existing_chart_types = {
+                s.get("chart", {}).get("type")
+                for s in sections
+                if s.get("type") == "chart"
+            }
+            injected = 0
+            for cs in chart_sections:
+                ct = cs.get("chart", {}).get("type")
+                if ct and ct not in existing_chart_types:
+                    sections.append(cs)
+                    existing_chart_types.add(ct)
+                    injected += 1
+            if injected:
+                logger.info(f"[FORMAT_DOCS] 📊 Injected {injected} chart(s) from enrichment data")
+
+        # 4. Also inject any pre-built charts sitting in data["charts"]
+        existing_chart_types = {
+            s.get("chart", {}).get("type") for s in sections if s.get("type") == "chart"
+        }
+        for chart in data.get("charts", []):
+            ct = chart.get("type")
+            if ct and ct not in existing_chart_types:
+                sections.append({"type": "chart", "chart": chart})
+                existing_chart_types.add(ct)
+
+        metadata["has_charts"] = any(s.get("type") == "chart" for s in sections)
+        metadata["section_count"] = len(sections)
 
         return {
             "format": "docs",
@@ -19581,7 +27320,6 @@ Return a JSON with this structure:
             "date": date,
             "sections": sections,
             "metadata": metadata,
-            # memo_updates is what AgentChat.normalizeResponse reads to forward to onMemoUpdates
             "memo_updates": {
                 "action": "replace",
                 "sections": sections
@@ -19591,40 +27329,428 @@ Return a JSON with this structure:
             "companies": data.get("companies", []),
         }
 
-    def _build_fallback_memo_sections(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Build minimal memo sections from analysis data when memo-writer didn't run."""
+    # ------------------------------------------------------------------
+    # Chart section builder — extracts real charts from enrichment data.
+    # Same data sources the deck pipeline uses, same chart format as
+    # lightweight_memo_service._build_chart().
+    # ------------------------------------------------------------------
+
+    def _build_chart_sections_from_data(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Build chart sections from real enrichment data.
+
+        Scans scenario_analysis, cap_table_history, exit_scenarios_data,
+        exit_modeling, and fund_metrics for chart-renderable data and returns
+        {"type": "chart", "chart": {...}} sections ready for memo injection.
+        """
         sections: List[Dict[str, Any]] = []
-        sections.append({"type": "heading1", "content": "Investment Analysis"})
-
         companies = data.get("companies", [])
-        if not companies:
-            sections.append({"type": "paragraph", "content": "No company data available."})
-            return sections
 
-        # Executive summary
-        names = [c.get("company", "Unknown") for c in companies]
-        sections.append({"type": "heading2", "content": "Executive Summary"})
-        sections.append({"type": "paragraph", "content": f"Analysis of {', '.join(names)}."})
+        # --- Cap table sankey ---
+        cap_history = data.get("cap_table_history", {})
+        if isinstance(cap_history, dict):
+            sankey = cap_history.get("sankey_data")
+            if sankey:
+                sections.append({"type": "chart", "chart": {
+                    "type": "sankey", "title": "Cap Table — Ownership Flow", "data": sankey,
+                }})
+            else:
+                for name, ch in cap_history.items():
+                    if isinstance(ch, dict) and ch.get("sankey_data"):
+                        sections.append({"type": "chart", "chart": {
+                            "type": "sankey",
+                            "title": f"{name} — Ownership Flow",
+                            "data": ch["sankey_data"],
+                        }})
+                        break
 
-        # Per-company overview
-        for company in companies:
-            name = company.get("company", "Unknown")
-            sections.append({"type": "heading2", "content": name})
-            items = []
-            val = self._get_field_safe(company, "valuation") or self._get_field_safe(company, "inferred_valuation")
-            if val:
-                items.append(f"Valuation: ${val / 1e6:,.0f}M")
-            rev = self._get_field_safe(company, "revenue") or self._get_field_safe(company, "inferred_revenue")
-            if rev:
-                items.append(f"Revenue: ${rev / 1e6:,.1f}M")
-            stage = company.get("stage")
-            if stage:
-                items.append(f"Stage: {stage}")
-            if items:
-                sections.append({"type": "list", "items": items})
-            desc = company.get("description") or company.get("product_description", "")
-            if desc:
-                sections.append({"type": "paragraph", "content": desc})
+        # --- Cap table evolution (stacked area) ---
+        if isinstance(cap_history, dict):
+            evolution = cap_history.get("evolution", cap_history.get("rounds", []))
+            if not evolution:
+                for name, ch in cap_history.items():
+                    if isinstance(ch, dict):
+                        evolution = ch.get("evolution", ch.get("rounds", []))
+                        if evolution:
+                            break
+            if evolution:
+                sections.append({"type": "chart", "chart": {
+                    "type": "cap_table_evolution",
+                    "title": "Cap Table Evolution",
+                    "data": {"evolution": evolution},
+                }})
+
+        # --- Probability cloud from scenario_analysis ---
+        scenario_analysis = data.get("scenario_analysis", {})
+        if isinstance(scenario_analysis, dict):
+            for name, sc in scenario_analysis.items():
+                if not isinstance(sc, dict):
+                    continue
+                sc_list = sc.get("scenarios", [])
+                if sc_list:
+                    sections.append({"type": "chart", "chart": {
+                        "type": "probability_cloud",
+                        "title": f"{name} — Exit Scenarios",
+                        "data": {
+                            "scenarios": [
+                                {
+                                    "name": s.get("name", s.get("scenario_name", "Scenario")),
+                                    "probability": s.get("probability", 0),
+                                    "dataPoints": s.get("data_points", s.get("dataPoints", [])),
+                                }
+                                for s in sc_list[:10]
+                            ],
+                            "breakpoints": sc.get("breakpoints", []),
+                            "xConfig": {"label": "Exit Value ($M)", "type": "log"},
+                            "yConfig": {"label": "Return Multiple"},
+                        },
+                    }})
+                    break
+            # Also check company-level scenarios
+            if not any(s.get("chart", {}).get("type") == "probability_cloud" for s in sections):
+                for c in companies:
+                    sc_list = c.get("scenarios", [])
+                    if sc_list:
+                        sections.append({"type": "chart", "chart": {
+                            "type": "probability_cloud",
+                            "title": f"{c.get('company', 'Company')} — Exit Scenarios",
+                            "data": {
+                                "scenarios": [
+                                    {
+                                        "name": s.get("name", s.get("scenario_name", "Scenario")),
+                                        "probability": s.get("probability", 0),
+                                        "dataPoints": s.get("data_points", s.get("dataPoints", [])),
+                                    }
+                                    for s in sc_list[:10]
+                                ],
+                                "breakpoints": [],
+                                "xConfig": {"label": "Exit Value ($M)", "type": "log"},
+                                "yConfig": {"label": "Return Multiple"},
+                            },
+                        }})
+                        break
+
+        # --- Bull/bear/base bar chart from exit scenarios ---
+        exit_data = data.get("exit_scenarios_data", data.get("exit_modeling", {}))
+        if isinstance(exit_data, dict):
+            for name, company_exits in exit_data.items():
+                if not isinstance(company_exits, dict):
+                    continue
+                scenarios = company_exits.get("scenarios", [])
+                if scenarios:
+                    sections.append({"type": "chart", "chart": {
+                        "type": "bar",
+                        "title": f"{name} — Exit Values by Scenario",
+                        "data": [
+                            {
+                                "name": s.get("scenario_name", s.get("name", "Unknown")),
+                                "value": (s.get("exit_value", 0) or 0) / 1e6,
+                            }
+                            for s in scenarios[:6]
+                        ],
+                    }})
+                    break
+
+        # --- DPI Sankey ---
+        fund_metrics = data.get("fund_metrics", {})
+        dpi_sankey = fund_metrics.get("dpi_sankey") if isinstance(fund_metrics, dict) else None
+        if not dpi_sankey and isinstance(exit_data, dict):
+            dpi_sankey = exit_data.get("dpi_sankey")
+        if dpi_sankey:
+            sections.append({"type": "chart", "chart": {
+                "type": "dpi_sankey",
+                "title": "Fund Distribution Flow",
+                "data": dpi_sankey,
+            }})
+
+        # --- Breakpoint chart ---
+        if isinstance(scenario_analysis, dict):
+            for name, sc in scenario_analysis.items():
+                if isinstance(sc, dict):
+                    breakpoints = sc.get("breakpoints", [])
+                    if breakpoints:
+                        sections.append({"type": "chart", "chart": {
+                            "type": "breakpoint_chart",
+                            "title": f"{name} — Breakpoint Distribution",
+                            "data": {"breakpoints": breakpoints},
+                        }})
+                        break
+
+        # --- Scatter multiples (if 2+ companies) ---
+        if len(companies) >= 2:
+            points = []
+            for c in companies:
+                val = safe_get_value(c.get("valuation"), 0)
+                rev = (
+                    safe_get_value(c.get("revenue"))
+                    or safe_get_value(c.get("arr"))
+                    or safe_get_value(c.get("inferred_revenue"))
+                    or 1
+                )
+                growth = (
+                    safe_get_value(c.get("growth_rate"))
+                    or safe_get_value(c.get("revenue_growth_annual_pct"))
+                    or 0
+                )
+                multiple = val / rev if val and rev > 0 else 0
+                points.append({
+                    "name": c.get("company", "Unknown"),
+                    "x": growth * 100 if growth < 5 else growth,
+                    "y": multiple,
+                    "arr": rev,
+                    "stage": c.get("stage", "series_a"),
+                })
+            if any(p["y"] > 0 for p in points):
+                sections.append({"type": "chart", "chart": {
+                    "type": "scatter_multiples",
+                    "title": "Revenue Multiple vs Growth",
+                    "data": {"companies": points},
+                }})
+
+        # --- Revenue forecasting (bull/bear/base) line chart ---
+        revenue_projections = data.get("revenue_projections", {})
+        if not revenue_projections and companies:
+            # Build forecasting data from company revenue + growth
+            for c in companies:
+                rev = (
+                    safe_get_value(c.get("revenue"))
+                    or safe_get_value(c.get("arr"))
+                    or safe_get_value(c.get("inferred_revenue"))
+                    or 0
+                )
+                growth = (
+                    safe_get_value(c.get("growth_rate"))
+                    or safe_get_value(c.get("revenue_growth_annual_pct"))
+                    or 0
+                )
+                if rev > 0 and growth > 0:
+                    name = c.get("company", "Company")
+                    growth_frac = growth if growth < 5 else growth / 100
+                    base_pts = []
+                    bull_pts = []
+                    bear_pts = []
+                    for yr in range(6):
+                        base_rev = rev * ((1 + growth_frac * max(0.3, 1 - yr * 0.12)) ** yr)
+                        bull_rev = rev * ((1 + growth_frac * 1.3 * max(0.3, 1 - yr * 0.10)) ** yr)
+                        bear_rev = rev * ((1 + growth_frac * 0.5 * max(0.3, 1 - yr * 0.15)) ** yr)
+                        base_pts.append({"x": yr, "y": round(base_rev / 1e6, 2)})
+                        bull_pts.append({"x": yr, "y": round(bull_rev / 1e6, 2)})
+                        bear_pts.append({"x": yr, "y": round(bear_rev / 1e6, 2)})
+                    revenue_projections[name] = {
+                        "base": base_pts, "bull": bull_pts, "bear": bear_pts,
+                        "current_revenue": rev,
+                    }
+        if revenue_projections:
+            for name, proj in revenue_projections.items():
+                if isinstance(proj, dict) and proj.get("base"):
+                    sections.append({"type": "chart", "chart": {
+                        "type": "line",
+                        "title": f"{name} — Revenue Forecast (Bull/Bear/Base)",
+                        "data": {
+                            "labels": [f"Year {p['x']}" for p in proj["base"]],
+                            "datasets": [
+                                {
+                                    "label": "Bull Case",
+                                    "data": [p["y"] for p in proj.get("bull", proj["base"])],
+                                    "borderColor": "#59a14f",
+                                    "backgroundColor": "rgba(89,161,79,0.1)",
+                                    "fill": False,
+                                    "borderDash": [5, 3],
+                                },
+                                {
+                                    "label": "Base Case",
+                                    "data": [p["y"] for p in proj["base"]],
+                                    "borderColor": "#4e79a7",
+                                    "backgroundColor": "rgba(78,121,167,0.1)",
+                                    "fill": False,
+                                },
+                                {
+                                    "label": "Bear Case",
+                                    "data": [p["y"] for p in proj.get("bear", proj["base"])],
+                                    "borderColor": "#e15759",
+                                    "backgroundColor": "rgba(225,87,89,0.1)",
+                                    "fill": False,
+                                    "borderDash": [5, 3],
+                                },
+                            ],
+                        },
+                    }})
+                    break  # One forecasting chart per memo
+
+        # --- Investor/team-enriched cap table pie chart ---
+        if not any(s.get("chart", {}).get("type") == "pie" for s in sections):
+            for c in companies:
+                cap = c.get("cap_table") or c.get("ownership_breakdown") or {}
+                investors_raw = c.get("investors") or c.get("key_investors") or []
+                if cap and isinstance(cap, dict):
+                    pie_segments = []
+                    for holder, pct in cap.items():
+                        val = safe_get_value(pct, 0)
+                        if val > 0:
+                            pie_segments.append({"name": str(holder), "value": val})
+                    if pie_segments:
+                        sections.append({"type": "chart", "chart": {
+                            "type": "pie",
+                            "title": f"{c.get('company', 'Company')} — Ownership Breakdown",
+                            "data": pie_segments,
+                        }})
+                        break
+                elif investors_raw and isinstance(investors_raw, list):
+                    # Build approximate ownership pie from investor list + stage heuristics
+                    stage = (c.get("stage") or "series_a").lower().replace(" ", "_")
+                    founder_pct_map = {"seed": 70, "series_a": 55, "series_b": 40, "series_c": 30, "series_d": 25}
+                    esop_pct = 10
+                    founder_pct = founder_pct_map.get(stage, 35)
+                    investor_pool = 100 - founder_pct - esop_pct
+                    inv_list = investors_raw[:6] if isinstance(investors_raw[0], str) else [
+                        i.get("name", i.get("investor", "Investor")) for i in investors_raw[:6]
+                    ]
+                    per_investor = investor_pool / max(len(inv_list), 1)
+                    pie_segments = [{"name": "Founders", "value": founder_pct}, {"name": "ESOP", "value": esop_pct}]
+                    for inv_name in inv_list:
+                        pie_segments.append({"name": str(inv_name), "value": round(per_investor, 1)})
+                    sections.append({"type": "chart", "chart": {
+                        "type": "pie",
+                        "title": f"{c.get('company', 'Company')} — Estimated Ownership",
+                        "data": pie_segments,
+                    }})
+                    break
+
+        # --- Cap table waterfall (ownership evolution through rounds) ---
+        if not any(s.get("chart", {}).get("type") == "cap_table_waterfall" for s in sections):
+            if isinstance(cap_history, dict):
+                for name, ch in cap_history.items():
+                    if isinstance(ch, dict):
+                        evolution = ch.get("evolution", ch.get("rounds", []))
+                        if evolution and isinstance(evolution, list) and len(evolution) >= 2:
+                            sections.append({"type": "chart", "chart": {
+                                "type": "cap_table_waterfall",
+                                "title": f"{name} — Ownership Through Rounds",
+                                "data": {"cap_table_evolution": evolution},
+                            }})
+                            break
+
+        # --- J-curve / growth-decay projection ---
+        fund_deployment = data.get("fund_deployment", {})
+        if isinstance(fund_deployment, dict) and fund_deployment.get("j_curve"):
+            j_curve_data = fund_deployment["j_curve"]
+            sections.append({"type": "chart", "chart": {
+                "type": "line",
+                "title": "Fund J-Curve — Cumulative Net Cash Flow",
+                "data": {
+                    "labels": [str(p.get("year", p.get("quarter", i))) for i, p in enumerate(j_curve_data)],
+                    "datasets": [{
+                        "label": "Cumulative Net Cash Flow ($M)",
+                        "data": [round(safe_get_value(p.get("cumulative", p.get("value", 0)), 0) / 1e6, 2) for p in j_curve_data],
+                        "borderColor": "#4e79a7",
+                        "backgroundColor": "rgba(78,121,167,0.15)",
+                        "fill": True,
+                    }],
+                },
+            }})
+        elif not any("J-Curve" in (s.get("chart", {}).get("title") or "") for s in sections):
+            # Build synthetic J-curve from fund context if available
+            fc = data.get("fund_context", {})
+            fund_size = safe_get_value(fc.get("fund_size"), 0)
+            if fund_size > 0:
+                # Standard VC J-curve: deploy over ~4 years, returns start year 3-4
+                j_pts = []
+                for yr in range(11):
+                    if yr <= 4:
+                        deploy = fund_size * min(yr * 0.22, 0.90)
+                        returns = fund_size * max(0, (yr - 2) * 0.05)
+                    else:
+                        deploy = fund_size * 0.95
+                        returns = fund_size * (0.15 + (yr - 4) * 0.25)
+                    j_pts.append(round((returns - deploy) / 1e6, 1))
+                sections.append({"type": "chart", "chart": {
+                    "type": "line",
+                    "title": "Projected Fund J-Curve",
+                    "data": {
+                        "labels": [f"Year {y}" for y in range(11)],
+                        "datasets": [{
+                            "label": "Cumulative Net ($M)",
+                            "data": j_pts,
+                            "borderColor": "#4e79a7",
+                            "backgroundColor": "rgba(78,121,167,0.15)",
+                            "fill": True,
+                        }],
+                    },
+                }})
+
+        # --- Growth decay curves per company ---
+        for c in companies[:3]:
+            rev = (
+                safe_get_value(c.get("revenue"))
+                or safe_get_value(c.get("arr"))
+                or safe_get_value(c.get("inferred_revenue"))
+                or 0
+            )
+            growth = (
+                safe_get_value(c.get("growth_rate"))
+                or safe_get_value(c.get("revenue_growth_annual_pct"))
+                or 0
+            )
+            if rev > 0 and growth > 0:
+                name = c.get("company", "Company")
+                growth_frac = growth if growth < 5 else growth / 100
+                # Growth decay: growth rate decreases over time (SaaS reversion)
+                growth_pts = []
+                rev_pts = []
+                current_rev = rev
+                current_growth = growth_frac
+                for yr in range(7):
+                    growth_pts.append(round(current_growth * 100, 1))
+                    rev_pts.append(round(current_rev / 1e6, 2))
+                    current_rev = current_rev * (1 + current_growth)
+                    current_growth = current_growth * 0.75  # 25% decay per year
+                sections.append({"type": "chart", "chart": {
+                    "type": "line",
+                    "title": f"{name} — Growth Decay Projection",
+                    "data": {
+                        "labels": [f"Year {y}" for y in range(7)],
+                        "datasets": [
+                            {
+                                "label": "Revenue ($M)",
+                                "data": rev_pts,
+                                "borderColor": "#4e79a7",
+                                "yAxisID": "y",
+                            },
+                            {
+                                "label": "Growth Rate (%)",
+                                "data": growth_pts,
+                                "borderColor": "#e15759",
+                                "borderDash": [5, 3],
+                                "yAxisID": "y1",
+                            },
+                        ],
+                    },
+                }})
+                break  # One growth decay chart
+
+        # --- Portfolio treemap (if 2+ companies) ---
+        if len(companies) >= 2 and not any(
+            s.get("chart", {}).get("type") == "treemap" for s in sections
+        ):
+            treemap_data = []
+            for c in companies:
+                val = (
+                    safe_get_value(c.get("valuation"))
+                    or safe_get_value(c.get("nav"))
+                    or safe_get_value(c.get("inferred_revenue"))
+                    or 0
+                )
+                if val > 0:
+                    treemap_data.append({
+                        "name": c.get("company", "Unknown"),
+                        "value": val,
+                        "sector": c.get("sector", "Other"),
+                    })
+            if treemap_data:
+                sections.append({"type": "chart", "chart": {
+                    "type": "treemap",
+                    "title": "Portfolio Allocation by Valuation",
+                    "data": treemap_data,
+                }})
 
         return sections
 
@@ -22714,261 +30840,6 @@ Return your analysis with inline citations for ALL factual claims.
         logger.info(f"[INFERENCE_ENRICHMENT] Completed inference enrichment and validation for {len(validated_companies)} companies")
         return validated_companies
     
-    def _format_sankey_chart(self, nodes: List[Dict], links: List[Dict], title: str = None, **kwargs) -> Dict[str, Any]:
-        """
-        Helper to format Sankey chart data consistently
-        
-        Args:
-            nodes: List of node dicts with id, name, and optional color
-            links: List of link dicts with source, target, value, and optional color
-            title: Optional chart title
-            **kwargs: Additional fields to include in chart_data (e.g., options, description)
-            
-        Returns:
-            Properly formatted chart_data dict
-        """
-        chart_data = {
-            "type": "sankey",
-            "data": {
-                "nodes": nodes,
-                "links": links
-            }
-        }
-        if title:
-            chart_data["title"] = title
-        # Add any additional fields passed via kwargs
-        chart_data.update(kwargs)
-        return chart_data
-    
-    def _format_side_by_side_sankey_chart(
-        self, 
-        company1_data: Dict[str, Any], 
-        company2_data: Dict[str, Any],
-        company1_name: str,
-        company2_name: str,
-        title: str = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        Helper to format side-by-side Sankey chart data consistently
-        
-        Args:
-            company1_data: Sankey data for first company (nodes and links)
-            company2_data: Sankey data for second company (nodes and links)
-            company1_name: Name of first company
-            company2_name: Name of second company
-            title: Optional chart title
-            **kwargs: Additional fields to include in data dict (e.g., liquidation_prefs, forward)
-            
-        Returns:
-            Properly formatted chart_data dict
-        """
-        chart_data = {
-            "type": "side_by_side_sankey",
-            "data": {
-                "company1_data": company1_data,
-                "company2_data": company2_data,
-                "company1_name": company1_name,
-                "company2_name": company2_name
-            }
-        }
-        if title:
-            chart_data["title"] = title
-        # Add any additional fields to data dict
-        if kwargs:
-            chart_data["data"].update(kwargs)
-        return chart_data
-    
-    def _format_probability_cloud_chart(
-        self,
-        scenario_curves: List[Dict],
-        breakpoint_clouds: List[Dict],
-        decision_zones: List[Dict],
-        config: Dict[str, Any],
-        insights: Dict[str, Any] = None,
-        title: str = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        Helper to format probability cloud chart data consistently
-        
-        Args:
-            scenario_curves: List of scenario curve data
-            breakpoint_clouds: List of breakpoint cloud data
-            decision_zones: List of decision zone data
-            config: Chart configuration (x_axis, y_axis)
-            insights: Optional insights dict
-            title: Optional chart title
-            **kwargs: Additional fields to include in chart_data (e.g., description)
-            
-        Returns:
-            Properly formatted chart_data dict
-        """
-        chart_data = {
-            "type": "probability_cloud",
-            "data": {
-                "scenario_curves": scenario_curves,
-                "breakpoint_clouds": breakpoint_clouds,
-                "decision_zones": decision_zones,
-                "config": config
-            }
-        }
-        if title:
-            chart_data["title"] = title
-        if insights:
-            chart_data["data"]["insights"] = insights
-        # Add any additional fields passed via kwargs
-        chart_data.update(kwargs)
-        return chart_data
-    
-    def _format_heatmap_chart(
-        self,
-        dimensions: List[str],
-        companies: List[str],
-        scores: List[List[float]],
-        weights: Dict[str, int] = None,
-        title: str = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        Helper to format heatmap chart data consistently
-        
-        Args:
-            dimensions: List of dimension names (rows)
-            companies: List of company names (columns)
-            scores: 2D list of scores [company1_scores, company2_scores, ...]
-            weights: Optional dict of dimension weights
-            title: Optional chart title
-            **kwargs: Additional fields to include in data dict or chart_data
-            
-        Returns:
-            Properly formatted chart_data dict
-        """
-        chart_data = {
-            "type": "heatmap",
-            "data": {
-                "dimensions": dimensions,
-                "companies": companies,
-                "scores": scores
-            }
-        }
-        if title:
-            chart_data["title"] = title
-        if weights:
-            chart_data["data"]["weights"] = weights
-        # Add any additional fields to data dict
-        if kwargs:
-            for key, value in kwargs.items():
-                if key.startswith("data_"):
-                    chart_data["data"][key[5:]] = value
-                else:
-                    chart_data[key] = value
-        return chart_data
-    
-    def _format_waterfall_chart(
-        self,
-        items: List[Dict[str, Any]],
-        title: str = None
-    ) -> Dict[str, Any]:
-        """
-        Helper to format waterfall chart data consistently
-        
-        Args:
-            items: List of waterfall items with label, value, type (positive/negative/total)
-            title: Optional chart title
-            
-        Returns:
-            Properly formatted chart_data dict
-        """
-        return {
-            "type": "waterfall",
-            "data": {
-                "items": items
-            },
-            "title": title
-        }
-    
-    def _format_bar_chart(
-        self,
-        labels: List[str],
-        datasets: List[Dict[str, Any]],
-        title: str = None
-    ) -> Dict[str, Any]:
-        """
-        Helper to format bar chart data consistently
-        
-        Args:
-            labels: List of x-axis labels
-            datasets: List of dataset dicts with label, data, and optional styling
-            title: Optional chart title
-            
-        Returns:
-            Properly formatted chart_data dict
-        """
-        return {
-            "type": "bar",
-            "data": {
-                "labels": labels,
-                "datasets": datasets
-            },
-            "title": title
-        }
-    
-    def _format_line_chart(
-        self,
-        labels: List[str],
-        datasets: List[Dict[str, Any]],
-        title: str = None
-    ) -> Dict[str, Any]:
-        """
-        Helper to format line chart data consistently
-        
-        Args:
-            labels: List of x-axis labels
-            datasets: List of dataset dicts with label, data, and optional styling
-            title: Optional chart title
-            
-        Returns:
-            Properly formatted chart_data dict
-        """
-        return {
-            "type": "line",
-            "data": {
-                "labels": labels,
-                "datasets": datasets
-            },
-            "title": title
-        }
-    
-    def _format_pie_chart(
-        self,
-        labels: List[str],
-        data: List[float],
-        title: str = None
-    ) -> Dict[str, Any]:
-        """
-        Helper to format pie chart data consistently
-        
-        Args:
-            labels: List of segment labels
-            data: List of segment values
-            title: Optional chart title
-            
-        Returns:
-            Properly formatted chart_data dict
-        """
-        return {
-            "type": "pie",
-            "data": {
-                "labels": labels,
-                "datasets": [{
-                    "label": "Distribution",
-                    "data": data
-                }]
-            },
-            "title": title
-        }
-    
     def _validate_chart_data(self, chart_data: Dict[str, Any]) -> tuple[bool, str]:
         """
         Validate chart_data structure before prerendering
@@ -23294,6 +31165,2584 @@ Return your analysis with inline citations for ALL factual claims.
         
         return bullets
     
+    # ------------------------------------------------------------------
+    # New tools: company list reasoning, @ cell enrichment, inline todos, CRM sync
+    # ------------------------------------------------------------------
+
+    async def _tool_reason_company_list(self, inputs: dict) -> dict:
+        """Ranked reasoning over a set of companies: relevance, gaps, next steps."""
+        company_names = inputs.get("companies", [])
+        objective = inputs.get("objective", "investment analysis")
+
+        # Gather whatever we already have in shared_data
+        companies = self.shared_data.get("companies", [])
+        matched = []
+        for name in company_names:
+            clean = name.replace("@", "").strip().lower()
+            match = next(
+                (c for c in companies
+                 if (c.get("company", "") or "").lower() == clean
+                 or (c.get("name", "") or "").lower() == clean),
+                None,
+            )
+            matched.append(match or {"company": name, "_missing": True})
+
+        # Build a compact summary for each company
+        summaries = []
+        gaps = []
+        for c in matched:
+            cname = c.get("company") or c.get("name", "?")
+            if c.get("_missing"):
+                gaps.append(cname)
+                summaries.append(f"- **{cname}**: No data fetched yet — needs enrichment")
+                continue
+            rev = c.get("arr") or c.get("revenue") or c.get("inferred_revenue")
+            val = c.get("valuation") or c.get("inferred_valuation")
+            stage = c.get("stage", "Unknown")
+            desc = (c.get("description") or c.get("product_description") or "")[:120]
+            missing_fields = [k for k in ("arr", "valuation", "stage", "total_funding") if not c.get(k)]
+            if missing_fields:
+                gaps.append(f"{cname} missing: {', '.join(missing_fields)}")
+            summaries.append(
+                f"- **{cname}** ({stage}): {desc}  |  Rev: ${(rev or 0)/1e6:.1f}M  Val: ${(val or 0)/1e6:.0f}M"
+            )
+
+        # Build todos for gaps
+        todos = []
+        for g in gaps:
+            todos.append({
+                "type": "action_item",
+                "title": f"Fill gaps: {g}",
+                "description": f"Run enrichment or web search to fill missing data for {g}",
+                "priority": "high",
+            })
+
+        return {
+            "reasoning": f"## Company List Analysis ({objective})\n\n" + "\n".join(summaries),
+            "gaps": gaps,
+            "suggestions": todos,
+            "company_count": len(matched),
+            "data_complete_count": len([c for c in matched if not c.get("_missing")]),
+        }
+
+    async def _tool_build_company_list(self, inputs: dict) -> dict:
+        """Search for companies by thesis/criteria, enrich matches, score, and persist.
+
+        Replaces naive keyword concat with:
+        1. LLM query generation — turns thesis into 4 targeted Tavily queries
+        2. Portfolio dedup — checks DB for existing companies
+        3. LLM name extraction — extracts company names from search snippets
+        4. Parallel enrichment — _execute_company_fetch + _persist_company_to_db
+        5. Multi-dimensional scoring — fund_fit, growth, moat, stage_match, data_quality
+        """
+        criteria = inputs.get("criteria", "")
+        sector = inputs.get("sector", "")
+        stage = inputs.get("stage", "")
+        geography = inputs.get("geography", "")
+        min_arr = inputs.get("min_arr")
+        scoring_rubric = inputs.get("scoring_rubric") or {}
+        persist = inputs.get("persist", True)
+        add_to_matrix = inputs.get("add_to_matrix", False)
+        max_results = min(inputs.get("max_results", 10), 20)
+        fund_id = inputs.get("fund_id") or self.shared_data.get("fund_id")
+
+        thesis = " ".join(filter(None, [criteria, sector, stage, geography]))
+        if not thesis.strip():
+            return {"error": "At least one search criterion required (criteria, sector, stage, or geography)"}
+
+        # ------------------------------------------------------------------
+        # Step 1: LLM query generation — turn thesis into targeted queries
+        # ------------------------------------------------------------------
+        try:
+            from app.services.model_router import ModelCapability
+            query_gen_prompt = (
+                f"Generate exactly 4 targeted web search queries to find startup companies matching this thesis:\n"
+                f"Thesis: {thesis}\n"
+                f"{'Stage filter: ' + stage if stage else ''}\n"
+                f"{'Geography: ' + geography if geography else ''}\n"
+                f"{'Min ARR: $' + str(min_arr) if min_arr else ''}\n\n"
+                f"Return JSON: {{\"queries\": [\"query1\", \"query2\", \"query3\", \"query4\"]}}\n"
+                f"Query guidelines:\n"
+                f"- Query 1: Direct company names + sector + stage\n"
+                f"- Query 2: Recent funding rounds in the space\n"
+                f"- Query 3: Market landscape / competitor mapping\n"
+                f"- Query 4: Industry reports or lists mentioning companies\n"
+                f"Make queries specific enough to surface real company names, not generic articles."
+            )
+            query_result = await self.model_router.get_completion(
+                prompt=query_gen_prompt,
+                system_prompt="Generate targeted search queries. Return valid JSON only.",
+                capability=ModelCapability.FAST,
+                max_tokens=300,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="build_company_list_query_gen",
+            )
+            raw = query_result.get("response", "{}") if isinstance(query_result, dict) else str(query_result)
+            parsed_queries = json.loads(raw) if isinstance(raw, str) else raw
+            web_queries = parsed_queries.get("queries", [])[:4]
+        except Exception as e:
+            logger.warning(f"[BUILD_COMPANY_LIST] LLM query gen failed, using fallback: {e}")
+            web_queries = [
+                f"{thesis} startup funding valuation",
+                f"{thesis} companies startups 2024 2025",
+                f"{thesis} series {stage or 'A B'} funding round",
+                f"{thesis} market landscape competitors",
+            ]
+
+        logger.info(f"[BUILD_COMPANY_LIST] Generated {len(web_queries)} search queries for thesis: {thesis[:80]}")
+
+        # ------------------------------------------------------------------
+        # Step 2: Portfolio dedup — get existing company names from DB
+        # ------------------------------------------------------------------
+        existing_names: set = set()
+        db_results = []
+        try:
+            from app.services.portfolio_service import portfolio_service
+            existing_names = await portfolio_service.get_portfolio_company_names(fund_id)
+            db_response = await portfolio_service.search_companies_db(thesis, limit=max_results)
+            db_results = db_response.get("companies", [])
+        except Exception as e:
+            logger.warning(f"[BUILD_COMPANY_LIST] DB search/dedup failed: {e}")
+
+        # ------------------------------------------------------------------
+        # Step 3: Web search — run generated queries in parallel
+        # ------------------------------------------------------------------
+        web_results = []
+        if len(db_results) < max_results and hasattr(self, '_execute_web_search'):
+            async def run_query(q: str) -> list:
+                try:
+                    wr = await self._execute_web_search({"query": q, "max_results": 5})
+                    return wr.get("results", []) if isinstance(wr, dict) else []
+                except Exception:
+                    return []
+
+            query_tasks = [run_query(q) for q in web_queries]
+            query_results = await asyncio.gather(*query_tasks)
+            for batch in query_results:
+                web_results.extend(batch)
+
+        # ------------------------------------------------------------------
+        # Step 4: LLM name extraction — extract company names from snippets
+        # ------------------------------------------------------------------
+        web_company_names: set = set()
+        if web_results:
+            snippets = []
+            for wr in web_results[:20]:
+                title = wr.get("title", "") or ""
+                snippet = wr.get("snippet", "") or wr.get("content", "") or ""
+                snippets.append(f"Title: {title}\nSnippet: {snippet[:300]}")
+
+            try:
+                extraction_prompt = (
+                    f"From the search results below, extract all company/startup names mentioned.\n"
+                    f"Only include actual company names, not people, products, or generic terms.\n"
+                    f"Search context: {thesis}\n\n"
+                    f"Search results:\n" + "\n---\n".join(snippets) + "\n\n"
+                    f"Return JSON: {{\"companies\": [\"CompanyA\", \"CompanyB\", ...]}}"
+                )
+                extract_result = await self.model_router.get_completion(
+                    prompt=extraction_prompt,
+                    system_prompt="Extract company names from search results. Return valid JSON only.",
+                    capability=ModelCapability.FAST,
+                    max_tokens=500,
+                    temperature=0.0,
+                    json_mode=True,
+                    caller_context="build_company_list_name_extraction",
+                )
+                raw = extract_result.get("response", "{}") if isinstance(extract_result, dict) else str(extract_result)
+                parsed_names = json.loads(raw) if isinstance(raw, str) else raw
+                extracted = parsed_names.get("companies", [])
+                db_names_lower = {c.get("name", "").lower() for c in db_results}
+                for name in extracted:
+                    name_clean = name.strip()
+                    if (
+                        2 < len(name_clean) < 60
+                        and name_clean.lower() not in existing_names
+                        and name_clean.lower() not in db_names_lower
+                    ):
+                        web_company_names.add(name_clean)
+            except Exception as e:
+                logger.warning(f"[BUILD_COMPANY_LIST] LLM name extraction failed, using title split: {e}")
+                db_names_lower = {c.get("name", "").lower() for c in db_results}
+                for wr in web_results:
+                    title = wr.get("title", "") or ""
+                    for sep in [" - ", " | ", ": ", " — ", " – "]:
+                        if sep in title:
+                            candidate = title.split(sep)[0].strip()
+                            if 2 < len(candidate) < 40 and candidate.lower() not in existing_names and candidate.lower() not in db_names_lower:
+                                web_company_names.add(candidate)
+                            break
+
+        logger.info(f"[BUILD_COMPANY_LIST] Extracted {len(web_company_names)} new company names from web")
+
+        # ------------------------------------------------------------------
+        # Step 5: Parallel enrichment via _execute_company_fetch
+        # ------------------------------------------------------------------
+        remaining_slots = max(0, max_results - len(db_results))
+        enriched_new = []
+        if web_company_names and remaining_slots > 0:
+            semaphore = asyncio.Semaphore(3)
+
+            async def enrich_and_persist(name: str) -> dict:
+                async with semaphore:
+                    try:
+                        result = await self._execute_company_fetch({
+                            "company": name,
+                            "fund_id": fund_id,
+                        })
+                        # _execute_company_fetch returns {"companies": [data]}
+                        companies_list = result.get("companies", []) if isinstance(result, dict) else []
+                        if not companies_list:
+                            company_data = result if isinstance(result, dict) else {}
+                        else:
+                            company_data = companies_list[0]
+
+                        # Extract summary fields
+                        arr_val = company_data.get("arr") or company_data.get("revenue") or company_data.get("inferred_revenue")
+                        if hasattr(arr_val, "value"):
+                            arr_val = arr_val.value
+
+                        valuation_val = company_data.get("valuation") or company_data.get("inferred_valuation")
+                        if hasattr(valuation_val, "value"):
+                            valuation_val = valuation_val.value
+
+                        return {
+                            "name": name,
+                            "company_id": company_data.get("id"),
+                            "sector": company_data.get("sector", ""),
+                            "stage": company_data.get("stage", ""),
+                            "description": (company_data.get("description") or company_data.get("product_description") or "")[:200],
+                            "arr": arr_val,
+                            "valuation": valuation_val,
+                            "total_funding": company_data.get("total_funding") or company_data.get("total_raised"),
+                            "employee_count": company_data.get("employee_count") or company_data.get("team_size"),
+                            "growth_rate": company_data.get("growth_rate"),
+                            "hq": company_data.get("hq_location") or company_data.get("geography", ""),
+                            "business_model": company_data.get("business_model", ""),
+                            "fund_fit_score": company_data.get("fund_fit_score"),
+                            "source": "web_enriched",
+                            "enriched": True,
+                            "_full_data": company_data,  # Keep for scoring
+                        }
+                    except Exception as e:
+                        logger.warning(f"[BUILD_COMPANY_LIST] Enrichment failed for '{name}': {e}")
+                        return {"name": name, "error": str(e), "source": "web_failed"}
+
+            tasks = [enrich_and_persist(n) for n in list(web_company_names)[:remaining_slots]]
+            enriched_new = await asyncio.gather(*tasks)
+            enriched_new = [e for e in enriched_new if not e.get("error")]
+
+        # ------------------------------------------------------------------
+        # Step 6: Combine, filter, and score
+        # ------------------------------------------------------------------
+        all_companies = []
+        for c in db_results:
+            c["source"] = "database"
+            c["enriched"] = True
+            all_companies.append(c)
+        for c in enriched_new:
+            all_companies.append(c)
+
+        # Apply min_arr filter
+        if min_arr:
+            filtered = [c for c in all_companies if (c.get("arr") or 0) >= min_arr]
+            if filtered:
+                all_companies = filtered
+
+        # Apply stage filter
+        if stage:
+            stage_lower = stage.lower()
+            filtered = [c for c in all_companies if stage_lower in (c.get("stage") or "").lower()]
+            if filtered:
+                all_companies = filtered
+
+        # Apply geography filter
+        if geography:
+            geo_lower = geography.lower()
+            filtered = [c for c in all_companies if geo_lower in (c.get("hq") or "").lower()]
+            if filtered:
+                all_companies = filtered
+
+        # Multi-dimensional scoring
+        # Default rubric weights
+        weights = {
+            "fund_fit": scoring_rubric.get("fund_fit", 0.25),
+            "growth": scoring_rubric.get("growth", 0.20),
+            "moat": scoring_rubric.get("moat", 0.15),
+            "stage_match": scoring_rubric.get("stage_match", 0.15),
+            "data_quality": scoring_rubric.get("data_quality", 0.25),
+        }
+
+        for c in all_companies:
+            scores = {}
+
+            # Fund fit (0-10) — from enrichment or estimate
+            fund_fit_raw = c.get("fund_fit_score") or 0
+            if hasattr(fund_fit_raw, "value"):
+                fund_fit_raw = fund_fit_raw.value
+            scores["fund_fit"] = min(10, float(fund_fit_raw or 0))
+
+            # Growth (0-10) — based on growth rate
+            gr = c.get("growth_rate") or 0
+            if hasattr(gr, "value"):
+                gr = gr.value
+            gr = float(gr or 0)
+            if gr > 3.0:
+                scores["growth"] = 10
+            elif gr > 2.0:
+                scores["growth"] = 8
+            elif gr > 1.0:
+                scores["growth"] = 6
+            elif gr > 0.5:
+                scores["growth"] = 4
+            else:
+                scores["growth"] = 2
+
+            # Moat (0-10) — from full data if available
+            full_data = c.get("_full_data", {})
+            moat_score = full_data.get("moat_score") or full_data.get("switching_costs")
+            if moat_score:
+                if hasattr(moat_score, "value"):
+                    moat_score = moat_score.value
+                scores["moat"] = min(10, float(moat_score or 5))
+            else:
+                scores["moat"] = 5  # neutral default
+
+            # Stage match (0-10)
+            if stage:
+                c_stage = (c.get("stage") or "").lower()
+                scores["stage_match"] = 10 if stage.lower() in c_stage else 3
+            else:
+                scores["stage_match"] = 7  # no filter = neutral
+
+            # Data quality (0-10) — count of non-empty key fields
+            filled = 0
+            for field in ("arr", "valuation", "total_funding", "stage", "employee_count",
+                          "description", "growth_rate", "business_model", "hq", "sector"):
+                if c.get(field):
+                    filled += 1
+            scores["data_quality"] = min(10, filled)
+
+            # Weighted composite
+            composite = sum(scores[dim] * weights[dim] for dim in weights)
+            c["scores"] = scores
+            c["composite_score"] = round(composite, 2)
+
+            # Strip internal _full_data before returning
+            c.pop("_full_data", None)
+
+        all_companies.sort(key=lambda x: x.get("composite_score", 0), reverse=True)
+        final_list = all_companies[:max_results]
+
+        # Build summary
+        total_arr = sum(c.get("arr") or 0 for c in final_list)
+        stages_breakdown = {}
+        for c in final_list:
+            s = c.get("stage", "Unknown")
+            stages_breakdown[s] = stages_breakdown.get(s, 0) + 1
+
+        result = {
+            "companies": final_list,
+            "count": len(final_list),
+            "query": thesis,
+            "search_queries_used": web_queries,
+            "summary": {
+                "total_companies": len(final_list),
+                "from_database": sum(1 for c in final_list if c.get("source") == "database"),
+                "from_web": sum(1 for c in final_list if c.get("source") == "web_enriched"),
+                "total_arr": total_arr,
+                "avg_composite_score": round(sum(c.get("composite_score", 0) for c in final_list) / max(len(final_list), 1), 2),
+                "stage_breakdown": stages_breakdown,
+                "persisted": persist,
+            },
+            "filters_applied": {
+                "sector": sector, "stage": stage, "geography": geography,
+                "min_arr": min_arr,
+            },
+            "scoring_weights": weights,
+        }
+
+        # Emit add_to_matrix grid commands if requested
+        if add_to_matrix and final_list:
+            grid_commands = []
+            for c in final_list:
+                grid_commands.append({
+                    "action": "add_row",
+                    "companyName": c.get("name", ""),
+                    "company_id": c.get("company_id"),
+                    "cellValues": {
+                        "arr": c.get("arr"),
+                        "valuation": c.get("valuation"),
+                        "stage": c.get("stage"),
+                        "sector": c.get("sector"),
+                        "headcount": c.get("employee_count"),
+                        "totalRaised": c.get("total_funding"),
+                        "description": c.get("description"),
+                    },
+                    "source_service": "build_company_list",
+                })
+            result["grid_commands"] = grid_commands
+
+        return result
+
+    async def _tool_score_and_rank_companies(self, inputs: dict) -> dict:
+        """Score companies from shared_data by configurable rubric and return ranked list.
+
+        Dimensions: fund_fit, growth, moat, capital_efficiency, momentum.
+        Optionally run full valuations. Returns ranked list + grid_commands for scores.
+        """
+        company_names = inputs.get("companies") or []
+        rubric = inputs.get("scoring_rubric") or {}
+        run_valuations = inputs.get("run_valuations", False)
+        fund_id = inputs.get("fund_id") or self.shared_data.get("fund_id")
+
+        # Gather companies from shared_data
+        shared_companies = self.shared_data.get("companies", [])
+        if not company_names:
+            # Score all companies in shared_data
+            targets = shared_companies
+        else:
+            name_set = {n.lower().strip().lstrip("@") for n in company_names}
+            targets = [
+                c for c in shared_companies
+                if isinstance(c, dict)
+                and (c.get("company") or c.get("name") or "").lower().strip() in name_set
+            ]
+
+        if not targets:
+            return {"error": "No companies found in shared_data to score", "companies": []}
+
+        # Rubric weights
+        weights = {
+            "fund_fit": rubric.get("fund_fit", 0.25),
+            "growth": rubric.get("growth", 0.20),
+            "moat": rubric.get("moat", 0.15),
+            "capital_efficiency": rubric.get("capital_efficiency", 0.20),
+            "momentum": rubric.get("momentum", 0.20),
+        }
+
+        scored = []
+        for c in targets:
+            name = c.get("company") or c.get("name") or "Unknown"
+            scores = {}
+
+            # Fund fit
+            ff = c.get("fund_fit_score") or 0
+            if hasattr(ff, "value"):
+                ff = ff.value
+            scores["fund_fit"] = min(10, float(ff or 0))
+
+            # Growth
+            gr = c.get("growth_rate") or 0
+            if hasattr(gr, "value"):
+                gr = gr.value
+            gr = float(gr or 0)
+            scores["growth"] = min(10, max(0, gr * 3.3)) if gr > 0 else 2
+
+            # Moat
+            moat = c.get("moat_score") or c.get("switching_costs") or 5
+            if hasattr(moat, "value"):
+                moat = moat.value
+            scores["moat"] = min(10, float(moat or 5))
+
+            # Capital efficiency (revenue / total funding)
+            rev = c.get("arr") or c.get("revenue") or c.get("inferred_revenue") or 0
+            if hasattr(rev, "value"):
+                rev = rev.value
+            funding = c.get("total_funding") or c.get("total_raised") or 0
+            if hasattr(funding, "value"):
+                funding = funding.value
+            if funding and float(funding) > 0:
+                ratio = float(rev or 0) / float(funding)
+                scores["capital_efficiency"] = min(10, ratio * 10)
+            else:
+                scores["capital_efficiency"] = 3
+
+            # Momentum — based on recency of funding + growth rate
+            months_since = c.get("months_since_last_raise") or 24
+            if hasattr(months_since, "value"):
+                months_since = months_since.value
+            recency = max(0, 10 - (int(months_since or 24) / 3))
+            scores["momentum"] = min(10, (recency + scores["growth"]) / 2)
+
+            composite = sum(scores[d] * weights[d] for d in weights)
+            scored.append({
+                "name": name,
+                "company_id": c.get("id") or c.get("company_id"),
+                "scores": {k: round(v, 1) for k, v in scores.items()},
+                "composite_score": round(composite, 2),
+                "arr": rev,
+                "valuation": c.get("valuation") or c.get("inferred_valuation"),
+                "stage": c.get("stage"),
+                "sector": c.get("sector"),
+            })
+
+        scored.sort(key=lambda x: x["composite_score"], reverse=True)
+
+        # Build grid commands to write scores
+        grid_commands = []
+        for rank, s in enumerate(scored, 1):
+            cid = s.get("company_id") or self._find_company_id(s["name"])
+            if cid:
+                grid_commands.append({
+                    "action": "edit",
+                    "rowId": cid,
+                    "columnId": "composite_score",
+                    "value": s["composite_score"],
+                    "source_service": "score_and_rank",
+                    "reasoning": f"Rank #{rank}: " + ", ".join(f"{k}={v}" for k, v in s["scores"].items()),
+                })
+
+        return {
+            "ranked_companies": scored,
+            "count": len(scored),
+            "scoring_weights": weights,
+            "grid_commands": grid_commands,
+        }
+
+    async def _tool_find_comparables(self, inputs: dict) -> dict:
+        """Find comparable companies by sector/stage/business model/revenue range/geography.
+
+        Searches DB + web for similar companies. Returns similarity-scored list.
+        Persists new discoveries to DB.
+        """
+        target_company = inputs.get("company", "").strip().lstrip("@")
+        if not target_company:
+            return {"error": "company name required"}
+
+        fund_id = inputs.get("fund_id") or self.shared_data.get("fund_id")
+        max_results = min(inputs.get("max_results", 10), 20)
+
+        # Resolve target from shared_data or DB
+        target_data = None
+        for c in self.shared_data.get("companies", []):
+            if isinstance(c, dict) and (c.get("company") or c.get("name") or "").lower().strip() == target_company.lower():
+                target_data = c
+                break
+
+        if not target_data:
+            try:
+                from app.services.portfolio_service import portfolio_service
+                target_data = await portfolio_service.get_company_by_name(target_company, fund_id)
+            except Exception:
+                pass
+
+        if not target_data:
+            target_data = {"company": target_company}
+
+        # Build comp criteria from target
+        target_sector = target_data.get("sector", "")
+        target_stage = target_data.get("stage", "")
+        target_bm = target_data.get("business_model", "")
+        target_arr = target_data.get("arr") or target_data.get("current_arr_usd") or target_data.get("inferred_revenue") or 0
+        if hasattr(target_arr, "value"):
+            target_arr = target_arr.value
+        target_arr = float(target_arr or 0)
+        target_geo = target_data.get("hq_location") or target_data.get("hq") or ""
+
+        # DB search for similar companies
+        db_comps = []
+        try:
+            from app.services.portfolio_service import portfolio_service
+            # Search by sector
+            if target_sector:
+                resp = await portfolio_service.search_companies_db(target_sector, limit=max_results * 2)
+                db_comps.extend(resp.get("companies", []))
+            # Search by business model
+            if target_bm:
+                resp = await portfolio_service.search_companies_db(target_bm, limit=max_results)
+                seen_ids = {c.get("company_id") for c in db_comps}
+                for c in resp.get("companies", []):
+                    if c.get("company_id") not in seen_ids:
+                        db_comps.append(c)
+        except Exception as e:
+            logger.warning(f"[FIND_COMPARABLES] DB search failed: {e}")
+
+        # Remove the target itself
+        db_comps = [c for c in db_comps if (c.get("name") or "").lower().strip() != target_company.lower()]
+
+        # Web search for additional comps
+        web_comps = []
+        if len(db_comps) < max_results and hasattr(self, '_execute_web_search'):
+            comp_query = f"{target_company} competitors similar companies {target_sector} {target_stage}".strip()
+            try:
+                wr = await self._execute_web_search({"query": comp_query, "max_results": 8})
+                if isinstance(wr, dict):
+                    # LLM extract names
+                    snippets = "\n".join(
+                        f"- {r.get('title', '')}: {(r.get('snippet') or '')[:200]}"
+                        for r in wr.get("results", [])[:10]
+                    )
+                    try:
+                        from app.services.model_router import ModelCapability
+                        extract_result = await self.model_router.get_completion(
+                            prompt=(
+                                f"From these search results about companies similar to {target_company}, "
+                                f"extract competitor/comparable company names.\n\n{snippets}\n\n"
+                                f"Return JSON: {{\"companies\": [\"Name1\", \"Name2\", ...]}}"
+                            ),
+                            system_prompt="Extract company names. Return valid JSON only.",
+                            capability=ModelCapability.FAST,
+                            max_tokens=300,
+                            temperature=0.0,
+                            json_mode=True,
+                            caller_context="find_comparables_extract",
+                        )
+                        raw = extract_result.get("response", "{}") if isinstance(extract_result, dict) else str(extract_result)
+                        parsed = json.loads(raw) if isinstance(raw, str) else raw
+                        existing_names = {c.get("name", "").lower() for c in db_comps} | {target_company.lower()}
+                        for name in parsed.get("companies", []):
+                            if name.lower().strip() not in existing_names and 2 < len(name) < 60:
+                                web_comps.append(name.strip())
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"[FIND_COMPARABLES] Web search failed: {e}")
+
+        # Enrich web-found companies (limited)
+        if web_comps:
+            semaphore = asyncio.Semaphore(3)
+
+            async def enrich_comp(name: str) -> dict:
+                async with semaphore:
+                    try:
+                        result = await self._execute_company_fetch({"company": name, "fund_id": fund_id})
+                        companies_list = result.get("companies", []) if isinstance(result, dict) else []
+                        cd = companies_list[0] if companies_list else (result if isinstance(result, dict) else {})
+                        arr_v = cd.get("arr") or cd.get("revenue") or cd.get("inferred_revenue") or 0
+                        if hasattr(arr_v, "value"):
+                            arr_v = arr_v.value
+                        return {
+                            "name": name,
+                            "company_id": cd.get("id"),
+                            "sector": cd.get("sector", ""),
+                            "stage": cd.get("stage", ""),
+                            "arr": arr_v,
+                            "valuation": cd.get("valuation") or cd.get("inferred_valuation"),
+                            "business_model": cd.get("business_model", ""),
+                            "hq": cd.get("hq_location", ""),
+                            "description": (cd.get("description") or "")[:200],
+                            "source": "web_enriched",
+                        }
+                    except Exception:
+                        return {"name": name, "source": "web_failed", "error": True}
+
+            enrich_tasks = [enrich_comp(n) for n in web_comps[:max(0, max_results - len(db_comps))]]
+            enriched = await asyncio.gather(*enrich_tasks)
+            enriched = [e for e in enriched if not e.get("error")]
+            db_comps.extend(enriched)
+
+        # Similarity scoring
+        for c in db_comps:
+            sim = 0.0
+            total_weight = 0.0
+
+            # Sector match (weight 3)
+            c_sector = (c.get("sector") or "").lower()
+            if target_sector and c_sector:
+                from difflib import SequenceMatcher
+                sim += 3 * SequenceMatcher(None, target_sector.lower(), c_sector).ratio()
+            total_weight += 3
+
+            # Stage match (weight 2)
+            c_stage = (c.get("stage") or "").lower()
+            if target_stage and c_stage:
+                sim += 2 * (1.0 if target_stage.lower() == c_stage else 0.3)
+            total_weight += 2
+
+            # Revenue range (weight 2) — within 5x
+            c_arr = c.get("arr") or 0
+            if hasattr(c_arr, "value"):
+                c_arr = c_arr.value
+            c_arr = float(c_arr or 0)
+            if target_arr > 0 and c_arr > 0:
+                ratio = min(target_arr, c_arr) / max(target_arr, c_arr)
+                sim += 2 * ratio
+            total_weight += 2
+
+            # Business model (weight 2)
+            c_bm = (c.get("business_model") or "").lower()
+            if target_bm and c_bm:
+                from difflib import SequenceMatcher
+                sim += 2 * SequenceMatcher(None, target_bm.lower(), c_bm).ratio()
+            total_weight += 2
+
+            # Geography (weight 1)
+            c_geo = (c.get("hq") or c.get("hq_location") or "").lower()
+            if target_geo and c_geo:
+                sim += 1 * (1.0 if target_geo.lower() in c_geo or c_geo in target_geo.lower() else 0.2)
+            total_weight += 1
+
+            c["similarity_score"] = round(sim / total_weight * 10, 1) if total_weight > 0 else 0
+
+        db_comps.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+        final = db_comps[:max_results]
+
+        return {
+            "target": target_company,
+            "target_profile": {
+                "sector": target_sector,
+                "stage": target_stage,
+                "arr": target_arr,
+                "business_model": target_bm,
+                "geography": target_geo,
+            },
+            "comparables": final,
+            "count": len(final),
+        }
+
+    async def _tool_add_companies_to_matrix(self, inputs: dict) -> dict:
+        """Batch add companies to the matrix grid.
+
+        Persists each company to DB and emits add_row grid commands with pre-populated cells.
+        Triggers background enrichment for sparse fields.
+        """
+        company_names = inputs.get("companies") or []
+        fund_id = inputs.get("fund_id") or self.shared_data.get("fund_id")
+
+        if not company_names:
+            return {"error": "companies list required"}
+
+        grid_commands = []
+        results = []
+        semaphore = asyncio.Semaphore(3)
+
+        async def add_one(name: str) -> dict:
+            async with semaphore:
+                name = name.strip().lstrip("@")
+                # Check if already in shared_data
+                existing = None
+                for c in self.shared_data.get("companies", []):
+                    if isinstance(c, dict) and (c.get("company") or c.get("name") or "").lower() == name.lower():
+                        existing = c
+                        break
+
+                if not existing:
+                    # Fetch and enrich
+                    try:
+                        result = await self._execute_company_fetch({"company": name, "fund_id": fund_id})
+                        companies_list = result.get("companies", []) if isinstance(result, dict) else []
+                        existing = companies_list[0] if companies_list else {}
+                    except Exception as e:
+                        return {"name": name, "error": str(e)}
+
+                # Build grid command
+                arr_val = existing.get("arr") or existing.get("revenue") or existing.get("inferred_revenue")
+                if hasattr(arr_val, "value"):
+                    arr_val = arr_val.value
+                val = existing.get("valuation") or existing.get("inferred_valuation")
+                if hasattr(val, "value"):
+                    val = val.value
+
+                company_id = existing.get("id") or existing.get("company_id") or self._find_company_id(name)
+
+                cmd = {
+                    "action": "add_row",
+                    "companyName": name,
+                    "company_id": company_id,
+                    "cellValues": {
+                        "arr": arr_val,
+                        "valuation": val,
+                        "stage": existing.get("stage"),
+                        "sector": existing.get("sector"),
+                        "headcount": existing.get("employee_count") or existing.get("team_size"),
+                        "totalRaised": existing.get("total_funding") or existing.get("total_raised"),
+                        "burnRate": existing.get("burn_rate"),
+                        "runway": existing.get("runway_months"),
+                        "description": (existing.get("description") or existing.get("product_description") or "")[:200],
+                    },
+                    "source_service": "add_companies_to_matrix",
+                }
+                return {"name": name, "company_id": company_id, "grid_command": cmd}
+
+        tasks = [add_one(n) for n in company_names[:20]]
+        raw_results = await asyncio.gather(*tasks)
+
+        for r in raw_results:
+            if r.get("error"):
+                results.append({"name": r["name"], "status": "failed", "error": r["error"]})
+            else:
+                results.append({"name": r["name"], "company_id": r.get("company_id"), "status": "added"})
+                grid_commands.append(r["grid_command"])
+
+        return {
+            "results": results,
+            "added_count": len(grid_commands),
+            "failed_count": sum(1 for r in results if r["status"] == "failed"),
+            "grid_commands": grid_commands,
+        }
+
+    async def _tool_remove_company_from_matrix(self, inputs: dict) -> dict:
+        """Archive or soft-delete a company from the matrix grid.
+
+        Emits a delete grid_command for the frontend to remove the row.
+        """
+        company_name = (inputs.get("company") or "").strip().lstrip("@")
+        if not company_name:
+            return {"error": "company name required"}
+
+        company_id = inputs.get("company_id") or self._find_company_id(company_name)
+        if not company_id:
+            return {"error": f"Could not find company_id for '{company_name}'"}
+
+        grid_commands = [{
+            "action": "delete",
+            "rowId": company_id,
+            "companyName": company_name,
+            "source_service": "remove_company_from_matrix",
+        }]
+
+        return {
+            "removed": company_name,
+            "company_id": company_id,
+            "grid_commands": grid_commands,
+        }
+
+    async def _tool_refresh_company_data(self, inputs: dict) -> dict:
+        """Re-fetch and re-enrich a company. Emits suggestion diffs for changed fields."""
+        company_name = (inputs.get("company") or "").strip().lstrip("@")
+        if not company_name:
+            return {"error": "company name required"}
+
+        fund_id = inputs.get("fund_id") or self.shared_data.get("fund_id")
+
+        # Get old data from shared_data
+        old_data = None
+        for c in self.shared_data.get("companies", []):
+            if isinstance(c, dict) and (c.get("company") or c.get("name") or "").lower() == company_name.lower():
+                old_data = c
+                break
+
+        # Force fresh fetch (bypass cache)
+        cache_key = company_name.lower().strip()
+        self._company_cache.pop(cache_key, None)
+
+        try:
+            result = await self._execute_company_fetch({"company": company_name, "fund_id": fund_id})
+            companies_list = result.get("companies", []) if isinstance(result, dict) else []
+            new_data = companies_list[0] if companies_list else {}
+        except Exception as e:
+            return {"error": f"Re-fetch failed: {e}"}
+
+        # Diff old vs new to create suggestion commands
+        diff_fields = []
+        grid_commands = []
+        company_id = new_data.get("id") or self._find_company_id(company_name)
+        compare_fields = ["arr", "revenue", "valuation", "stage", "sector", "employee_count",
+                          "team_size", "total_funding", "burn_rate", "runway_months", "growth_rate"]
+
+        for field in compare_fields:
+            old_val = old_data.get(field) if old_data else None
+            new_val = new_data.get(field)
+            if hasattr(old_val, "value"):
+                old_val = old_val.value
+            if hasattr(new_val, "value"):
+                new_val = new_val.value
+            if new_val is not None and new_val != old_val:
+                diff_fields.append({"field": field, "old": old_val, "new": new_val})
+                if company_id:
+                    # Map field to grid column
+                    col_map = {"arr": "arr", "revenue": "arr", "valuation": "valuation",
+                               "stage": "stage", "sector": "sector", "employee_count": "headcount",
+                               "team_size": "headcount", "total_funding": "totalRaised",
+                               "burn_rate": "burnRate", "runway_months": "runway", "growth_rate": "revenueGrowthAnnual"}
+                    col_id = col_map.get(field, field)
+                    grid_commands.append({
+                        "action": "edit",
+                        "rowId": company_id,
+                        "columnId": col_id,
+                        "value": new_val,
+                        "source_service": "refresh_company_data",
+                        "reasoning": f"Updated {field}: {old_val} → {new_val}",
+                    })
+
+        return {
+            "company": company_name,
+            "refreshed": True,
+            "changes": diff_fields,
+            "change_count": len(diff_fields),
+            "grid_commands": grid_commands,
+        }
+
+    async def _tool_bulk_score_matrix(self, inputs: dict) -> dict:
+        """Score all companies in the grid by rubric, write to score column.
+
+        Reads grid snapshot, scores each company, emits edit grid_commands.
+        """
+        rubric = inputs.get("scoring_rubric") or {}
+        fund_id = inputs.get("fund_id") or self.shared_data.get("fund_id")
+
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snap = matrix_ctx.get("gridSnapshot", {}) if isinstance(matrix_ctx.get("gridSnapshot"), dict) else {}
+        rows = grid_snap.get("rows", [])
+
+        if not rows:
+            return {"error": "No grid data available. Grid must be open with companies."}
+
+        # Build company-like dicts from grid rows for scoring
+        targets = []
+        for row in rows:
+            cells = row.get("cells") or row.get("cellValues") or {}
+            targets.append({
+                "company": row.get("companyName") or row.get("company_name") or "",
+                "id": row.get("id") or row.get("rowId"),
+                "arr": cells.get("arr"),
+                "valuation": cells.get("valuation"),
+                "growth_rate": cells.get("revenueGrowthAnnual") or cells.get("growth_rate"),
+                "stage": cells.get("stage"),
+                "sector": cells.get("sector"),
+                "total_funding": cells.get("totalRaised"),
+                "employee_count": cells.get("headcount"),
+                "burn_rate": cells.get("burnRate"),
+                "fund_fit_score": cells.get("composite_score"),
+            })
+
+        # Reuse score_and_rank logic
+        self.shared_data.setdefault("companies", []).extend(targets)
+        result = await self._tool_score_and_rank_companies({
+            "companies": [t["company"] for t in targets if t["company"]],
+            "scoring_rubric": rubric,
+            "fund_id": fund_id,
+        })
+
+        # Clean up injected entries
+        for t in targets:
+            if t in self.shared_data.get("companies", []):
+                self.shared_data["companies"].remove(t)
+
+        return result
+
+    async def _tool_search_extract(self, inputs: dict) -> dict:
+        """Targeted web search + structured extraction combo.
+
+        Searches for specific data points and returns extracted structured data.
+        Chains: web_search → LLM extraction → grid suggestions.
+        """
+        query = inputs.get("query", "")
+        company = inputs.get("company", "")
+        extract_fields = inputs.get("extract_fields", [])
+
+        if not query and not company:
+            return {"error": "query or company required"}
+
+        # If company provided, use granular search
+        if company:
+            field_schema = {}
+            default_fields = ["revenue", "valuation", "funding", "stage", "employee_count", "description"]
+            for f in (extract_fields or default_fields):
+                field_schema[f] = "number, string, or null"
+            return await self._granular_search_and_extract(
+                company_name=company,
+                search_suffix=query or "company data funding revenue",
+                extract_fields=field_schema,
+                extraction_instructions="Extract all available company data. Use exact numbers when found.",
+            )
+
+        # Generic query: web search + extraction
+        try:
+            search_result = await self._execute_tool("web_search", {
+                "query": query,
+                "search_depth": "basic",
+            })
+            results = search_result.get("results", []) if isinstance(search_result, dict) else []
+        except Exception as e:
+            return {"query": query, "results": [], "error": str(e)}
+
+        # Extract company names from results if no specific fields requested
+        extracted_items = []
+        for r in results[:5]:
+            extracted_items.append({
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "snippet": (r.get("content") or r.get("snippet") or "")[:300],
+            })
+
+        return {
+            "query": query,
+            "results": extracted_items,
+            "count": len(extracted_items),
+        }
+
+    async def _tool_enrich_sparse_grid(self, inputs: dict) -> dict:
+        """Auto-detect companies with sparse data in the grid and generate suggestions.
+
+        Scans grid for companies with many empty fields, runs web search + benchmarks
+        to fill gaps, and writes results as pending_suggestions.
+        """
+        fund_id = inputs.get("fund_id")
+        min_empty = inputs.get("min_empty_fields", 3)
+
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_rows = matrix_ctx.get("rows") or matrix_ctx.get("gridData") or []
+
+        if not grid_rows:
+            return {"error": "No grid data available", "enriched": 0}
+
+        # Identify sparse companies
+        CHECK_FIELDS = ["arr", "currentValuationUsd", "headcount", "totalRaised",
+                        "burnRateMonthlyUsd", "revenueGrowthAnnualPct", "stage"]
+        sparse_companies = []
+        for row in grid_rows:
+            name = row.get("name") or row.get("companyName") or ""
+            if not name:
+                continue
+            empty_count = sum(1 for f in CHECK_FIELDS if not row.get(f))
+            if empty_count >= min_empty:
+                sparse_companies.append({
+                    "name": name,
+                    "id": row.get("id") or row.get("companyId"),
+                    "empty_fields": empty_count,
+                    "existing_data": row,
+                })
+
+        if not sparse_companies:
+            return {"message": "All companies have sufficient data", "enriched": 0, "checked": len(grid_rows)}
+
+        # Sort by sparseness (most empty first)
+        sparse_companies.sort(key=lambda x: x["empty_fields"], reverse=True)
+
+        # Enrich top sparse companies using micro-skills (max 10)
+        enriched_count = 0
+        results = []
+        for sc in sparse_companies[:10]:
+            try:
+                empty_fields = [f for f in CHECK_FIELDS if not sc["existing_data"].get(f)]
+                result = await self._tool_enrich_field({
+                    "company_name": sc["name"],
+                    "fields": empty_fields,
+                })
+                suggestions_written = result.get("suggestions_persisted", 0)
+                fields_found = result.get("fields_found", [])
+                enriched_count += 1
+                results.append({
+                    "name": sc["name"],
+                    "suggestions": suggestions_written,
+                    "fields_found": fields_found,
+                    "success": True,
+                })
+            except Exception as e:
+                results.append({"name": sc["name"], "error": str(e), "success": False})
+
+        return {
+            "checked": len(grid_rows),
+            "sparse_found": len(sparse_companies),
+            "enriched": enriched_count,
+            "results": results,
+        }
+
+    async def _tool_enrich_cell(self, inputs: dict) -> dict:
+        """Deep-enrich a single company cell. No @ prefix needed."""
+        company_name = (inputs.get("company") or "").replace("@", "").strip()
+        column = inputs.get("column", "")
+        current_value = inputs.get("current_value")
+
+        if not company_name:
+            return {"error": "company name required"}
+
+        # Try lightweight diligence first
+        ld_memo_sections = []
+        try:
+            ld_result = await self._execute_lightweight_diligence({"company_name": company_name})
+            company_data = ld_result.get("company", {}) if isinstance(ld_result, dict) else {}
+            ld_memo_sections = ld_result.get("memo_sections", [])
+        except Exception as e:
+            logger.warning(f"[ENRICH_CELL] Lightweight diligence failed for {company_name}: {e}")
+            company_data = {}
+
+        # Extract relevant field
+        field_map = {
+            "valuation": ["valuation", "inferred_valuation"],
+            "arr": ["arr", "revenue", "inferred_revenue"],
+            "revenue": ["revenue", "arr", "inferred_revenue"],
+            "stage": ["stage"],
+            "sector": ["sector"],
+            "description": ["description", "product_description"],
+            "total_funding": ["total_funding"],
+            "headcount": ["team_size", "employee_count"],
+            "gross_margin": ["gross_margin"],
+            "business_model": ["business_model"],
+            "team_size": ["team_size", "employee_count"],
+            "target_market": ["target_market"],
+            "pricing_model": ["pricing_model"],
+            "hq_location": ["hq_location", "hq"],
+        }
+        candidates = field_map.get(column, [column])
+        enriched_value = None
+        for field in candidates:
+            v = company_data.get(field)
+            if v is not None:
+                enriched_value = v
+                break
+
+        if enriched_value is None:
+            return {
+                "suggestion": None,
+                "message": f"Could not find data for {company_name}.{column}",
+                "memo_sections": ld_memo_sections,
+            }
+
+        return {
+            "suggestion": {
+                "action": "edit",
+                "rowId": company_name,
+                "columnId": column,
+                "value": enriched_value,
+                "reasoning": f"Enriched from web search for {company_name}",
+                "confidence": company_data.get("confidence", 0.6),
+                "source_service": "agent.enrich_cell",
+            },
+            "grid_command": {
+                "action": "edit",
+                "rowId": company_name,
+                "columnId": column,
+                "value": enriched_value,
+                "reasoning": f"Enriched from web search for {company_name}",
+                "confidence": company_data.get("confidence", 0.6),
+            },
+            "memo_sections": ld_memo_sections,
+        }
+
+    async def _tool_write_to_memo(self, inputs: dict) -> dict:
+        """Primary output tool. Appends a section to the memo canvas.
+
+        The agent calls this incrementally to build analysis. Each call
+        streams a section to the frontend MemoEditor in real-time.
+        """
+        section = {
+            "id": f"sec_{len(self.shared_data.get('memo_sections', []))}",
+            "title": inputs.get("section_title", ""),
+            "text": inputs.get("text", ""),
+            "type": "heading2" if inputs.get("section_title") else "paragraph",
+            "content": inputs.get("text", ""),
+            "created_at": datetime.now().isoformat(),
+        }
+        # Optional chart
+        if inputs.get("chart_type") and inputs.get("chart_data"):
+            section["chart"] = {
+                "type": inputs["chart_type"],
+                "data": inputs["chart_data"],
+                "title": inputs.get("section_title", ""),
+            }
+            section["type"] = "chart"
+        # Optional table
+        if inputs.get("table"):
+            section["table"] = inputs["table"]
+            if not section.get("chart"):
+                section["type"] = "table"
+
+        async with self.shared_data_lock:
+            if "memo_sections" not in self.shared_data:
+                self.shared_data["memo_sections"] = []
+            self.shared_data["memo_sections"].append(section)
+
+        return {
+            "success": True,
+            "section_id": section["id"],
+            "memo_sections": [section],
+        }
+
+    async def _tool_emit_todo(self, inputs: dict) -> dict:
+        """Emit an inline todo that appears in chat and feeds into the suggestions panel."""
+        todo = {
+            "type": "action_item",
+            "title": inputs.get("title", ""),
+            "description": inputs.get("description", ""),
+            "priority": inputs.get("priority", "medium"),
+            "company": inputs.get("company", ""),
+            "due": inputs.get("due", ""),
+        }
+
+        # Persist to pending_suggestions so it survives page refresh
+        fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+        company_id = inputs.get("company", "") or "portfolio"
+        if fund_id:
+            try:
+                supabase_url = settings.SUPABASE_URL
+                supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+                if supabase_url and supabase_key:
+                    from supabase import create_client
+                    sb = create_client(supabase_url, supabase_key)
+                    sb.table("pending_suggestions").upsert({
+                        "fund_id": fund_id,
+                        "company_id": company_id,
+                        "column_id": "_todo",
+                        "suggested_value": json.dumps(todo),
+                        "source_service": "agent.emit_todo",
+                        "reasoning": inputs.get("description", ""),
+                        "metadata": {"tool": "emit_todo", "priority": todo["priority"]},
+                    }, on_conflict="fund_id,company_id,column_id").execute()
+            except Exception as e:
+                logger.warning(f"[TOOL] Failed to persist todo: {e}")
+
+        return {"suggestion": todo, "todo": todo}
+
+    async def _tool_sync_crm(self, inputs: dict) -> dict:
+        """Sync companies from matrix to CRM (Attio/Affinity via MCP)."""
+        try:
+            from app.services.crm import get_crm_provider
+        except ImportError:
+            return {"error": "CRM module not available"}
+
+        direction = inputs.get("direction", "push")
+        matrix_context = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_context.get("gridSnapshot") or {}
+        rows = grid_snapshot.get("rows", [])
+
+        # Filter to requested companies if specified
+        requested = inputs.get("companies")
+        if requested:
+            clean_names = {n.replace("@", "").strip().lower() for n in requested}
+            rows = [r for r in rows if (r.get("companyName") or "").lower() in clean_names]
+
+        if not rows:
+            return {"error": "No companies found in matrix to sync", "synced": 0}
+
+        provider = get_crm_provider()
+        if direction == "pull":
+            try:
+                crm_data = await provider.pull_all(limit=100)
+                return {"pulled": crm_data, "count": len(crm_data.get("companies", []))}
+            except Exception as e:
+                return {"error": f"CRM pull failed: {e}"}
+
+        # Default: push to CRM
+        try:
+            result = await provider.sync_companies_from_matrix(rows)
+            return {
+                "synced": result.created + result.updated,
+                "created": result.created,
+                "updated": result.updated,
+                "errors": result.errors,
+                "success": result.success,
+            }
+        except Exception as e:
+            return {"error": f"CRM sync failed: {e}"}
+
+    # ------------------------------------------------------------------
+    # New tools: batch ops, currency, CRM granular
+    # ------------------------------------------------------------------
+
+    async def _tool_batch_valuate(self, inputs: dict) -> dict:
+        """Run valuations across multiple companies in parallel batches."""
+        company_names = inputs.get("companies", [])
+        method = inputs.get("method")
+        if not company_names:
+            # Fall back to portfolio
+            company_names = list(
+                self.shared_data.get("matrix_context", {}).get("companyNames", [])
+            )
+        if not company_names:
+            return {"error": "No companies specified and no portfolio loaded"}
+
+        import asyncio
+        results = []
+        errors = []
+        # Process in batches of 5
+        for batch_start in range(0, len(company_names), 5):
+            batch = company_names[batch_start:batch_start + 5]
+            batch_tasks = []
+            for name in batch:
+                val_inputs = {"company_id": name}
+                if method:
+                    val_inputs["method"] = method
+                batch_tasks.append(self._tool_valuation(val_inputs))
+            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            for name, res in zip(batch, batch_results):
+                if isinstance(res, Exception):
+                    errors.append({"company": name, "error": str(res)})
+                elif isinstance(res, dict) and res.get("error"):
+                    errors.append({"company": name, "error": res["error"]})
+                else:
+                    results.append({"company": name, "valuation": res})
+
+        return {
+            "completed": len(results),
+            "failed": len(errors),
+            "results": results,
+            "errors": errors,
+            "total": len(company_names),
+        }
+
+    async def _tool_batch_enrich(self, inputs: dict) -> dict:
+        """Enrich multiple companies in parallel — wrapper around resolve_data_gaps."""
+        company_names = inputs.get("companies", [])
+        fields = inputs.get("fields")
+        if not company_names:
+            company_names = list(
+                self.shared_data.get("matrix_context", {}).get("companyNames", [])
+            )
+        if not company_names:
+            return {"error": "No companies specified and no portfolio loaded"}
+
+        gap_inputs = {"companies": company_names[:20]}
+        if fields:
+            gap_inputs["needed_fields"] = fields
+        return await self._tool_resolve_gaps(gap_inputs)
+
+    async def _tool_convert_currency(self, inputs: dict) -> dict:
+        """Convert all monetary values in shared_data to target currency."""
+        target = inputs.get("target_currency", "USD").upper()
+        source = inputs.get("source_currency", "").upper()
+
+        try:
+            from app.services.fx_intelligence_service import FXIntelligenceService
+            fx = FXIntelligenceService()
+        except ImportError:
+            return {"error": "FX service not available"}
+
+        companies = self.shared_data.get("companies", [])
+        conversions = []
+        monetary_fields = [
+            "revenue", "arr", "inferred_revenue", "valuation", "inferred_valuation",
+            "total_funding", "last_round_amount", "burn_rate",
+        ]
+
+        for company in companies:
+            company_ccy = source or (company.get("currency") or company.get("reporting_currency") or "USD").upper()
+            if company_ccy == target:
+                continue
+
+            rate = await fx.get_rate(company_ccy, target)
+            if not rate:
+                continue
+
+            converted_fields = {}
+            for field in monetary_fields:
+                val = company.get(field)
+                if val is not None:
+                    try:
+                        original = float(val)
+                        converted = original * rate
+                        company[field] = converted
+                        company[f"_{field}_original_{company_ccy}"] = original
+                        converted_fields[field] = converted
+                    except (TypeError, ValueError):
+                        pass
+
+            if converted_fields:
+                company["currency"] = target
+                conversions.append({
+                    "company": company.get("company") or company.get("name"),
+                    "from": company_ccy,
+                    "to": target,
+                    "rate": rate,
+                    "fields_converted": list(converted_fields.keys()),
+                })
+
+        return {
+            "target_currency": target,
+            "conversions": conversions,
+            "companies_converted": len(conversions),
+            "companies_skipped": len(companies) - len(conversions),
+        }
+
+    async def _tool_crm_search(self, inputs: dict) -> dict:
+        """Search CRM for companies, deals, or notes."""
+        try:
+            from app.services.crm import get_crm_provider
+        except ImportError:
+            return {"error": "CRM module not available"}
+
+        query = inputs.get("query", "")
+        entity_type = inputs.get("entity_type", "companies")
+
+        provider = get_crm_provider()
+        try:
+            if entity_type == "companies":
+                results = await provider.search_companies(query, limit=10)
+                return {"companies": [r.__dict__ if hasattr(r, '__dict__') else r for r in results], "count": len(results)}
+            elif entity_type == "deals":
+                results = await provider.list_deals(limit=20)
+                # Filter by query
+                filtered = [d for d in results if query.lower() in (getattr(d, 'name', '') or '').lower()] if query else results
+                return {"deals": [d.__dict__ if hasattr(d, '__dict__') else d for d in filtered], "count": len(filtered)}
+            elif entity_type == "notes":
+                results = await provider.list_notes(query, limit=20)
+                return {"notes": [n.__dict__ if hasattr(n, '__dict__') else n for n in results], "count": len(results)}
+            else:
+                return {"error": f"Unknown entity_type: {entity_type}. Use: companies, deals, notes"}
+        except Exception as e:
+            return {"error": f"CRM search failed: {e}"}
+
+    async def _tool_crm_log_interaction(self, inputs: dict) -> dict:
+        """Log a meeting, call, email, or note to CRM."""
+        try:
+            from app.services.crm import get_crm_provider
+            from app.services.crm.base import CRMNote
+        except ImportError:
+            return {"error": "CRM module not available"}
+
+        company = inputs.get("company", "")
+        note_type = inputs.get("note_type", "note")
+        content = inputs.get("content", "")
+        title = inputs.get("title", f"{note_type.capitalize()} - {company}")
+
+        if not company or not content:
+            return {"error": "company and content are required"}
+
+        provider = get_crm_provider()
+        try:
+            # Find the company in CRM first
+            matches = await provider.search_companies(company, limit=1)
+            if not matches:
+                return {"error": f"Company '{company}' not found in CRM. Sync first with sync_crm."}
+
+            company_ext_id = matches[0].external_id if hasattr(matches[0], 'external_id') else str(matches[0].get('external_id', ''))
+
+            note = CRMNote(
+                external_id="",
+                company_external_id=company_ext_id,
+                title=title,
+                body=content,
+            )
+            result = await provider.add_note(note)
+            return {
+                "logged": True,
+                "note_type": note_type,
+                "company": company,
+                "title": title,
+            }
+        except Exception as e:
+            return {"error": f"Failed to log interaction: {e}"}
+
+    async def _tool_crm_pipeline_update(self, inputs: dict) -> dict:
+        """Update deal pipeline stage in CRM."""
+        try:
+            from app.services.crm import get_crm_provider
+            from app.services.crm.base import CRMDeal
+        except ImportError:
+            return {"error": "CRM module not available"}
+
+        company = inputs.get("company", "")
+        stage = inputs.get("stage", "")
+        deal_value = inputs.get("deal_value")
+        notes = inputs.get("notes", "")
+
+        if not company or not stage:
+            return {"error": "company and stage are required"}
+
+        valid_stages = {"sourced", "screening", "dd", "ic_review", "term_sheet", "closed", "passed"}
+        if stage not in valid_stages:
+            return {"error": f"Invalid stage: {stage}. Use: {', '.join(sorted(valid_stages))}"}
+
+        provider = get_crm_provider()
+        try:
+            matches = await provider.search_companies(company, limit=1)
+            if not matches:
+                return {"error": f"Company '{company}' not found in CRM. Sync first with sync_crm."}
+
+            company_ext_id = matches[0].external_id if hasattr(matches[0], 'external_id') else str(matches[0].get('external_id', ''))
+
+            deal = CRMDeal(
+                external_id="",
+                company_external_id=company_ext_id,
+                name=f"{company} - Investment",
+                stage=stage,
+                value=deal_value,
+            )
+            result = await provider.upsert_deal(deal)
+            return {
+                "updated": True,
+                "company": company,
+                "stage": stage,
+                "deal_value": deal_value,
+            }
+        except Exception as e:
+            return {"error": f"Failed to update pipeline: {e}"}
+
+        # =========================================================================
+        # Phase 7: Enhanced Agent Skills — bulk ops, LP queries, team comparison
+        # =========================================================================
+
+    def _identify_data_gaps(self, company_data: Dict[str, Any]) -> List[str]:
+        """Return list of missing or low-confidence fields for dynamic enrichment."""
+        gaps = []
+        critical_fields = [
+            ('revenue', 'arr', 'current_arr_usd'),
+            ('valuation', 'current_valuation_usd'),
+            ('employee_count', 'team_size', 'headcount'),
+            ('total_raised', 'total_funding'),
+            ('burn_rate', 'burn_rate_monthly_usd'),
+            ('growth_rate', 'revenue_growth_annual_pct'),
+        ]
+        for field_group in critical_fields:
+            found = False
+            for field in field_group if isinstance(field_group, tuple) else [field_group]:
+                val = company_data.get(field)
+                if val is not None and val != 0:
+                    found = True
+                    break
+                # Check inferred version
+                inferred = company_data.get(f'inferred_{field}')
+                confidence = company_data.get(f'{field}_confidence', 0)
+                if inferred is not None and confidence >= 0.5:
+                    found = True
+                    break
+            if not found:
+                gaps.append(field_group[0] if isinstance(field_group, tuple) else field_group)
+        return gaps
+
+    def _calculate_search_depth(self, gaps: List[str]) -> int:
+        """More gaps = more Tavily searches. Min 4, max 12."""
+        base = 4
+        gap_boost = min(len(gaps) * 2, 8)
+        return min(base + gap_boost, 12)
+
+    def _build_gap_specific_queries(self, company_name: str, gaps: List[str]) -> List[str]:
+        """Build targeted Tavily queries based on specific data gaps."""
+        search_name = self._clean_company_name_for_search(company_name)
+        base_queries = [
+            f'"{search_name}" startup company funding valuation revenue',
+            f'"{search_name}" company business model team founders',
+            f'"{search_name}" Series A B C funding round investors',
+            f'"{search_name}" founder CEO CTO background',
+        ]
+        gap_queries: Dict[str, str] = {
+            'revenue': f'"{search_name}" annual revenue ARR MRR 2024 2025',
+            'valuation': f'"{search_name}" valuation post-money Series round 2024 2025',
+            'employee_count': f'"{search_name}" employees team size headcount LinkedIn',
+            'total_raised': f'"{search_name}" total funding raised Crunchbase',
+            'burn_rate': f'"{search_name}" burn rate runway cash monthly expenses',
+            'growth_rate': f'"{search_name}" revenue growth rate YoY percentage',
+        }
+        for gap in gaps:
+            if gap in gap_queries:
+                base_queries.append(gap_queries[gap])
+        return base_queries[:self._calculate_search_depth(gaps)]
+
+    async def _execute_bulk_valuation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Run valuation engine across all portfolio companies in parallel."""
+        fund_id = inputs.get('fund_id')
+        if not fund_id:
+            return {"error": "fund_id required for bulk valuation"}
+
+        try:
+            from app.services.portfolio_service import PortfolioService
+            ps = PortfolioService()
+            portfolio = ps.get_portfolio(fund_id)
+            companies = portfolio.get('companies', []) if portfolio else []
+            if not companies:
+                return {"error": "No companies found in portfolio", "fund_id": fund_id}
+
+            async def value_one(company: Dict) -> Dict:
+                try:
+                    result = await self._execute_valuation({
+                        'company_name': company.get('name', ''),
+                        'company': company.get('name', ''),
+                        'revenue': company.get('current_arr_usd') or company.get('arr') or 0,
+                        'arr': company.get('current_arr_usd') or company.get('arr') or 0,
+                        'sector': company.get('sector', ''),
+                        'stage': company.get('funnel_status', ''),
+                        'growth_rate': company.get('revenue_growth_annual_pct', 0),
+                        'fund_id': fund_id,
+                        'company_id': company.get('id'),
+                    })
+                    return {"company_id": company.get('id'), "name": company.get('name'), "result": result, "success": True}
+                except Exception as e:
+                    return {"company_id": company.get('id'), "name": company.get('name'), "error": str(e), "success": False}
+
+            # Limit concurrency to 5
+            semaphore = asyncio.Semaphore(5)
+            async def limited(company: Dict) -> Dict:
+                async with semaphore:
+                    return await value_one(company)
+
+            tasks = [limited(c) for c in companies]
+            results = await asyncio.gather(*tasks)
+
+            succeeded = [r for r in results if r.get('success')]
+            failed = [r for r in results if not r.get('success')]
+
+            # Write successful valuations as pending_suggestions
+            for r in succeeded:
+                val = r.get('result', {})
+                valuation = val.get('valuation') or val.get('fair_value') or val.get('estimated_valuation')
+                if valuation and r.get('company_id'):
+                    try:
+                        await self._add_pending_suggestion_to_db(
+                            fund_id=fund_id,
+                            company_id=r['company_id'],
+                            column_id='valuation',
+                            suggested_value=valuation,
+                            source_service='valuation_engine.bulk',
+                            reasoning=f"Bulk valuation: {val.get('method', 'composite')} method"
+                        )
+                    except Exception as e:
+                        logger.warning(f"[BULK_VALUATION] Failed to write suggestion for {r.get('name')}: {e}")
+
+            return {
+                "total": len(results),
+                "succeeded": len(succeeded),
+                "failed": len(failed),
+                "results": results,
+            }
+        except Exception as e:
+            logger.error(f"[BULK_VALUATION] Error: {e}")
+            return {"error": str(e)}
+
+    async def _execute_multi_enrich(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich multiple companies using targeted micro-skill searches.
+
+        Delegates to _tool_enrich_field per company — detects empty fields,
+        runs focused searches, and persists suggestions automatically.
+        """
+        company_names = inputs.get('companies', inputs.get('company_names', []))
+        fund_id = inputs.get('fund_id')
+
+        # Pick up proactive enrichment targets from shared_data
+        proactive_targets = self.shared_data.get("proactive_enrich_companies", [])
+        sparse_targets = self.shared_data.get("sparse_enrich_companies", [])
+        if proactive_targets:
+            for name in proactive_targets:
+                if name not in company_names:
+                    company_names.append(name)
+        if sparse_targets:
+            for item in sparse_targets:
+                name = item if isinstance(item, str) else item.get("name", "")
+                if name and name not in company_names:
+                    company_names.append(name)
+
+        if not company_names and fund_id:
+            try:
+                from app.services.portfolio_service import PortfolioService
+                ps = PortfolioService()
+                portfolio = ps.get_portfolio(fund_id)
+                companies = portfolio.get('companies', []) if portfolio else []
+                company_names = [c.get('name') for c in companies if c.get('name')]
+            except Exception:
+                pass
+
+        if not company_names:
+            return {"error": "No companies to enrich"}
+
+        semaphore = asyncio.Semaphore(5)
+        async def enrich_one(name: str) -> Dict:
+            async with semaphore:
+                try:
+                    # _tool_enrich_field auto-detects empty fields, searches, persists suggestions
+                    result = await self._tool_enrich_field({
+                        "company_name": name,
+                    })
+                    return {
+                        "company": name,
+                        "fields_found": result.get("fields_found", []),
+                        "suggestions_persisted": result.get("suggestions_persisted", 0),
+                        "success": True,
+                    }
+                except Exception as e:
+                    logger.error(f"[MULTI_ENRICH] {name} failed: {e}")
+                    return {"company": name, "error": str(e), "success": False}
+
+        tasks = [enrich_one(name) for name in company_names[:20]]
+        results = await asyncio.gather(*tasks)
+
+        succeeded = sum(1 for r in results if r.get('success'))
+        total_suggestions = sum(r.get("suggestions_persisted", 0) for r in results if r.get("success"))
+        logger.info(f"[MULTI_ENRICH] Complete: {succeeded}/{len(results)} enriched, {total_suggestions} suggestions")
+        return {
+            "total": len(results),
+            "succeeded": succeeded,
+            "failed": len(results) - succeeded,
+            "suggestions_persisted": total_suggestions,
+            "companies": results,
+        }
+
+    async def _execute_lp_query_response(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Answer LP questions using fund data + portfolio metrics."""
+        query = inputs.get('query', inputs.get('prompt', ''))
+        fund_id = inputs.get('fund_id')
+
+        try:
+            from app.services.portfolio_service import PortfolioService
+            ps = PortfolioService()
+            fund_metrics = ps.get_portfolio_metrics(fund_id) if fund_id else {}
+            pacing = ps.get_portfolio_pacing(fund_id) if fund_id else {}
+        except Exception:
+            fund_metrics = {}
+            pacing = {}
+
+        # Build shared data for memo generation
+        shared_data = {
+            'fund_metrics': fund_metrics,
+            'fund_context': {
+                'fund_id': fund_id,
+                'fund_metrics': fund_metrics,
+                'pacing': pacing,
+            },
+            'query_summary': query[:80] if query else 'LP Query',
+        }
+
+        try:
+            from app.services.lightweight_memo_service import LightweightMemoService
+            memo_svc = LightweightMemoService()
+            memo = await memo_svc.generate(
+                user_prompt=query,
+                shared_data=shared_data,
+                template_id='lp_quarterly_enhanced' if 'dpi' in query.lower() or 'quarterly' in query.lower() else 'bespoke_lp',
+            )
+            return {"memo": memo, "fund_metrics": fund_metrics, "template": "lp_response"}
+        except Exception as e:
+            logger.error(f"[LP_QUERY] Error: {e}")
+            return {"error": str(e), "fund_metrics": fund_metrics}
+
+    async def _execute_team_comparison(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Compare founding teams across 2-4 companies."""
+        company_names = inputs.get('companies', inputs.get('company_names', []))
+        if len(company_names) < 2:
+            return {"error": "Need at least 2 companies for team comparison"}
+
+        # Fetch data for each company
+        team_data = []
+        for name in company_names[:4]:
+            try:
+                result = await self._execute_company_fetch({'company': name})
+                companies = result.get('companies', [])
+                if companies:
+                    team_data.append(companies[0])
+            except Exception as e:
+                team_data.append({'company': name, 'error': str(e)})
+
+        # Score teams on 5 dimensions
+        dimensions = ['technical', 'domain', 'execution', 'fundraising', 'leadership']
+        radar_data = []
+        for dim in dimensions:
+            entry = {'dimension': dim.title()}
+            for td in team_data:
+                name = td.get('company', td.get('name', 'Unknown'))
+                # Use existing scores or estimate from data
+                score = td.get(f'{dim}_score', 5)
+                if dim == 'technical':
+                    score = min(10, 5 + (1 if td.get('cto_technical') else 0) + (1 if td.get('repeat_founders') else 0))
+                elif dim == 'fundraising':
+                    raised = td.get('total_raised', 0) or 0
+                    score = min(10, 3 + int(raised / 10_000_000))
+                entry[name] = score
+            radar_data.append(entry)
+
+        return {
+            "companies": team_data,
+            "radar_data": {
+                "dimensions": radar_data,
+                "companies": [td.get('company', td.get('name', '')) for td in team_data],
+            },
+            "template": "team_comparison",
+        }
+
+    async def _execute_followon_deep_dive(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Deep follow-on analysis with cap table evolution and breakpoints."""
+        company_name = inputs.get('company', inputs.get('company_name', ''))
+        follow_on_amount = inputs.get('follow_on_amount', inputs.get('amount', 0))
+        fund_id = inputs.get('fund_id')
+
+        # Get company data
+        try:
+            result = await self._execute_company_fetch({'company': company_name})
+            company_data = result.get('companies', [{}])[0] if result.get('companies') else {}
+        except Exception:
+            company_data = {'company': company_name}
+
+        # Get cap table history if available
+        cap_table_evolution = []
+        try:
+            rounds = company_data.get('funding_rounds', [])
+            if rounds:
+                founder_pct = 100.0
+                our_pct = 0.0
+                other_pct = 0.0
+                esop_pct = 0.0
+                for r in rounds:
+                    dilution = r.get('dilution', 0.15)
+                    founder_pct *= (1 - dilution)
+                    esop_pct = min(15, esop_pct + 2)
+                    our_new = dilution * 0.3 if 'our' in str(r.get('investors', '')).lower() else 0
+                    our_pct = our_pct * (1 - dilution) + our_new * 100
+                    other_pct = 100 - founder_pct - esop_pct - our_pct
+                    cap_table_evolution.append({
+                        'round': r.get('round', r.get('type', 'Unknown')),
+                        'founders': round(founder_pct, 1),
+                        'esop': round(esop_pct, 1),
+                        'our_fund': round(our_pct, 1),
+                        'others': round(max(0, other_pct), 1),
+                    })
+        except Exception:
+            pass
+
+        # Model follow-on scenarios
+        current_ownership = company_data.get('ownership_percentage', 10) or 10
+        scenarios = [
+            {'name': 'No Follow-On', 'ownership': round(current_ownership * 0.8, 1), 'moic': 'N/A'},
+            {'name': 'Pro-Rata', 'ownership': round(current_ownership, 1), 'moic': 'N/A'},
+            {'name': 'Super Pro-Rata', 'ownership': round(current_ownership * 1.2, 1), 'moic': 'N/A'},
+        ]
+
+        return {
+            "company": company_data,
+            "cap_table_evolution": cap_table_evolution,
+            "follow_on_amount": follow_on_amount,
+            "scenarios": scenarios,
+            "current_ownership": current_ownership,
+            "template": "followon_deep_dive",
+        }
+
+    async def _execute_competitive_landscape_memo(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate competitive landscape memo with scatter positioning."""
+        company_name = inputs.get('company', inputs.get('company_name', ''))
+
+        # Fetch company + competitors
+        try:
+            result = await self._execute_company_fetch({'company': company_name})
+            company_data = result.get('companies', [{}])[0] if result.get('companies') else {}
+        except Exception:
+            company_data = {'company': company_name}
+
+        # Search for competitors
+        competitors = []
+        if self.tavily_api_key:
+            try:
+                search_name = self._clean_company_name_for_search(company_name)
+                comp_result = await self._tavily_search(f'{search_name} competitors alternatives market landscape')
+                if comp_result and comp_result.get('results'):
+                    for r in comp_result['results'][:5]:
+                        competitors.append({
+                            'source': r.get('url', ''),
+                            'title': r.get('title', ''),
+                            'snippet': r.get('content', '')[:200],
+                        })
+            except Exception:
+                pass
+
+        return {
+            "company": company_data,
+            "competitors": competitors,
+            "template": "competitive_landscape",
+        }
+
+    async def _add_pending_suggestion_to_db(
+        self,
+        fund_id: str,
+        company_id: str,
+        column_id: str,
+        suggested_value: Any,
+        source_service: str,
+        reasoning: str = "",
+        ) -> None:
+        """Write a pending suggestion to the database."""
+        try:
+            from app.core.database import get_supabase_service
+            sb = get_supabase_service()
+            if not sb:
+                return
+            import json
+            sb.from_('pending_suggestions').upsert({
+                'fund_id': fund_id,
+                'company_id': company_id,
+                'column_id': column_id,
+                'suggested_value': {"value": suggested_value},
+                'source_service': source_service,
+                'reasoning': reasoning,
+            }, on_conflict='fund_id,company_id,column_id').execute()
+        except Exception as e:
+            logger.warning(f"[PENDING_SUGGESTION] Write failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Shared-data hydration: derive secondary keys from companies
+    # ------------------------------------------------------------------
+
+    async def _hydrate_shared_data_from_companies(self) -> None:
+        """Derive secondary shared_data keys from companies when missing.
+
+        After resolve_data_gaps (or any tool) populates shared_data["companies"],
+        downstream consumers like memo templates expect keys such as
+        revenue_projections, scenario_analysis, fund_metrics, and
+        cap_table_history.  If those keys are absent we synthesise lightweight
+        versions from the company dicts so memos never render blank.
+
+        This is intentionally *additive* — it never overwrites keys that a
+        real analysis tool has already populated.
+
+        Lock strategy: hold the lock only briefly to snapshot inputs and to
+        write back results.  All computation happens *outside* the lock so
+        other coroutines (memo artifact storage, process_request_stream) are
+        never blocked for more than a few microseconds.
+        """
+        # ── Step 1: snapshot inputs under a brief lock ──
+        async with self.shared_data_lock:
+            companies = list(self.shared_data.get("companies", []))
+            if not companies:
+                return
+            fund_ctx = dict(self.shared_data.get("fund_context", {}))
+            # Record which keys already exist so we don't recompute them
+            has_rev_proj = bool(self.shared_data.get("revenue_projections"))
+            has_scenarios = bool(self.shared_data.get("scenario_analysis"))
+            has_fund_metrics = bool(self.shared_data.get("fund_metrics"))
+            has_cap_hist = bool(self.shared_data.get("cap_table_history"))
+
+        # ── Step 2: compute derived data WITHOUT holding the lock ──
+        derived: Dict[str, Any] = {}
+
+        # -- 1. revenue_projections (per-company growth curves) ----------
+        if not has_rev_proj:
+            rev_proj: dict = {}
+            for c in companies:
+                name = c.get("company") or c.get("name") or ""
+                if not name:
+                    continue
+                base_rev = (
+                    _num(c.get("arr"))
+                    or _num(c.get("revenue"))
+                    or _num(c.get("inferred_revenue"))
+                    or 0
+                )
+                stage = c.get("stage") or "Unknown"
+                growth = _num(c.get("growth_rate")) or _stage_default_growth(stage)
+                # Fallback: if no revenue at all, estimate from stage benchmarks
+                if base_rev <= 0:
+                    stage_rev_defaults = {
+                        "Pre-Seed": 100_000, "Seed": 500_000, "Series A": 3_000_000,
+                        "Series B": 15_000_000, "Series C": 50_000_000, "Series D": 100_000_000,
+                    }
+                    base_rev = stage_rev_defaults.get(stage, 1_000_000)
+                    logger.info("[HYDRATE] %s: no revenue data, using stage default $%s for %s", name, f"{base_rev:,.0f}", stage)
+                projections = []
+                rev = base_rev
+                gr = growth
+                for yr in range(1, 6):
+                    rev = rev * (1 + gr)
+                    projections.append({"year": yr, "revenue": round(rev, 2), "growth_rate": round(gr, 4)})
+                    gr = max(gr * 0.85, 0.05)  # decay
+                rev_proj[name] = {
+                    "company": name,
+                    "base_revenue": base_rev,
+                    "initial_growth": growth,
+                    "years": 5,
+                    "projections": projections,
+                    "_inferred": base_rev == 0,
+                }
+            if rev_proj:
+                derived["revenue_projections"] = rev_proj
+            logger.info("[HYDRATE] revenue_projections: %d/%d companies", len(rev_proj), len(companies))
+
+        # -- 2. scenario_analysis (basic exit multiples) -----------------
+        if not has_scenarios:
+            scenarios: dict = {}
+            for c in companies:
+                name = c.get("company") or c.get("name") or ""
+                if not name:
+                    continue
+                val = _num(c.get("valuation")) or _num(c.get("inferred_valuation")) or 0
+                rev = (
+                    _num(c.get("arr"))
+                    or _num(c.get("revenue"))
+                    or _num(c.get("inferred_revenue"))
+                    or 0
+                )
+                stage = c.get("stage") or "Unknown"
+                # Fallback: estimate valuation from stage if missing
+                if val <= 0:
+                    stage_val_defaults = {
+                        "Pre-Seed": 5_000_000, "Seed": 20_000_000, "Series A": 100_000_000,
+                        "Series B": 400_000_000, "Series C": 1_000_000_000, "Series D": 3_000_000_000,
+                    }
+                    val = stage_val_defaults.get(stage, 50_000_000)
+                    logger.info("[HYDRATE] %s: no valuation, using stage default $%s for %s", name, f"{val:,.0f}", stage)
+                multiple = round(val / rev, 1) if rev > 0 else 10.0
+                scenarios[name] = {
+                    "company": name,
+                    "current_valuation": val,
+                    "current_revenue": rev,
+                    "revenue_multiple": multiple,
+                    "exit_scenarios": [
+                        {"label": "Bear", "exit_multiple": round(multiple * 0.5, 1), "exit_value": round(val * 1.5, 0), "probability": 0.25},
+                        {"label": "Base", "exit_multiple": round(multiple, 1), "exit_value": round(val * 3, 0), "probability": 0.50},
+                        {"label": "Bull", "exit_multiple": round(multiple * 2, 1), "exit_value": round(val * 7, 0), "probability": 0.20},
+                        {"label": "Outlier", "exit_multiple": round(multiple * 4, 1), "exit_value": round(val * 15, 0), "probability": 0.05},
+                    ],
+                }
+            if scenarios:
+                derived["scenario_analysis"] = scenarios
+            logger.info("[HYDRATE] scenario_analysis: %d/%d companies", len(scenarios), len(companies))
+
+        # -- 3. fund_metrics (from fund_context + companies) -------------
+        if not has_fund_metrics and fund_ctx:
+            fund_size = _num(fund_ctx.get("fund_size")) or _num(fund_ctx.get("fundSize")) or 0
+            deployed = _num(fund_ctx.get("deployed_capital")) or _num(fund_ctx.get("deployedCapital")) or 0
+            remaining = _num(fund_ctx.get("remaining_capital")) or _num(fund_ctx.get("remainingCapital")) or (fund_size - deployed if fund_size else 0)
+            if fund_size > 0:
+                derived["fund_metrics"] = {
+                    "metrics": {
+                        "total_committed": fund_size,
+                        "total_invested": deployed,
+                        "total_nav": round(deployed * 1.3, 0),
+                        "total_distributed": 0,
+                        "dpi": 0,
+                        "rvpi": round(remaining / fund_size, 2) if fund_size else 0,
+                        "tvpi": round((deployed * 1.3) / deployed, 2) if deployed else 0,
+                        "irr": 0,
+                        "deployment_rate": round(deployed / fund_size, 2) if fund_size else 0,
+                    },
+                    "portfolio": {
+                        "company_count": len(companies),
+                        "active_count": len(companies),
+                        "exited_count": 0,
+                    },
+                    "_source": "hydrated_from_companies",
+                }
+
+        # -- 4. cap_table_history (lightweight from funding data) --------
+        if not has_cap_hist:
+            cap_hist: dict = {}
+            for c in companies:
+                name = c.get("company") or c.get("name") or ""
+                if not name:
+                    continue
+                val = _num(c.get("valuation")) or _num(c.get("inferred_valuation")) or 0
+                total_raised = _num(c.get("total_funding")) or _num(c.get("total_raised")) or 0
+                stage = c.get("stage") or "Unknown"
+                # Always generate cap table — use stage defaults if no valuation
+                founder_pct = _stage_founder_ownership(stage)
+                if val > 0 and total_raised > 0:
+                    investor_pct = min(total_raised / val, 0.60)
+                else:
+                    investor_pct = 1 - founder_pct - 0.10
+                esop_pct = round(1.0 - founder_pct - investor_pct, 4)
+                if esop_pct < 0:
+                    esop_pct = 0.10
+                    investor_pct = round(1.0 - founder_pct - esop_pct, 4)
+                cap_hist[name] = {
+                    "company": name,
+                    "current_cap_table": {
+                        "Founders": round(founder_pct * 100, 1),
+                        "Investors": round(investor_pct * 100, 1),
+                        "Option Pool": round(esop_pct * 100, 1),
+                    },
+                    "total_raised": total_raised,
+                    "num_rounds": _stage_round_count(stage),
+                    "founder_ownership": round(founder_pct * 100, 1),
+                    "_source": "hydrated_from_companies",
+                }
+            if cap_hist:
+                derived["cap_table_history"] = cap_hist
+            logger.info("[HYDRATE] cap_table_history: %d/%d companies", len(cap_hist), len(companies))
+
+        # ── Step 3: write results back under a brief lock ──
+        if derived:
+            async with self.shared_data_lock:
+                for key, value in derived.items():
+                    # Additive: don't overwrite if another coroutine populated it
+                    if not self.shared_data.get(key):
+                        self.shared_data[key] = value
+                        entry_count = len(value) if isinstance(value, dict) else 1
+                        logger.info("[HYDRATE] Derived %s (%d entries)", key, entry_count)
+                    else:
+                        logger.info("[HYDRATE] Skipped %s — already populated", key)
+        else:
+            logger.warning("[HYDRATE] No derived data produced from %d companies", len(companies))
+
+    # ------------------------------------------------------------------
+    # Phase 9: Gap resolver tool + missing skill handlers
+    # ------------------------------------------------------------------
+
+    async def _tool_resolve_gaps(self, inputs: dict) -> dict:
+        """Auto-detect and fill missing company data using benchmarks + parallel searches.
+
+        This is the key tool that prevents the agent from ever saying "no data".
+        Tier 1: Stage benchmarks (instant) → Tier 2: Parallel Tavily searches → Tier 3: Valuations.
+        All results persist to pending_suggestions and emit grid_commands.
+        """
+        from app.services.micro_skills.gap_resolver import resolve_gaps
+
+        company_names = inputs.get("companies") or []
+        needed_fields = inputs.get("needed_fields")
+        fund_ctx = self.shared_data.get("fund_context", {})
+        fund_id = inputs.get("fund_id") or fund_ctx.get("fundId", "")
+
+        # Build company list from shared_data or inputs
+        companies = []
+        existing_companies = self.shared_data.get("companies", [])
+
+        if company_names:
+            for name in company_names:
+                name = name.strip().lstrip("@")
+                existing = next(
+                    (c for c in existing_companies if c.get("name", "").lower() == name.lower()),
+                    None,
+                )
+                if existing:
+                    companies.append(existing)
+                else:
+                    companies.append({"name": name})
+        elif existing_companies:
+            companies = existing_companies
+        else:
+            return {"error": "No companies specified or in shared_data"}
+
+        # Get portfolio + build UUID map + grid cell values
+        portfolio_companies = []
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_rows = matrix_ctx.get("gridSnapshot", {}).get("rows", []) if isinstance(matrix_ctx.get("gridSnapshot"), dict) else []
+        _grid_id_map: Dict[str, str] = {}
+        _grid_cell_map: Dict[str, Dict] = {}
+        for row in grid_rows[:50]:
+            cells = row.get("cells") or row.get("cellValues") or {}
+            _rn = (row.get("companyName") or row.get("company_name") or "").strip().lower()
+            _ri = row.get("id") or ""
+            if _rn and _ri:
+                _grid_id_map[_rn] = _ri
+                _grid_cell_map[_rn] = {
+                    "id": _ri,
+                    "stage": self._extract_str(cells, "stage", "investment_stage"),
+                    "sector": self._extract_str(cells, "sector", "category"),
+                    "arr": self._extract_numeric(cells, "arr", "currentArrUsd"),
+                    "valuation": self._extract_numeric(cells, "currentValuationUsd", "valuation"),
+                    "total_funding": self._extract_numeric(cells, "totalFunding", "total_funding"),
+                    "last_round_amount": self._extract_numeric(cells, "lastRoundAmount", "last_round_amount"),
+                    "team_size": self._extract_numeric(cells, "teamSize", "team_size"),
+                }
+            portfolio_companies.append({
+                "name": row.get("companyName") or row.get("company_name") or "",
+                "stage": self._extract_str(cells, "stage", "investment_stage"),
+                "sector": self._extract_str(cells, "sector", "category"),
+                "arr": self._extract_numeric(cells, "arr", "currentArrUsd"),
+                "valuation": self._extract_numeric(cells, "currentValuationUsd", "valuation"),
+            })
+
+        # Stamp UUIDs and seed grid values onto companies before gap resolution
+        # Preserve originals in _grid_values so correction detection can compare later
+        for company in companies:
+            _cn = (company.get("name") or company.get("company") or "").strip().lower()
+            if not _cn:
+                continue
+            if not (company.get("id") or company.get("company_id")):
+                _uid = _grid_id_map.get(_cn, "")
+                if _uid:
+                    company["id"] = _uid
+                    logger.info("[GAP_RESOLVER_PREP] Stamped UUID %s onto %s", _uid[:8], _cn)
+            _gv = _grid_cell_map.get(_cn)
+            if _gv:
+                company["_grid_values"] = dict(_gv)  # preserve originals for correction detection
+                for _k, _v in _gv.items():
+                    if _v and not company.get(_k):
+                        company[_k] = _v
+
+        # Wire up Tavily search and LLM extract functions
+        async def tavily_fn(query: str) -> dict:
+            return await self._tavily_search(query)
+
+        async def llm_fn(prompt: str, system: str) -> str:
+            result = await self.model_router.get_completion(
+                prompt=prompt,
+                system_prompt=system,
+                capability=ModelCapability.FAST,
+                max_tokens=400,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="micro_skill_extract",
+            )
+            return result.get("response", "{}") if isinstance(result, dict) else str(result)
+
+        # Run gap resolver
+        result = await resolve_gaps(
+            companies=companies,
+            needed_fields=needed_fields,
+            fund_id=fund_id,
+            tavily_search_fn=tavily_fn if self.tavily_api_key else None,
+            llm_extract_fn=llm_fn,
+            portfolio_companies=portfolio_companies if portfolio_companies else None,
+        )
+
+        # Store enriched companies back in shared_data
+        async with self.shared_data_lock:
+            self.shared_data["companies"] = result["companies"]
+
+        # Derive secondary keys (revenue_projections, scenario_analysis, etc.)
+        # so downstream tools like generate_memo have data to work with.
+        await self._hydrate_shared_data_from_companies()
+
+        return {
+            "companies_enriched": len(result["companies"]),
+            "total_fields_filled": result["total_fields_filled"],
+            "total_suggestions_persisted": result["total_suggestions_persisted"],
+            "skills_run": result["skills_run"],
+            "memo_sections": result["memo_sections"],
+            "grid_commands": result["grid_commands"],
+            "chart_data": result["chart_data"],
+            "company_summaries": [
+                {
+                    "name": c.get("name", ""),
+                    "stage": c.get("stage", ""),
+                    "arr": c.get("arr") or c.get("inferred_revenue"),
+                    "valuation": c.get("valuation") or c.get("inferred_valuation"),
+                    "team_size": c.get("team_size"),
+                }
+                for c in result["companies"]
+            ],
+        }
+
+    async def _tool_enrich_proactive(self, inputs: dict) -> dict:
+        """Auto-fetch and enrich a company mentioned without @. Delegates to gap resolver."""
+        company_name = inputs.get("company_name", "").strip().lstrip("@")
+        if not company_name:
+            return {"error": "company_name is required"}
+
+        return await self._tool_resolve_gaps({
+            "companies": [company_name],
+            "fund_id": inputs.get("fund_id"),
+        })
+
+    # ------------------------------------------------------------------
+    # enrich_field: single flexible tool for any column / field
+    # ------------------------------------------------------------------
+
+    def _find_company_id(self, company_name: str) -> str:
+        """Look up company UUID from shared_data or grid snapshot."""
+        name_lower = company_name.lower().strip().lstrip("@")
+        # Check shared_data companies
+        for c in self.shared_data.get("companies", []):
+            if isinstance(c, dict):
+                cn = (c.get("name") or c.get("company") or "").lower()
+                if cn == name_lower:
+                    return c.get("id") or c.get("company_id") or ""
+        # Check grid snapshot
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snap = matrix_ctx.get("gridSnapshot", {}) if isinstance(matrix_ctx.get("gridSnapshot"), dict) else {}
+        for row in grid_snap.get("rows", []):
+            if (row.get("companyName") or row.get("company_name") or "").lower().strip() == name_lower:
+                return row.get("id") or row.get("rowId") or ""
+        return ""
+
+    async def _persist_company_to_db(self, company_data: Dict[str, Any], fund_id: Optional[str] = None) -> Dict[str, Any]:
+        """Persist enriched company data to the companies table via portfolio_service.upsert_company.
+
+        Called after _execute_company_fetch to durably store enriched data.
+        Deduplicates by name, only writes non-None fields, stashes overflow into extra_data JSONB.
+
+        Returns upsert result dict with id, name, created flag, and updated fields.
+        """
+        company_name = (
+            company_data.get("company")
+            or company_data.get("name")
+            or company_data.get("requested_company")
+            or ""
+        ).strip()
+        if not company_name:
+            logger.warning("[PERSIST_COMPANY] No company name in data, skipping persist")
+            return {"error": "no company name"}
+
+        resolved_fund_id = fund_id or self.shared_data.get("fund_id")
+
+        try:
+            from app.services.portfolio_service import portfolio_service
+            result = await portfolio_service.upsert_company(
+                name=company_name,
+                data=company_data,
+                fund_id=resolved_fund_id,
+            )
+            if result.get("error"):
+                logger.warning(f"[PERSIST_COMPANY] upsert failed for '{company_name}': {result['error']}")
+            else:
+                action = "Created" if result.get("created") else "Updated"
+                logger.info(
+                    f"[PERSIST_COMPANY] {action} '{company_name}' "
+                    f"(id={result.get('id')}), fields={result.get('updated_fields', [])}"
+                )
+            return result
+        except Exception as e:
+            logger.error(f"[PERSIST_COMPANY] Exception persisting '{company_name}': {e}")
+            return {"error": str(e)}
+
+    def _detect_empty_fields(self, company_name: str) -> List[str]:
+        """Scan the grid for empty cells for a given company. Returns column IDs."""
+        name_lower = company_name.lower().strip().lstrip("@")
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snap = matrix_ctx.get("gridSnapshot", {}) if isinstance(matrix_ctx.get("gridSnapshot"), dict) else {}
+        for row in grid_snap.get("rows", []):
+            rn = (row.get("companyName") or row.get("company_name") or "").lower().strip()
+            if rn != name_lower:
+                continue
+            cells = row.get("cells") or row.get("cellValues") or {}
+            empty = []
+            # Check enrichable columns
+            for col_id in [
+                "arr", "valuation", "headcount", "totalRaised", "burnRate",
+                "runway", "grossMargin", "cashInBank", "sector", "stage",
+                "description", "revenueGrowthAnnual", "lastRoundAmount",
+            ]:
+                val = cells.get(col_id)
+                if val is None or val == "" or val == 0:
+                    empty.append(col_id)
+            return empty
+        return []
+
+    async def _tool_enrich_field(self, inputs: dict) -> dict:
+        """Search for specific data fields for a company using targeted micro-skills.
+
+        Accepts any column ID — routes to the right search skill or builds a custom query.
+        If fields is empty/missing, auto-detects empty columns from the grid.
+        """
+        from app.services.micro_skills.search_skills import find_field
+        from app.services.micro_skills.suggestion_emitter import (
+            emit_suggestions, emit_batch, build_grid_commands,
+        )
+
+        company_name = inputs.get("company_name", "").strip().lstrip("@")
+        if not company_name:
+            return {"error": "company_name required"}
+
+        fields = inputs.get("fields") or []
+        context = inputs.get("context", "")
+
+        # Auto-detect empty fields from grid if none specified
+        if not fields:
+            fields = self._detect_empty_fields(company_name)
+            if not fields:
+                return {"message": f"No empty fields detected for {company_name}", "grid_commands": []}
+
+        # Wire Tavily + LLM (same pattern as _tool_resolve_gaps)
+        async def tavily_fn(query: str) -> dict:
+            return await self._tavily_search(query)
+
+        async def llm_fn(prompt: str, system: str) -> str:
+            result = await self.model_router.get_completion(
+                prompt=prompt,
+                system_prompt=system,
+                capability=ModelCapability.FAST,
+                max_tokens=400,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="enrich_field",
+            )
+            return result.get("response", "{}") if isinstance(result, dict) else str(result)
+
+        # Run find_field (parallel skill dispatch)
+        skill_results = await find_field(
+            company_name=company_name,
+            fields=fields,
+            tavily_search_fn=tavily_fn if self.tavily_api_key else None,
+            llm_extract_fn=llm_fn,
+            context=context,
+        )
+
+        # Aggregate results
+        all_grid_commands = []
+        all_field_updates = {}
+        all_citations = []
+        all_memo_sections = []
+        total_confidence = 0.0
+
+        for r in skill_results:
+            if not r.has_data():
+                continue
+
+            # Build grid commands
+            cmds = build_grid_commands(r, company_name)
+            all_grid_commands.extend(cmds)
+
+            # Collect field updates
+            all_field_updates.update(r.field_updates)
+            all_citations.extend(r.citations)
+            total_confidence = max(total_confidence, r.confidence)
+
+            if r.memo_section:
+                all_memo_sections.append(r.memo_section)
+
+        # Merge into shared_data companies
+        async with self.shared_data_lock:
+            for c in self.shared_data.get("companies", []):
+                if isinstance(c, dict):
+                    cn = (c.get("name") or c.get("company") or "").lower()
+                    if cn == company_name.lower():
+                        for k, v in all_field_updates.items():
+                            if v is not None and not c.get(k):
+                                c[k] = v
+                        break
+
+        # Persist suggestions to DB
+        fund_ctx = self.shared_data.get("fund_context", {})
+        fund_id = fund_ctx.get("fundId", "")
+        company_id = self._find_company_id(company_name)
+        suggestions_persisted = 0
+        if fund_id and company_id:
+            suggestions_persisted = await emit_batch(
+                skill_results, company_id, fund_id, company_name,
+            )
+
+        return {
+            "company": company_name,
+            "fields_requested": fields,
+            "fields_found": list(all_field_updates.keys()),
+            "field_updates": all_field_updates,
+            "grid_commands": all_grid_commands,
+            "memo_sections": all_memo_sections,
+            "citations": [
+                c.to_dict() if hasattr(c, 'to_dict') else {"url": c}
+                for c in all_citations[:10]
+            ],
+            "confidence": total_confidence,
+            "suggestions_persisted": suggestions_persisted,
+        }
+
+    async def _tool_search_field_for_companies(self, inputs: dict) -> dict:
+        """Search for a specific field across multiple companies in parallel.
+
+        Example: 'find founders for Mercury, Ramp, Deel' → runs enrich_field
+        for each company concurrently, aggregates grid_commands + suggestions.
+        """
+        field = inputs.get("field", "")
+        company_names = inputs.get("company_names") or []
+        context = inputs.get("context", "")
+
+        if not field:
+            return {"error": "field is required (e.g. 'founders', 'arr', 'headcount')"}
+        if not company_names:
+            return {"error": "company_names is required (list of company names)"}
+
+        # Cap at 10 companies per batch to limit Tavily usage
+        company_names = [n.strip().lstrip("@") for n in company_names[:10]]
+
+        # Normalise field to list for enrich_field
+        fields = [field] if isinstance(field, str) else field
+
+        # Run enrich_field in parallel for each company
+        tasks = [
+            self._tool_enrich_field({
+                "company_name": name,
+                "fields": fields,
+                "context": context,
+            })
+            for name in company_names
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Aggregate
+        all_grid_commands = []
+        all_field_updates = {}
+        errors = []
+        total_persisted = 0
+
+        for i, r in enumerate(results):
+            name = company_names[i]
+            if isinstance(r, Exception):
+                errors.append({"company": name, "error": str(r)})
+                continue
+            if isinstance(r, dict) and r.get("error"):
+                errors.append({"company": name, "error": r["error"]})
+                continue
+            if isinstance(r, dict):
+                all_grid_commands.extend(r.get("grid_commands", []))
+                all_field_updates[name] = r.get("field_updates", {})
+                total_persisted += r.get("suggestions_persisted", 0)
+
+        return {
+            "field": field,
+            "companies_searched": len(company_names),
+            "companies_found": len(company_names) - len(errors),
+            "field_updates": all_field_updates,
+            "grid_commands": all_grid_commands,
+            "suggestions_persisted": total_persisted,
+            "errors": errors if errors else None,
+        }
+
+    async def _tool_run_projection(self, inputs: dict) -> dict:
+        """Run revenue/ARR projection with growth decay curves and scenario bands."""
+        from app.services.micro_skills.benchmark_skills import (
+            _ensure_numeric, _normalize_stage, _months_since_date,
+            STAGE_BENCHMARKS, GROWTH_DECAY,
+        )
+
+        company_name = inputs.get("company", "")
+        years = inputs.get("years", 5)
+
+        # Get company data from shared_data
+        companies = self.shared_data.get("companies", [])
+        company = next(
+            (c for c in companies if c.get("name", "").lower() == company_name.lower()),
+            {},
+        ) if company_name else (companies[0] if companies else {})
+
+        stage = _normalize_stage(company.get("stage", ""))
+        bench = STAGE_BENCHMARKS.get(stage, STAGE_BENCHMARKS["Series A"])
+
+        base_arr = _ensure_numeric(
+            company.get("arr") or company.get("revenue") or company.get("inferred_revenue"),
+            bench["arr_median"],
+        )
+        growth = _ensure_numeric(company.get("growth_rate"), bench["growth_rate"])
+
+        # Build bull/base/bear scenarios with growth decay
+        scenarios = {}
+        for scenario_name, growth_mult in [("bull", 1.3), ("base", 1.0), ("bear", 0.6)]:
+            projections = []
+            current = base_arr
+            for year in range(1, years + 1):
+                decay = GROWTH_DECAY.get(year, 0.3)
+                annual_growth = growth * growth_mult * decay
+                current = current * (1 + annual_growth)
+                projections.append({
+                    "year": year,
+                    "arr": round(current),
+                    "growth_rate": round(annual_growth, 2),
+                })
+            scenarios[scenario_name] = projections
+
+        # Time to $100M
+        time_to_100m = None
+        for p in scenarios["base"]:
+            if p["arr"] >= 100_000_000:
+                time_to_100m = p["year"]
+                break
+
+        name = company.get("name", company_name or "company")
+        return {
+            "company": name,
+            "base_arr": base_arr,
+            "scenarios": scenarios,
+            "time_to_100m": time_to_100m,
+            "memo_sections": [{
+                "type": "heading2", "content": f"{name} — Revenue Projections",
+            }, {
+                "type": "list", "items": [
+                    f"Base ARR: ${base_arr/1e6:.1f}M",
+                    f"Bull case ({years}yr): ${scenarios['bull'][-1]['arr']/1e6:.0f}M",
+                    f"Base case ({years}yr): ${scenarios['base'][-1]['arr']/1e6:.0f}M",
+                    f"Bear case ({years}yr): ${scenarios['bear'][-1]['arr']/1e6:.0f}M",
+                ] + ([f"Time to $100M ARR: {time_to_100m} years (base)"] if time_to_100m else []),
+            }],
+            "chart_config": {
+                "type": "line",
+                "title": f"{name} — Revenue Projection",
+                "datasets": [
+                    {"label": "Bull", "data": [{"x": p["year"], "y": p["arr"]} for p in scenarios["bull"]], "borderColor": "#10b981"},
+                    {"label": "Base", "data": [{"x": p["year"], "y": p["arr"]} for p in scenarios["base"]], "borderColor": "#3b82f6"},
+                    {"label": "Bear", "data": [{"x": p["year"], "y": p["arr"]} for p in scenarios["bear"]], "borderColor": "#ef4444"},
+                ],
+            },
+        }
+
+    async def _execute_proactive_enrich(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Skill handler for proactive-enricher. Delegates to gap resolver."""
+        company_name = inputs.get("company", inputs.get("company_name", ""))
+        return await self._tool_resolve_gaps({
+            "companies": [company_name] if company_name else [],
+            "fund_id": inputs.get("fund_id"),
+        })
+
+    async def _execute_company_list_search(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Skill handler for company-list-builder. Delegates to _tool_build_company_list."""
+        return await self._tool_build_company_list(inputs)
+
+    async def _execute_search_extract(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Skill handler for search-extract-combo. Delegates to _tool_search_extract."""
+        return await self._tool_search_extract(inputs)
+
+    async def _execute_projection_model(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Skill handler for projection-modeler. Delegates to _tool_run_projection."""
+        return await self._tool_run_projection(inputs)
+
+    async def _execute_sparse_grid_enrich(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Skill handler for sparse-grid-enricher. Delegates to _tool_enrich_sparse_grid."""
+        return await self._tool_enrich_sparse_grid(inputs)
+
     def is_ready(self) -> bool:
         """Return whether critical dependencies initialized successfully."""
         return bool(self._is_ready)
@@ -23305,6 +33754,354 @@ Return your analysis with inline citations for ALL factual claims.
             "error": self._readiness_error
         }
     
+    # ------------------------------------------------------------------
+    # Micro-skill tool handlers
+    # Each is self-contained: reads grid → runs skills → emits suggestions
+    # ------------------------------------------------------------------
+
+    async def _tool_run_followon_analysis(self, inputs: dict) -> dict:
+        """Loop all portfolio companies and flag who needs follow-on capital.
+
+        Runs next_round_model + time_adjusted_estimate per company using grid data.
+        Flags URGENT (<threshold mo runway) and WATCH (threshold–15mo) companies.
+        Persists runway/burn suggestions and emits grid_commands.
+        """
+        from app.services.micro_skills.benchmark_skills import (
+            next_round_model,
+            time_adjusted_estimate,
+            _normalize_stage,
+            _ensure_numeric,
+        )
+        from app.services.micro_skills.suggestion_emitter import emit_batch, build_grid_commands
+
+        fund_ctx = self.shared_data.get("fund_context", {})
+        fund_id = inputs.get("fund_id") or fund_ctx.get("fundId", "")
+        threshold = int(inputs.get("runway_threshold_months") or 9)
+
+        # Pull companies from grid
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = (
+            grid_snapshot.get("rows", [])
+            if isinstance(grid_snapshot, dict)
+            else grid_snapshot if isinstance(grid_snapshot, list) else []
+        )
+        if not grid_rows:
+            return {"error": "No portfolio grid data available. Send matrix context with gridSnapshot."}
+
+        urgent = []
+        watch = []
+        healthy = []
+        all_grid_commands: list = []
+        total_persisted = 0
+
+        for row in grid_rows:
+            name = row.get("companyName") or row.get("company_name") or "Unknown"
+            company_id = row.get("id") or row.get("companyId") or ""
+            cells = row.get("cells") or row.get("cellValues") or {}
+
+            # Build company_data from grid cells
+            company_data: Dict[str, Any] = {"name": name}
+            for k, v in cells.items():
+                val = v.get("value", v) if isinstance(v, dict) else v
+                if val is not None and val != "" and val != "N/A":
+                    company_data[k] = val
+
+            # Normalize field names from grid column IDs to benchmark_skills field names
+            if not company_data.get("stage"):
+                company_data["stage"] = (
+                    company_data.pop("investmentStage", None)
+                    or company_data.pop("funding_stage", None)
+                    or ""
+                )
+            if not company_data.get("arr"):
+                company_data["arr"] = company_data.pop("currentArrUsd", None) or 0
+            if not company_data.get("burn_rate"):
+                company_data["burn_rate"] = company_data.pop("burnRate", None) or 0
+            if not company_data.get("runway_months"):
+                company_data["runway_months"] = company_data.pop("runway", None) or 0
+            if not company_data.get("last_round_date"):
+                company_data["last_round_date"] = company_data.pop("lastRoundDate", None) or ""
+            if not company_data.get("last_round_amount"):
+                company_data["last_round_amount"] = company_data.pop("lastRoundAmount", None) or 0
+            if not company_data.get("valuation"):
+                company_data["valuation"] = company_data.pop("currentValuationUsd", None) or 0
+            if not company_data.get("total_funding"):
+                company_data["total_funding"] = company_data.pop("totalFunding", None) or 0
+
+            # Run skills
+            from app.services.micro_skills import MicroSkillResult
+            results: list[MicroSkillResult] = []
+            try:
+                time_result = await time_adjusted_estimate(company_data)
+                if time_result.has_data():
+                    time_result.merge_into(company_data)
+                    results.append(time_result)
+            except Exception as e:
+                logger.warning(f"[FOLLOWON] time_adjusted failed for {name}: {e}")
+
+            try:
+                round_result = await next_round_model(company_data)
+                if round_result.has_data():
+                    results.append(round_result)
+            except Exception as e:
+                logger.warning(f"[FOLLOWON] next_round_model failed for {name}: {e}")
+
+            # Determine runway and flag
+            runway = _ensure_numeric(
+                company_data.get("runway_months")
+                or (time_result.field_updates.get("runway_months") if time_result.has_data() else None),
+                0
+            )
+            down_round_risk = round_result.field_updates.get("down_round_risk", "UNKNOWN") if results else "UNKNOWN"
+            next_round_months = round_result.field_updates.get("next_round_months", 0) if results else 0
+
+            entry = {
+                "company": name,
+                "runway_months": runway,
+                "down_round_risk": down_round_risk,
+                "next_round_in_months": next_round_months,
+                "stage": company_data.get("stage", ""),
+            }
+
+            if runway > 0 and runway < threshold:
+                entry["flag"] = "URGENT"
+                urgent.append(entry)
+            elif runway >= threshold and runway < 15:
+                entry["flag"] = "WATCH"
+                watch.append(entry)
+            else:
+                entry["flag"] = "OK"
+                healthy.append(entry)
+
+            # Emit suggestions to DB and collect grid_commands
+            if results:
+                if fund_id and company_id:
+                    try:
+                        total_persisted += await emit_batch(results, company_id, fund_id, name)
+                    except Exception as e:
+                        logger.warning(f"[FOLLOWON] emit_batch failed for {name}: {e}")
+                for r in results:
+                    all_grid_commands.extend(build_grid_commands(r, name))
+
+        summary_lines = []
+        if urgent:
+            summary_lines.append(
+                f"URGENT ({len(urgent)} companies, <{threshold}mo runway): "
+                + ", ".join(e["company"] for e in urgent)
+            )
+        if watch:
+            summary_lines.append(
+                f"WATCH ({len(watch)} companies, {threshold}-15mo runway): "
+                + ", ".join(e["company"] for e in watch)
+            )
+        if healthy:
+            summary_lines.append(f"OK ({len(healthy)} companies well-funded)")
+
+        return {
+            "urgent": urgent,
+            "watch": watch,
+            "healthy": healthy,
+            "summary": " | ".join(summary_lines) or "No runway data found in grid",
+            "total_suggestions_persisted": total_persisted,
+            "grid_commands": all_grid_commands,
+            "memo_sections": [
+                {
+                    "type": "followon_analysis",
+                    "heading": "Follow-on Capital Analysis",
+                    "items": summary_lines,
+                    "urgent": urgent,
+                    "watch": watch,
+                }
+            ],
+        }
+
+    async def _tool_run_portfolio_health(self, inputs: dict) -> dict:
+        """Run full benchmark analysis across all portfolio companies.
+
+        Stage fit, ARR vs benchmark, burn, growth outliers, valuation coherence.
+        Emits per-company grid suggestions for missing or out-of-range fields.
+        Delegates to resolve_gaps (Tier 1 only — no web search for speed).
+        """
+        from app.services.micro_skills.gap_resolver import resolve_gaps
+        from app.services.micro_skills import FOLLOWON_FIELDS, CORE_FIELDS
+
+        fund_ctx = self.shared_data.get("fund_context", {})
+        fund_id = inputs.get("fund_id") or fund_ctx.get("fundId", "")
+        fields = inputs.get("fields") or FOLLOWON_FIELDS
+
+        # Pull companies from grid
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = (
+            grid_snapshot.get("rows", [])
+            if isinstance(grid_snapshot, dict)
+            else grid_snapshot if isinstance(grid_snapshot, list) else []
+        )
+        if not grid_rows:
+            return {"error": "No portfolio grid data available. Send matrix context with gridSnapshot."}
+
+        # Build company list from grid rows, stamping UUIDs
+        companies = []
+        for row in grid_rows:
+            name = row.get("companyName") or row.get("company_name") or "Unknown"
+            company_id = row.get("id") or row.get("companyId") or ""
+            cells = row.get("cells") or row.get("cellValues") or {}
+
+            company: Dict[str, Any] = {"name": name}
+            if company_id:
+                company["id"] = company_id
+
+            # Map grid column IDs → micro-skill field names
+            field_map = {
+                "stage": ["stage", "investmentStage", "funding_stage"],
+                "sector": ["sector", "category"],
+                "arr": ["arr", "currentArrUsd"],
+                "valuation": ["valuation", "currentValuationUsd"],
+                "total_funding": ["total_funding", "totalFunding"],
+                "last_round_amount": ["last_round_amount", "lastRoundAmount"],
+                "last_round_date": ["last_round_date", "lastRoundDate"],
+                "burn_rate": ["burn_rate", "burnRate"],
+                "runway_months": ["runway_months", "runway"],
+                "team_size": ["team_size", "teamSize", "headcount"],
+                "growth_rate": ["growth_rate", "revenueGrowthAnnual"],
+                "gross_margin": ["gross_margin", "grossMargin"],
+            }
+            for skill_field, grid_keys in field_map.items():
+                for gk in grid_keys:
+                    raw = cells.get(gk)
+                    val = raw.get("value", raw) if isinstance(raw, dict) else raw
+                    if val is not None and val != "" and val != "N/A":
+                        company[skill_field] = val
+                        break
+
+            companies.append(company)
+
+        # Run gap resolver — Tier 1 only (no tavily_search_fn → instant benchmarks only)
+        result = await resolve_gaps(
+            companies=companies,
+            needed_fields=fields,
+            fund_id=fund_id,
+            tavily_search_fn=None,   # Tier 1 only for speed
+            llm_extract_fn=None,
+            portfolio_companies=companies,
+        )
+
+        # Store enriched companies back in shared_data
+        async with self.shared_data_lock:
+            self.shared_data["companies"] = result["companies"]
+
+        return {
+            "companies_analyzed": len(result["companies"]),
+            "total_fields_filled": result["total_fields_filled"],
+            "total_suggestions_persisted": result["total_suggestions_persisted"],
+            "skills_run": result["skills_run"],
+            "memo_sections": result["memo_sections"],
+            "grid_commands": result["grid_commands"],
+            "chart_data": result["chart_data"],
+            "company_summaries": [
+                {
+                    "name": c.get("name", ""),
+                    "stage": c.get("stage", ""),
+                    "arr": c.get("arr") or c.get("inferred_revenue"),
+                    "valuation": c.get("valuation") or c.get("inferred_valuation"),
+                    "runway_months": c.get("runway_months"),
+                    "down_round_risk": c.get("down_round_risk"),
+                }
+                for c in result["companies"]
+            ],
+        }
+
+    async def _tool_enrich_sparse_companies(self, inputs: dict) -> dict:
+        """Find companies with missing core fields and enrich them via web search.
+
+        Filters grid to companies with >= min_missing gaps, then runs the full
+        gap resolver (Tier 1 benchmarks + Tier 2 parallel Tavily searches).
+        Emits grid suggestions with source citations.
+        """
+        from app.services.micro_skills import CORE_FIELDS, detect_missing
+
+        min_missing = int(inputs.get("min_missing") or 3)
+        company_names_filter = [n.strip().lstrip("@") for n in (inputs.get("companies") or [])]
+        fields = inputs.get("fields") or CORE_FIELDS
+
+        # Pull companies from grid
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = (
+            grid_snapshot.get("rows", [])
+            if isinstance(grid_snapshot, dict)
+            else grid_snapshot if isinstance(grid_snapshot, list) else []
+        )
+        if not grid_rows:
+            return {"error": "No portfolio grid data available. Send matrix context with gridSnapshot."}
+
+        # Build company list and filter to sparse ones
+        candidate_companies = []
+        for row in grid_rows:
+            name = row.get("companyName") or row.get("company_name") or "Unknown"
+            if company_names_filter and name not in company_names_filter:
+                continue
+            company_id = row.get("id") or row.get("companyId") or ""
+            cells = row.get("cells") or row.get("cellValues") or {}
+
+            company: Dict[str, Any] = {"name": name}
+            if company_id:
+                company["id"] = company_id
+
+            field_map = {
+                "stage": ["stage", "investmentStage", "funding_stage"],
+                "sector": ["sector", "category"],
+                "description": ["description"],
+                "arr": ["arr", "currentArrUsd"],
+                "valuation": ["valuation", "currentValuationUsd"],
+                "total_funding": ["total_funding", "totalFunding"],
+                "last_round_amount": ["last_round_amount", "lastRoundAmount"],
+                "last_round_date": ["last_round_date", "lastRoundDate"],
+                "burn_rate": ["burn_rate", "burnRate"],
+                "runway_months": ["runway_months", "runway"],
+                "team_size": ["team_size", "teamSize", "headcount"],
+                "growth_rate": ["growth_rate", "revenueGrowthAnnual"],
+                "gross_margin": ["gross_margin", "grossMargin"],
+                "founders": ["founders"],
+                "hq_location": ["hq_location", "hqLocation"],
+                "competitors": ["competitors"],
+            }
+            for skill_field, grid_keys in field_map.items():
+                for gk in grid_keys:
+                    raw = cells.get(gk)
+                    val = raw.get("value", raw) if isinstance(raw, dict) else raw
+                    if val is not None and val != "" and val != "N/A":
+                        company[skill_field] = val
+                        break
+
+            missing = detect_missing(company, fields)
+            if len(missing) >= min_missing:
+                company["_missing_fields"] = missing
+                candidate_companies.append(company)
+
+        if not candidate_companies:
+            return {
+                "message": f"No companies with {min_missing}+ missing fields found",
+                "companies_checked": len(grid_rows),
+                "grid_commands": [],
+            }
+
+        logger.info(
+            f"[ENRICH_SPARSE] Found {len(candidate_companies)} sparse companies "
+            f"(min_missing={min_missing}): {[c['name'] for c in candidate_companies[:10]]}"
+        )
+
+        # Delegate to _tool_resolve_gaps which runs full Tier 1+2 pipeline
+        fund_ctx = self.shared_data.get("fund_context", {})
+        fund_id = inputs.get("fund_id") or fund_ctx.get("fundId", "")
+
+        return await self._tool_resolve_gaps({
+            "companies": [c["name"] for c in candidate_companies],
+            "needed_fields": fields,
+            "fund_id": fund_id,
+        })
+
     async def __aenter__(self):
         """Async context manager entry - ensures Tavily session is properly initialized"""
         # Session will be created lazily on first use via _tavily_search

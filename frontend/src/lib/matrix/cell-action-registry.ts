@@ -297,10 +297,57 @@ export function formatActionOutput(
 }
 
 /**
- * Extract cell value from action response
+ * Extract cell value from action response.
+ * Handles all response shapes: scalar, PWERM weighted values, nested objects, arrays, etc.
+ * Falls back through multiple paths so NO suggestion is ever lost due to value extraction.
  */
 export function extractCellValue(response: ActionExecutionResponse): any {
-  return response.value;
+  const { value, metadata, display_value } = response;
+
+  // 1. Direct scalar — most common, return as-is
+  if (value != null && (typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean')) {
+    return value;
+  }
+
+  // 2. PWERM / valuation engine: weighted value in metadata
+  if (metadata) {
+    const raw = metadata.raw_output as Record<string, unknown> | undefined;
+    const metaAny = metadata as Record<string, unknown>;
+    const candidates = [
+      metaAny.weighted_value,
+      metaAny.weighted_valuation,
+      metaAny.fair_value,
+      metaAny.valuation,
+      raw?.weighted_value,
+      raw?.weighted_valuation,
+      raw?.fair_value,
+      raw?.valuation,
+      raw?.value,
+    ];
+    for (const c of candidates) {
+      if (c != null && typeof c === 'number') return c;
+    }
+  }
+
+  // 3. value is an object with a .value or .weighted_value property
+  if (value != null && typeof value === 'object' && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>;
+    if (typeof obj.value === 'number' || typeof obj.value === 'string') return obj.value;
+    if (typeof obj.weighted_value === 'number') return obj.weighted_value;
+    if (typeof obj.fair_value === 'number') return obj.fair_value;
+    if (typeof obj.valuation === 'number') return obj.valuation;
+    // Pass the whole object through — the suggestion system can store objects
+    return value;
+  }
+
+  // 4. Array value — pass through
+  if (Array.isArray(value)) return value;
+
+  // 5. Fallback: display_value as last resort
+  if (display_value) return display_value;
+
+  // 6. Original value (may be null — caller handles)
+  return value;
 }
 
 /**

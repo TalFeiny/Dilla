@@ -1,13 +1,16 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { ICellRendererParams } from 'ag-grid-community';
-import { ChevronRight, ChevronDown, Building2, TrendingUp, DollarSign, Users, Calendar, MapPin, ExternalLink } from 'lucide-react';
+import { ChevronRight, ChevronDown, Building2, TrendingUp, DollarSign, Users, Calendar, MapPin, ExternalLink, PieChart } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Separator } from '@/components/ui/separator';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import { FullTreemap } from './TreemapRenderer';
 
@@ -90,14 +93,14 @@ function CompanyDetailExpanded({ company, details, matrixData }: {
   const companyData = details || company;
   
   // Extract financial metrics
-  const arr = companyData?.arr || companyData?.cells?.arr?.value || 0;
-  const valuation = companyData?.valuation || companyData?.cells?.valuation?.value || 0;
-  const growthRate = companyData?.growthRate || companyData?.cells?.growthRate?.value || 0;
-  const burnRate = companyData?.burnRate || companyData?.cells?.burnRate?.value || 0;
-  const runway = companyData?.runway || companyData?.cells?.runway?.value || 0;
+  const arr = companyData?.arr ?? companyData?.cells?.arr?.value ?? null;
+  const valuation = companyData?.valuation ?? companyData?.cells?.valuation?.value ?? null;
+  const growthRate = companyData?.growthRate ?? companyData?.cells?.growthRate?.value ?? null;
+  const burnRate = companyData?.burnRate ?? companyData?.cells?.burnRate?.value ?? null;
+  const runway = companyData?.runway ?? companyData?.cells?.runway?.value ?? null;
   const stage = companyData?.stage || companyData?.cells?.stage?.value || 'Unknown';
   const sector = companyData?.sector || companyData?.cells?.sector?.value || 'Unknown';
-  const employees = companyData?.employees || companyData?.cells?.employees?.value || 0;
+  const employees = companyData?.employees ?? companyData?.cells?.employees?.value ?? null;
   const founded = companyData?.foundedYear || companyData?.cells?.foundedYear?.value;
   const location = companyData?.location || companyData?.cells?.location?.value || 'Unknown';
 
@@ -131,9 +134,10 @@ function CompanyDetailExpanded({ company, details, matrixData }: {
       </CardHeader>
       <CardContent>
         <Tabs defaultValue="overview" className="w-full">
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="financials">Financials</TabsTrigger>
+            <TabsTrigger value="cap-table">Cap Table</TabsTrigger>
             <TabsTrigger value="hierarchy">Hierarchy</TabsTrigger>
             <TabsTrigger value="details">Details</TabsTrigger>
           </TabsList>
@@ -215,6 +219,16 @@ function CompanyDetailExpanded({ company, details, matrixData }: {
             </div>
           </TabsContent>
           
+          <TabsContent value="cap-table" className="mt-4">
+            <WhatIfInvestmentModeler
+              companyId={companyData?.id || companyData?.company_id}
+              companyName={companyData?.companyName || companyData?.name || 'Company'}
+              currentValuation={valuation}
+              stage={stage}
+              founderOwnership={companyData?.founderOwnership ?? companyData?.cells?.founderOwnership?.value}
+            />
+          </TabsContent>
+
           <TabsContent value="hierarchy" className="mt-4">
             <div className="space-y-4">
               <div>
@@ -298,14 +312,300 @@ function CompanyDetailExpanded({ company, details, matrixData }: {
   );
 }
 
-function MetricCard({ 
-  label, 
-  value, 
-  format, 
-  icon 
-}: { 
-  label: string; 
-  value: number; 
+function WhatIfInvestmentModeler({
+  companyId,
+  companyName,
+  currentValuation,
+  stage,
+  founderOwnership,
+}: {
+  companyId?: string;
+  companyName: string;
+  currentValuation?: number | null;
+  stage: string;
+  founderOwnership?: number | null;
+}) {
+  const [investmentAmount, setInvestmentAmount] = useState<string>('15000000');
+  const [roundName, setRoundName] = useState<string>(stage || 'Series B');
+  const [result, setResult] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const formatCurrency = (val: number) =>
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(val);
+
+  const formatPct = (val: number) => {
+    if (val === null || val === undefined) return '—';
+    // Handle both decimal (0.23) and percentage (23.0) formats
+    const pct = val > 1 ? val : val * 100;
+    return `${pct.toFixed(1)}%`;
+  };
+
+  const handleModel = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const amount = parseFloat(investmentAmount);
+      if (isNaN(amount) || amount <= 0) {
+        setError('Enter a valid investment amount');
+        return;
+      }
+      const res = await fetch(`/api/cell-actions/actions/cap_table.entry_impact/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action_id: 'cap_table.entry_impact',
+          company_id: companyId,
+          inputs: { our_investment: amount, round_name: roundName },
+        }),
+      });
+      if (!res.ok) throw new Error(`Failed: ${res.status}`);
+      const data = await res.json();
+      setResult(data.result || data);
+    } catch (e: any) {
+      setError(e.message || 'Failed to model investment');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const topStakeholders = useMemo(() => {
+    if (!result?.post_investment_cap_table) return [];
+    return Object.entries(result.post_investment_cap_table)
+      .map(([name, ownership]) => ({ name, ownership: Number(ownership) }))
+      .sort((a, b) => b.ownership - a.ownership)
+      .slice(0, 8);
+  }, [result]);
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
+          <PieChart className="h-4 w-4" />
+          Model Our Entry — {companyName}
+        </h4>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <Label className="text-xs">Investment Amount ($)</Label>
+            <Input
+              type="number"
+              value={investmentAmount}
+              onChange={(e) => setInvestmentAmount(e.target.value)}
+              placeholder="15000000"
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">Round</Label>
+            <Select value={roundName} onValueChange={setRoundName}>
+              <SelectTrigger className="mt-1">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Seed">Seed</SelectItem>
+                <SelectItem value="Series A">Series A</SelectItem>
+                <SelectItem value="Series B">Series B</SelectItem>
+                <SelectItem value="Series C">Series C</SelectItem>
+                <SelectItem value="Series D">Series D</SelectItem>
+                <SelectItem value="Growth">Growth</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-end">
+            <Button onClick={handleModel} disabled={loading} className="w-full">
+              {loading ? 'Modeling...' : 'Model Entry'}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {error && (
+        <div className="text-sm text-destructive bg-destructive/10 p-2 rounded">{error}</div>
+      )}
+
+      {result && (
+        <div className="space-y-4">
+          <Separator />
+          <div className="grid grid-cols-4 gap-3">
+            <div className="border rounded p-3">
+              <div className="text-xs text-muted-foreground">Our Ownership</div>
+              <div className="text-lg font-semibold text-primary">{formatPct(result.our_ownership)}</div>
+            </div>
+            <div className="border rounded p-3">
+              <div className="text-xs text-muted-foreground">Post-Money</div>
+              <div className="text-lg font-semibold">{formatCurrency(result.post_money_valuation)}</div>
+            </div>
+            <div className="border rounded p-3">
+              <div className="text-xs text-muted-foreground">Dilution to Existing</div>
+              <div className="text-lg font-semibold text-orange-600">{formatPct(result.dilution_to_existing)}</div>
+            </div>
+            <div className="border rounded p-3">
+              <div className="text-xs text-muted-foreground">Founder After</div>
+              <div className="text-lg font-semibold">{formatPct(result.founder_ownership_after)}</div>
+            </div>
+          </div>
+
+          {topStakeholders.length > 0 && (
+            <div>
+              <h5 className="text-xs font-medium text-muted-foreground mb-2">Post-Investment Cap Table</h5>
+              <div className="space-y-1">
+                {topStakeholders.map(({ name, ownership }) => (
+                  <div key={name} className="flex items-center gap-2">
+                    <div className="flex-1 text-sm truncate">{name}</div>
+                    <div className="w-32">
+                      <div className="h-4 bg-muted rounded overflow-hidden">
+                        <div
+                          className={cn(
+                            "h-full rounded",
+                            name.includes('Our Fund') ? 'bg-primary' : 'bg-primary/30'
+                          )}
+                          style={{ width: `${Math.min(ownership > 1 ? ownership : ownership * 100, 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                    <div className="w-14 text-right text-sm font-mono">{formatPct(ownership)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!result && founderOwnership != null && (
+        <div className="text-sm text-muted-foreground">
+          Current founder ownership: {formatPct(founderOwnership)}
+          {currentValuation && ` · Valuation: ${formatCurrency(currentValuation)}`}
+        </div>
+      )}
+
+      <Separator className="my-4" />
+      <LiquidationWaterfallPanel companyId={companyId} companyName={companyName} />
+    </div>
+  );
+}
+
+function LiquidationWaterfallPanel({
+  companyId,
+  companyName,
+}: {
+  companyId?: string;
+  companyName: string;
+}) {
+  const EXIT_VALUES = [50_000_000, 100_000_000, 250_000_000, 500_000_000, 1_000_000_000];
+  const [exitValue, setExitValue] = useState<number>(250_000_000);
+  const [result, setResult] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  const formatCurrency = (val: number) =>
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(val);
+
+  const formatShort = (val: number) => {
+    if (val >= 1_000_000_000) return `$${(val / 1_000_000_000).toFixed(1)}B`;
+    if (val >= 1_000_000) return `$${(val / 1_000_000).toFixed(0)}M`;
+    return formatCurrency(val);
+  };
+
+  const [waterfallError, setWaterfallError] = useState<string | null>(null);
+
+  const handleCalculate = async () => {
+    setLoading(true);
+    setWaterfallError(null);
+    try {
+      const res = await fetch(`/api/cell-actions/actions/waterfall/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action_id: 'waterfall',
+          company_id: companyId,
+          inputs: { exit_value: exitValue },
+        }),
+      });
+      if (!res.ok) throw new Error(`Failed: ${res.status}`);
+      const data = await res.json();
+      setResult(data.result || data);
+    } catch (e: any) {
+      setWaterfallError(e.message || 'Calculation failed');
+      setResult(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const distributions = useMemo(() => {
+    if (!result) return [];
+    // Handle both dict and array formats
+    const dist = result.distributions || result.waterfall || [];
+    if (!dist || typeof dist !== 'object') return [];
+    if (Array.isArray(dist)) return dist;
+    return Object.entries(dist).map(([name, amount]) => ({ name, amount: Number(amount) }));
+  }, [result]);
+
+  return (
+    <div className="space-y-3">
+      <h4 className="text-sm font-medium flex items-center gap-2">
+        <DollarSign className="h-4 w-4" />
+        Liquidation Waterfall — {companyName}
+      </h4>
+      <div className="flex items-center gap-2">
+        <Label className="text-xs whitespace-nowrap">Exit Value:</Label>
+        <div className="flex gap-1">
+          {EXIT_VALUES.map((v) => (
+            <Button
+              key={v}
+              size="sm"
+              variant={exitValue === v ? 'default' : 'outline'}
+              className="h-7 text-xs px-2"
+              onClick={() => setExitValue(v)}
+            >
+              {formatShort(v)}
+            </Button>
+          ))}
+        </div>
+        <Button size="sm" onClick={handleCalculate} disabled={loading} className="h-7">
+          {loading ? '...' : 'Calculate'}
+        </Button>
+      </div>
+      {waterfallError && (
+        <p className="text-xs text-destructive">{waterfallError}</p>
+      )}
+
+      {distributions.length > 0 && (
+        <div className="space-y-1">
+          {distributions.map((d: any, i: number) => {
+            const name = d.name || d.investor_name || d.series || `Investor ${i + 1}`;
+            const amount = Number(d.amount || d.proceeds || d.distribution || 0);
+            const pct = exitValue > 0 ? (amount / exitValue) * 100 : 0;
+            return (
+              <div key={i} className="flex items-center gap-2">
+                <div className="flex-1 text-sm truncate">{name}</div>
+                <div className="w-40">
+                  <div className="h-4 bg-muted rounded overflow-hidden">
+                    <div
+                      className="h-full rounded bg-green-500/60"
+                      style={{ width: `${Math.min(pct, 100)}%` }}
+                    />
+                  </div>
+                </div>
+                <div className="w-20 text-right text-sm font-mono">{formatShort(amount)}</div>
+                <div className="w-12 text-right text-xs text-muted-foreground">{pct.toFixed(1)}%</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  format,
+  icon
+}: {
+  label: string;
+  value: number;
   format: 'currency' | 'percentage' | 'number' | 'months';
   icon: React.ReactNode;
 }) {

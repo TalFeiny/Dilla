@@ -225,6 +225,9 @@ class CellActionRegistry:
                 'displayValue': str(service_output),
                 'metadata': {'raw_output': service_output}
             }
+            if isinstance(service_output, dict) and service_output.get('citations'):
+                result.setdefault('metadata', {})['citations'] = service_output['citations']
+            return result
         elif action_id == "document.extract":
             result = self._transform_document_extract_output(service_output)
         else:
@@ -1758,6 +1761,22 @@ class CellActionRegistry:
             column_compatibility=['object', 'number', 'currency']
         )
         
+        # Chain Execution — run multiple actions in sequence, piping outputs forward
+        self.register_workflow(
+            action_id="chain.execute",
+            name="Chain Execute",
+            service_name="chain_executor",
+            required_inputs={"steps": "array"},
+            output_type=OutputType.OBJECT,
+            description=(
+                "Execute multiple cell actions sequentially. "
+                "Each step receives the previous step's output as additional inputs. "
+                "Payload: {steps: [{action_id, inputs}, ...], shared_inputs?: {}}."
+            ),
+            mode_availability=['portfolio', 'query', 'custom', 'lp'],
+            column_compatibility=['object', 'array']
+        )
+
         # Scenario Composition Workflow
         self.register_workflow(
             action_id="scenario.compose",

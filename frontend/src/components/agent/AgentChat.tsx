@@ -39,6 +39,8 @@ import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import AgentFeedback from './AgentFeedback';
+import { CompanyAnalysisCard } from './CompanyAnalysisCard';
+import type { CompanyAnalysisData } from './CompanyAnalysisCard';
 import { MatrixSnippet, type MatrixSnippetData } from './MatrixSnippet';
 import {
   Tooltip,
@@ -58,6 +60,8 @@ import { SkeletonChart } from '@/components/ui/skeleton';
 import type { MatrixData } from '@/components/matrix/UnifiedMatrix';
 import { contextManager } from '@/lib/agent-context-manager';
 import { FormatHandlerFactory } from '@/lib/format-handlers/factory';
+import { parseMarkdownToSections } from '@/lib/format-handlers/docs-handler';
+import { formatSuggestionValue } from '@/lib/matrix/cell-formatters';
 
 // Dynamically import TableauLevelCharts to avoid SSR issues
 const TableauLevelCharts = dynamic(() => import('@/components/charts/TableauLevelCharts'), { 
@@ -88,7 +92,7 @@ interface Message {
     method?: string;
     reasoning?: string;
   };
-  gridCommands?: Array<{ action: 'edit' | 'run' | 'add_document'; rowId?: string; columnId?: string; value?: unknown; actionId?: string }>;
+  gridCommands?: Array<{ action: 'edit' | 'run' | 'add_document'; rowId?: string; columnId?: string; value?: unknown; actionId?: string; source_service?: string; reasoning?: string; confidence?: number; metadata?: Record<string, unknown>; auto_apply?: boolean }>;
   toolsFailed?: string[];
   /** Deck format: slides for inline preview */
   deckSlides?: Array<{ id?: string; title?: string; content?: any; order?: number }>;
@@ -104,6 +108,10 @@ interface Message {
   awaitingApproval?: boolean;
   /** Non-cell suggestions: action items, warnings, insights from agent */
   agentSuggestions?: Array<{ type: 'warning' | 'action_item' | 'insight'; title: string; description: string; priority?: string }>;
+  /** Inline todos emitted by the agent — session state, checkable in chat */
+  todoItems?: Array<{ id: string; title: string; description?: string; priority?: string; company?: string; due?: string; done: boolean }>;
+  /** Inline memo sections from enrichment/diligence — rendered in chat, not in doc viewer */
+  memoSections?: Array<{ type: string; content?: string; items?: string[]; chart?: any }>;
 }
 
 export type ExportFormat = 'csv' | 'xlsx' | 'pdf';
@@ -135,7 +143,7 @@ interface AgentChatProps {
   onUploadDocument?: (files: File[], opts: { companyId?: string; fundId?: string }) => Promise<void>;
   onPlanStepsUpdate?: (steps: Array<{ id: string; label: string; status: 'pending' | 'running' | 'done' | 'failed'; detail?: string }>) => void;
   /** When provided, grid commands (from backend or intent) go through this callback instead of executing directly. Enables accept/reject flow. */
-  onGridCommandsFromBackend?: (commands: Array<{ action: 'edit' | 'run' | 'add_document'; rowId?: string; columnId?: string; value?: unknown; actionId?: string }>) => Promise<void>;
+  onGridCommandsFromBackend?: (commands: Array<{ action: 'edit' | 'run' | 'add_document'; rowId?: string; columnId?: string; value?: unknown; actionId?: string; source_service?: string; reasoning?: string; confidence?: number; metadata?: Record<string, unknown> }>) => Promise<void>;
   /** Document/service suggestions for inline accept/reject in chat (Cursor-style) */
   suggestions?: DocumentSuggestion[];
   suggestionsLoading?: boolean;
@@ -152,6 +160,13 @@ interface AgentChatProps {
   onMemoUpdates?: (updates: { action: string; sections: Array<{ type: string; content?: string; chart?: unknown; items?: string[]; table?: unknown }> }) => void;
   /** Current memo sections for sending as context */
   memoSections?: Array<{ type: string; content?: string }>;
+  /** Emit rich analysis content to the bottom panel instead of crammed into sidebar */
+  onAnalysisReady?: (analysis: {
+    sections: Array<{ title?: string; content?: string; level?: number }>;
+    charts: Array<{ type: string; title?: string; data: any }>;
+    companies?: any[];
+    capTables?: any[];
+  }) => void;
 }
 
 const TOOL_ICONS: Record<string, React.ElementType> = {
@@ -169,25 +184,6 @@ const TOOL_ICONS: Record<string, React.ElementType> = {
   'get_portfolio_metrics': DollarSign,
   'predict_exit_timing': Activity,
 };
-
-/** Format suggestion value for display, column-aware */
-const NON_CURRENCY_COLUMNS = new Set(['headcount', 'optionPool', 'runway', 'runwayMonths', 'grossMargin', 'revenueGrowthAnnual', 'revenueGrowthMonthly']);
-function formatSuggestionValue(value: unknown, columnId?: string): string {
-  if (value === null || value === undefined) return 'N/A';
-  if (typeof value === 'number') {
-    if (columnId && NON_CURRENCY_COLUMNS.has(columnId)) {
-      if (columnId === 'grossMargin') return `${(value <= 1 ? value * 100 : value).toFixed(1)}%`;
-      if (columnId.toLowerCase().includes('growth')) return `${value.toFixed(1)}%`;
-      if (columnId === 'optionPool') return `${value} bps`;
-      if (columnId === 'runway' || columnId === 'runwayMonths') return `${value.toFixed(0)} mo`;
-      return value.toLocaleString();
-    }
-    if (value >= 1000000) return `$${(value / 1000000).toFixed(2)}M`;
-    if (value >= 1000) return `$${(value / 1000).toFixed(0)}K`;
-    return `$${value.toFixed(2)}`;
-  }
-  return String(value);
-}
 
 /** Build compressed matrix context for backend (< 5KB) with optional gridSnapshot for cell values */
 function buildMatrixContext(matrixData: MatrixData | null | undefined, fundId?: string): MatrixContext | undefined {
@@ -243,6 +239,14 @@ function parseGridIntent(
   if (!matrixData?.rows?.length) return null;
   const cmds: Array<{ action: 'edit' | 'run'; rowId?: string; columnId?: string; value?: unknown; actionId?: string }> = [];
   const lower = input.toLowerCase();
+
+  // Multi-company / fund-wide intents ("value all", "fill in everything", "value the fund")
+  // → Let the backend handle via plan mode (multistep with parallel execution engine).
+  // Do NOT intercept here — the backend creates plan steps, user approves, then grid_commands flow back.
+  const isMultiCompanyIntent = /\b(?:value\s+(?:all|the\s+fund|every(?:thing)?|entire\s+(?:fund|portfolio))|fill\s+in\s+every(?:thing)?|run\s+(?:valuation|pwerm|dcf)\s+(?:on|for)\s+(?:all|every(?:thing)?|the\s+(?:fund|portfolio)))\b/.test(lower);
+  if (isMultiCompanyIntent) {
+    return null; // Pass through to backend for plan mode
+  }
 
   // "value @X" / "value X" (valuation intent)
   const valueMatch = input.match(/\bvalue\s+@?([A-Za-z0-9_\s]+?)(?:\s|$|\.|,)/i) || lower.match(/\bvalue\s+@?([a-z0-9_\s]+)/);
@@ -347,6 +351,7 @@ export default function AgentChat({
   onHighlightCell,
   onMemoUpdates,
   memoSections,
+  onAnalysisReady,
 }: AgentChatProps) {
   // --- Conversation Tabs ---
   interface ChatTab {
@@ -393,9 +398,12 @@ export default function AgentChat({
   const [pendingApprovedPlan, setPendingApprovedPlan] = useState(false);
   const approvedPlanStepsRef = useRef<any[]>([]);
   const workingMemoryRef = useRef<Array<{ tool: string; summary: string }>>([]);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const uploadFileInputRef = useRef<HTMLInputElement>(null);
+  const [droppedContext, setDroppedContext] = useState<{ type: string; content: string } | null>(null);
+  const [dragOverInput, setDragOverInput] = useState(false);
 
   // Sync messages to active tab
   useEffect(() => {
@@ -475,6 +483,10 @@ export default function AgentChat({
       awaitingApproval: result.awaiting_approval ?? data.awaiting_approval ?? false,
       warnings: result.warnings ?? data.warnings ?? [],
       gridCommands: data.result?.grid_commands ?? data.grid_commands ?? [],
+      memoArtifacts: result.memo_artifacts ?? data.memo_artifacts ?? null,
+      memoType: result.memo_type ?? data.memo_type ?? null,
+      isResumable: result.is_resumable ?? data.is_resumable ?? false,
+      todos: result.todos ?? result.todo_items ?? data.todos ?? [],
     };
   };
 
@@ -524,17 +536,24 @@ export default function AgentChat({
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
+    // Prepend dropped context to the message if present
+    const contextPrefix = droppedContext
+      ? `[CONTEXT FROM MEMO]\n${droppedContext.content}\n\n[USER QUERY]\n`
+      : '';
+    const fullContent = contextPrefix + input;
+
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: input,
+      content: fullContent,
       timestamp: new Date(),
     };
 
     setMessages(prev => [...prev, userMessage]);
     setInput('');
+    setDroppedContext(null);
     setIsLoading(true);
-    onMessageSent?.(input);
+    onMessageSent?.(fullContent);
 
     const gridCommandsFromIntent = parseGridIntent(input, matrixData ?? null);
     const outputFormat = parseOutputFormatIntent(input);
@@ -576,8 +595,23 @@ export default function AgentChat({
         ? buildMatrixContext(matrixData, fundId)
         : undefined;
 
-      // Extract all @mentions (Phase 1: pass all companies)
-      const companiesFromMentions = [...new Set(input.match(/@(\w+)/g)?.map((m) => m.slice(1)) || [])];
+      // Extract @mentions — supports multi-word names like @Safe Intelligence, @QC Design
+      const companiesFromAtMentions = (input.match(/@([\w][\w\s]*[\w]|[\w]+)/g) || []).map((m) => m.slice(1).trim());
+
+      // Also match against known grid company names (without requiring @ prefix)
+      const companiesFromGrid: string[] = [];
+      if (matrixContext?.companyNames) {
+        const atSet = new Set(companiesFromAtMentions.map((n) => n.toLowerCase()));
+        for (const name of matrixContext.companyNames) {
+          if (!name || name.length < 3 || atSet.has(name.toLowerCase())) continue;
+          const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          if (new RegExp(`\\b${escaped}\\b`, 'i').test(input)) {
+            companiesFromGrid.push(name);
+          }
+        }
+      }
+
+      const companiesFromMentions = [...new Set([...companiesFromAtMentions, ...companiesFromGrid])];
 
       // Build agent_context for backend sync — recent analyses & conversation summary
       const recentAssistantMessages = messages
@@ -595,6 +629,7 @@ export default function AgentChat({
         approvedPlanStepsRef.current = [];
       }
 
+      const now = new Date();
       const requestBody = {
         prompt: input,
         // Send as hint — backend determines final format from prompt + tool results
@@ -610,24 +645,39 @@ export default function AgentChat({
           fundId,
           // Pass plan steps back so backend can execute the approved plan
           plan_steps: planStepsToSend.length > 0 ? planStepsToSend : undefined,
+          // Datetime context for time-aware analysis
+          datetime: {
+            iso: now.toISOString(),
+            date: now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            quarter: `Q${Math.ceil((now.getMonth() + 1) / 3)} ${now.getFullYear()}`,
+          },
         },
         agent_context: {
           recent_analyses: recentAssistantMessages,
           active_company: companiesFromMentions[0] || null,
           fund_id: fundId || null,
           conversation_summary: conversationSummary,
-          memo_sections: memoSections?.slice(-15) || [],
+          memo_section_count: memoSections?.length || 0,
           memo_title: memoSections?.[0]?.content || '',
           working_memory: workingMemoryRef.current,
+          current_datetime: now.toISOString(),
         },
         approved_plan: isApprovedPlan || undefined,
         stream: true,
       };
 
+      // Abort any in-flight request before starting a new one
+      abortControllerRef.current?.abort();
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
       const res = await fetch('/api/agent/unified-brain', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
+        signal: abortController.signal,
       });
 
       if (!res.ok) {
@@ -663,6 +713,19 @@ export default function AgentChat({
                   detail: s.detail,
                 }));
                 onPlanStepsUpdate(steps);
+              } else if (event.type === 'memo_section' && event.section && onMemoUpdates) {
+                // Stream memo sections to MemoEditor in real-time
+                onMemoUpdates({ action: 'append', sections: [event.section] });
+              } else if (event.type === 'chart_data' && event.chart) {
+                // Accumulate streamed charts for final message
+                if (!data) data = { success: true, result: {} };
+                if (!data.result) data.result = {};
+                if (!data.result.charts) data.result.charts = [];
+                data.result.charts.push(event.chart);
+                // Also stream charts to memo in real-time
+                if (onMemoUpdates) {
+                  onMemoUpdates({ action: 'append', sections: [{ type: 'chart', chart: event.chart }] });
+                }
               } else if (event.type === 'complete') {
                 data = event;
               } else if (event.type === 'error') {
@@ -702,24 +765,36 @@ export default function AgentChat({
       // Execute grid commands from intent or from response
       const commandsToRun = gridCommandsFromIntent ?? data.result?.grid_commands ?? data.grid_commands ?? [];
       let gridErrorSummary = '';
+      const gridEditCount = commandsToRun.filter((c: any) => c.action === 'edit').length;
+      const gridRunCount = commandsToRun.filter((c: any) => c.action === 'run').length;
       if (commandsToRun.length > 0) {
         if (onGridCommandsFromBackend) {
           // Route through wrapper for accept/reject flow when suggestBeforeApply is on
           await onGridCommandsFromBackend(commandsToRun);
         } else {
-          // Execute grid commands sequentially to prevent partial corruption
+          // Execute grid commands by group order to support workflow chaining.
+          // Group 0 = edits (parallel batches), Group 1+ = run services (sequential groups).
           const cmdErrors: string[] = [];
+          const groupMap = new Map<number, typeof commandsToRun>();
           for (const cmd of commandsToRun) {
-            try {
-              if (cmd.action === 'run' && cmd.rowId && cmd.columnId && cmd.actionId && onRunService) {
-                await onRunService(cmd.actionId, cmd.rowId, cmd.columnId);
-              } else if (cmd.action === 'edit' && cmd.rowId && cmd.columnId && cmd.value !== undefined && onCellEdit) {
-                await onCellEdit(cmd.rowId, cmd.columnId, cmd.value, { data_source: 'agent', metadata: { fromChat: true } });
+            const g = (cmd as any).group ?? (cmd.action === 'run' ? 1 : 0);
+            if (!groupMap.has(g)) groupMap.set(g, []);
+            groupMap.get(g)!.push(cmd);
+          }
+          for (const groupNum of [...groupMap.keys()].sort((a, b) => a - b)) {
+            const groupCmds = groupMap.get(groupNum)!;
+            for (const cmd of groupCmds) {
+              try {
+                if (cmd.action === 'run' && cmd.rowId && cmd.columnId && cmd.actionId && onRunService) {
+                  await onRunService(cmd.actionId, cmd.rowId, cmd.columnId);
+                } else if (cmd.action === 'edit' && cmd.rowId && cmd.columnId && cmd.value !== undefined && onCellEdit) {
+                  await onCellEdit(cmd.rowId, cmd.columnId, cmd.value, { data_source: 'agent', metadata: { fromChat: true } });
+                }
+              } catch (cmdError) {
+                const msg = `${cmd.action} ${cmd.columnId}: ${cmdError instanceof Error ? cmdError.message : 'failed'}`;
+                cmdErrors.push(msg);
+                console.error('Grid command failed:', msg);
               }
-            } catch (cmdError) {
-              const msg = `${cmd.action} ${cmd.columnId}: ${cmdError instanceof Error ? cmdError.message : 'failed'}`;
-              cmdErrors.push(msg);
-              console.error('Grid command failed:', msg);
             }
           }
           if (cmdErrors.length > 0) {
@@ -749,6 +824,17 @@ export default function AgentChat({
         onMemoUpdates(norm.memoUpdates);
       }
 
+      // Store resumable memo artifacts (plan memos) for cross-session context
+      if (norm.memoArtifacts?.length) {
+        try {
+          const existing = JSON.parse(localStorage.getItem('dilla_memo_artifacts') || '[]');
+          const updated = [...existing, ...norm.memoArtifacts].slice(-20); // Keep last 20
+          localStorage.setItem('dilla_memo_artifacts', JSON.stringify(updated));
+        } catch (e) {
+          console.warn('[AgentChat] Failed to store memo artifacts:', e);
+        }
+      }
+
       // Extract plan steps for inline rendering in message
       const messagePlanSteps = rawSteps && Array.isArray(rawSteps)
         ? rawSteps.map((s: any, i: number) => ({
@@ -762,6 +848,26 @@ export default function AgentChat({
 
       // Extract non-cell suggestions (action items, warnings, insights)
       const agentSuggestions = norm.suggestions;
+
+      // Extract inline todos from response (emitted by emit_todo tool)
+      const rawTodos: Array<{ title: string; description?: string; priority?: string; company?: string; due?: string }> =
+        result.todos ?? result.todo_items ?? data.todos ?? [];
+      const todoItems = rawTodos.length > 0
+        ? rawTodos.map((t: any, i: number) => ({
+            id: `todo-${Date.now()}-${i}`,
+            title: t.title || '',
+            description: t.description,
+            priority: t.priority,
+            company: t.company,
+            due: t.due,
+            done: false,
+          }))
+        : undefined;
+
+      // Extract inline memo sections from agent response (enrichment/diligence memos)
+      // These render in-chat, not in a document viewer
+      const responseMemoSections: Array<{ type: string; content?: string; items?: string[]; chart?: any }> | undefined =
+        norm.memoUpdates?.sections?.length ? norm.memoUpdates.sections : undefined;
 
       // Chart from chat intent: fetch and merge
       let chartCharts: Array<{ type: string; title?: string; data: any }> = [];
@@ -785,7 +891,10 @@ export default function AgentChat({
       let docsChartPositions: Array<{ afterParagraph: number; inline: boolean }> | undefined;
 
       const formatHandler = FormatHandlerFactory.getHandler(responseFormat);
-      if (formatHandler && (responseFormat === 'docs' || responseFormat === 'document' || responseFormat === 'analysis')) {
+      const hasDocContent = responseFormat === 'docs' || responseFormat === 'document' || responseFormat === 'analysis';
+      // Run docs enrichment for doc formats, but also when grid commands co-exist with sections
+      const shouldEnrichDocs = formatHandler && (hasDocContent || (commandsToRun.length > 0 && (result.sections?.length || result.memo?.sections?.length)));
+      if (shouldEnrichDocs) {
         try {
           const handlerResult = await formatHandler.format({
             text: JSON.stringify(result),
@@ -810,121 +919,177 @@ export default function AgentChat({
       }
 
       // Fallback: extract docs sections directly if handler didn't produce them
-      if (!docsSections?.length && (responseFormat === 'docs' || responseFormat === 'document')) {
-        docsSections = result.sections ?? result.memo?.sections ?? result.docs?.sections ?? [];
-      }
-
-      // Format the content from the structured analysis
-      let content = '';
-      let capTables = [];
-      let citations = [];
-
-      // Deck format: brief summary + slide count
-      if (deckSlides?.length) {
-        content = `# Investment Deck\n\nGenerated ${deckSlides.length} slides. Preview below.\n\n`;
-      }
-      // Docs format: brief summary in chat, full doc in popover
-      else if (docsSections?.length) {
-        const title = docsSections[0]?.title || 'Document';
-        content = `# ${title}\n\n${docsSections.length} sections generated. Click "View Document" below to read the full memo.\n\n`;
-        // Show first section preview
-        if (docsSections[0]?.content) {
-          const preview = docsSections[0].content.slice(0, 300);
-          content += `${preview}${docsSections[0].content.length > 300 ? '...' : ''}`;
+      if (!docsSections?.length) {
+        const rawSections = result.sections ?? result.memo?.sections ?? result.docs?.sections;
+        if (Array.isArray(rawSections) && rawSections.length > 0) {
+          docsSections = rawSections;
         }
       }
 
-      // Backend returns everything in result object — use normalized accessors
+      // Extract the agent synthesis early so it is available for fallback parsing
+      const synthesis = result.content || result.summary || result.synthesis || '';
+
+      // Last resort: parse synthesis markdown into sections for memo when content is substantial
+      if (!docsSections?.length && typeof synthesis === 'string' && synthesis.length > 200) {
+        const parsed = parseMarkdownToSections(synthesis);
+        if (parsed.length > 1) {
+          docsSections = parsed.map(s => ({
+            title: s.title || (s.type?.startsWith('heading') ? s.content : undefined),
+            content: s.type === 'paragraph' || s.type === 'list' ? (s.content || s.items?.join('\n')) : s.content,
+            level: s.level ?? 2,
+          }));
+        }
+      }
+
+      // --- Composite content generation ---
+      // Chat is NOT the primary output. The memo is. Chat gets a brief summary.
+      // Rich content (sections, charts, analysis) routes to memo/document viewer.
+      let content = '';
+      let capTables: any[] = [];
+      let citations: any[] = [];
+
       const companies = norm.companies;
       const allCitations = norm.citations;
-      
-      if (companies && companies.length > 0 && !deckSlides?.length && !docsSections?.length) {
-        content = `# Company Analysis\n\n`;
-        
-        companies.forEach((company: any, index: number) => {
-          const companyName = company.company || company.name || `Company ${index + 1}`;
-          content += `## ${index + 1}. ${companyName}\n\n`;
-          
-          // Display fund fit score
-          if (company.fund_fit_score) {
-            content += `**Fund Fit Score:** ${company.fund_fit_score}/100\n\n`;
-          }
-          
-          // Display financial metrics
-          if (company.valuation) content += `**Valuation:** $${(company.valuation / 1e9).toFixed(2)}B\n`;
-          if (company.revenue) content += `**Revenue:** $${(company.revenue / 1e6).toFixed(1)}M\n`;
-          if (company.arr) content += `**ARR:** $${(company.arr / 1e6).toFixed(1)}M\n`;
-          if (company.growth_rate) content += `**Growth Rate:** ${(company.growth_rate * 100).toFixed(1)}%\n`;
-          if (company.business_model) content += `**Business Model:** ${company.business_model}\n`;
-          
-          // Display funding information
-          if (company.funding) {
-            const funding = company.funding;
-            if (funding.total_raised) content += `**Total Raised:** $${(funding.total_raised / 1e6).toFixed(1)}M\n`;
-            if (funding.last_round_type) content += `**Last Round:** ${funding.last_round_type}\n`;
-            if (funding.last_round_amount) content += `**Last Amount:** $${(funding.last_round_amount / 1e6).toFixed(1)}M\n`;
-            if (funding.last_round_date) content += `**Last Date:** ${funding.last_round_date}\n`;
-          }
-          
-          // Display cap table if available
+
+      // Extract cap tables from companies (used by memo/viewer, not chat)
+      if (companies && companies.length > 0) {
+        companies.forEach((company: any) => {
+          const companyName = company.company || company.name || '';
           if (company.cap_table) {
-            content += `\n### Ownership Structure\n`;
             capTables.push({ company: companyName, capTable: company.cap_table });
-            
-            // Show investor ownership
-            if (company.cap_table.investors) {
-              content += `**Investors:**\n`;
-              company.cap_table.investors.forEach((investor: any) => {
-                content += `- ${investor.name}: ${(investor.ownership * 100).toFixed(2)}% (${investor.round || 'Unknown'})\n`;
-              });
-            }
-            
-            // Show liquidation preferences
-            if (company.cap_table.liquidation_stack) {
-              content += `\n**Liquidation Preferences:**\n`;
-              company.cap_table.liquidation_stack.forEach((pref: any, idx: number) => {
-                content += `${idx + 1}. ${pref.investor}: $${(pref.amount / 1e6).toFixed(1)}M at ${pref.multiple}x\n`;
-              });
-            }
           }
-          
-          // Display valuation methods if available
-          if (company.valuation_methods) {
-            content += `\n### Valuation Analysis\n`;
-            const methods = company.valuation_methods;
-            if (methods.pwerm) content += `**PWERM:** $${(methods.pwerm / 1e6).toFixed(1)}M\n`;
-            if (methods.dcf) content += `**DCF:** $${(methods.dcf / 1e6).toFixed(1)}M\n`;
-            if (methods.comparables) content += `**Comparables:** $${(methods.comparables / 1e6).toFixed(1)}M\n`;
-          }
-          
-          content += '\n';
         });
-      } else if (result.analysis && result.analysis.executive_summary) {
-        // Fallback to old structure if needed
-        const analysis = result.analysis;
-        content = `# Executive Summary\n\n${analysis.executive_summary}\n\n`;
-      } else {
-        // Final fallback
-        content = data.analysis || data.synthesis || result.content || JSON.stringify(result, null, 2);
       }
-      
-      // Add citations section if available
+
+      // Store citations for structured rendering (not dumped in chat text)
       if (allCitations && allCitations.length > 0) {
-        content += `\n## Sources & Citations\n`;
-        allCitations.forEach((citation: any, idx: number) => {
-          if (citation.url) {
-            content += `${idx + 1}. [${citation.source || citation.title || 'Source'}](${citation.url})\n`;
-          }
-        });
         citations = allCitations;
+      }
+
+      // Determine if this response has rich content that belongs in memo, not chat
+      const hasRichContent = (docsSections?.length ?? 0) > 0
+        || (norm.charts?.length ?? 0) > 0
+        || (companies?.length ?? 0) > 0
+        || (deckSlides?.length ?? 0) > 0
+        || (typeof synthesis === 'string' && synthesis.length > 300);
+
+      // 1. Use synthesis (extracted above) as chat content
+      if (typeof synthesis === 'string' && synthesis.trim().length > 10) {
+        content = synthesis;
+      }
+
+      // 2. If we have rich content, truncate chat to a brief pointer
+      if (hasRichContent && content.length > 600) {
+        // Keep first ~3 sentences as a chat summary
+        const sentences = content.match(/[^.!?]+[.!?]+/g) || [content];
+        content = sentences.slice(0, 3).join(' ').trim();
+      }
+
+      // 3. Deck format: brief summary only
+      if (deckSlides?.length) {
+        content = content
+          ? `${content.slice(0, 300)}\n\n**Deck ready** — ${deckSlides.length} slides generated.`
+          : `**Investment deck generated** — ${deckSlides.length} slides. Click to preview.`;
+      }
+
+      // 4. Docs/memo format: brief pointer to the memo
+      if (docsSections?.length && !content) {
+        const title = docsSections[0]?.title || 'Analysis';
+        content = `**${title}** — written to memo. Click "View Document" to read.`;
+      } else if (docsSections?.length && content) {
+        // Ensure chat doesn't repeat what's in the memo
+        content = content.slice(0, 400);
+      }
+
+      // 5. Company analysis: brief summary, not a data dump
+      if (companies?.length && !content) {
+        const names = companies.map((c: any) => c.company || c.name).filter(Boolean);
+        content = `Analysis of ${names.join(', ')} complete. See memo for details.`;
+      }
+
+      // 6. Fallback for truly empty responses — keep it brief
+      if (!content) {
+        const fallbackFields = [
+          result.analysis?.executive_summary,
+          typeof (data.analysis || data.synthesis || result.text) === 'string' ? (data.analysis || data.synthesis || result.text) : null,
+          result.summary,
+          result.analysis_text,
+          typeof result.explanation === 'string' ? result.explanation : result.explanation?.reasoning,
+          result.portfolio_summary || result.fund_summary,
+          result.insight || result.response || result.answer || result.message,
+        ].filter((v): v is string => typeof v === 'string' && v.trim().length > 10);
+
+        if (fallbackFields.length > 0) {
+          // Take the first meaningful field, cap at ~500 chars
+          content = fallbackFields[0].slice(0, 500);
+        } else {
+          content = 'Analysis complete.';
+        }
+      }
+
+      // Auto-generate memo_updates from rich response data when backend didn't explicitly provide them
+      // This ensures analysis always flows to the memo, not just chat
+      if (!norm.memoUpdates?.sections?.length && hasRichContent && onMemoUpdates) {
+        const autoSections: Array<{ type: string; content?: string; chart?: unknown; items?: string[] }> = [];
+
+        // Add text sections from docs or synthesis (use MemoEditor-compatible types)
+        if (docsSections?.length) {
+          for (const sec of docsSections) {
+            if (sec.title) {
+              autoSections.push({ type: 'heading2', content: sec.title });
+            }
+            if (sec.content) {
+              autoSections.push({ type: 'paragraph', content: sec.content });
+            }
+          }
+        } else if (typeof synthesis === 'string' && synthesis.length > 100) {
+          autoSections.push({ type: 'paragraph', content: synthesis });
+        }
+
+        // Add charts as memo sections
+        if (norm.charts?.length) {
+          for (const chart of norm.charts) {
+            autoSections.push({ type: 'chart', chart });
+          }
+        }
+
+        // Add citations
+        if (allCitations?.length) {
+          const citationText = allCitations
+            .filter((c: any) => c.url)
+            .map((c: any, i: number) => `${i + 1}. [${c.source || c.title || 'Source'}](${c.url})`)
+            .join('\n');
+          if (citationText) {
+            autoSections.push({ type: 'heading3', content: 'Sources' });
+            autoSections.push({ type: 'paragraph', content: citationText });
+          }
+        }
+
+        if (autoSections.length > 0) {
+          onMemoUpdates({ action: 'append', sections: autoSections });
+        }
       }
       
       const toolsUsed = data.tool_calls?.map((tc: any) => tc.tool) || 
                         data.metadata?.tools_used || 
                         (result.metadata ? result.metadata.entities?.actions || [] : []);
       
-      // Charts: backend response + chart-from-chat intent
-      const charts = [...norm.charts, ...chartCharts];
+      // Charts: ALWAYS route to memo/document viewer, never inline in chat sidebar.
+      // Charts in a narrow sidebar are unreadable and drag the page.
+      const allCharts = [...norm.charts, ...chartCharts];
+      let charts: typeof allCharts = []; // Never render charts inline in chat
+      if (allCharts.length > 0) {
+        if (!docsCharts) docsCharts = [];
+        docsCharts.push(...allCharts.map(c => ({ type: c.type, title: c.title, data: c.data })));
+        // Ensure we have at least a minimal section so the document viewer opens
+        if (!docsSections?.length) {
+          docsSections = [{ title: 'Analysis', content: content || 'See charts below.', level: 1 }];
+        }
+        // Add a note in chat that charts are in the memo
+        if (!content.includes('chart') && !content.includes('memo')) {
+          content += `\n\n${allCharts.length} chart${allCharts.length > 1 ? 's' : ''} added to memo.`;
+        }
+      }
 
       // Explanation block from backend
       const explanation = norm.explanation;
@@ -946,7 +1111,13 @@ export default function AgentChat({
         }
       }
 
-      // Append grid errors and backend warnings to visible content
+      // Append grid suggestion summary and errors to visible content
+      if (gridEditCount > 0 || gridRunCount > 0) {
+        const parts: string[] = [];
+        if (gridEditCount > 0) parts.push(`${gridEditCount} value${gridEditCount > 1 ? 's' : ''}`);
+        if (gridRunCount > 0) parts.push(`${gridRunCount} service${gridRunCount > 1 ? 's' : ''}`);
+        content += `\n\n---\n**Grid updated:** ${parts.join(' + ')} added as suggestions for review.`;
+      }
       if (gridErrorSummary) {
         content += gridErrorSummary;
       }
@@ -983,10 +1154,36 @@ export default function AgentChat({
               planSteps: messagePlanSteps?.length ? messagePlanSteps : undefined,
               awaitingApproval: isAwaitingApproval || undefined,
               agentSuggestions: agentSuggestions?.length ? agentSuggestions : undefined,
+              todoItems: todoItems?.length ? todoItems : undefined,
+              memoSections: responseMemoSections?.length ? responseMemoSections : undefined,
               processing: false,
             }
           : msg
       ));
+
+      // Emit rich analysis to bottom panel when we have docs content
+      if (onAnalysisReady && docsSections?.length) {
+        onAnalysisReady({
+          sections: docsSections,
+          charts: docsCharts || charts || [],
+          companies: companies,
+          capTables: capTables,
+        });
+      }
+
+      // AUTO-OPEN document viewer when docs/memo sections arrive
+      if (docsSections?.length) {
+        // Small delay to ensure message is rendered before opening viewer
+        setTimeout(() => {
+          setMessages(prev => {
+            const updated = prev.find(m => m.id === placeholderId);
+            if (updated) {
+              openDocumentViewer(updated);
+            }
+            return prev;
+          });
+        }, 300);
+      }
     } catch (error) {
       console.error('Error sending message:', error);
       // Update placeholder with error message
@@ -1000,6 +1197,7 @@ export default function AgentChat({
           : msg
       ));
     } finally {
+      abortControllerRef.current = null;
       setIsLoading(false);
     }
   };
@@ -1042,23 +1240,25 @@ export default function AgentChat({
     setDocumentViewerOpen(true);
   };
 
-  /** Export document as PDF via existing deck export */
+  /** Export document as PDF via memo export endpoint */
   const handlePdfExport = async (message: Message) => {
     if (!message.docsSections?.length) return;
     setExportingPdf(true);
     try {
-      const res = await fetch('/api/export/deck', {
+      const res = await fetch('/api/memos/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          format: 'pdf',
           sections: message.docsSections,
           charts: message.docsCharts || message.charts || [],
           title: message.docsSections[0]?.title || 'Investment Memo',
           companies: message.companies?.map((c: any) => c.company || c.name) || [],
         }),
       });
-      if (!res.ok) throw new Error('PDF export failed');
+      if (!res.ok) {
+        const errText = await res.text().catch(() => 'Unknown error');
+        throw new Error(`PDF export failed: ${errText}`);
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1249,7 +1449,7 @@ export default function AgentChat({
                   }`}
                 >
                   <div
-                    className={`group relative max-w-[95%] min-w-0 rounded-lg px-2.5 py-1.5 overflow-hidden text-sm ${
+                    className={`group relative max-w-[92%] min-w-0 rounded-lg px-2 py-1 text-xs ${
                       message.role === 'user'
                         ? 'bg-gradient-to-r from-gray-600 to-gray-700 text-white'
                         : 'bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800'
@@ -1262,7 +1462,7 @@ export default function AgentChat({
                       </div>
                     ) : (
                       <>
-                        <div className="prose prose-sm dark:prose-invert max-w-none break-words overflow-wrap-anywhere">
+                        <div className="prose prose-xs dark:prose-invert max-w-none break-words overflow-wrap-anywhere text-xs leading-snug max-h-[200px] overflow-y-auto">
                           <ReactMarkdown
                             components={{
                               code({ node, className, children, ...props }: any) {
@@ -1273,6 +1473,7 @@ export default function AgentChat({
                                     style={atomDark}
                                     language={match[1]}
                                     PreTag="div"
+                                    customStyle={{ fontSize: '10px' }}
                                     {...props}
                                   >
                                     {String(children).replace(/\n$/, '')}
@@ -1298,21 +1499,21 @@ export default function AgentChat({
                               },
                               p({ node, className, children, ...props }: any) {
                                 return (
-                                  <p className="mb-3 leading-relaxed" {...props}>
+                                  <p className="mb-1.5 leading-snug" {...props}>
                                     {children}
                                   </p>
                                 );
                               },
                               h1({ node, className, children, ...props }: any) {
                                 return (
-                                  <h1 className="text-xl font-bold mb-3 mt-4 text-gray-900 dark:text-gray-100" {...props}>
+                                  <h1 className="text-sm font-bold mb-1.5 mt-2 text-gray-900 dark:text-gray-100" {...props}>
                                     {children}
                                   </h1>
                                 );
                               },
                               h2({ node, className, children, ...props }: any) {
                                 return (
-                                  <h2 className="text-lg font-semibold mb-2 mt-3 text-gray-800 dark:text-gray-200" {...props}>
+                                  <h2 className="text-xs font-semibold mb-1 mt-2 text-gray-800 dark:text-gray-200" {...props}>
                                     {children}
                                   </h2>
                                 );
@@ -1322,50 +1523,32 @@ export default function AgentChat({
                             {message.content}
                           </ReactMarkdown>
                         </div>
-                        
-                        {/* Charts inline in thread */}
-                        {message.charts && message.charts.length > 0 && (
-                          <div className="mt-3 space-y-3">
-                            {message.charts.map((chart, idx) => (
-                              <div key={idx} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
-                                <TableauLevelCharts
-                                  type={chart.type as any}
-                                  data={chart.data}
-                                  title={chart.title}
-                                  interactive={true}
-                                  height={400}
-                                />
-                              </div>
+
+                        {/* Compact company badges — full analysis is in memo */}
+                        {message.companies && message.companies.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {message.companies.map((company: CompanyAnalysisData, idx: number) => (
+                              <Badge key={idx} variant="outline" className="text-[10px]">
+                                {company.company || company.name || `Company ${idx + 1}`}
+                              </Badge>
                             ))}
                           </div>
                         )}
-                        
-                        {/* Deck slides: inline in thread */}
+
+                        {/* Charts are NEVER rendered inline — they go to memo.
+                            Show a compact indicator instead */}
+                        {message.charts && message.charts.length > 0 && (
+                          <div className="mt-1.5 flex items-center gap-1 text-[10px] text-muted-foreground">
+                            <BarChart3 className="h-3 w-3" />
+                            <span>{message.charts.length} chart{message.charts.length > 1 ? 's' : ''} in memo</span>
+                          </div>
+                        )}
+
+                        {/* Deck: compact summary, not inline slides */}
                         {message.deckSlides && message.deckSlides.length > 0 && (
-                          <div className="mt-3 space-y-2">
-                            {message.deckSlides.slice(0, 10).map((slide, idx) => (
-                              <details key={slide.id ?? idx} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-                                <summary className="px-3 py-2 cursor-pointer bg-gray-50 dark:bg-gray-800/50 text-sm font-medium">
-                                  Slide {idx + 1}: {slide.title || slide.content?.title || 'Untitled'}
-                                </summary>
-                                <div className="px-3 py-2 text-xs text-gray-600 dark:text-gray-400 prose prose-sm max-w-none">
-                                  {typeof slide.content?.body === 'string' && <p>{slide.content.body}</p>}
-                                  {slide.content?.bullets && (
-                                    <ul className="list-disc pl-4 mt-1">
-                                      {slide.content.bullets.map((b: string, i: number) => (
-                                        <li key={i}>{b}</li>
-                                      ))}
-                                    </ul>
-                                  )}
-                                  {!slide.content?.body && !slide.content?.bullets && (
-                                    <p>{JSON.stringify(slide.content || slide).slice(0, 200)}...</p>
-                                  )}
-                                </div>
-                              </details>
-                            ))}
-                            {message.deckSlides.length > 10 && (
-                              <p className="text-xs text-muted-foreground">+{message.deckSlides.length - 10} more slides</p>
-                            )}
+                          <div className="mt-1.5 flex items-center gap-1 text-[10px] text-muted-foreground">
+                            <FileTextIcon className="h-3 w-3" />
+                            <span>{message.deckSlides.length} slides generated</span>
                           </div>
                         )}
 
@@ -1396,20 +1579,41 @@ export default function AgentChat({
                           </div>
                         )}
 
-                        {/* Cap tables inline */}
+                        {/* Cap tables inline — ownership bar style */}
                         {message.capTables && message.capTables.length > 0 && (
                           <div className="mt-3 space-y-3">
-                            {message.capTables.map((item, idx) => (
-                              <div key={idx} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
-                                <h4 className="font-medium mb-2">{item.company}</h4>
-                                {item.capTable.investors && (
-                                  <div className="space-y-1">
-                                    {item.capTable.investors.map((investor, invIdx) => (
-                                      <div key={invIdx} className="flex justify-between text-sm">
-                                        <span>{investor.name}</span>
-                                        <span className="font-mono">{(investor.ownership * 100).toFixed(2)}%</span>
+                            {message.capTables.map((item: any, idx: number) => (
+                              <div key={idx} className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-gray-50/50 dark:bg-gray-800/30">
+                                <span className="text-[10px] text-muted-foreground uppercase tracking-wide">{item.company} — Ownership</span>
+                                {item.capTable?.investors && (
+                                  <div className="mt-1.5 space-y-0.5">
+                                    {item.capTable.investors.slice(0, 8).map((inv: any, invIdx: number) => (
+                                      <div key={invIdx} className="flex items-center gap-2 text-[11px]">
+                                        <span className="truncate flex-1 min-w-0">{inv.name}</span>
+                                        {inv.round && <span className="text-muted-foreground text-[10px] shrink-0">{inv.round}</span>}
+                                        <div className="w-20 shrink-0 flex items-center gap-1">
+                                          <div className="flex-1 h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                                            <div className="h-full rounded-full bg-blue-500 dark:bg-blue-400" style={{ width: `${Math.min((inv.ownership * 100), 100)}%` }} />
+                                          </div>
+                                          <span className="tabular-nums text-[10px] w-10 text-right">{(inv.ownership * 100).toFixed(1)}%</span>
+                                        </div>
                                       </div>
                                     ))}
+                                  </div>
+                                )}
+                                {item.capTable?.liquidation_stack && item.capTable.liquidation_stack.length > 0 && (
+                                  <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
+                                    <span className="text-[10px] text-muted-foreground uppercase tracking-wide">Liquidation Preferences</span>
+                                    <div className="mt-1 space-y-0.5">
+                                      {item.capTable.liquidation_stack.map((liq: any, li: number) => (
+                                        <div key={li} className="flex items-center gap-2 text-[11px]">
+                                          <span className="text-muted-foreground w-4 text-right shrink-0">{li + 1}.</span>
+                                          <span className="truncate flex-1 min-w-0">{liq.investor}</span>
+                                          <span className="tabular-nums shrink-0">${(liq.amount / 1e6).toFixed(1)}M</span>
+                                          <span className="text-muted-foreground shrink-0">{liq.multiple}x</span>
+                                        </div>
+                                      ))}
+                                    </div>
                                   </div>
                                 )}
                               </div>
@@ -1535,6 +1739,97 @@ export default function AgentChat({
                                 </div>
                               </div>
                             ))}
+                          </div>
+                        )}
+
+                        {/* Inline todos: checkable action items from agent */}
+                        {message.todoItems && message.todoItems.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Action Items</p>
+                            {message.todoItems.map((todo) => (
+                              <div
+                                key={todo.id}
+                                className={`flex items-start gap-2 p-2 rounded text-xs border ${
+                                  todo.done
+                                    ? 'bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800 opacity-60'
+                                    : 'bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800'
+                                }`}
+                              >
+                                <button
+                                  className="shrink-0 mt-0.5"
+                                  onClick={() => {
+                                    setMessages(prev => prev.map(m =>
+                                      m.id === message.id
+                                        ? {
+                                            ...m,
+                                            todoItems: m.todoItems?.map(t =>
+                                              t.id === todo.id ? { ...t, done: !t.done } : t
+                                            ),
+                                          }
+                                        : m
+                                    ));
+                                  }}
+                                >
+                                  {todo.done
+                                    ? <Check className="h-3.5 w-3.5 text-green-600" />
+                                    : <div className="h-3.5 w-3.5 border border-blue-400 rounded-sm" />
+                                  }
+                                </button>
+                                <div className="flex-1 min-w-0">
+                                  <p className={`font-medium ${todo.done ? 'line-through' : ''}`}>
+                                    {todo.title}
+                                    {todo.company && (
+                                      <span className="ml-1 text-[10px] text-muted-foreground">@{todo.company}</span>
+                                    )}
+                                  </p>
+                                  {todo.description && (
+                                    <p className="text-muted-foreground">{todo.description}</p>
+                                  )}
+                                </div>
+                                {todo.priority && (
+                                  <Badge variant="outline" className={`text-[9px] h-4 ${
+                                    todo.priority === 'high' ? 'border-red-300 text-red-600' :
+                                    todo.priority === 'low' ? 'border-gray-300 text-gray-500' :
+                                    'border-blue-300 text-blue-600'
+                                  }`}>
+                                    {todo.priority}
+                                  </Badge>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Inline memo sections: stream of consciousness from enrichment/diligence */}
+                        {message.memoSections && message.memoSections.length > 0 && (
+                          <div className="mt-3 space-y-1.5 border-l-2 border-indigo-300 dark:border-indigo-700 pl-3">
+                            {message.memoSections.map((section: any, i: number) => {
+                              if (section.type === 'heading1') {
+                                return <p key={i} className="text-sm font-semibold text-foreground">{section.content}</p>;
+                              }
+                              if (section.type === 'heading2') {
+                                return <p key={i} className="text-xs font-semibold text-foreground mt-2">{section.content}</p>;
+                              }
+                              if (section.type === 'heading3') {
+                                return <p key={i} className="text-xs font-medium text-muted-foreground mt-1">{section.content}</p>;
+                              }
+                              if (section.type === 'list' && section.items) {
+                                return (
+                                  <ul key={i} className="text-xs text-muted-foreground space-y-0.5 ml-2">
+                                    {section.items.map((item: string, j: number) => (
+                                      <li key={j} className="flex gap-1.5">
+                                        <span className="text-indigo-400 shrink-0">•</span>
+                                        <span dangerouslySetInnerHTML={{ __html: item.replace(/\*\*(.*?)\*\*/g, '<strong class="text-foreground">$1</strong>') }} />
+                                      </li>
+                                    ))}
+                                  </ul>
+                                );
+                              }
+                              if (section.type === 'paragraph' && section.content) {
+                                return <p key={i} className="text-xs text-muted-foreground">{section.content}</p>;
+                              }
+                              return null;
+                            })}
                           </div>
                         )}
 
@@ -1674,11 +1969,11 @@ export default function AgentChat({
               {toolCallEntries.length > 0 && (
                 <div className="flex justify-start">
                   <div className="max-w-[95%] rounded-lg px-2.5 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 min-w-0 space-y-1">
-                    {toolCallEntries.map((entry) => {
+                    {toolCallEntries.map((entry, entryIdx) => {
                       const Icon = TOOL_ICONS[entry.action_id] || Sparkles;
                       const label = (entry.action_id || '').replace(/_/g, ' ');
                       return (
-                        <Tooltip key={`${entry.row_id}-${entry.column_id}-${entry.action_id}`}>
+                        <Tooltip key={`${entry.row_id}-${entry.column_id}-${entry.action_id}-${entryIdx}`}>
                           <TooltipTrigger asChild>
                             <div className="flex items-center gap-2 rounded-md border border-gray-100 dark:border-gray-800 px-2 py-1.5 text-sm">
                               {entry.status === 'running' && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground shrink-0" />}
@@ -1743,8 +2038,38 @@ export default function AgentChat({
           </div>
         </div>
 
-        {/* Input bar — Cursor-style: sticky at bottom, minimal send */}
-        <div className="shrink-0 p-2 border-t border-border/80 bg-background/95 backdrop-blur-sm">
+        {/* Input bar — Cursor-style: sticky at bottom, minimal send, accepts dropped memo sections */}
+        <div
+          className={`shrink-0 p-2 border-t border-border/80 bg-background/95 backdrop-blur-sm ${dragOverInput ? 'ring-2 ring-primary/50 bg-primary/5' : ''}`}
+          onDragOver={(e) => { e.preventDefault(); setDragOverInput(true); }}
+          onDragLeave={() => setDragOverInput(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOverInput(false);
+            const raw = e.dataTransfer.getData('application/dilla-memo-section');
+            if (raw) {
+              try {
+                const section = JSON.parse(raw);
+                const content = section.section?.content || section.content || e.dataTransfer.getData('text/plain') || '';
+                if (content) {
+                  setDroppedContext({ type: section.section?.type || 'paragraph', content });
+                }
+              } catch {}
+            }
+          }}
+        >
+          {/* Dropped context card */}
+          {droppedContext && (
+            <div className="mb-1.5 mx-0.5 p-2 rounded-lg bg-muted/50 border text-xs flex items-start gap-2">
+              <div className="flex-1 min-w-0">
+                <span className="text-[10px] font-medium text-muted-foreground uppercase">Context from memo</span>
+                <p className="text-foreground line-clamp-2 mt-0.5">{droppedContext.content}</p>
+              </div>
+              <button onClick={() => setDroppedContext(null)} className="shrink-0 h-4 w-4 text-muted-foreground hover:text-foreground">
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          )}
           <input
             ref={uploadFileInputRef}
             type="file"
@@ -1853,7 +2178,9 @@ export default function AgentChat({
                       {/* Inline charts positioned after this section */}
                       {chartsAfterSection.map(({ chartIdx }) => {
                         const chart = docsCharts[chartIdx];
-                        return chart ? (
+                        if (!chart) return null;
+                        const hasData = chart.data && (Array.isArray(chart.data) ? chart.data.length > 0 : Object.keys(chart.data).length > 0);
+                        return hasData ? (
                           <div key={`chart-${chartIdx}`} className="my-6 border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-800/30">
                             <TableauLevelCharts
                               type={chart.type as any}
@@ -1864,7 +2191,11 @@ export default function AgentChat({
                               width="100%"
                             />
                           </div>
-                        ) : null;
+                        ) : (
+                          <div key={`chart-${chartIdx}`} className="my-4 flex items-center justify-center h-20 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-sm text-muted-foreground">
+                            {chart.title ? `${chart.title} — data unavailable` : 'Chart data unavailable'}
+                          </div>
+                        );
                       })}
                     </React.Fragment>
                   );
@@ -1880,21 +2211,101 @@ export default function AgentChat({
                   return (
                     <div className="mt-8 space-y-4">
                       <h2 className="text-xl font-semibold mb-3 text-gray-800 dark:text-gray-200">Charts</h2>
-                      {unpositioned.map((chart, idx) => (
-                        <div key={`extra-chart-${idx}`} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-800/30">
-                          <TableauLevelCharts
-                            type={chart.type as any}
-                            data={chart.data}
-                            title={chart.title}
-                            interactive={true}
-                            height={320}
-                            width="100%"
-                          />
-                        </div>
-                      ))}
+                      {unpositioned.map((chart, idx) => {
+                        const hasData = chart.data && (Array.isArray(chart.data) ? chart.data.length > 0 : Object.keys(chart.data).length > 0);
+                        return hasData ? (
+                          <div key={`extra-chart-${idx}`} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-800/30">
+                            <TableauLevelCharts
+                              type={chart.type as any}
+                              data={chart.data}
+                              title={chart.title}
+                              interactive={true}
+                              height={320}
+                              width="100%"
+                            />
+                          </div>
+                        ) : (
+                          <div key={`extra-chart-${idx}`} className="flex items-center justify-center h-20 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-sm text-muted-foreground">
+                            {chart.title ? `${chart.title} — data unavailable` : 'Chart data unavailable'}
+                          </div>
+                        );
+                      })}
                     </div>
                   );
                 })()}
+
+                {/* Company analysis cards in document */}
+                {documentViewerMessage?.companies && documentViewerMessage.companies.length > 0 && (
+                  <div className="mt-8 space-y-4">
+                    <h2 className="text-xl font-semibold mb-3 text-gray-800 dark:text-gray-200 border-b pb-2">Company Overview</h2>
+                    {documentViewerMessage.companies.map((company: CompanyAnalysisData, cidx: number) => (
+                      <CompanyAnalysisCard key={cidx} data={company} />
+                    ))}
+                  </div>
+                )}
+
+                {/* Cap tables in document — with ownership bars */}
+                {documentViewerMessage?.capTables && documentViewerMessage.capTables.length > 0 && (
+                  <div className="mt-8 space-y-6">
+                    <h2 className="text-xl font-semibold mb-3 text-gray-800 dark:text-gray-200 border-b pb-2">Ownership Structure</h2>
+                    {documentViewerMessage.capTables.map((item: any, idx: number) => (
+                      <div key={idx} className="space-y-3">
+                        <h3 className="text-lg font-medium text-gray-700 dark:text-gray-300">{item.company}</h3>
+                        {item.capTable?.investors && item.capTable.investors.length > 0 && (
+                          <table className="w-full text-sm border-collapse">
+                            <thead>
+                              <tr className="border-b-2 border-gray-200 dark:border-gray-600">
+                                <th className="text-left py-2 pr-4 font-semibold text-gray-600 dark:text-gray-400">Investor</th>
+                                <th className="text-left py-2 pr-4 font-semibold text-gray-600 dark:text-gray-400">Round</th>
+                                <th className="text-right py-2 pr-4 font-semibold text-gray-600 dark:text-gray-400">Ownership</th>
+                                <th className="py-2 w-32"></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {item.capTable.investors.map((inv: any, invIdx: number) => (
+                                <tr key={invIdx} className={`border-b border-gray-100 dark:border-gray-700 ${invIdx % 2 === 0 ? '' : 'bg-gray-50 dark:bg-gray-800/30'}`}>
+                                  <td className="py-1.5 pr-4">{inv.name}</td>
+                                  <td className="py-1.5 pr-4 text-muted-foreground">{inv.round || '--'}</td>
+                                  <td className="py-1.5 pr-4 text-right font-mono tabular-nums">{(inv.ownership * 100).toFixed(2)}%</td>
+                                  <td className="py-1.5">
+                                    <div className="h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                                      <div className="h-full rounded-full bg-blue-500 dark:bg-blue-400" style={{ width: `${Math.min(inv.ownership * 100, 100)}%` }} />
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                        {item.capTable?.liquidation_stack && item.capTable.liquidation_stack.length > 0 && (
+                          <div className="mt-3">
+                            <h4 className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-1">Liquidation Preferences</h4>
+                            <table className="w-full text-sm border-collapse">
+                              <thead>
+                                <tr className="border-b border-gray-200 dark:border-gray-600">
+                                  <th className="text-left py-1 pr-4 text-xs font-medium text-gray-500">#</th>
+                                  <th className="text-left py-1 pr-4 text-xs font-medium text-gray-500">Investor</th>
+                                  <th className="text-right py-1 pr-4 text-xs font-medium text-gray-500">Amount</th>
+                                  <th className="text-right py-1 text-xs font-medium text-gray-500">Multiple</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {item.capTable.liquidation_stack.map((pref: any, prefIdx: number) => (
+                                  <tr key={prefIdx} className="border-b border-gray-50 dark:border-gray-800">
+                                    <td className="py-1 pr-4 text-muted-foreground">{prefIdx + 1}</td>
+                                    <td className="py-1 pr-4">{pref.investor}</td>
+                                    <td className="py-1 pr-4 text-right font-mono">${(pref.amount / 1e6).toFixed(1)}M</td>
+                                    <td className="py-1 text-right font-mono">{pref.multiple}x</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {/* Citations at bottom of document */}
                 {documentViewerMessage?.citations && documentViewerMessage.citations.length > 0 && (

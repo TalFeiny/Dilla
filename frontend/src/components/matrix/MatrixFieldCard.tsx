@@ -82,23 +82,28 @@ export function MatrixFieldCard({
 
   const handleSave = async () => {
     if (!onEdit) return;
-    
+
     const column = field;
     let parsedValue: any = editValue;
-    
+
     // Parse based on column type
     if (column.type === 'number' || column.type === 'currency' || column.type === 'percentage') {
-      parsedValue = parseFloat(editValue) || 0;
-      if (column.type === 'percentage') {
+      { const n = parseFloat(editValue); parsedValue = isNaN(n) ? null : n; }
+      if (column.type === 'percentage' && parsedValue != null) {
         parsedValue = parsedValue / 100; // Store as decimal
       }
     } else if (column.type === 'boolean') {
       parsedValue = editValue.toLowerCase() === 'true' || editValue === '1';
     }
 
-    await onEdit(row.id, field.id, parsedValue);
-    setIsEditing(false);
-    setEditValue('');
+    try {
+      await onEdit(row.id, field.id, parsedValue);
+      setIsEditing(false);
+      setEditValue('');
+    } catch (err) {
+      console.error('[MatrixFieldCard] Save failed:', err);
+      // Keep edit mode open so user can retry
+    }
   };
 
   const handleCancel = () => {

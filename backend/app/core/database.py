@@ -9,25 +9,45 @@ class SupabaseService:
     def __init__(self):
         self.client: Client = None
         self._initialized = False
+        self._last_attempt: float = 0
+        self._retry_interval: float = 30.0  # seconds between retries
         # Don't initialize during import - do it lazily
-    
+
     def initialize(self):
-        """Lazy initialization of Supabase client"""
-        if self._initialized:
+        """Lazy initialization of Supabase client with retry on failure."""
+        import time
+        now = time.time()
+
+        # If already successfully initialized, skip
+        if self._initialized and self.client is not None:
             return
-            
+
+        # If previously failed, only retry after the retry interval
+        if self._initialized and self.client is None:
+            if now - self._last_attempt < self._retry_interval:
+                return
+            logger.info("Retrying Supabase client initialization...")
+
+        self._last_attempt = now
+
         try:
             # Use NEXT_PUBLIC_SUPABASE_URL if SUPABASE_URL is not set
             supabase_url = settings.SUPABASE_URL or settings.NEXT_PUBLIC_SUPABASE_URL
             supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_SERVICE_KEY
-            
+
             # Check if we have valid Supabase URL
             if not supabase_url or supabase_url.startswith("https://xxxxx"):
                 logger.warning("Supabase URL not configured - database features will be limited")
                 self.client = None
                 self._initialized = True
                 return
-            
+
+            if not supabase_key:
+                logger.warning("Supabase key not configured - database features will be limited")
+                self.client = None
+                self._initialized = True
+                return
+
             logger.info("Initializing Supabase client...")
             self.client = create_client(
                 supabase_url,
@@ -40,11 +60,11 @@ class SupabaseService:
             logger.error(f"Error type: {type(e).__name__}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
-            self.client = None  # Set to None instead of raising
-            self._initialized = True  # Mark as initialized to prevent infinite retries
-    
+            self.client = None
+            self._initialized = True  # Mark attempted, but will retry after interval
+
     def get_client(self) -> Client:
-        if not self._initialized:
+        if not self._initialized or (self.client is None):
             self.initialize()
         return self.client
     

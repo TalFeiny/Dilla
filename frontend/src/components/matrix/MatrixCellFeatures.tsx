@@ -11,7 +11,7 @@
  * - Citations: Inline expansion within cell (no popover)
  */
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -317,9 +317,15 @@ export function DocumentsCell({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [extractedData, setExtractedData] = useState<any>(null);
-  const [currentDocumentId, setCurrentDocumentId] = useState<string | null>(null);
+  const xhrRef = useRef<XMLHttpRequest | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      xhrRef.current?.abort();
+    };
+  }, []);
   const [documentType, setDocumentType] = useState<string>('monthly_update');
 
   const handleFileUpload = async (file: File) => {
@@ -337,12 +343,13 @@ export function DocumentsCell({
       if (fundId) formData.append('fund_id', fundId);
 
       const xhr = new XMLHttpRequest();
+      xhrRef.current = xhr;
 
       // Track upload progress
       xhr.upload.addEventListener('progress', (e) => {
         if (e.lengthComputable) {
           const percentComplete = (e.loaded / e.total) * 100;
-          setUploadProgress(percentComplete);
+          if (mountedRef.current) setUploadProgress(percentComplete);
         }
       });
 
@@ -352,11 +359,12 @@ export function DocumentsCell({
             try {
               const result = JSON.parse(xhr.responseText);
               const documentId = result?.document?.id ?? result?.id ?? result?.document_id;
-              setUploadProgress(100);
-              
-              // After upload, automatically trigger document extraction and show suggestions
+              if (mountedRef.current) setUploadProgress(100);
+
+              // After upload, trigger document extraction.
+              // The backend now persists extracted metrics as pending_suggestions,
+              // so the badge pipeline (DocumentSuggestionBadge) picks them up automatically.
               if (onCellActionResult && rowId && columnId && documentId) {
-                setCurrentDocumentId(documentId);
                 try {
                   const response = await executeAction({
                     action_id: 'document.extract',
@@ -370,33 +378,28 @@ export function DocumentsCell({
                     fund_id: fundId,
                     company_id: companyId,
                   });
-                  
-                  if (response.success) {
-                    setExtractedData(response.metadata?.raw_output || response.value);
-                    setShowSuggestions(true);
+
+                  if (mountedRef.current && response.success) {
                     await onCellActionResult(rowId, columnId, response);
-                    
-                    // Trigger suggestions fetch and show in viewport
-                    // The viewport will automatically pick up new suggestions via useDocumentSuggestions hook
+                    // Notify parent to refresh suggestions
                     if (onSuggestChanges) {
-                      // Notify parent to refresh suggestions and open viewport
                       onSuggestChanges(String(documentId), response.metadata?.raw_output || response.value);
                     }
+                    setIsOpen(false);
                   }
                 } catch (extractError) {
                   console.error('Document extraction failed:', extractError);
+                  reject(extractError instanceof Error ? extractError : new Error('Document extraction failed'));
+                  return;
                 }
               }
-              
-              // Call onUpload prop if provided (for backward compatibility)
-              if (onUpload) {
-                try {
-                  await onUpload(file);
-                } catch (uploadError) {
-                  console.warn('onUpload callback failed:', uploadError);
-                }
-              }
-              
+
+              // NOTE: Do NOT call onUpload(file) here. The XHR above already uploaded
+              // the file to /api/documents. Calling onUpload would trigger uploadDocumentInCell()
+              // in MatrixFieldCard, which would POST the same file again, creating a duplicate.
+              // The onCellFeatureAction callback in onUpload is also unnecessary — extraction
+              // is already handled above via executeAction('document.extract').
+
               resolve({ document_id: documentId });
             } catch (parseError) {
               reject(new Error('Failed to parse upload response'));
@@ -453,21 +456,7 @@ export function DocumentsCell({
     setIsDragging(false);
   };
 
-  const handleAcceptSuggestions = async () => {
-    if (onCellActionResult && rowId && columnId && extractedData) {
-      // Suggestions are already applied via onCellActionResult
-      setShowSuggestions(false);
-      setExtractedData(null);
-    }
-  };
-
-  const handleRejectSuggestions = () => {
-    setShowSuggestions(false);
-    setExtractedData(null);
-  };
-
   return (
-    <>
       <Sheet open={isOpen} onOpenChange={setIsOpen}>
         <SheetTrigger asChild>
           <Button
@@ -591,36 +580,6 @@ export function DocumentsCell({
           </div>
         </SheetContent>
       </Sheet>
-
-      {/* Suggestions Dialog */}
-      <Dialog open={showSuggestions} onOpenChange={setShowSuggestions}>
-        <DialogContent className="sm:max-w-[600px] max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Extracted Data Suggestions</DialogTitle>
-            <DialogDescription>
-              Review the extracted data from the document and choose to accept or reject the suggestions.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            {extractedData && (
-              <div className="space-y-2">
-                <pre className="text-xs p-4 bg-muted rounded-md overflow-x-auto">
-                  {JSON.stringify(extractedData, null, 2)}
-                </pre>
-              </div>
-            )}
-            <div className="flex items-center justify-end gap-2">
-              <Button variant="outline" onClick={handleRejectSuggestions}>
-                Reject
-              </Button>
-              <Button onClick={handleAcceptSuggestions}>
-                Accept Suggestions
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </>
   );
 }
 

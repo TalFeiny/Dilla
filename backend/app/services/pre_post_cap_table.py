@@ -214,6 +214,7 @@ class PrePostCapTable:
                 "total_raised": 0,
                 "num_rounds": 0,
                 "founder_dilution": 0,
+                "founder_ownership": initial_cap_table.get("Founders", 100.0),
                 "sankey_data": {"nodes": [], "links": []},
                 "waterfall_data": [],
                 "has_pending_safes": is_yc

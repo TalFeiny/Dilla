@@ -18,6 +18,7 @@ export type SuggestionApplyPayloadApi = {
   new_value: unknown;
   fund_id?: string;
   source_document_id?: string | number;
+  data_source?: 'document' | 'service';
 };
 
 /** Options passed to onCellEdit when persisting a suggestion (portfolio expects sourceDocumentId). */
@@ -34,7 +35,8 @@ export type CellEditOptionsFromSuggestion = {
 export function buildApplyPayloadFromSuggestion(
   payload: SuggestionAcceptPayload,
   fundId: string,
-  companyIdOverride?: string
+  companyIdOverride?: string,
+  dataSource?: 'document' | 'service'
 ): SuggestionApplyPayloadApi {
   return {
     company_id: companyIdOverride ?? payload.rowId,
@@ -42,6 +44,7 @@ export function buildApplyPayloadFromSuggestion(
     new_value: payload.suggestedValue,
     fund_id: fundId,
     source_document_id: payload.sourceDocumentId ?? undefined,
+    data_source: dataSource ?? (payload.sourceDocumentId ? 'document' : undefined),
   };
 }
 
@@ -104,16 +107,30 @@ export async function addServiceSuggestion(opts: {
 /**
  * Reject a suggestion: POST /api/matrix/suggestions with action 'reject'.
  * Persists suggestion_id in rejected_suggestions for the fund so GET filters it out.
+ * Pass companyId + columnId so the backend can also record the composite key
+ * (companyId::columnId) — this survives dedup ID swaps on subsequent GETs.
  */
 export async function rejectSuggestion(
   suggestionId: string,
-  fundId: string
+  fundId: string,
+  context?: { companyId?: string; columnId?: string }
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const body: Record<string, unknown> = {
+      suggestionId: String(suggestionId),
+      action: 'reject',
+      fundId,
+    };
+    if (context?.companyId && context?.columnId) {
+      body.applyPayload = {
+        company_id: context.companyId,
+        column_id: context.columnId,
+      };
+    }
     const res = await fetch('/api/matrix/suggestions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ suggestionId: String(suggestionId), action: 'reject', fundId }),
+      body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -153,6 +170,7 @@ export async function acceptSuggestionViaApi(
       new_value: applyPayloadOrFundId.new_value,
       fund_id: applyPayloadOrFundId.fund_id ?? null,
       source_document_id: applyPayloadOrFundId.source_document_id ?? null,
+      data_source: applyPayloadOrFundId.data_source ?? undefined,
     };
   }
   try {

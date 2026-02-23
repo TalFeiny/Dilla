@@ -26,8 +26,9 @@ celery_app.conf.update(
     task_track_started=True,
     task_time_limit=30 * 60,  # 30 minutes
     task_soft_time_limit=25 * 60,  # 25 minutes
-    worker_prefetch_multiplier=1,
+    worker_prefetch_multiplier=2,
     worker_max_tasks_per_child=1000,
+    worker_concurrency=4,
 )
 
 # Task routing
@@ -42,5 +43,5 @@ celery_app.conf.task_annotations = {
     "app.tasks.market.research": {"rate_limit": "10/m"},
     "app.tasks.analysis.run_pwerm": {"rate_limit": "5/m"},
     "app.tasks.analysis.run_company_history": {"time_limit": 60 * 60, "soft_time_limit": 55 * 60},
-    "app.tasks.document.process": {"rate_limit": "5/m"},  # Avoid hammering LLM APIs when many docs queued
+    "app.tasks.document.process": {"rate_limit": "20/m"},  # Bumped from 5/m — model_router handles its own rate limiting
 }

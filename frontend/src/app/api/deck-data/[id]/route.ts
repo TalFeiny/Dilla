@@ -29,7 +29,7 @@ export async function GET(
         'Content-Type': 'application/json',
       },
       // Add timeout to prevent hanging
-      signal: AbortSignal.timeout(10000), // 10 second timeout
+      signal: AbortSignal.timeout(30000), // 30 second timeout
     });
 
     console.log(`[DECK_DATA_API] Backend response status: ${response.status}`);

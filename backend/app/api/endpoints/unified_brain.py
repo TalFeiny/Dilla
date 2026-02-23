@@ -196,6 +196,19 @@ async def process_unified_request(request: UnifiedRequest):
                 logger.info(f"[ENDPOINT] formatted_results.format: {formatted_results.get('format')}")
                 logger.info(f"[ENDPOINT] formatted_results.slides count: {len(formatted_results.get('slides', []))}")
             
+            # Normalize missing format/type metadata so successful results never 500
+            if isinstance(formatted_results, dict):
+                requested_format = (request.output_format or "").strip().lower()
+                inferred_format = formatted_results.get('format') or formatted_results.get('type')
+                if not inferred_format:
+                    if requested_format:
+                        inferred_format = requested_format
+                    elif isinstance(output_format, OutputFormat):
+                        inferred_format = output_format.value
+                if inferred_format:
+                    formatted_results.setdefault('format', inferred_format)
+                    formatted_results.setdefault('type', inferred_format)
+            
             # REMOVED: No need to check for nested deck-storytelling
             # The orchestrator now returns deck data at top level
             
@@ -308,7 +321,7 @@ async def process_unified_request(request: UnifiedRequest):
                     "result": result_data
                 }
                     
-                # Clean the response for JSON serialization and return as pre-serialized string
+                # Clean the response for JSON serialization and return
                 try:
                     cleaned_response = clean_for_json(response_data)
                     return JSONResponse(content=cleaned_response)
@@ -317,70 +330,37 @@ async def process_unified_request(request: UnifiedRequest):
                     logger.error(f"[ENDPOINT] Response data keys: {list(response_data.keys()) if isinstance(response_data, dict) else 'not_dict'}")
                     import traceback
                     logger.error(f"[ENDPOINT] Traceback: {traceback.format_exc()}")
-                    # Return a minimal error response
+                    # Fallback: return the raw result as-is
+                    try:
+                        cleaned_result = clean_for_json(result)
+                        return JSONResponse(content=cleaned_result)
+                    except Exception:
+                        error_response = clean_for_json({
+                            "success": False,
+                            "error": f"Serialization error: {str(e)}",
+                            "partial_data": True
+                        })
+                        return JSONResponse(content=error_response, status_code=500)
+            else:
+                logger.warning(f"[ENDPOINT] Missing format metadata; falling back to direct payload. result={result}")
+                fallback_payload = formatted_results if formatted_results else result
+                # Ensure fallback payload is JSON serializable
+                try:
+                    cleaned_fallback = clean_for_json({
+                        "success": True,
+                        "result": fallback_payload
+                    })
+                    return JSONResponse(content=cleaned_fallback)
+                except Exception as e:
+                    logger.error(f"[ENDPOINT] Fallback serialization error: {e}")
+                    logger.error(f"[ENDPOINT] Fallback payload type: {type(fallback_payload)}")
+                    import traceback
+                    logger.error(f"[ENDPOINT] Traceback: {traceback.format_exc()}")
                     error_response = clean_for_json({
                         "success": False,
-                        "error": f"Serialization error: {str(e)}",
-                        "partial_data": True
+                        "error": f"Serialization error: {str(e)}"
                     })
                     return JSONResponse(content=error_response, status_code=500)
-                
-                # Legacy format handling (shouldn't happen with new code)
-                if isinstance(formatted_results, dict) and output_format.value in ["structured", "analysis", "spreadsheet", "deck", "matrix"]:
-                    # Old structured data format
-                    actual_format = request.output_format.lower().replace('-', '_')
-                    # Clean the response for JSON serialization
-                    response_data = {
-                        "success": True,
-                        "format": actual_format,
-                        "result": formatted_results,
-                        "commands": formatted_results.get('commands', []),
-                        "citations": formatted_results.get('citations', []),
-                        "charts": formatted_results.get('charts', []),
-                        "companies": formatted_results.get('companies', []),
-                        "data": formatted_results.get('data', {}),
-                        "comparison": formatted_results.get('comparison', {}),
-                        "valuation": formatted_results.get('valuation', {}),
-                        "valuations": formatted_results.get('valuations', {}),  # Bull/bear/base
-                        "cap_tables": formatted_results.get('cap_tables', {}),
-                        "portfolio_analysis": formatted_results.get('portfolio_analysis', {}),
-                        "exit_modeling": formatted_results.get('exit_modeling', {}),
-                        "fund_metrics": formatted_results.get('fund_metrics', {}),
-                        "stage_analysis": formatted_results.get('stage_analysis', {}),
-                        "market_analysis": formatted_results.get('market_analysis', {}),  # Market sizing
-                        "metadata": formatted_results.get('metadata', {}),
-                        "execution_time": result.get('execution_time', 0),
-                        "errors": result.get('errors', [])
-                    }
-                    cleaned_response = clean_for_json(response_data)
-                    return JSONResponse(content=cleaned_response)
-                # For markdown or other string formats
-                elif isinstance(formatted_results, str):
-                    # Clean the response for JSON serialization
-                    response_data = {
-                        "success": True,
-                        "content": formatted_results,
-                        "format": output_format.value,
-                        "execution_time": result.get('execution_time', 0),
-                        "errors": result.get('errors', [])
-                    }
-                    cleaned_response = clean_for_json(response_data)
-                    return JSONResponse(content=cleaned_response)
-                # Fallback: return the entire result
-                else:
-                    logger.info(f"[ENDPOINT] Fallback: No format field found, returning entire result")
-                    logger.info(f"[ENDPOINT] result keys: {list(result.keys()) if isinstance(result, dict) else 'not_dict'}")
-                    # Clean the result for JSON serialization
-                    cleaned_result = clean_for_json(result)
-                    return JSONResponse(content=cleaned_result)
-            else:
-                logger.error(f"[ENDPOINT] No success in result: {result}")
-                logger.error(f"[ENDPOINT] Result type: {type(result)}")
-                logger.error(f"[ENDPOINT] Result keys: {list(result.keys()) if isinstance(result, dict) else 'not_dict'}")
-                logger.error(f"[ENDPOINT] Result success value: {result.get('success') if isinstance(result, dict) else 'N/A'}")
-                logger.error(f"[ENDPOINT] Result error value: {result.get('error') if isinstance(result, dict) else 'N/A'}")
-                error_response = clean_for_json({"success": False, "error": result.get('error', 'No results generated') if isinstance(result, dict) else 'Invalid result format'})
-                return JSONResponse(content=error_response, status_code=500)
     
     except Exception as e:
         logger.error(f"Unified brain error: {e}")
@@ -431,6 +411,10 @@ async def process_unified_stream(request: UnifiedRequest):
                 event_type = event.get("type", "unknown")
                 if event_type == "progress":
                     yield _json.dumps({"type": "progress", "stage": event.get("stage"), "message": event.get("message"), "plan_steps": event.get("plan_steps")}) + "\n"
+                elif event_type == "memo_section":
+                    yield _json.dumps({"type": "memo_section", "section": clean_for_json(event.get("section", {}))}) + "\n"
+                elif event_type == "chart_data":
+                    yield _json.dumps({"type": "chart_data", "chart": clean_for_json(event.get("chart", {}))}) + "\n"
                 elif event_type == "complete":
                     from app.utils.numpy_converter import convert_numpy_to_native
                     result = event.get("result", {})

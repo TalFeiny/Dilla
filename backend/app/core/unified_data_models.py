@@ -394,10 +394,41 @@ def merge_company_data(existing: Company, new_data: Dict[str, Any]) -> Company:
     
     return merged
 
+@dataclass
+class PlanContext:
+    """Resumable plan context for cross-session hydration."""
+    findings: Dict[str, Any] = field(default_factory=dict)
+    fetched_data: Dict[str, Any] = field(default_factory=dict)
+    reasoning: List[str] = field(default_factory=list)
+    entity_refs: Dict[str, str] = field(default_factory=dict)
+    session_id: str = ""
+    updated_at: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "findings": self.findings,
+            "fetched_data": self.fetched_data,
+            "reasoning": self.reasoning,
+            "entity_refs": self.entity_refs,
+            "session_id": self.session_id,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PlanContext":
+        return cls(
+            findings=data.get("findings", {}),
+            fetched_data=data.get("fetched_data", {}),
+            reasoning=data.get("reasoning", []),
+            entity_refs=data.get("entity_refs", {}),
+            session_id=data.get("session_id", ""),
+            updated_at=data.get("updated_at", ""),
+        )
+
 # Export all models
 __all__ = [
     'Company', 'FundingRound', 'PortfolioCompany', 'AgentInteraction',
-    'MarketData', 'InvestmentThesis', 'CompanyStage', 'IndustryVertical',
-    'InvestmentStatus', 'SecurityType', 'validate_company_data', 
-    'merge_company_data'
+    'MarketData', 'InvestmentThesis', 'PlanContext', 'CompanyStage',
+    'IndustryVertical', 'InvestmentStatus', 'SecurityType',
+    'validate_company_data', 'merge_company_data'
 ]

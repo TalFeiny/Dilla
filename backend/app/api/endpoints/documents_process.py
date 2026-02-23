@@ -3,11 +3,14 @@ Backend-agnostic document processing endpoint.
 POST /process: download via storage, run extraction, update via document metadata repo.
 POST /process-async: enqueue single doc to Celery (scale, rate-limit respect).
 POST /process-batch: parallel batch processing via asyncio.gather + asyncio.to_thread.
+POST /process-batch-stream: NDJSON streaming — sends per-doc progress as each completes.
 POST /process-batch-async: enqueue each doc to Celery, return immediately.
 """
 
 import asyncio
+import json
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 
@@ -24,7 +27,7 @@ def _get_process_document_task():
 
 router = APIRouter()
 
-MAX_CONCURRENT_DOCS = 5
+MAX_CONCURRENT_DOCS = 10
 DOCUMENT_PROCESS_TIMEOUT = 300.0  # 5 min per doc, like deck agent
 
 
@@ -195,6 +198,71 @@ async def process_batch(body: DocumentBatchProcessRequest):
     return DocumentBatchProcessResponse(
         results=[_normalize_batch_result(r) for r in results]
     )
+
+
+@router.post("/process-batch-stream")
+async def process_batch_stream(body: DocumentBatchProcessRequest):
+    """
+    Streaming batch processing — sends an NDJSON line for each document as it completes.
+    Frontend can render progress incrementally instead of waiting for all docs.
+    Each line: {"type": "progress"|"result"|"done", "document_id": ..., ...}
+    """
+    if not body.documents:
+        return StreamingResponse(
+            iter([json.dumps({"type": "done", "total": 0}) + "\n"]),
+            media_type="application/x-ndjson",
+        )
+
+    storage = get_storage()
+    document_repo = get_document_repo()
+    sem = asyncio.Semaphore(MAX_CONCURRENT_DOCS)
+    total = len(body.documents)
+
+    async def stream_results():
+        completed = 0
+        # Yield initial progress
+        yield json.dumps({"type": "progress", "message": f"Processing {total} document(s)...", "total": total, "completed": 0}) + "\n"
+
+        async def process_one(doc: DocumentBatchDocItem) -> Dict[str, Any]:
+            async with sem:
+                try:
+                    out = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            run_document_process,
+                            document_id=doc.document_id,
+                            storage_path=doc.file_path,
+                            document_type=doc.document_type or "other",
+                            storage=storage,
+                            document_repo=document_repo,
+                            company_id=doc.company_id,
+                            fund_id=doc.fund_id,
+                        ),
+                        timeout=DOCUMENT_PROCESS_TIMEOUT,
+                    )
+                    return {
+                        "type": "result",
+                        "success": out.get("success", False),
+                        "document_id": doc.document_id,
+                        "fields_extracted": (out.get("result") or {}).get("processing_summary", {}).get("fields_extracted", 0),
+                        "error": out.get("error"),
+                    }
+                except asyncio.TimeoutError:
+                    return {"type": "result", "success": False, "document_id": doc.document_id, "error": "timeout"}
+                except Exception as e:
+                    return {"type": "result", "success": False, "document_id": doc.document_id, "error": str(e)}
+
+        # Use asyncio.as_completed to yield results as they finish (not all at once)
+        tasks = {asyncio.ensure_future(process_one(d)): d for d in body.documents}
+        for coro in asyncio.as_completed(tasks.keys()):
+            result = await coro
+            completed += 1
+            result["completed"] = completed
+            result["total"] = total
+            yield json.dumps(result) + "\n"
+
+        yield json.dumps({"type": "done", "total": total, "completed": completed}) + "\n"
+
+    return StreamingResponse(stream_results(), media_type="application/x-ndjson")
 
 
 class DocumentBatchProcessAsyncResponse(BaseModel):

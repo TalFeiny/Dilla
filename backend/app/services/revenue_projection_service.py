@@ -159,13 +159,13 @@ class RevenueProjectionService:
         stage: Optional[str] = None,
         market_conditions: Optional[str] = None,  # "bull", "bear", "neutral"
         return_projections: bool = False,
-        # Additional parameters (currently unused but accepted for API compatibility)
-        investor_quality: Optional[str] = None,
-        geography: Optional[str] = None,
-        sector: Optional[str] = None,
-        company_age_years: Optional[int] = None,
-        market_size_tam: Optional[float] = None,
-        competitive_position: Optional[str] = None
+        # Business model decay modifiers (all active)
+        investor_quality: Optional[str] = None,    # "tier1", "tier2", "tier3" — affects decay rate
+        geography: Optional[str] = None,            # "US", "Europe", "Asia" — US = slower decay
+        sector: Optional[str] = None,               # "ai_first", "vertical_saas", "services", etc.
+        company_age_years: Optional[int] = None,    # >5yr adds incremental decay penalty
+        market_size_tam: Optional[float] = None,    # TAM ceiling — faster decay near saturation
+        competitive_position: Optional[str] = None  # reserved for future use
     ) -> Union[float, List[Dict[str, Any]]]:
         """
         Project revenue forward with realistic growth decay, adjusted for company quality.
@@ -189,12 +189,12 @@ class RevenueProjectionService:
             stage: Company stage (affects decay rate - early stage = slower decay)
             market_conditions: "bull", "bear", or "neutral" (affects decay rate)
             return_projections: If True, returns list of year-by-year projections instead of final value
-            investor_quality: Optional investor quality tier (currently unused, accepted for API compatibility)
-            geography: Optional geography indicator (currently unused, accepted for API compatibility)
-            sector: Optional sector classification (currently unused, accepted for API compatibility)
-            company_age_years: Optional company age in years (currently unused, accepted for API compatibility)
-            market_size_tam: Optional total addressable market size (currently unused, accepted for API compatibility)
-            competitive_position: Optional competitive position indicator (currently unused, accepted for API compatibility)
+            investor_quality: Investor quality tier — "tier1" (0.90x decay), "tier2" (1.0x), "tier3" (1.10x)
+            geography: Geography — "US" (0.95x decay), "Europe" (1.0x), "Asia" (1.02x)
+            sector: Business model — "ai_first" (1.15x), "vertical_saas" (0.85x), "services" (1.20x), etc.
+            company_age_years: Company age — >5yr adds incremental decay penalty (capped at 20%)
+            market_size_tam: TAM ceiling — faster decay as SOM approaches TAM
+            competitive_position: Reserved for future use
         
         Returns:
             If return_projections=False: final revenue after years
@@ -281,8 +281,72 @@ class RevenueProjectionService:
                 else:
                     market_conditions_multiplier = 1.0  # Neutral baseline
             
-            # Calculate total decay multiplier (simplified - only stage and market conditions)
-            total_decay_multiplier = stage_decay_multiplier * market_conditions_multiplier
+            # Business model / sector decay modifier
+            # ai_first decays 15% faster (competition), vertical_saas 15% slower (moat),
+            # services 20% faster (linear scaling)
+            sector_decay_multiplier = 1.0
+            if sector:
+                sector_lower = sector.lower().replace(' ', '_').replace('-', '_')
+                _BM_DECAY = {
+                    'ai_first': 1.15,       # 15% faster decay (intense competition)
+                    'ai': 1.15,
+                    'vertical_saas': 0.85,  # 15% slower decay (deep moat)
+                    'vertical': 0.85,
+                    'saas': 1.0,            # baseline
+                    'horizontal_saas': 1.05, # 5% faster (more competition)
+                    'horizontal': 1.05,
+                    'services': 1.20,       # 20% faster (linear scaling)
+                    'marketplace': 0.90,    # 10% slower (network effects)
+                    'hardware': 1.10,       # 10% faster (capital intensive)
+                    'fintech': 0.95,        # 5% slower (regulatory moat)
+                    'rollup': 1.10,         # 10% faster (integration drag)
+                }
+                sector_decay_multiplier = _BM_DECAY.get(sector_lower, 1.0)
+
+            # Investor quality: tier1 = 10% slower decay, tier3 = 10% faster
+            investor_decay_multiplier = 1.0
+            if investor_quality:
+                iq_lower = investor_quality.lower()
+                if iq_lower == 'tier1':
+                    investor_decay_multiplier = 0.90
+                elif iq_lower == 'tier3':
+                    investor_decay_multiplier = 1.10
+
+            # Geography: US = 5% slower decay (more runway access)
+            geography_decay_multiplier = 1.0
+            if geography:
+                geo_lower = geography.lower()
+                if geo_lower == 'us':
+                    geography_decay_multiplier = 0.95
+                elif geo_lower == 'asia':
+                    geography_decay_multiplier = 1.02
+
+            # Company age: >5yr = incremental decay penalty (2%/yr, capped 20%)
+            age_decay_multiplier = 1.0
+            if company_age_years and company_age_years > 5:
+                age_decay_multiplier = 1.0 + min(0.20, (company_age_years - 5) * 0.02)
+
+            # TAM ceiling: growth decays faster as revenue approaches TAM
+            tam_decay_multiplier = 1.0
+            if market_size_tam and market_size_tam > 0 and current_revenue > 0:
+                penetration = current_revenue / market_size_tam
+                if penetration > 0.10:
+                    tam_decay_multiplier = 1.15
+                elif penetration > 0.05:
+                    tam_decay_multiplier = 1.08
+                elif penetration > 0.01:
+                    tam_decay_multiplier = 1.03
+
+            # Calculate total decay multiplier from all factors
+            total_decay_multiplier = (
+                stage_decay_multiplier
+                * market_conditions_multiplier
+                * sector_decay_multiplier
+                * investor_decay_multiplier
+                * geography_decay_multiplier
+                * age_decay_multiplier
+                * tam_decay_multiplier
+            )
             
             # FIX: Apply multipliers to base_decay_rate first, then apply quality adjustment
             # This ensures multipliers affect the base rate before quality score adjustment
@@ -316,12 +380,42 @@ class RevenueProjectionService:
             current_revenue = current_revenue * (1 + year_growth)
             
             if return_projections:
+                # Margin expansion trajectory by business model
+                # SaaS margins improve ~2pp/yr, AI companies ~3pp/yr (GPU efficiency),
+                # services stay flat, marketplaces ~1.5pp/yr
+                _MARGIN_EXPANSION_RATES = {
+                    'ai_first': 0.03, 'ai': 0.03,
+                    'vertical_saas': 0.025, 'vertical': 0.025,
+                    'saas': 0.02, 'horizontal_saas': 0.02, 'horizontal': 0.02,
+                    'services': 0.005,
+                    'marketplace': 0.015,
+                    'hardware': 0.01,
+                    'fintech': 0.02,
+                    'rollup': 0.01,
+                }
+                _BASE_MARGINS = {
+                    'ai_first': 0.55, 'ai': 0.55,
+                    'vertical_saas': 0.75, 'vertical': 0.75,
+                    'saas': 0.70, 'horizontal_saas': 0.70, 'horizontal': 0.70,
+                    'services': 0.40,
+                    'marketplace': 0.65,
+                    'hardware': 0.45,
+                    'fintech': 0.60,
+                    'rollup': 0.50,
+                }
+                sector_key = (sector or '').lower().replace(' ', '_').replace('-', '_')
+                base_margin = _BASE_MARGINS.get(sector_key, 0.65)
+                margin_rate = _MARGIN_EXPANSION_RATES.get(sector_key, 0.015)
+                gross_margin = min(0.90, base_margin + margin_rate * year)
+
                 projections.append({
                     'year': year,
                     'revenue': current_revenue,
-                    'growth_rate': year_growth
+                    'growth_rate': year_growth,
+                    'gross_margin': round(gross_margin, 3),
+                    'gross_profit': current_revenue * gross_margin,
                 })
-        
+
         # VALIDATION: Ensure revenue multiples remain reasonable (separate from PWERM validation)
         # This prevents ridiculous projections that would break PWERM assumptions
         if return_projections:

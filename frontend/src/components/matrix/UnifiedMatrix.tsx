@@ -49,6 +49,9 @@ import {
   MoreVertical,
   Plus,
   BarChart3,
+  ChevronDown,
+  ChevronUp,
+  Pin,
 } from 'lucide-react';
 import { MatrixInsights } from './MatrixInsights';
 import { ChartViewport, type ChartTab } from './ChartViewport';
@@ -69,8 +72,14 @@ import {
 } from './MatrixCellFeatures';
 import { MatrixFieldCard } from './MatrixFieldCard';
 import { AGGridMatrix } from './AGGridMatrix';
+import ReactMarkdown from 'react-markdown';
+import dynamic from 'next/dynamic';
+import { MemoEditor, type DocumentSection } from '@/components/memo/MemoEditor';
+
+const TableauLevelCharts = dynamic(() => import('@/components/charts/TableauLevelCharts'), { ssr: false });
 import { SkeletonTable } from '@/components/ui/skeleton';
 import { CellActionProvider } from './CellActionContext';
+import { SuggestionsProvider } from './SuggestionsContext';
 import { useDocumentSuggestions } from './DocumentSuggestions';
 import {
   Dialog,
@@ -340,6 +349,7 @@ export function UnifiedMatrix({
   const [isLoading, setIsLoading] = useState(false);
   const [editingCell, setEditingCell] = useState<{ rowId: string; columnId: string } | null>(null);
   const [editValue, setEditValue] = useState('');
+  const editInFlightRef = useRef(0);
   const [query, setQuery] = useState('');
   const [showInsightsPanel, setShowInsightsPanel] = useState(mode === 'portfolio' ? false : showInsights);
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
@@ -370,8 +380,11 @@ export function UnifiedMatrix({
   /** Phase 6: Right panel (Agent/Charts) always-on by default — Cursor-like layout */
   const [showChartViewport, setShowChartViewport] = useState(true);
   const [viewportActiveTab, setViewportActiveTab] = useState<ChartTab>('charts');
+  /** Ref to the memo editor container for html2canvas chart capture in PDF export */
+  const memoContainerRef = useRef<HTMLDivElement>(null);
+
   /** Memo sections — persisted to localStorage, shared between ChartViewport and AgentChat */
-  const [memoSections, setMemoSections] = useState<import('@/components/memo/MemoEditor').DocumentSection[]>(() => {
+  const [memoSections, setMemoSections] = useState<DocumentSection[]>(() => {
     if (typeof window === 'undefined') return [{ type: 'heading1', content: 'Working Memo' }, { type: 'paragraph', content: '' }];
     try {
       const stored = localStorage.getItem(`dilla_memo_${fundId || 'default'}`);
@@ -379,6 +392,38 @@ export function UnifiedMatrix({
     } catch {}
     return [{ type: 'heading1', content: 'Working Memo' }, { type: 'paragraph', content: '' }];
   });
+
+  /** Memo panel below grid — emerges when agent builds it out */
+  const [memoPanelExpanded, setMemoPanelExpanded] = useState(false);
+  /** Track companies/capTables from last analysis for pin-to-company */
+  const [memoPanelContext, setMemoPanelContext] = useState<{ companies?: any[]; capTables?: any[] }>({});
+
+  const handleAnalysisReady = useCallback((analysis: {
+    sections: Array<{ title?: string; content?: string; level?: number }>;
+    charts: Array<{ type: string; title?: string; data: any }>;
+    companies?: any[];
+    capTables?: any[];
+  }) => {
+    // Convert raw analysis sections → DocumentSection[] and append to memo
+    const converted: DocumentSection[] = [];
+    for (const s of analysis.sections) {
+      if (s.title) {
+        const headingType = (s.level ?? 1) <= 1 ? 'heading1' : (s.level === 2 ? 'heading2' : 'heading3');
+        converted.push({ type: headingType, content: s.title });
+      }
+      if (s.content) {
+        converted.push({ type: 'paragraph', content: s.content });
+      }
+    }
+    for (const c of analysis.charts) {
+      converted.push({ type: 'chart', chart: { type: c.type, title: c.title, data: c.data } });
+    }
+    if (converted.length > 0) {
+      setMemoSections(prev => [...prev, ...converted]);
+      setMemoPanelExpanded(true);
+    }
+    setMemoPanelContext({ companies: analysis.companies, capTables: analysis.capTables });
+  }, []);
 
   // Persist memo to localStorage on change (debounced)
   const memoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -397,16 +442,29 @@ export function UnifiedMatrix({
   /** Per-cell status for in-cell display (replaces toast). Key = rowId_columnId. */
   const [cellActionStatus, setCellActionStatus] = useState<import('./CellActionContext').CellActionStatusMap>({});
   const { suggestions: documentSuggestionsList, insights: documentInsights, loading: suggestionsLoading, error: suggestionsError, refresh: refreshSuggestions } = useDocumentSuggestions(matrixData, fundId);
-  /** Optimistically hide accepted/rejected suggestions so they disappear immediately on click */
+  /** Optimistically hide accepted/rejected suggestions so they disappear immediately on click.
+   *  Prune stale IDs once the server list no longer contains them (i.e. they were persisted). */
   const [optimisticallyHiddenIds, setOptimisticallyHiddenIds] = useState<Set<string>>(new Set());
-  const visibleSuggestions = useMemo(
-    () => documentSuggestionsList.filter((s) => !optimisticallyHiddenIds.has(s.id)),
-    [documentSuggestionsList, optimisticallyHiddenIds]
-  );
+  const visibleSuggestions = useMemo(() => {
+    return documentSuggestionsList.filter((s) => !optimisticallyHiddenIds.has(s.id));
+  }, [documentSuggestionsList, optimisticallyHiddenIds]);
+
+  // Prune stale hidden IDs once the server list no longer contains them
+  useEffect(() => {
+    const serverIds = new Set(documentSuggestionsList.map((s) => s.id));
+    setOptimisticallyHiddenIds((prev) => {
+      const next = new Set(prev);
+      for (const id of prev) {
+        if (!serverIds.has(id)) next.delete(id);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [documentSuggestionsList]);
   const suggestPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   /** Plan steps from agent (Plan tab) - updated by AgentChat when backend returns plan_steps */
   const [planStepsState, setPlanStepsState] = useState<PlanStep[]>(planSteps || []);
   const loadPortfolioDataRef = useRef<() => Promise<void>>();
+  const portfolioAbortRef = useRef<AbortController | null>(null);
   const matrixDataRef = useRef<MatrixData | null>(null);
   matrixDataRef.current = matrixData;
 
@@ -485,29 +543,10 @@ export function UnifiedMatrix({
     toast.success(`Uploaded ${data.documentIds?.length ?? files.length} document(s)`, {
       description: 'Processing queued in background (Celery)',
     });
-    await refreshSuggestions();
     window.dispatchEvent(new CustomEvent('refreshMatrix'));
-    if (fundId) {
-      const pollMs = 2000;
-      const maxAttempts = 3;
-      let attempts = 0;
-      const poll = async () => {
-        attempts += 1;
-        try {
-          const r = await fetch(`/api/matrix/suggestions?fundId=${fundId}`);
-          if (!r.ok) return;
-          const j = await r.json();
-          const list = j.suggestions ?? [];
-          if (Array.isArray(list) && list.length > 0) {
-            await refreshSuggestions();
-            return;
-          }
-        } catch { /* ignore */ }
-        if (attempts < maxAttempts) setTimeout(poll, pollMs);
-        else refreshSuggestions();
-      };
-      setTimeout(poll, pollMs);
-    }
+    // The batch route processes synchronously, so suggestions should be
+    // available after a short delay. Single refresh is enough — no polling loop.
+    await refreshSuggestions();
   }, [fundId, refreshSuggestions]);
 
   /** Chart viewport "Ask" bar: send prompt to same agent (unified-brain) that has tools for docs, memo, modeling, what-if. */
@@ -560,7 +599,11 @@ export function UnifiedMatrix({
   /** Shared accept handler: optimistic grid update + suggestion removal for fast UX. */
   const handleSuggestionAccept = useCallback(async (suggestionId: string, payload?: { rowId: string; columnId: string; suggestedValue: unknown; sourceDocumentId?: string | number }) => {
     if (!payload) return;
-    const row = matrixData?.rows.find((r) => r.id === payload.rowId || r.companyId === payload.rowId);
+    const row = matrixData?.rows.find((r) =>
+      r.id === payload.rowId ||
+      r.companyId === payload.rowId ||
+      (r.companyName && r.companyName.toLowerCase() === payload.rowId.toLowerCase())
+    );
     if (!row) {
       toast.error('Company no longer in matrix');
       return;
@@ -580,12 +623,16 @@ export function UnifiedMatrix({
           ? String(suggestedValue)
           : undefined;
 
+    const suggestion = documentSuggestionsList.find((s) => s.id === suggestionId);
+    const isService = suggestion?.source === 'service';
+
     const prevMatrix = matrixData;
     const updatedData: MatrixData = prevMatrix
       ? {
           ...prevMatrix,
           rows: prevMatrix.rows.map((r) => {
-            if (r.id !== rowId && r.companyId !== rowId) return r;
+            const isMatch = r.id === rowId || r.companyId === rowId || (r.companyName && r.companyName.toLowerCase() === rowId.toLowerCase());
+            if (!isMatch) return r;
             const cell = r.cells[columnId] || {};
             return {
               ...r,
@@ -595,7 +642,7 @@ export function UnifiedMatrix({
                   ...cell,
                   value: suggestedValue,
                   displayValue: displayValue ?? (cell as { displayValue?: string }).displayValue,
-                  source: 'document' as const,
+                  source: 'agent' as const,
                   lastUpdated: new Date().toISOString(),
                 },
               },
@@ -605,48 +652,66 @@ export function UnifiedMatrix({
       : prevMatrix!;
 
     setMatrixData(updatedData);
+    // Synchronously update the ref so any in-flight loadPortfolioData merge
+    // sees the 'agent' source cell and preserves it (React render is async).
+    matrixDataRef.current = updatedData;
     onDataChange?.(updatedData);
     setOptimisticallyHiddenIds((ids) => new Set([...ids, suggestionId]));
 
-    const suggestion = documentSuggestionsList.find((s) => s.id === suggestionId);
-    const isService = suggestion?.source === 'service';
+    // Prevent loadPortfolioData from running while the DB write is in flight.
+    // Keep the guard up for a cooldown after accept to prevent race conditions
+    // where a concurrent loadPortfolioData or refreshSuggestions sees stale data.
+    editInFlightRef.current++;
+    try {
+      let success = false;
+      if (isService && effectiveFundId) {
+        const res = await acceptSuggestionViaApi(suggestionId, effectiveFundId);
+        success = res.success;
+        if (!success && res.error) {
+          setMatrixData(prevMatrix!);
+          matrixDataRef.current = prevMatrix!;
+          onDataChange?.(prevMatrix!);
+          setOptimisticallyHiddenIds((ids) => {
+            const next = new Set(ids);
+            next.delete(suggestionId);
+            return next;
+          });
+          toast.error(res.error);
+          loadPortfolioDataRef.current?.();
+          return;
+        }
+      } else if (effectiveFundId) {
+        const applyPayload = buildApplyPayloadFromSuggestion(payload, effectiveFundId, companyId, isService ? 'service' : 'document');
+        const res = await acceptSuggestionViaApi(suggestionId, applyPayload);
+        success = res.success;
+        if (!success && res.error) {
+          setMatrixData(prevMatrix!);
+          matrixDataRef.current = prevMatrix!;
+          onDataChange?.(prevMatrix!);
+          setOptimisticallyHiddenIds((ids) => {
+            const next = new Set(ids);
+            next.delete(suggestionId);
+            return next;
+          });
+          toast.error(res.error);
+          loadPortfolioDataRef.current?.();
+          return;
+        }
+      }
 
-    let success = false;
-    if (isService && effectiveFundId) {
-      const res = await acceptSuggestionViaApi(suggestionId, effectiveFundId);
-      success = res.success;
-      if (!success && res.error) {
-        setMatrixData(prevMatrix!);
-        onDataChange?.(prevMatrix!);
-        setOptimisticallyHiddenIds((ids) => {
-          const next = new Set(ids);
-          next.delete(suggestionId);
-          return next;
-        });
-        toast.error(res.error);
-        loadPortfolioDataRef.current?.();
-        return;
-      }
-    } else if (effectiveFundId) {
-      const applyPayload = buildApplyPayloadFromSuggestion(payload, effectiveFundId, companyId);
-      const res = await acceptSuggestionViaApi(suggestionId, applyPayload);
-      success = res.success;
-      if (!success && res.error) {
-        setMatrixData(prevMatrix!);
-        onDataChange?.(prevMatrix!);
-        setOptimisticallyHiddenIds((ids) => {
-          const next = new Set(ids);
-          next.delete(suggestionId);
-          return next;
-        });
-        toast.error(res.error);
-        loadPortfolioDataRef.current?.();
-        return;
-      }
+      toast.success('Suggestion accepted');
+      // Delay refreshSuggestions slightly to allow accepted_suggestions write to propagate
+      // before the GET query runs, preventing suggestion reappearance.
+      setTimeout(() => {
+        refreshSuggestions().catch(() => {});
+      }, 500);
+    } finally {
+      // Keep the guard up briefly so a concurrent loadPortfolioData doesn't
+      // overwrite the optimistic cell value with stale DB data before Supabase propagates.
+      setTimeout(() => {
+        editInFlightRef.current--;
+      }, 1500);
     }
-
-    toast.success('Suggestion accepted');
-    refreshSuggestions().catch(() => {});
   }, [matrixData, fundId, documentSuggestionsList, refreshSuggestions, onDataChange]);
 
   /** Single reject wrapper: optimistic removal so suggestion disappears immediately. */
@@ -657,8 +722,13 @@ export function UnifiedMatrix({
         toast.error('Unable to reject suggestion');
         return;
       }
+      // Look up suggestion to get rowId + columnId for composite-key persistence
+      const suggestion = documentSuggestionsList.find((s) => s.id === suggestionId);
+      const context = suggestion
+        ? { companyId: suggestion.rowId, columnId: suggestion.columnId }
+        : undefined;
       setOptimisticallyHiddenIds((ids) => new Set([...ids, suggestionId]));
-      const { success, error } = await rejectSuggestion(suggestionId, effectiveFundId);
+      const { success, error } = await rejectSuggestion(suggestionId, effectiveFundId, context);
       if (!success && error) {
         setOptimisticallyHiddenIds((ids) => {
           const next = new Set(ids);
@@ -671,7 +741,7 @@ export function UnifiedMatrix({
       toast.success('Suggestion rejected');
       refreshSuggestions().catch(() => {});
     },
-    [fundId, matrixData, refreshSuggestions]
+    [fundId, matrixData, documentSuggestionsList, refreshSuggestions]
   );
 
   /** Apply multiple suggestions through the same accept wrapper (documents + service). */
@@ -697,56 +767,21 @@ export function UnifiedMatrix({
     setStartEditingCellRef(() => callback);
   }, []);
 
-  // Handle document upload with auto-suggest: poll for suggestions; surface in chat only (no panel switch)
+  // Handle document upload with auto-suggest: single refresh is enough.
+  // The backend processes synchronously and emits suggestions before returning.
+  // No polling loop needed — it caused 4x concurrent fetches and race conditions.
   const handleDocumentUploadWithSuggest = useCallback((_rowId: string) => {
     if (suggestPollRef.current) {
-      clearInterval(suggestPollRef.current);
+      clearTimeout(suggestPollRef.current as ReturnType<typeof setTimeout>);
       suggestPollRef.current = null;
     }
-    if (!fundId) {
-      refreshSuggestions();
-      return;
-    }
-    const pollMs = 1500;
-    const maxAttempts = 8;
-    let attempts = 0;
-
-    const poll = async () => {
-      attempts += 1;
-      try {
-        const res = await fetch(`/api/matrix/suggestions?fundId=${fundId}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        const list = data.suggestions ?? [];
-        if (Array.isArray(list) && list.length > 0) {
-          stopPolling();
-          await refreshSuggestions();
-          return;
-        }
-      } catch {
-        /* ignore */
-      }
-      if (attempts >= maxAttempts) {
-        stopPolling();
-        refreshSuggestions();
-      }
-    };
-
-    const stopPolling = () => {
-      if (suggestPollRef.current) {
-        clearInterval(suggestPollRef.current);
-        suggestPollRef.current = null;
-      }
-    };
-
-    suggestPollRef.current = setInterval(poll, pollMs);
-    poll();
-  }, [fundId, refreshSuggestions]);
+    refreshSuggestions();
+  }, [refreshSuggestions]);
 
   useEffect(() => {
     return () => {
       if (suggestPollRef.current) {
-        clearInterval(suggestPollRef.current);
+        clearTimeout(suggestPollRef.current as ReturnType<typeof setTimeout>);
         suggestPollRef.current = null;
       }
     };
@@ -864,6 +899,10 @@ export function UnifiedMatrix({
   // Listen for refreshMatrix custom event
   useEffect(() => {
     const handleRefreshMatrix = async () => {
+      if (editInFlightRef.current > 0) {
+        console.log('[UnifiedMatrix] Skipping refresh - cell edit in flight');
+        return;
+      }
       if (mode === 'portfolio' && fundId) {
         console.log('[UnifiedMatrix] Refresh event received, reloading portfolio data');
         setIsLoading(true);
@@ -940,6 +979,15 @@ export function UnifiedMatrix({
 
   const loadPortfolioData = useCallback(async () => {
     if (!fundId) return;
+    if (editInFlightRef.current > 0) {
+      console.log('[UnifiedMatrix] Skipping loadPortfolioData - edit/accept in flight');
+      return;
+    }
+
+    // Abort any previous in-flight portfolio load to prevent stale data
+    portfolioAbortRef.current?.abort();
+    const controller = new AbortController();
+    portfolioAbortRef.current = controller;
 
     setIsLoading(true);
     setError(null);
@@ -950,9 +998,25 @@ export function UnifiedMatrix({
       const defaultData = getDefaultMatrixData(mode, fundId);
       const defaultColumns = defaultData.columns;
 
+      // Retry helper for transient network failures
+      const fetchWithRetry = async (url: string, opts: RequestInit, retries = 1): Promise<Response> => {
+        for (let attempt = 0; attempt <= retries; attempt++) {
+          try {
+            const res = await fetch(url, opts);
+            return res;
+          } catch (err) {
+            if (err instanceof DOMException && err.name === 'AbortError') throw err;
+            if (attempt === retries) throw err;
+            console.warn(`[UnifiedMatrix] Transient fetch failure for ${url}, retrying...`);
+            await new Promise(r => setTimeout(r, 500));
+          }
+        }
+        throw new Error('Unreachable');
+      };
+
       const [columnsResponse, companiesResponse] = await Promise.all([
-        fetch(`/api/matrix/columns?fundId=${fundId}`),
-        fetch(`/api/portfolio/${fundId}/companies`),
+        fetchWithRetry(`/api/matrix/columns?fundId=${fundId}`, { signal: controller.signal }),
+        fetchWithRetry(`/api/portfolio/${fundId}/companies`, { signal: controller.signal }),
       ]);
       
       try {
@@ -1053,12 +1117,13 @@ export function UnifiedMatrix({
 
       // Map companies to rows - create cells for all columns (no NAV sparklines yet for fast first paint)
       const rows: MatrixRow[] = companies.map((company: any) => {
-        const currentArr = company.currentArr || 0;
-        const investmentAmount = company.investmentAmount || 0;
-        const ownershipPercentage = company.ownershipPercentage || 0;
-        const valuation = company.valuation || (currentArr * 10);
-        const ownership = ownershipPercentage / 100;
-        const nav = valuation * ownership;
+        const currentArr = company.currentArr ?? null;
+        const investmentAmount = company.investmentAmount ?? null;
+        const ownershipPercentage = company.ownershipPercentage ?? null;
+        // Use persisted valuation directly; only derive from investment/ownership as last resort. Never invent multiples.
+        const valuation = company.valuation ?? null;
+        const ownership = ownershipPercentage != null ? ownershipPercentage / 100 : null;
+        const nav = valuation != null && ownership != null ? valuation * ownership : null;
         const navTimeSeries = navTimeSeriesMap.get(company.id) || [];
 
         // Build cells for all columns - map common field names
@@ -1089,25 +1154,25 @@ export function UnifiedMatrix({
             lastUpdated = company.revenueUpdatedAt;
             sourceDocumentId = company.revenueDocumentId;
           } else if (colId === 'burnrate' || colId === 'burn_rate') {
-            value = company.burnRate || 0;
+            value = company.burnRate ?? null;
             displayValue = formatCurrency(company.burnRate);
             source = 'document';
             lastUpdated = company.burnRateUpdatedAt;
             sourceDocumentId = company.burnRateDocumentId;
           } else if (colId === 'runway') {
-            value = company.runwayMonths || 0;
+            value = company.runwayMonths ?? null;
             displayValue = company.runwayMonths ? `${company.runwayMonths}m` : '-';
             source = 'document';
             lastUpdated = company.runwayUpdatedAt;
             sourceDocumentId = company.runwayDocumentId;
           } else if (colId === 'grossmargin' || colId === 'gross_margin') {
-            value = company.grossMargin || 0;
+            value = company.grossMargin ?? null;
             displayValue = company.grossMargin ? `${(company.grossMargin * 100).toFixed(1)}%` : '-';
             source = 'document';
             lastUpdated = company.grossMarginUpdatedAt;
             sourceDocumentId = company.grossMarginDocumentId;
           } else if (colId === 'cashinbank' || colId === 'cash_in_bank') {
-            value = company.cashInBank || 0;
+            value = company.cashInBank ?? null;
             displayValue = formatCurrency(company.cashInBank);
             source = 'document';
             lastUpdated = company.cashUpdatedAt;
@@ -1206,7 +1271,7 @@ export function UnifiedMatrix({
         };
       });
 
-      // Human edits are final: never overwrite cells the user has manually edited.
+      // Preserve cells that were edited by the user or the agent — never overwrite them with stale API data.
       const prev = matrixDataRef.current;
       const prevById = prev?.rows ? new Map(prev.rows.map((r) => [r.id, r])) : new Map<string, MatrixRow>();
       const rowsWithManualPreserved: MatrixRow[] = rows.map((row) => {
@@ -1214,7 +1279,7 @@ export function UnifiedMatrix({
         if (!existing?.cells) return row;
         const mergedCells = { ...row.cells };
         for (const [colId, cell] of Object.entries(existing.cells)) {
-          if (cell?.source === 'manual') {
+          if (cell?.source === 'manual' || cell?.source === 'agent') {
             mergedCells[colId] = { ...cell };
           }
         }
@@ -1236,10 +1301,11 @@ export function UnifiedMatrix({
 
       // Load NAV sparklines in background so grid stays responsive
       if (companyIds.length > 0 && fundId) {
-        fetch(`/api/portfolio/${fundId}/nav-timeseries?companyIds=${companyIds.join(',')}`)
+        fetch(`/api/portfolio/${fundId}/nav-timeseries?companyIds=${companyIds.join(',')}`, { signal: controller.signal })
           .then((res) => (res.ok ? res.json() : null))
           .then((navData: Record<string, number[]> | null) => {
             if (!navData || typeof navData !== 'object') return;
+            if (controller.signal.aborted) return;
             setMatrixData((prev) => {
               if (!prev?.rows?.length) return prev;
               const navMap = new Map<string, number[]>();
@@ -1262,9 +1328,15 @@ export function UnifiedMatrix({
               return { ...prev, rows: nextRows };
             });
           })
-          .catch(() => {});
+          .catch((err) => {
+            if (err?.name !== 'AbortError') {
+              console.warn('[UnifiedMatrix] NAV sparkline fetch failed:', err);
+            }
+          });
       }
     } catch (err) {
+      // Ignore AbortError — just means a newer request replaced this one
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       console.error('Error loading portfolio data:', err);
       setError(err instanceof Error ? err.message : 'Failed to load portfolio data');
     } finally {
@@ -1276,6 +1348,9 @@ export function UnifiedMatrix({
   useEffect(() => {
     loadPortfolioDataRef.current = loadPortfolioData;
   }, [loadPortfolioData]);
+
+  // Abort in-flight portfolio fetch on unmount
+  useEffect(() => () => { portfolioAbortRef.current?.abort(); }, []);
 
   // Load LP data for LP mode
   const loadLPData = useCallback(async () => {
@@ -1318,8 +1393,14 @@ export function UnifiedMatrix({
   };
 
   // Handle batch company search for @CompanyName mentions
+  const batchSearchAbortRef = useRef<AbortController | null>(null);
   const handleBatchCompanySearch = async (companyNames: string[]) => {
     if (!matrixData) return;
+
+    // Abort any previous batch search polling
+    batchSearchAbortRef.current?.abort();
+    const controller = new AbortController();
+    batchSearchAbortRef.current = controller;
 
     try {
       // Start batch search job
@@ -1327,6 +1408,7 @@ export function UnifiedMatrix({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ companyNames }),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -1342,8 +1424,9 @@ export function UnifiedMatrix({
 
       while (!completed && attempts < maxAttempts) {
         await new Promise(resolve => setTimeout(resolve, 5000)); // Poll every 5 seconds
+        if (controller.signal.aborted) return;
 
-        const statusResponse = await fetch(`/api/matrix/companies/search/${jobId}`);
+        const statusResponse = await fetch(`/api/matrix/companies/search/${jobId}`, { signal: controller.signal });
         if (!statusResponse.ok) {
           throw new Error('Failed to check search status');
         }
@@ -1362,13 +1445,13 @@ export function UnifiedMatrix({
                 company: { value: companyName, source: 'api' },
                 sector: { value: companyData.sector || companyData.industry || '-', source: 'api' },
                 arr: { 
-                  value: companyData.arr || companyData.revenue || 0, 
-                  displayValue: formatCurrency(companyData.arr || companyData.revenue || 0),
+                  value: companyData.arr || companyData.revenue || null, 
+                  displayValue: (companyData.arr || companyData.revenue) ? formatCurrency(companyData.arr || companyData.revenue) : "-",
                   source: 'api' 
                 },
                 valuation: { 
-                  value: companyData.valuation || companyData.latestValuation || 0,
-                  displayValue: formatCurrency(companyData.valuation || companyData.latestValuation || 0),
+                  value: companyData.valuation || companyData.latestValuation || null,
+                  displayValue: (companyData.valuation || companyData.latestValuation) ? formatCurrency(companyData.valuation || companyData.latestValuation) : "-",
                   source: 'api' 
                 },
                 ownership: { value: 0, source: 'manual' }, // Default to 0, user can edit
@@ -1398,6 +1481,7 @@ export function UnifiedMatrix({
         throw new Error('Batch search timed out');
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       console.error('Error in batch company search:', err);
       setError(err instanceof Error ? err.message : 'Failed to search companies');
     }
@@ -1529,69 +1613,72 @@ export function UnifiedMatrix({
 
   /**
    * Preset company fields from database into grid row.
-   * Human edits are final: never overwrite a cell when source === 'manual'.
+   * Never overwrite a cell that was edited by the user or the agent.
    */
   const presetCompanyFields = (row: MatrixRow, companyData: any): MatrixRow => {
     const updatedCells = { ...row.cells };
-    const isManual = (colId: string) => updatedCells[colId]?.source === 'manual';
+    const isProtected = (colId: string) => {
+      const src = updatedCells[colId]?.source;
+      return src === 'manual' || src === 'agent';
+    };
 
-    if (companyData.name && !isManual('company')) {
+    if (companyData.name && !isProtected('company')) {
       updatedCells['company'] = {
         value: companyData.name,
         displayValue: companyData.name,
         source: 'api',
       };
     }
-    if (companyData.sector && !isManual('sector')) {
+    if (companyData.sector && !isProtected('sector')) {
       updatedCells['sector'] = {
         value: companyData.sector,
         displayValue: companyData.sector,
         source: 'api',
       };
     }
-    if (companyData.current_arr_usd !== undefined && !isManual('arr')) {
+    if (companyData.current_arr_usd !== undefined && !isProtected('arr')) {
       updatedCells['arr'] = {
         value: companyData.current_arr_usd,
         displayValue: formatCurrency(companyData.current_arr_usd),
         source: 'api',
       };
     }
-    if (companyData.total_invested_usd !== undefined && !isManual('invested')) {
+    if (companyData.total_invested_usd !== undefined && !isProtected('invested')) {
       updatedCells['invested'] = {
         value: companyData.total_invested_usd,
         displayValue: formatCurrency(companyData.total_invested_usd),
         source: 'api',
       };
     }
-    if (companyData.ownership_percentage !== undefined && !isManual('ownership')) {
+    if (companyData.ownership_percentage !== undefined && !isProtected('ownership')) {
       updatedCells['ownership'] = {
         value: companyData.ownership_percentage,
         displayValue: `${companyData.ownership_percentage.toFixed(1)}%`,
         source: 'api',
       };
     }
-    if (companyData.burn_rate_monthly_usd !== undefined && !isManual('burnRate')) {
+    if (companyData.burn_rate_monthly_usd !== undefined && !isProtected('burnRate')) {
       updatedCells['burnRate'] = {
         value: companyData.burn_rate_monthly_usd,
         displayValue: formatCurrency(companyData.burn_rate_monthly_usd),
         source: 'api',
       };
     }
-    if (companyData.runway_months !== undefined && !isManual('runway')) {
+    if (companyData.runway_months !== undefined && !isProtected('runway')) {
       updatedCells['runway'] = {
         value: companyData.runway_months,
         displayValue: `${companyData.runway_months}m`,
         source: 'api',
       };
     }
-    if (companyData.gross_margin !== undefined && !isManual('grossMargin')) {
+    if (companyData.gross_margin !== undefined && !isProtected('grossMargin')) {
       updatedCells['grossMargin'] = {
         value: companyData.gross_margin,
         displayValue: `${(companyData.gross_margin * 100).toFixed(1)}%`,
         source: 'api',
       };
     }
-    if (companyData.cash_in_bank_usd !== undefined && !isManual('cashInBank')) {
+    if (companyData.cash_in_bank_usd !== undefined && !isProtected('cashInBank')) {
       updatedCells['cashInBank'] = {
         value: companyData.cash_in_bank_usd,
         displayValue: formatCurrency(companyData.cash_in_bank_usd),
@@ -1636,7 +1723,7 @@ export function UnifiedMatrix({
     rowId: string,
     columnId: string,
     newValue: any,
-    options?: { sourceDocumentId?: string | number; data_source?: string; metadata?: { fromChat?: boolean } }
+    options?: { sourceDocumentId?: string | number; data_source?: string; metadata?: { fromChat?: boolean; auto_applied?: boolean; [key: string]: unknown } }
   ) => {
     const currentData = matrixData || getDefaultMatrixData(mode, fundId);
     if (!currentData) return;
@@ -1781,6 +1868,33 @@ export function UnifiedMatrix({
         }
         setMatrixData(data);
         onDataChange?.(data);
+
+        // Persist each workflow result to the database (mirrors handleCellActionResult)
+        if (onCellEdit) {
+          for (const { rowId: rId, columnId: cId, response } of wf.results) {
+            if (!response.success) continue;
+            const value = extractCellValue(response) ?? response.value;
+            try {
+              await onCellEdit(rId, cId, value, {
+                data_source: 'service',
+                metadata: {
+                  ...(response.metadata ? { explanation: response.metadata.explanation, citations: response.metadata.citations, service_name: response.action_id } : {}),
+                },
+              });
+            } catch (err) {
+              console.warn(`Workflow result persist failed for ${rId}/${cId}:`, err);
+            }
+          }
+          // Also persist the summary cell
+          try {
+            await onCellEdit(rowId, columnId, summary, {
+              data_source: 'service',
+              metadata: { workflow_ran: wf.processedCount > 0 },
+            });
+          } catch (err) {
+            console.warn('Workflow summary persist failed:', err);
+          }
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         toast.error(`Workflow failed: ${msg}`);
@@ -1853,27 +1967,30 @@ export function UnifiedMatrix({
     setMatrixData(updatedData);
     onDataChange?.(updatedData);
 
-    if (onCellEdit) {
-      try {
-        const cellEditOptions = buildCellEditOptionsFromSuggestion(options?.sourceDocumentId);
-        await onCellEdit(rowId, columnId, valueToStore, cellEditOptions);
-      } catch (err) {
-        console.error('Error saving cell edit:', err);
-        toast.error(err instanceof Error ? err.message : 'Failed to save edit');
-        // Do NOT revert - edit stays visible so user can retry or fix
+    editInFlightRef.current++;
+    try {
+      if (onCellEdit) {
+        try {
+          const cellEditOptions = buildCellEditOptionsFromSuggestion(options?.sourceDocumentId);
+          await onCellEdit(rowId, columnId, valueToStore, cellEditOptions);
+        } catch (err) {
+          console.error('Error saving cell edit:', err);
+          toast.error(err instanceof Error ? err.message : 'Failed to save edit');
+        }
+      } else if (row.companyId) {
+        try {
+          await saveCellEditToCompany(row.companyId, columnId, valueToStore, fundId, {
+            ...(options?.sourceDocumentId != null ? { sourceDocumentId: options.sourceDocumentId } : {}),
+          });
+        } catch (err) {
+          console.error('Error saving to company:', err);
+          toast.error(err instanceof Error ? err.message : 'Failed to save edit');
+        }
+      } else {
+        toast.info('Add to portfolio to save edits');
       }
-    } else if (row.companyId) {
-      try {
-        await saveCellEditToCompany(row.companyId, columnId, valueToStore, fundId, {
-          ...(options?.sourceDocumentId != null ? { sourceDocumentId: options.sourceDocumentId } : {}),
-        });
-      } catch (err) {
-        console.error('Error saving to company:', err);
-        toast.error(err instanceof Error ? err.message : 'Failed to save edit');
-        // Do NOT revert - edit stays visible
-      }
-    } else {
-      toast.info('Add to portfolio to save edits');
+    } finally {
+      editInFlightRef.current--;
     }
   };
 
@@ -1975,8 +2092,8 @@ export function UnifiedMatrix({
     }
     if (!matrixData) return;
     const value = extractCellValue(response) ?? response.value;
-    const row = matrixData.rows.find((r) => r.id === rowId || r.companyId === rowId);
-    const companyId = row?.companyId ?? rowId;
+    const row = matrixData.rows.find((r) => r.id === rowId || r.companyId === rowId || (r.companyName && r.companyName.toLowerCase() === rowId.toLowerCase()));
+    const companyId = row?.companyId ?? row?.id ?? rowId;
 
     if (suggestBeforeApply && fundId) {
       const result = await addServiceSuggestion({
@@ -2030,12 +2147,14 @@ export function UnifiedMatrix({
   /** Guard: prevents refreshCells during cell action execution. */
   const actionInProgressRef = useRef(false);
 
-  /** Single run path for any service: execute → add suggestion → refresh + toast. Grid persistence happens on accept. */
+  /** Single run path for any service: execute → add suggestion → refresh + toast. Grid persistence happens on accept.
+   *  When isBulk=true, suppresses individual toasts/refreshes — caller handles summary.
+   *  When autoApply=true (agent enrichment), apply result directly instead of creating a suggestion. */
   const runActionWrapper = useCallback(
-    async (actionId: string, rowId: string, columnId: string) => {
+    async (actionId: string, rowId: string, columnId: string, isBulk = false, autoApply = false) => {
       const data = matrixData ?? getDefaultMatrixData(mode, fundId);
-      const row = data.rows.find((r) => r.id === rowId || r.companyId === rowId);
-      const companyId = row?.companyId ?? rowId;
+      const row = data.rows.find((r) => r.id === rowId || r.companyId === rowId || (r.companyName && r.companyName.toLowerCase() === rowId.toLowerCase()));
+      const companyId = row?.companyId ?? row?.id ?? rowId;
       const inputs = buildActionInputs(actionId, row ?? { id: rowId, companyId, companyName: '', cells: {} }, columnId, data);
       onToolCallLog?.({
         action_id: actionId,
@@ -2065,26 +2184,52 @@ export function UnifiedMatrix({
           reasoning: response.metadata?.reasoning as string | undefined,
         });
         if (!response.success) {
-          toast.error(response.error ?? 'Action failed');
+          if (!isBulk) toast.error(response.error ?? 'Action failed');
           return;
         }
-        if (!fundId) return;
-        const value = extractCellValue(response) ?? response.value;
+        const value = extractCellValue(response);
+
+        // Agent enrichment: apply directly to grid, skip suggestion queue
+        if (autoApply) {
+          await handleCellEdit(rowId, columnId, value, {
+            data_source: actionId,
+            metadata: { fromChat: true, auto_applied: true, ...(response.metadata || {}) },
+          });
+          onServiceResultLog?.(rowId, columnId, response);
+          return;
+        }
+
+        // Normal path: persist as suggestion for user review
+        const activeFundId = fundId!;
         const { success, error } = await addServiceSuggestion({
-          fundId,
+          fundId: activeFundId,
           company_id: companyId,
           column_id: columnId,
           suggested_value: value,
           source_service: actionId,
-          reasoning: (response.metadata as Record<string, unknown>|undefined)?.explanation as string | undefined,
-          metadata: response.metadata ? { explanation: response.metadata.explanation, citations: response.metadata.citations } : undefined,
+          reasoning: (response.metadata as Record<string, unknown>|undefined)?.reasoning as string
+            ?? (response.metadata as Record<string, unknown>|undefined)?.explanation as string
+            ?? undefined,
+          metadata: response.metadata
+            ? {
+                explanation: response.metadata.explanation,
+                reasoning: response.metadata.reasoning,
+                method: response.metadata.method,
+                confidence: response.metadata.confidence,
+                citations: response.metadata.citations,
+                output_type: response.metadata.output_type,
+              }
+            : undefined,
         });
         if (success) {
-          await refreshSuggestions();
-          toast.success('Suggestion added — review in chat');
-          window.dispatchEvent(new CustomEvent('refreshSuggestionsAndOpenViewport'));
+          if (!isBulk) {
+            await refreshSuggestions();
+            toast.success('Suggestion added — review in chat');
+            window.dispatchEvent(new CustomEvent('refreshSuggestionsAndOpenViewport'));
+          }
         } else {
-          toast.error(error ?? 'Failed to add suggestion');
+          console.error('[runActionWrapper] Suggestion persistence failed:', { actionId, companyId, columnId, error });
+          if (!isBulk) toast.error(error ?? 'Failed to add suggestion');
         }
         onServiceResultLog?.(rowId, columnId, response);
       } catch (err) {
@@ -2100,7 +2245,7 @@ export function UnifiedMatrix({
         toast.error(msg);
       }
     },
-    [matrixData, mode, fundId, getDefaultMatrixData, onToolCallLog, onServiceResultLog, refreshSuggestions]
+    [matrixData, mode, fundId, getDefaultMatrixData, onToolCallLog, onServiceResultLog, refreshSuggestions, handleCellEdit]
   );
 
   /** Run cell action from parent (POST survives cell unmount). When suggestBeforeApply + fundId, route through runActionWrapper for grid persistence. */
@@ -2157,54 +2302,86 @@ export function UnifiedMatrix({
     [suggestBeforeApply, fundId, runActionWrapper, handleCellActionResult, matrixData?.rows, onToolCallLog]
   );
 
-  /** Grid commands from chat/backend: route through accept/reject when suggestBeforeApply, else apply directly. Supports edit, run, add_document.
-   *  Performance: Pre-computes row lookup map and batches edit commands in parallel (up to 8 concurrent). */
+  /** Grid commands from chat/backend: route through accept/reject when suggestBeforeApply, else apply directly.
+   *  Supports edit, run, add_document with group-based execution ordering.
+   *  Performance: Pre-computes row lookup map and batches edit commands in parallel (up to 8 concurrent).
+   *  Edit commands can carry source_service, reasoning, confidence, and metadata from backend enrichment.
+   *
+   *  Workflow chaining: commands carry a `group` field (0=edits, 1+=run services).
+   *  Groups execute sequentially; within a group, same-action commands run in parallel.
+   *  Run results from group N are passed as workflow context to group N+1 for the same row. */
   const handleGridCommandsFromBackend = useCallback(
-    async (commands: Array<{ action: 'edit' | 'run' | 'add_document'; rowId?: string; columnId?: string; value?: unknown; actionId?: string }>) => {
+    async (commands: Array<{ action: 'edit' | 'run' | 'add_document' | 'add_row' | 'delete'; rowId?: string; columnId?: string; value?: unknown; actionId?: string; group?: number; depends_on?: string[]; provides?: string; source_service?: string; reasoning?: string; confidence?: number; metadata?: Record<string, unknown>; auto_apply?: boolean; companyName?: string; company_id?: string; cellValues?: Record<string, unknown> }>) => {
       // Pre-compute row lookup map: O(n) instead of O(n*m) per-command finds
+      // Index by id, companyId, AND companyName (backend grid_commands often use name as rowId)
       const rowMap = new Map<string, typeof matrixData extends { rows: (infer R)[] } ? R : any>();
       for (const r of (matrixData?.rows || [])) {
         if (r.id) rowMap.set(r.id, r);
         if (r.companyId && r.companyId !== r.id) rowMap.set(r.companyId, r);
-      }
-      const findRow = (rowId?: string) => rowId ? (rowMap.get(rowId) ?? null) : null;
-
-      // Separate commands by type for batch execution
-      const editCmds: typeof commands = [];
-      const runCmds: typeof commands = [];
-      const docCmds: typeof commands = [];
-      for (const cmd of commands) {
-        if (cmd.action === 'add_document' && cmd.rowId && (cmd.columnId === 'documents' || !cmd.columnId) && cmd.value != null) {
-          docCmds.push(cmd);
-        } else if (cmd.action === 'edit' && cmd.rowId && cmd.columnId && cmd.value !== undefined) {
-          editCmds.push(cmd);
-        } else if (cmd.action === 'run' && cmd.rowId && cmd.columnId && cmd.actionId) {
-          runCmds.push(cmd);
+        if (r.companyName) {
+          rowMap.set(r.companyName, r);
+          rowMap.set(r.companyName.toLowerCase(), r);
         }
       }
+      const findRow = (rowId?: string) => {
+        if (!rowId) return null;
+        return rowMap.get(rowId) ?? rowMap.get(rowId.toLowerCase()) ?? null;
+      };
 
-      // Helper: execute a single edit command
+      // --- Group commands by execution group ---
+      // Group 0 = edits + add_document (parallel batches)
+      // Group 1+ = run services (sequential groups, parallel within group per row)
+      const groupMap = new Map<number, typeof commands>();
+      for (const cmd of commands) {
+        const g = cmd.group ?? (cmd.action === 'run' ? 1 : 0);
+        if (!groupMap.has(g)) groupMap.set(g, []);
+        groupMap.get(g)!.push(cmd);
+      }
+      const sortedGroups = [...groupMap.keys()].sort((a, b) => a - b);
+
+      // Helper: execute a single edit command.
+      // When suggestBeforeApply + fundId, persist as suggestion so user can accept/reject.
+      // When auto_apply=true (agent enrichment), bypass suggestion queue and apply directly.
+      // Otherwise, apply directly to the grid.
       const execEdit = async (cmd: typeof commands[0]) => {
-        const row = findRow(cmd.rowId);
-        const companyId = row?.companyId ?? row?.id ?? cmd.rowId;
         const isDocumentsColumn = cmd.columnId === 'documents';
-        const editMetadata = isDocumentsColumn && Array.isArray(cmd.value) ? { fromChat: true, documents: cmd.value } : { fromChat: true };
+        const serviceSource = cmd.source_service || 'agent';
+        const editMetadata = isDocumentsColumn && Array.isArray(cmd.value) ? { fromChat: true, documents: cmd.value } : { fromChat: true, ...(cmd.metadata || {}) };
+
+        // Agent enrichment commands bypass suggestion queue entirely
+        if (cmd.auto_apply) {
+          await handleCellEdit(cmd.rowId!, cmd.columnId!, cmd.value, { data_source: serviceSource, metadata: editMetadata });
+          return;
+        }
+
         if (suggestBeforeApply && fundId) {
+          const row = findRow(cmd.rowId);
+          // MUST use the DB-level companyId (UUID), not company name — accept API looks up by companies.id
+          const companyId = row?.companyId ?? row?.id;
+          if (!companyId) {
+            console.warn('[grid-cmd] Cannot persist suggestion: no companyId found for rowId', cmd.rowId);
+            // Fallback: apply directly to grid to avoid silent data loss
+            await handleCellEdit(cmd.rowId!, cmd.columnId!, cmd.value, { data_source: serviceSource, metadata: editMetadata });
+            return;
+          }
           const result = await addServiceSuggestion({
             fundId,
-            company_id: companyId!,
+            company_id: companyId,
             column_id: cmd.columnId!,
             suggested_value: cmd.value,
-            source_service: 'agent',
-            metadata: { fromChat: true, ...(isDocumentsColumn ? { documents: cmd.value } : {}) },
+            source_service: serviceSource,
+            reasoning: cmd.reasoning,
+            metadata: { fromChat: true, ...(cmd.metadata || {}) },
           });
-          if (!result.success) toast.error(result.error ?? 'Failed to add suggestion');
+          if (!result.success) {
+            console.error('[grid-cmd] Edit suggestion persistence failed:', result.error);
+          }
         } else {
-          await handleCellEdit(cmd.rowId!, cmd.columnId!, cmd.value, { data_source: 'agent', metadata: editMetadata });
+          await handleCellEdit(cmd.rowId!, cmd.columnId!, cmd.value, { data_source: serviceSource, metadata: editMetadata });
         }
       };
 
-      // Helper: execute a single add_document command
+      // Helper: execute a single add_document command — always persists as suggestion when fundId is set
       const execDoc = async (cmd: typeof commands[0]) => {
         const row = findRow(cmd.rowId);
         const companyId = row?.companyId ?? row?.id ?? cmd.rowId;
@@ -2214,37 +2391,177 @@ export function UnifiedMatrix({
           ? cmd.value as { id: string; name?: string }
           : { id: String(cmd.value), name: 'Document' };
         const newList = [...existingDocs, newDoc];
-        if (suggestBeforeApply && fundId) {
+        if (fundId) {
           const result = await addServiceSuggestion({
             fundId,
             company_id: companyId!,
             column_id: 'documents',
             suggested_value: newList,
-            source_service: 'agent',
-            metadata: { fromChat: true, documents: newList },
+            source_service: cmd.source_service || 'agent',
+            reasoning: cmd.reasoning,
+            metadata: { fromChat: true, documents: newList, ...(cmd.metadata || {}) },
           });
-          if (!result.success) toast.error(result.error ?? 'Failed to add suggestion');
-        } else {
-          await handleCellEdit(cmd.rowId!, 'documents', newList, { data_source: 'agent', metadata: { fromChat: true, documents: newList } as Record<string, unknown> });
+          if (!result.success) {
+            console.error('[grid-cmd] Document suggestion persistence failed:', result.error);
+          }
+        }
+        if (!suggestBeforeApply || !fundId) {
+          await handleCellEdit(cmd.rowId!, 'documents', newList, { data_source: cmd.source_service || 'agent', metadata: { fromChat: true, documents: newList } as Record<string, unknown> });
         }
       };
 
-      // Execute edits in parallel batches of 8 for throughput
-      const BATCH_SIZE = 8;
-      const allEdits = [...docCmds.map(c => () => execDoc(c)), ...editCmds.map(c => () => execEdit(c))];
-      for (let i = 0; i < allEdits.length; i += BATCH_SIZE) {
-        await Promise.all(allEdits.slice(i, i + BATCH_SIZE).map(fn => fn()));
+      // Workflow context: accumulates run results per row across groups for chaining
+      const workflowResults = new Map<string, Record<string, any>>();
+      let totalEdits = 0;
+      let bulkSuccessCount = 0;
+      let bulkFailCount = 0;
+
+      // Execute groups sequentially — within each group, batch for throughput
+      for (const groupNum of sortedGroups) {
+        const groupCmds = groupMap.get(groupNum)!;
+
+        // Separate by type within group
+        const edits: typeof commands = [];
+        const docs: typeof commands = [];
+        const runs: typeof commands = [];
+        const addRows: typeof commands = [];
+        const deletes: typeof commands = [];
+        for (const cmd of groupCmds) {
+          if (cmd.action === 'add_row' && cmd.companyName) {
+            addRows.push(cmd);
+          } else if (cmd.action === 'delete' && (cmd.rowId || cmd.company_id)) {
+            deletes.push(cmd);
+          } else if (cmd.action === 'add_document' && cmd.rowId && (cmd.columnId === 'documents' || !cmd.columnId) && cmd.value != null) {
+            docs.push(cmd);
+          } else if (cmd.action === 'edit' && cmd.rowId && cmd.columnId && cmd.value !== undefined) {
+            edits.push(cmd);
+          } else if (cmd.action === 'run' && cmd.rowId && cmd.columnId && cmd.actionId) {
+            runs.push(cmd);
+          }
+        }
+
+        // Handle add_row commands — create company + add to grid with pre-populated cells
+        for (const cmd of addRows) {
+          try {
+            const cellVals = (cmd.cellValues || {}) as Record<string, any>;
+            const newCompany = await createCompanyForMatrix({
+              name: cmd.companyName!,
+              fundId: mode === 'portfolio' ? fundId : undefined,
+              mode,
+              companyFields: {
+                investmentAmount: 1,
+                sector: cellVals.sector || '',
+                stage: cellVals.stage || '',
+                ownershipPercentage: 0,
+                currentArr: cellVals.arr || 0,
+                valuation: cellVals.valuation || 0,
+              },
+            });
+
+            const currentData = matrixData || getDefaultMatrixData(mode, fundId);
+            const columns = canonicalizeMatrixColumns(currentData.columns.length > 0 ? currentData.columns : getDefaultMatrixData(mode, fundId).columns);
+
+            setMatrixData((prev) => {
+              const data = prev || getDefaultMatrixData(mode, fundId);
+              const newRow: MatrixRow = {
+                id: newCompany.id,
+                companyId: newCompany.id,
+                companyName: newCompany.companyName ?? cmd.companyName!,
+                cells: columns.reduce(
+                  (acc, col) => {
+                    const prePopulated = cellVals[col.id];
+                    acc[col.id] = { value: prePopulated ?? null, source: prePopulated != null ? 'agent' as const : 'manual' as const };
+                    return acc;
+                  },
+                  {} as Record<string, MatrixCell>
+                ),
+              };
+              return {
+                ...data,
+                columns,
+                rows: [...(data.rows || []), newRow],
+                metadata: { ...data.metadata, lastUpdated: new Date().toISOString() },
+              };
+            });
+            console.log(`[grid-cmd] add_row: Added '${cmd.companyName}' (id=${newCompany.id})`);
+          } catch (err) {
+            console.error(`[grid-cmd] add_row failed for '${cmd.companyName}':`, err);
+          }
+        }
+
+        // Handle delete commands — remove row from grid
+        for (const cmd of deletes) {
+          const targetId = cmd.rowId || cmd.company_id;
+          const row = findRow(targetId);
+          const resolvedId = row?.id || row?.companyId || targetId;
+          if (resolvedId) {
+            setMatrixData((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                rows: prev.rows.filter(r => r.id !== resolvedId && r.companyId !== resolvedId),
+                metadata: { ...prev.metadata, lastUpdated: new Date().toISOString() },
+              };
+            });
+            console.log(`[grid-cmd] delete: Removed row '${cmd.companyName || resolvedId}'`);
+          }
+        }
+
+        // Execute edits + docs in parallel batches of 8
+        const allEdits = [...docs.map(c => () => execDoc(c)), ...edits.map(c => () => execEdit(c))];
+        const BATCH_SIZE = 8;
+        for (let i = 0; i < allEdits.length; i += BATCH_SIZE) {
+          await Promise.all(allEdits.slice(i, i + BATCH_SIZE).map(fn => fn()));
+        }
+        totalEdits += allEdits.length;
+
+        // Refresh after edits in this group land (so run services see fresh data)
+        if (fundId && allEdits.length > 0) {
+          await refreshSuggestions();
+        }
+
+        // Execute run commands — pass workflow context from previous groups
+        const isBulk = runs.length > 1;
+        for (const cmd of runs) {
+          try {
+            // Inject workflow context from previous run results for this row
+            const rowCtx = workflowResults.get(cmd.rowId!) || {};
+            if (Object.keys(rowCtx).length > 0 && cmd.metadata) {
+              cmd.metadata._workflow_context = rowCtx;
+            } else if (Object.keys(rowCtx).length > 0) {
+              (cmd as any).metadata = { _workflow_context: rowCtx };
+            }
+            await runActionWrapper(cmd.actionId!, cmd.rowId!, cmd.columnId!, isBulk, cmd.auto_apply === true);
+            bulkSuccessCount++;
+            // Store result reference so next group can chain from it
+            if (!workflowResults.has(cmd.rowId!)) workflowResults.set(cmd.rowId!, {});
+            workflowResults.get(cmd.rowId!)![cmd.actionId!] = { success: true, group: groupNum };
+          } catch {
+            bulkFailCount++;
+            if (!workflowResults.has(cmd.rowId!)) workflowResults.set(cmd.rowId!, {});
+            workflowResults.get(cmd.rowId!)![cmd.actionId!] = { success: false, group: groupNum };
+          }
+        }
       }
 
-      // Refresh suggestions once after all edits (not per-command)
-      if (suggestBeforeApply && fundId && allEdits.length > 0) {
+      // Single refresh + summary toast at the end
+      const hasAutoApply = commands.some(c => c.auto_apply);
+      if (fundId && totalEdits > 0 && bulkSuccessCount === 0) {
+        const msg = hasAutoApply
+          ? `${totalEdits} field(s) enriched and applied`
+          : `${totalEdits} suggestion(s) added — review in chat`;
+        toast.success(msg);
+        if (!hasAutoApply) window.dispatchEvent(new CustomEvent('refreshSuggestionsAndOpenViewport'));
+      }
+      if (bulkSuccessCount > 0 || bulkFailCount > 0) {
         await refreshSuggestions();
-        toast.success(`${allEdits.length} suggestion(s) added — review in chat`);
-      }
-
-      // Run commands stay sequential (they may depend on each other)
-      for (const cmd of runCmds) {
-        await runActionWrapper(cmd.actionId!, cmd.rowId!, cmd.columnId!);
+        const summary = bulkFailCount > 0
+          ? `${bulkSuccessCount} valued, ${bulkFailCount} failed`
+          : totalEdits > 0
+          ? `${totalEdits} fields updated, ${bulkSuccessCount} services run`
+          : `${bulkSuccessCount} companies valued`;
+        toast.success(hasAutoApply ? summary : `${summary} — review suggestions`);
+        if (!hasAutoApply) window.dispatchEvent(new CustomEvent('refreshSuggestionsAndOpenViewport'));
       }
     },
     [matrixData?.rows, suggestBeforeApply, fundId, runActionWrapper, refreshSuggestions, handleCellEdit]
@@ -2429,7 +2746,14 @@ export function UnifiedMatrix({
           error: response.error,
           companyName: row?.companyName,
         });
-        await handleCellActionResult(canonicalRowId, columnId, response);
+        // Don't route through handleCellActionResult — that creates a single blob
+        // suggestion for the documents column. The backend already wrote per-metric
+        // suggestions via emit_document_suggestions; just refresh to pick them up.
+        if (!response.success) {
+          const key = `${canonicalRowId}_${columnId}`;
+          setCellActionStatus((prev) => ({ ...prev, [key]: { state: 'error', message: response.error ?? 'Extraction failed' } }));
+          setTimeout(() => setCellActionStatus((p) => { const next = { ...p }; delete next[key]; return next; }), 6000);
+        }
         await refreshSuggestions();
       } catch (err) {
         console.error('Document upload or extraction failed:', err);
@@ -2443,7 +2767,6 @@ export function UnifiedMatrix({
       fundId,
       getDefaultMatrixData,
       executeAction,
-      handleCellActionResult,
       refreshSuggestions,
       onCellEdit,
       onDataChange,
@@ -3488,7 +3811,7 @@ export function UnifiedMatrix({
       return;
     }
 
-    // Document files (PDF, docx, etc.): batch upload to first row + documents column
+    // Document files (PDF, docx, etc.): match to company by filename, then upload
     const docFiles = files.filter(f =>
       f.name.endsWith('.pdf') ||
       f.name.endsWith('.docx') ||
@@ -3496,17 +3819,38 @@ export function UnifiedMatrix({
     );
     if (docFiles.length > 0 && handleUploadDocumentToCell) {
       const currentData = matrixData ?? getDefaultMatrixData(mode, fundId);
-      const firstRow = currentData.rows?.[0];
       const docCol = currentData.columns?.find(c => c.id === 'documents' || c.name?.toLowerCase().includes('document')) ?? currentData.columns?.[0];
-      const rowId = firstRow?.id ?? firstRow?.companyId;
-      if (!rowId || !docCol) {
-        console.warn('[UnifiedMatrix] Document drop ignored: need at least one row and a documents column.', { rowId, hasDocCol: !!docCol, rowsCount: currentData.rows?.length ?? 0 });
+      if (!docCol || !currentData.rows?.length) {
+        console.warn('[UnifiedMatrix] Document drop ignored: need at least one row and a documents column.', { hasDocCol: !!docCol, rowsCount: currentData.rows?.length ?? 0 });
         toast.error('Add a row first', { description: 'Document upload needs at least one row and a Documents column.' });
         return;
       }
-      console.log('[UnifiedMatrix] Document drop: uploading', docFiles.length, 'file(s) to row', rowId, 'column', docCol.id);
+
       for (const file of docFiles) {
-        await handleUploadDocumentToCell(rowId, docCol.id, file);
+        // Try to match file to a company by name in filename
+        const fileBase = file.name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[_\-]+/g, ' ');
+        let matchedRow = currentData.rows.find(r => {
+          const compName = (r.name ?? r.companyId ?? '').toLowerCase();
+          if (!compName) return false;
+          // Check if company name appears in filename or first token of filename matches
+          const firstToken = fileBase.split(/\s+/)[0];
+          return fileBase.includes(compName) || compName.includes(firstToken) || firstToken.length > 2 && compName.startsWith(firstToken);
+        });
+
+        if (!matchedRow && currentData.rows.length === 1) {
+          // Only one company — safe to default
+          matchedRow = currentData.rows[0];
+        }
+
+        if (!matchedRow) {
+          toast.error(`Cannot match "${file.name}" to a company`, { description: 'Drag the file onto the specific company row, or rename the file to include the company name.' });
+          console.warn('[UnifiedMatrix] Document drop: no company match for', file.name, 'rows:', currentData.rows.map(r => r.name ?? r.companyId));
+          continue;
+        }
+
+        const rowId = matchedRow.id ?? matchedRow.companyId;
+        console.log('[UnifiedMatrix] Document drop: matched', file.name, 'to company', matchedRow.name ?? rowId);
+        await handleUploadDocumentToCell(rowId!, docCol.id, file);
       }
     }
   }, [mode, fundId, handleFileImport, handleUploadDocumentToCell, matrixData, getDefaultMatrixData]);
@@ -3755,6 +4099,13 @@ export function UnifiedMatrix({
               cellActionStatus,
             }}
           >
+          <SuggestionsProvider
+            value={{
+              suggestions: visibleSuggestions,
+              onAccept: handleSuggestionAccept,
+              onReject: handleSuggestionReject,
+            }}
+          >
           {mode === 'portfolio' && isLoading && !matrixData?.rows?.length ? (
             <div className="flex-1 min-h-0 flex flex-col p-4 rounded-lg border bg-muted/30" style={{ height: 640, minHeight: 640 }}>
               <SkeletonTable rows={8} columns={12} />
@@ -3765,6 +4116,7 @@ export function UnifiedMatrix({
             mode={mode}
             availableActions={availableActions}
             onCellEdit={handleCellEdit}
+            onStartCellEdit={handleCellDoubleClick}
             onCellActionResult={handleCellActionResult}
             onRunCellAction={onRunCellAction}
             onOpenValuationPicker={onOpenValuationPicker}
@@ -3829,10 +4181,7 @@ export function UnifiedMatrix({
             onDeleteColumn={handleDeleteColumn}
             onAddRow={handleAddRowSimple}
             onAddColumn={handleAddColumnSimple}
-            documentSuggestions={visibleSuggestions}
             useAgentPanel={useAgentPanel}
-            onSuggestionAccept={handleSuggestionAccept}
-            onSuggestionReject={handleSuggestionReject}
             onSuggestChanges={async () => {
               await refreshSuggestions();
             }}
@@ -4022,6 +4371,7 @@ export function UnifiedMatrix({
               }}
             />
           )}
+          </SuggestionsProvider>
           </CellActionProvider>
         </div>
 
@@ -4062,11 +4412,12 @@ export function UnifiedMatrix({
               memoSections={memoSections}
               onMemoUpdates={(updates) => {
                 if (updates.action === 'append') {
-                  setMemoSections(prev => [...prev, ...updates.sections as import('@/components/memo/MemoEditor').DocumentSection[]]);
+                  setMemoSections(prev => [...prev, ...updates.sections as DocumentSection[]]);
                 } else {
-                  setMemoSections(updates.sections as import('@/components/memo/MemoEditor').DocumentSection[]);
+                  setMemoSections(updates.sections as DocumentSection[]);
                 }
               }}
+              onAnalysisReady={handleAnalysisReady}
             />
           </div>
         )}
@@ -4098,10 +4449,71 @@ export function UnifiedMatrix({
                 onApplySuggestions={handleApplySuggestions}
                 memoSections={memoSections}
                 onMemoChange={setMemoSections}
+                onMemoExportPdf={async () => {
+                  const { exportMemoPdf } = await import('@/lib/memo-pdf-export');
+                  await exportMemoPdf(memoSections, 'Investment Memo', memoContainerRef.current);
+                }}
+                memoContainerRef={memoContainerRef}
               />
           </div>
         )}
       </div>
+
+      {/* Memo panel below grid — shows whenever agent has added content beyond the default heading+empty paragraph */}
+      {memoSections.length > 0 && memoSections.some(s => s.type !== 'heading1' && s.content?.trim()) && (
+        <div className="border-t bg-card/50">
+          <button
+            className="w-full flex items-center justify-between px-4 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            onClick={() => setMemoPanelExpanded(prev => !prev)}
+          >
+            <span className="flex items-center gap-1.5">
+              <FileText className="h-3 w-3" />
+              {memoSections.find(s => s.type === 'heading1')?.content || 'Working Memo'}
+            </span>
+            <span className="flex items-center gap-2">
+              <Pin
+                className="h-3 w-3 cursor-pointer hover:text-primary"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const companyName = memoPanelContext.companies?.[0]?.company || memoPanelContext.companies?.[0]?.name;
+                  if (companyName && fundId) {
+                    const companyRow = matrixData?.rows.find(r => r.companyName?.toLowerCase().includes(companyName.toLowerCase()));
+                    if (companyRow?.companyId) {
+                      fetch('/api/matrix/cell-edit', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          company_id: companyRow.companyId,
+                          column_id: 'extra_data',
+                          new_value: { agent_memo: { sections: memoSections, pinned_at: new Date().toISOString() } },
+                          fund_id: fundId,
+                          data_source: 'agent',
+                        }),
+                      }).then(() => toast.success('Memo pinned to company')).catch(() => toast.error('Failed to pin'));
+                    }
+                  }
+                }}
+              />
+              <span className="text-[10px] text-muted-foreground/60">{memoSections.length} sections</span>
+              {memoPanelExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
+            </span>
+          </button>
+          {memoPanelExpanded && (
+            <div className="max-h-[340px] overflow-y-auto">
+              <MemoEditor
+                sections={memoSections}
+                onChange={setMemoSections}
+                compact
+                containerRef={memoContainerRef}
+                onExportPdf={async () => {
+                  const { exportMemoPdf } = await import('@/lib/memo-pdf-export');
+                  await exportMemoPdf(memoSections, 'Investment Memo', memoContainerRef.current);
+                }}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Valuation method picker (parent-level, survives cell unmount) */}
       <Dialog open={!!valuationPicker} onOpenChange={(open) => !open && setValuationPicker(null)}>
@@ -4264,7 +4676,7 @@ export function UnifiedMatrix({
         </DialogContent>
       </Dialog>
 
-      {/* Formula Builder dialog: open when editingCell is set (Formula / Edit Formula) */}
+      {/* Cell edit dialog: open when editingCell is set */}
       <Dialog
         open={!!editingCell}
         onOpenChange={(open) => {
@@ -4273,9 +4685,9 @@ export function UnifiedMatrix({
       >
         <DialogContent className="sm:max-w-lg" onPointerDownOutside={(e) => e.stopPropagation()}>
           <DialogHeader>
-            <DialogTitle>Formula</DialogTitle>
+            <DialogTitle>{editValue.trim().startsWith('=') ? 'Formula' : 'Edit Cell'}</DialogTitle>
             <DialogDescription>
-              Use =SUM(...), =WORKFLOW(&quot;actionIds&quot;, &quot;all&quot;), or other supported functions.
+              {editValue.trim().startsWith('=') ? 'Use =SUM(...), =WORKFLOW("actionIds", "all"), or other supported functions.' : 'Enter a new value for this cell.'}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">

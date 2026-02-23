@@ -1067,6 +1067,85 @@ class FundModelingService:
         }
 
     # ------------------------------------------------------------------
+    # Phase 4b: Scenario Tree → Fund Impact Evaluation
+    # ------------------------------------------------------------------
+    def evaluate_scenario_tree_on_fund(
+        self,
+        tree_paths: List[Dict[str, Any]],
+        portfolio_companies: List[Dict[str, Any]],
+        fund_size: float = 260_000_000,
+        total_invested: float = 0,
+    ) -> List[Dict[str, Any]]:
+        """Evaluate a ScenarioTree's paths in the context of the full fund.
+
+        For companies NOT in the tree, uses base-case projections.
+        Returns per-path fund metrics with attribution.
+
+        Args:
+            tree_paths: Serialized paths from ScenarioTreeService.tree_to_chart_data()
+                        Each path: {path_id, labels, cumulative_probability,
+                                    final_dpi, final_tvpi, yearly_data}
+            portfolio_companies: Full list of portfolio companies (from DB or shared_data)
+            fund_size: Total fund size
+            total_invested: Total capital deployed so far
+        """
+        # Collect tree company names from path labels
+        # Labels look like "Palo Alto Networks Bull", "CompanyName 30%"
+        # Strip trailing scenario keywords (Bull/Base/Bear/percentages) to get the company name
+        _SCENARIO_SUFFIXES = {"bull", "base", "bear", "neutral", "upside", "downside"}
+        tree_company_names = set()
+        for path in tree_paths:
+            for label in (path.get("labels") or []):
+                parts = label.strip().split(" ")
+                # Remove trailing word if it's a scenario keyword or ends with %
+                while len(parts) > 1 and (parts[-1].lower() in _SCENARIO_SUFFIXES or parts[-1].endswith("%")):
+                    parts.pop()
+                tree_company_names.add(" ".join(parts).lower())
+
+        # Separate NAV and invested for tree vs non-tree companies
+        base_nav = 0.0
+        base_invested = 0.0
+        tree_invested = 0.0
+        for comp in portfolio_companies:
+            cname = (comp.get("company_name") or comp.get("name") or "").lower()
+            invested = ensure_numeric(comp.get("investment_amount"), 0)
+            if cname in tree_company_names:
+                tree_invested += invested
+                continue
+            valuation = ensure_numeric(comp.get("valuation") or comp.get("current_valuation_usd"), 0)
+            ownership = ensure_numeric(comp.get("ownership_pct"), 0)
+            # ownership_pct is stored as percentage (e.g. 10 = 10%), convert to decimal
+            base_nav += valuation * (ownership / 100)
+            base_invested += invested
+
+        # Use explicit total_invested if provided, otherwise sum from portfolio
+        combined_invested = total_invested if total_invested > 0 else (base_invested + tree_invested)
+
+        results = []
+        for path in tree_paths:
+            yearly = path.get("yearly_data", [])
+            final = yearly[-1] if yearly else {}
+            tree_nav = final.get("fund_nav", 0)
+
+            total_nav = base_nav + tree_nav
+            fund_tvpi = total_nav / combined_invested if combined_invested > 0 else 0
+            fund_dpi = 0  # No distributions modeled yet in tree
+
+            results.append({
+                "path_id": path.get("path_id"),
+                "path_label": " + ".join(path.get("labels", [])),
+                "probability": path.get("cumulative_probability", 0),
+                "tree_nav": tree_nav,
+                "rest_of_portfolio_nav": base_nav,
+                "fund_total_nav": total_nav,
+                "fund_tvpi": round(fund_tvpi, 3),
+                "fund_dpi": round(fund_dpi, 3),
+                "combined_invested": round(combined_invested, 0),
+            })
+
+        return results
+
+    # ------------------------------------------------------------------
     # Phase 5: Follow-On, Exit Planning & Reserve Analysis
     # ------------------------------------------------------------------
     async def analyze_follow_on(
