@@ -134,23 +134,8 @@ async def websocket_info():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    try:
-        from app.core.database import supabase_service
-        db_status = "connected" if supabase_service.get_client() else "disconnected"
-    except Exception as e:
-        logger.error(f"Supabase health check failed: {e}")
-        db_status = "error"
-    
-    return {
-        "status": "healthy",
-        "environment": settings.ENVIRONMENT,
-        "services": {
-            "database": db_status,
-            "websocket": "available",
-            "api": "running"
-        }
-    }
+    """Health check endpoint - kept lightweight for Railway health checks"""
+    return {"status": "healthy", "environment": settings.ENVIRONMENT}
 
 
 # @app.websocket("/ws")
