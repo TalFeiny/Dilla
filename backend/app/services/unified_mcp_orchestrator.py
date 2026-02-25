@@ -28432,12 +28432,13 @@ Return a JSON with this structure:
         # Log fallback reasons for debugging
         logger.info(f"[FORMAT_DECK] Fallback reasons: {fallback_reasons}")
         logger.info(f"[FORMAT_DECK] Tavily available: {bool(self.tavily_api_key)}")
-        logger.info(f"[FORMAT_DECK] LLM available: {bool(self.model_router and any([
+        _llm_available = bool(self.model_router and any([
             self.model_router.anthropic_key,
             self.model_router.openai_key,
             self.model_router.google_key,
             self.model_router.groq_key
-        ]))}")
+        ]))
+        logger.info(f"[FORMAT_DECK] LLM available: {_llm_available}")
         
         fallback_result = {
             "format": "deck",
