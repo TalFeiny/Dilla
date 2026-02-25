@@ -66,7 +66,7 @@ interface TableauChartProps {
   subtitle?: string;
   interactive?: boolean;
   colors?: string[];
-  width?: number | string;
+  width?: number | `${number}%`;
   height?: number;
   citations?: Citation[];
   showCitations?: boolean;
