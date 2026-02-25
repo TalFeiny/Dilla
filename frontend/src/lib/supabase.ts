@@ -34,42 +34,27 @@ const clientOptions = {
 // Singleton pattern for client-side Supabase client
 // This ensures only one instance is created, preventing the "Multiple GoTrueClient instances" warning
 let supabase: SupabaseClient<any, 'public', any> | null = null;
-let supabaseInitialized = false;
 
-function getSupabaseClient(): SupabaseClient<any, 'public', any> | null {
-  // Only initialize once, even if called multiple times
-  if (supabaseInitialized) {
+function getSupabaseClient(): SupabaseClient<any, 'public', any> {
+  // Return cached instance if already created
+  if (supabase) {
     return supabase;
   }
 
-  // Only initialize on client side
+  // Server-side: return null — only browser clients can use this
   if (typeof window === 'undefined') {
-    return null;
+    return null as any;
   }
 
-  try {
-    const url = getSupabaseUrl();
-    const anonKey = getSupabaseAnonKey();
+  const url = getSupabaseUrl();
+  const anonKey = getSupabaseAnonKey();
 
-    if (url && anonKey) {
-      supabase = createClient(url, anonKey, clientOptions) as SupabaseClient<any, 'public', any>;
-      supabaseInitialized = true;
-    } else {
-      console.warn('Supabase client not initialized: Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY');
-      supabaseInitialized = true; // Mark as initialized to prevent retries
-    }
-  } catch (error) {
-    console.error('Error initializing Supabase client:', error);
-    supabaseInitialized = true; // Mark as initialized to prevent retries
+  if (!url || !anonKey) {
+    throw new Error('Supabase client not initialized: Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY');
   }
 
+  supabase = createClient(url, anonKey, clientOptions) as SupabaseClient<any, 'public', any>;
   return supabase;
-}
-
-// Initialize on module load for client-side (backward compatibility)
-// But use lazy initialization to prevent issues during SSR
-if (typeof window !== 'undefined') {
-  getSupabaseClient();
 }
 
 // Service role client - lazy initialization (server-side only)
@@ -117,7 +102,17 @@ export { supabaseService };
 // Export the getter function for explicit client access
 export { getSupabaseClient };
 
-// Default export - lazy initialization for backward compatibility
-// This ensures the client is only created when accessed, preventing SSR/hydration issues
-// and ensuring only one instance is ever created
-export default getSupabaseClient();
+// Default export - a lazy proxy that defers to getSupabaseClient() on first property access.
+// The old code did `export default getSupabaseClient()` which ran at module load during SSR,
+// got null (no window), and that null was permanently locked in as the default export.
+// This proxy waits until something actually accesses .auth, .from(), etc. — which only
+// happens client-side in 'use client' components — then initializes the real client.
+const lazySupabase = new Proxy({} as SupabaseClient<any, 'public', any>, {
+  get(_, prop) {
+    const client = getSupabaseClient();
+    const value = (client as any)[prop];
+    return typeof value === 'function' ? value.bind(client) : value;
+  },
+});
+
+export default lazySupabase;
