@@ -2888,6 +2888,12 @@ class DeckExportService:
                     
                     # For now, create a simple comparison visualization
                     # We'll use simple bars to show ownership changes
+                    # Pre-compute to avoid backslash in f-string (Python 3.11)
+                    _insights_items = ''.join([
+                        '<p class="text-sm text-gray-700">' + '\u2022 ' + insight + '</p>'
+                        for insight in content.get("insights", [])
+                    ])
+                    _insights_html = f'<div class="mt-6 grid grid-cols-2 gap-4">{_insights_items}</div>' if content.get('insights') else ''
                     return f"""
 <div class="slide bg-white p-12">
     <h2 class="text-3xl font-bold text-gray-900 mb-4">{content.get('title', 'Cap Table Evolution')}</h2>
@@ -2906,7 +2912,7 @@ class DeckExportService:
             </div>
         </div>
     </div>
-    {f'<div class="mt-6 grid grid-cols-2 gap-4">{"".join([f"<p class=\"text-sm text-gray-700\">• {insight}</p>" for insight in content.get("insights", [])])}</div>' if content.get('insights') else ''}
+    {_insights_html}
 </div>
                     """
         
@@ -3292,6 +3298,13 @@ class DeckExportService:
                 """
             future_pie_charts_html += '</div></div>'
         
+        # Pre-compute to avoid backslash in f-string (Python 3.11)
+        _bullets_items = ''.join([
+            '<p class="text-sm text-gray-700">' + '\u2022 ' + bullet + '</p>'
+            for bullet in content.get("bullets", [])
+        ])
+        _bullets_html = f'<div class="mt-6 space-y-2">{_bullets_items}</div>' if content.get('bullets') else ''
+
         return f"""
 <div class="slide bg-white p-12">
     <h2 class="text-3xl font-bold text-gray-900 mb-4">{content.get('title', 'Cap Table Evolution')}</h2>
@@ -3299,7 +3312,7 @@ class DeckExportService:
     {chart_container}
     {future_chart_container}
     {future_pie_charts_html}
-    {f'<div class="mt-6 space-y-2">{"".join([f"<p class=\"text-sm text-gray-700\">• {bullet}</p>" for bullet in content.get("bullets", [])])}</div>' if content.get('bullets') else ''}
+    {_bullets_html}
 </div>
             """
         
