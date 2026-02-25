@@ -194,7 +194,7 @@ export function middleware(request: NextRequest) {
     
     // Add CORS headers for FastAPI responses
     const origin = request.headers.get('origin')
-    const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla.ai', 'https://dilla-ai.com', 'https://www.dilla.ai', 'https://www.dilla-ai.com']
+    const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com']
 
     if (origin && allowedOrigins.includes(origin)) {
       response.headers.set('Access-Control-Allow-Origin', origin)
@@ -230,7 +230,7 @@ export function middleware(request: NextRequest) {
     
     // CORS handling for API routes
     const origin = request.headers.get('origin')
-    const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla.ai', 'https://dilla-ai.com', 'https://www.dilla.ai', 'https://www.dilla-ai.com']
+    const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com']
 
     if (origin && allowedOrigins.includes(origin)) {
       response.headers.set('Access-Control-Allow-Origin', origin)
