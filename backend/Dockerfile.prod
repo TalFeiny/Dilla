@@ -33,10 +33,11 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
 # Run with gunicorn for production
-CMD ["gunicorn", "app.main:app", \
-    "--worker-class", "uvicorn.workers.UvicornWorker", \
-    "--workers", "4", \
-    "--bind", "0.0.0.0:8000", \
-    "--access-logfile", "-", \
-    "--error-logfile", "-", \
-    "--log-level", "info"]
+# Railway sets PORT dynamically — must use shell form to expand $PORT
+CMD gunicorn app.main:app \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --workers 2 \
+    --bind 0.0.0.0:${PORT:-8000} \
+    --access-logfile - \
+    --error-logfile - \
+    --log-level info
