@@ -14,7 +14,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    which gunicorn && gunicorn --version
 
 # Copy application code
 COPY . .
@@ -27,6 +28,7 @@ USER appuser
 ENV PYTHONUNBUFFERED=1
 ENV ENVIRONMENT=production
 ENV PORT=8000
+ENV PATH="/usr/local/bin:$PATH"
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
