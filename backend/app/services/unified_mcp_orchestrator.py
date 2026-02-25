@@ -8799,7 +8799,7 @@ ABSOLUTE RULES:
 - If you have estimates/benchmarks, present them with confidence levels
 - If you have partial data, show what you have and flag what's estimated
 - Present ranges (low/mid/high) rather than saying "unknown"
-- Always show SOMETHING — even stage benchmarks are more useful than "no data""""
+- Always show SOMETHING — even stage benchmarks are more useful than 'no data'"""
 
             synthesis_response = await self.model_router.get_completion(
                 prompt=synth_prompt,
@@ -8990,6 +8990,13 @@ ABSOLUTE RULES:
         for td in todo_items:
             result_artifacts.append({"type": "todo", "action": "suggest", "data": td, "target": "chat"})
 
+        # For docs format, strip internal planner noise that pollutes
+        # the frontend when section extraction fails.
+        # Also strip from extra_result_fields to prevent leaking via **spread
+        if detected_format == "docs":
+            for noise_key in ("plan_steps", "working_memory", "session_plan", "plan_context"):
+                extra_result_fields.pop(noise_key, None)
+
         yield {
             "type": "complete",
             "result": {
@@ -9007,12 +9014,6 @@ ABSOLUTE RULES:
                           if memo_sections and any(s.get("id", id(s)) not in _streamed_memo_ids for s in memo_sections)
                           else ({"action": "append", "sections": charts_as_memo} if charts else None))
                 ),
-                # For docs format, strip internal planner noise that pollutes
-                # the frontend when section extraction fails.
-                # Also strip from extra_result_fields to prevent leaking via **spread
-                if detected_format == "docs":
-                    for noise_key in ("plan_steps", "working_memory", "session_plan", "plan_context"):
-                        extra_result_fields.pop(noise_key, None)
                 "plan_steps": None if detected_format == "docs" else plan_steps,
                 "charts": charts,
                 "citations": self._extract_citations_from_results(tool_results),
