@@ -20,11 +20,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 SOURCING_COLUMNS = (
     "id, name, sector, stage, description, current_arr_usd, "
-    "current_valuation_usd, last_valuation_usd, total_funding_usd, "
-    "growth_rate, employee_count, hq_location, founded_year, "
-    "burn_rate_monthly_usd, runway_months, business_model, "
-    "latest_round_name, latest_round_date, extra_data, "
-    "funding_stage, fund_id, category, tam_numeric"
+    "current_valuation_usd, last_valuation_usd, total_raised, "
+    "growth_rate, employee_count, headquarters, founded_year, "
+    "burn_rate_monthly_usd, runway_months, revenue_model, "
+    "funding_stage, last_funding_date, extra_data, "
+    "fund_id, ai_category, tam"
 )
 
 # Mapping from sort key names to actual DB column names
@@ -32,7 +32,7 @@ SORT_COLUMN_MAP = {
     "name": "name",
     "arr": "current_arr_usd",
     "valuation": "current_valuation_usd",
-    "total_funding": "total_funding_usd",
+    "total_funding": "total_raised",
     "growth_rate": "growth_rate",
     "employee_count": "employee_count",
     "founded_year": "founded_year",
@@ -145,20 +145,20 @@ async def query_companies(
             q = q.or_(f"stage.ilike.%{stage}%,funding_stage.ilike.%{stage}%")
 
         if filters.get("geography"):
-            q = q.ilike("hq_location", f"%{filters['geography']}%")
+            q = q.ilike("headquarters", f"%{filters['geography']}%")
 
         if filters.get("business_model"):
-            q = q.ilike("business_model", f"%{filters['business_model']}%")
+            q = q.ilike("revenue_model", f"%{filters['business_model']}%")
 
         if filters.get("keyword"):
             kw = filters["keyword"]
             q = q.or_(
                 f"name.ilike.%{kw}%,sector.ilike.%{kw}%,"
-                f"description.ilike.%{kw}%,category.ilike.%{kw}%"
+                f"description.ilike.%{kw}%,ai_category.ilike.%{kw}%"
             )
 
         if filters.get("round_name"):
-            q = q.ilike("latest_round_name", f"%{filters['round_name']}%")
+            q = q.ilike("funding_stage", f"%{filters['round_name']}%")
 
         # --- Numeric range filters ---
         if filters.get("arr_min") is not None:
@@ -172,9 +172,9 @@ async def query_companies(
             q = q.lte("current_valuation_usd", filters["valuation_max"])
 
         if filters.get("funding_min") is not None:
-            q = q.gte("total_funding_usd", filters["funding_min"])
+            q = q.gte("total_raised", filters["funding_min"])
         if filters.get("funding_max") is not None:
-            q = q.lte("total_funding_usd", filters["funding_max"])
+            q = q.lte("total_raised", filters["funding_max"])
 
         if filters.get("founded_after") is not None:
             q = q.gte("founded_year", filters["founded_after"])
@@ -182,14 +182,15 @@ async def query_companies(
             q = q.lte("founded_year", filters["founded_before"])
 
         # --- Round date filters ---
-        # raised_within_months uses the computed months_since_last_raise column
+        # raised_within_months: compute cutoff from last_funding_date
         if filters.get("raised_within_months") is not None:
-            q = q.lte("months_since_last_raise", filters["raised_within_months"])
-        # Direct date comparisons on latest_round_date (date type column)
+            from dateutil.relativedelta import relativedelta
+            cutoff = datetime.now() - relativedelta(months=int(filters["raised_within_months"]))
+            q = q.gte("last_funding_date", cutoff.strftime("%Y-%m-%d"))
         if filters.get("latest_round_date_after") is not None:
-            q = q.gte("latest_round_date", filters["latest_round_date_after"])
+            q = q.gte("last_funding_date", filters["latest_round_date_after"])
         if filters.get("latest_round_date_before") is not None:
-            q = q.lte("latest_round_date", filters["latest_round_date_before"])
+            q = q.lte("last_funding_date", filters["latest_round_date_before"])
 
         # --- Boolean filters ---
         if filters.get("has_arr"):
@@ -231,17 +232,17 @@ def _format_company(c: dict) -> dict:
         "description": c.get("description", ""),
         "arr": c.get("current_arr_usd"),
         "valuation": c.get("current_valuation_usd") or c.get("last_valuation_usd"),
-        "total_funding": c.get("total_funding_usd"),
+        "total_funding": c.get("total_raised"),
         "growth_rate": c.get("growth_rate"),
         "employee_count": c.get("employee_count"),
-        "hq": c.get("hq_location", ""),
+        "hq": c.get("headquarters", ""),
         "founded": c.get("founded_year"),
         "burn_rate": c.get("burn_rate_monthly_usd"),
         "runway_months": c.get("runway_months"),
-        "business_model": c.get("business_model", ""),
-        "latest_round": c.get("latest_round_name", ""),
-        "latest_round_date": str(c.get("latest_round_date", "") or ""),
-        "tam": c.get("tam_numeric"),
+        "business_model": c.get("revenue_model", ""),
+        "latest_round": c.get("funding_stage", ""),
+        "latest_round_date": str(c.get("last_funding_date", "") or ""),
+        "tam": c.get("tam"),
         "extra_data": c.get("extra_data") or {},
     }
 
@@ -565,13 +566,13 @@ async def upsert_sourced_companies(
             "description": c.get("description") or None,
             "current_arr_usd": _safe_float(c.get("arr")) or None,
             "current_valuation_usd": _safe_float(c.get("valuation")) or None,
-            "total_funding_usd": _safe_float(c.get("total_funding")) or None,
+            "total_raised": _safe_float(c.get("total_funding")) or None,
             "growth_rate": _safe_float(c.get("growth_rate")) or None,
             "employee_count": _safe_int(c.get("employee_count")) or None,
-            "hq_location": c.get("hq") or None,
-            "business_model": c.get("business_model") or None,
-            "latest_round_name": c.get("latest_round") or None,
-            "tam_numeric": _safe_float(c.get("tam")) or None,
+            "headquarters": c.get("hq") or None,
+            "revenue_model": c.get("business_model") or None,
+            "funding_stage": c.get("latest_round") or None,
+            "tam": _safe_float(c.get("tam")) or None,
         }
         if fund_id:
             row["fund_id"] = fund_id

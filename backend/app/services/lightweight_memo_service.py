@@ -21,6 +21,7 @@ from app.services.chart_data_service import (
     format_sankey_chart,
     format_waterfall_chart,
     format_bar_chart,
+    format_line_chart,
     format_pie_chart,
 )
 from app.services.memo_templates import (
@@ -112,6 +113,19 @@ class LightweightMemoService:
                     if self._has_data(val):
                         available[dk] = val
 
+        # ── Always pull in fund-level keys that are useful for any memo ──
+        # These feed charts (DPI Sankey, waterfall, NAV, MOIC bar) even when
+        # the template doesn't explicitly list them.
+        _always_pull = [
+            "fund_metrics", "portfolio_health", "fund_scenarios",
+            "portfolio_analysis", "fund_context",
+        ]
+        for key in _always_pull:
+            if key not in available:
+                val = self.shared_data.get(key)
+                if self._has_data(val):
+                    available[key] = val
+
         return available, missing_required, missing_optional
 
     # ------------------------------------------------------------------
@@ -165,26 +179,37 @@ class LightweightMemoService:
         company_str = f"Companies under analysis: {', '.join(company_names)}. " if company_names else ""
 
         system_prompt = (
-            "You are a senior investment analyst at a venture capital fund writing a memo for Investment Committee review. "
+            "You are a senior investment analyst at a top-tier venture capital fund writing a memo for Investment Committee review. "
+            "Write with authority and precision — this memo drives multi-million dollar decisions. "
             f"{fund_size_str}"
             f"{company_str}"
             "\n\nQUALITY REQUIREMENTS:\n"
             "1. Each narrative section MUST be 3-5 dense paragraphs (150-400 words). Sections shorter than 100 words are unacceptable.\n"
             "2. Use markdown tables for ALL structured comparisons — financials, round history, comp tables, side-by-side data.\n"
-            "3. Use flowing prose for analysis and thesis — every number woven into a sentence with context.\n"
-            "4. Cite every key figure with source: 'per Pitchbook Q3 2024', 'company-reported FY24', 'estimated based on [reasoning]'.\n"
-            "5. Lead each section with the MOST IMPORTANT finding, not background. No filler, no preamble ('In this section...'), no hedging ('It is worth noting...').\n"
-            "6. Only use numbers from the provided data — never invent figures. When data is inferred, say: '[Estimated: $XM ARR based on stage benchmarks]'.\n"
-            "7. For multi-company analysis: always compare and contrast — don't just describe each company in isolation.\n"
-            "8. Calculate and include derived metrics: revenue multiples (valuation / ARR), capital efficiency (ARR / total funding), implied burn rate.\n"
+            "3. Use flowing prose for analysis — every number woven into a sentence with context and significance.\n"
+            "4. Cite every key figure with source: 'per Pitchbook Q3 2024', 'company-reported FY24', '[Estimated based on stage benchmarks]'.\n"
+            "5. Lead each section with the MOST IMPORTANT finding. No filler, no preamble ('In this section...'), no hedging ('It is worth noting...').\n"
+            "6. Only use numbers from the provided data — never invent figures. Mark inferred values: '[Est: $XM ARR]'.\n"
+            "7. For multi-company analysis: always compare and contrast — never describe companies in isolation.\n"
+            "8. Calculate derived metrics: revenue multiples (valuation ÷ ARR), capital efficiency (ARR ÷ total funding), implied burn rate.\n"
             "9. End each analytical section with a clear takeaway or implication for the investment decision.\n"
-            "10. Separate sections with: ---SECTION_BREAK---"
+            "\nFORMATTING RULES:\n"
+            "- Bold (**text**) key metrics and company names on first mention.\n"
+            "- Use `| Col1 | Col2 |` markdown tables for any comparison of 3+ items.\n"
+            "- Numbers: $XM for millions, $XB for billions, X% for percentages, Xx for multiples.\n"
+            "- Each paragraph should contain at least one concrete data point.\n"
+            "- For recommendations: state conviction level (High/Medium/Low) and check size.\n"
+            "\n10. Separate each section with its exact ## heading as shown below. "
+            "The headings are used to split your output — they MUST match exactly.\n"
+            "11. Within sections, use ### sub-headings, markdown tables, and bullet lists freely — "
+            "they will be rendered as proper structured elements.\n"
+            "12. Do NOT use ---SECTION_BREAK--- delimiters."
         )
 
         user_prompt = (
             f"User request: {prompt}\n\n"
             f"## Available Data\n{data_summary}\n\n"
-            f"## Generate these sections (separate each with ---SECTION_BREAK---):\n\n"
+            f"## Generate these sections (use the EXACT ## heading shown for each):\n\n"
             + "\n\n".join(section_prompts)
         )
 
@@ -197,8 +222,8 @@ class LightweightMemoService:
                     prompt=user_prompt,
                     system_prompt=system_prompt,
                     capability=ModelCapability.ANALYSIS,
-                    max_tokens=8192,
-                    temperature=0.3,
+                    max_tokens=12000,
+                    temperature=0.25,
                     caller_context="lightweight_memo_narratives",
                 ),
                 timeout=90,  # 90s per LLM call — leaves headroom within the 120s outer timeout
@@ -278,13 +303,24 @@ class LightweightMemoService:
                     })
 
             elif sec_type == "metrics":
-                # Metrics sections get both data-driven content AND narrative
+                # Metrics sections get structured data; narrative only if it
+                # adds prose beyond what the table/list already shows.
                 metrics = self._build_metrics(section_def, available_data, companies)
                 if metrics:
                     memo_sections.extend(metrics)
                 narrative = narratives.get(key, "")
                 if narrative:
-                    memo_sections.append({"type": "paragraph", "content": narrative})
+                    parsed = self._parse_markdown_to_sections(narrative)
+                    # If structured metrics already exist, only keep narrative
+                    # paragraphs and lists (skip tables that duplicate metrics)
+                    if metrics and parsed:
+                        for ps in parsed:
+                            if ps.get("type") in ("paragraph", "list", "heading3"):
+                                memo_sections.append(ps)
+                    elif parsed:
+                        memo_sections.extend(parsed)
+                    else:
+                        memo_sections.append({"type": "paragraph", "content": narrative})
 
             elif sec_type == "context":
                 # Plan memo context snapshot — machine-readable JSON
@@ -297,7 +333,11 @@ class LightweightMemoService:
             else:  # narrative
                 narrative = narratives.get(key, "")
                 if narrative:
-                    memo_sections.append({"type": "paragraph", "content": narrative})
+                    parsed = self._parse_markdown_to_sections(narrative)
+                    if parsed:
+                        memo_sections.extend(parsed)
+                    else:
+                        memo_sections.append({"type": "paragraph", "content": narrative})
                 else:
                     # Strip blank sections entirely — remove the heading we just added
                     if memo_sections and memo_sections[-1].get("type") == "heading2":
@@ -462,6 +502,37 @@ class LightweightMemoService:
                 f"Proceeding with available data."
             )
 
+        # Estimation fallback: ensure every company has revenue, valuation, growth
+        # so charts and metrics never return empty due to missing fundamentals.
+        companies = available_data.get("companies", [])
+        if companies:
+            _STAGE_BENCHMARKS = {
+                "pre-seed": {"revenue": 200_000, "valuation": 5_000_000, "growth": 3.0},
+                "seed": {"revenue": 1_000_000, "valuation": 15_000_000, "growth": 2.5},
+                "series a": {"revenue": 5_000_000, "valuation": 80_000_000, "growth": 1.5},
+                "series b": {"revenue": 20_000_000, "valuation": 300_000_000, "growth": 0.8},
+                "series c": {"revenue": 60_000_000, "valuation": 800_000_000, "growth": 0.5},
+                "growth": {"revenue": 100_000_000, "valuation": 2_000_000_000, "growth": 0.3},
+            }
+            for c in companies:
+                stage = str(c.get("stage") or "series a").lower().strip()
+                bench = _STAGE_BENCHMARKS.get(stage, _STAGE_BENCHMARKS["series a"])
+                # Revenue
+                rev = ensure_numeric(c.get("revenue")) or ensure_numeric(c.get("inferred_revenue"))
+                if not rev:
+                    c["revenue"] = bench["revenue"]
+                    c["_revenue_estimated"] = True
+                # Valuation
+                val = ensure_numeric(c.get("valuation"))
+                if not val:
+                    c["valuation"] = bench["valuation"]
+                    c["_valuation_estimated"] = True
+                # Growth rate
+                growth = c.get("revenue_growth")
+                if not growth or not isinstance(growth, (int, float)):
+                    c["revenue_growth"] = bench["growth"]
+                    c["_growth_estimated"] = True
+
         # Shot 2: Generate narratives (LLM) + pre-build charts (CPU) IN PARALLEL
         _t0 = datetime.now()
 
@@ -518,14 +589,161 @@ class LightweightMemoService:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _parse_markdown_to_sections(markdown: str) -> List[Dict[str, Any]]:
+        """Parse LLM markdown into properly typed section dicts.
+
+        Splits on:
+        - ### headings → heading3
+        - markdown tables → table (with headers/rows)
+        - bullet/numbered lists → list (with items)
+        - everything else → paragraph
+
+        Returns list of section dicts ready for the frontend.
+        """
+        import re
+
+        if not markdown or not markdown.strip():
+            return []
+
+        sections: List[Dict[str, Any]] = []
+        current_paragraph_lines: List[str] = []
+        current_list_items: List[str] = []
+        in_table = False
+        table_lines: List[str] = []
+
+        def _flush_paragraph():
+            text = "\n".join(current_paragraph_lines).strip()
+            if text:
+                sections.append({"type": "paragraph", "content": text})
+            current_paragraph_lines.clear()
+
+        def _flush_list():
+            if current_list_items:
+                sections.append({"type": "list", "items": list(current_list_items)})
+                current_list_items.clear()
+
+        def _flush_table():
+            if len(table_lines) < 2:
+                # Not a real table — put lines back as paragraph
+                current_paragraph_lines.extend(table_lines)
+                table_lines.clear()
+                return
+            # Parse header row
+            header_line = table_lines[0]
+            headers = [c.strip() for c in header_line.strip().strip("|").split("|") if c.strip()]
+            if not headers:
+                current_paragraph_lines.extend(table_lines)
+                table_lines.clear()
+                return
+            # Skip separator line (index 1), parse data rows
+            rows: List[List[Any]] = []
+            for row_line in table_lines[2:]:
+                if not row_line.strip() or not "|" in row_line:
+                    continue
+                cells = [c.strip() for c in row_line.strip().strip("|").split("|")]
+                # Try numeric conversion
+                parsed_cells: List[Any] = []
+                for c in cells:
+                    cleaned = c.replace("$", "").replace(",", "").replace("%", "").strip()
+                    try:
+                        parsed_cells.append(float(cleaned) if "." in cleaned else int(cleaned))
+                    except (ValueError, TypeError):
+                        parsed_cells.append(c)
+                rows.append(parsed_cells)
+            if rows:
+                sections.append({
+                    "type": "table",
+                    "table": {"headers": headers, "rows": rows},
+                })
+            else:
+                current_paragraph_lines.extend(table_lines)
+            table_lines.clear()
+
+        lines = markdown.split("\n")
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            # --- Heading (### only — ## is used for section splitting) ---
+            if re.match(r"^#{3,4}\s+", stripped):
+                _flush_paragraph()
+                _flush_list()
+                heading_text = re.sub(r"^#{3,4}\s+", "", stripped).strip()
+                if heading_text:
+                    sections.append({"type": "heading3", "content": heading_text})
+                i += 1
+                continue
+
+            # --- Table start: line has pipes and next line is separator ---
+            if (
+                not in_table
+                and "|" in stripped
+                and i + 1 < len(lines)
+                and re.match(r"^\s*\|[\s:|-]+\|\s*$", lines[i + 1].strip())
+            ):
+                _flush_paragraph()
+                _flush_list()
+                in_table = True
+                table_lines = [stripped]
+                i += 1
+                continue
+
+            # --- Inside table ---
+            if in_table:
+                if "|" in stripped:
+                    table_lines.append(stripped)
+                    i += 1
+                    continue
+                else:
+                    in_table = False
+                    _flush_table()
+                    # Don't increment — re-process this line
+                    continue
+
+            # --- Bullet or numbered list ---
+            list_match = re.match(r"^\s*(?:[-*+]|\d+[.)]) \s*(.*)", stripped)
+            if list_match:
+                _flush_paragraph()
+                current_list_items.append(list_match.group(1).strip())
+                i += 1
+                continue
+
+            # --- If we were in a list and hit non-list, flush ---
+            if current_list_items and stripped:
+                _flush_list()
+
+            # --- Empty line = paragraph break ---
+            if not stripped:
+                if current_paragraph_lines:
+                    _flush_paragraph()
+                if current_list_items:
+                    _flush_list()
+                i += 1
+                continue
+
+            # --- Regular text ---
+            current_paragraph_lines.append(line)
+            i += 1
+
+        # Flush remaining
+        if in_table:
+            in_table = False
+            _flush_table()
+        _flush_paragraph()
+        _flush_list()
+
+        return sections
+
+    @staticmethod
     def _parse_sections(raw_text: str, expected_count: int, section_headings: Optional[List[str]] = None) -> List[str]:
         """Parse LLM output into sections using multiple fallback strategies.
 
         Tries in order:
-        1. Exact ---SECTION_BREAK--- delimiter
-        2. Fuzzy regex for delimiter variations
-        3. Heading-match alignment (match known section headings in output)
-        4. Markdown H2/H3 headings as splits
+        1. Heading-match alignment (match known ## headings in output) — primary
+        2. Markdown H2/H3 headings as generic splits
+        3. Exact ---SECTION_BREAK--- delimiter (legacy fallback)
+        4. Fuzzy regex for delimiter variations
         5. Triple-dash (---) splits
         6. Proportional text split so every section gets something
         """
@@ -534,17 +752,7 @@ class LightweightMemoService:
         if not raw_text or expected_count <= 0:
             return [""] * expected_count
 
-        # Strategy 1: exact delimiter
-        parts = raw_text.split("---SECTION_BREAK---")
-        if len(parts) >= expected_count:
-            return parts[:expected_count]
-
-        # Strategy 2: fuzzy regex for common LLM variations
-        parts = re.split(r"-{2,}\s*SECTION[_\s]*BREAK\s*-{2,}", raw_text, flags=re.IGNORECASE)
-        if len(parts) >= expected_count:
-            return parts[:expected_count]
-
-        # Strategy 3: heading-match alignment — find known section headings in output
+        # Strategy 1 (primary): heading-match alignment — find known section headings in output
         if section_headings and len(section_headings) >= expected_count:
             positions = []
             for heading in section_headings:
@@ -574,9 +782,19 @@ class LightweightMemoService:
                 if any(r.strip() for r in result):
                     return result
 
-        # Strategy 4: markdown H2/H3 headings
+        # Strategy 2: generic markdown H2/H3 headings
         parts = re.split(r"\n#{2,3}\s+", raw_text)
         # First part may be preamble — keep it as section 0
+        if len(parts) >= expected_count:
+            return parts[:expected_count]
+
+        # Strategy 3 (legacy fallback): exact ---SECTION_BREAK--- delimiter
+        parts = raw_text.split("---SECTION_BREAK---")
+        if len(parts) >= expected_count:
+            return parts[:expected_count]
+
+        # Strategy 4 (legacy fallback): fuzzy regex for SECTION_BREAK variations
+        parts = re.split(r"-{2,}\s*SECTION[_\s]*BREAK\s*-{2,}", raw_text, flags=re.IGNORECASE)
         if len(parts) >= expected_count:
             return parts[:expected_count]
 
@@ -739,21 +957,39 @@ class LightweightMemoService:
                     lines.append(f"    - {t.get('title', '')} ({t.get('url', '')})")
         return "\n".join(lines)
 
-    def _summarize_data(self, data: Dict[str, Any], max_chars: int = 40000) -> str:
+    def _summarize_data(self, data: Dict[str, Any], max_chars: int = 60000) -> str:
         """Create a compact text summary of available data for LLM context.
 
-        Budget: 70% for companies, 30% for fund/portfolio data.
+        Budget: 5% for aggregate stats, 65% for companies, 30% for fund/portfolio data.
         Respects company boundaries — never truncates mid-company.
         """
-        company_budget = int(max_chars * 0.7)
-        fund_budget = max_chars - company_budget
-
-        # ── Companies (70% budget) ──
-        company_parts: List[str] = []
+        # ── Portfolio aggregate stats (always included, even when individual
+        #    companies get truncated) ──
         companies = data.get("companies", [])
+        agg_parts: List[str] = []
+        if companies:
+            from collections import Counter
+            stages = Counter(c.get("stage", "Unknown") for c in companies)
+            sectors = Counter(c.get("sector", c.get("industry", "Unknown")) for c in companies)
+            total_deployed = sum(
+                ensure_numeric(c.get("total_funding") or c.get("inferred_total_funding"), 0)
+                for c in companies
+            )
+            agg_parts.append(f"\n**Portfolio Aggregate** ({len(companies)} companies):")
+            agg_parts.append(f"  Stages: {dict(stages.most_common(8))}")
+            agg_parts.append(f"  Sectors: {dict(sectors.most_common(8))}")
+            if total_deployed:
+                agg_parts.append(f"  Total deployed: ${total_deployed / 1e6:,.0f}M")
+        agg_block = "\n".join(agg_parts) + "\n" if agg_parts else ""
+
+        company_budget = int((max_chars - len(agg_block)) * 0.7)
+        fund_budget = max_chars - len(agg_block) - company_budget
+
+        # ── Companies (70% of remaining budget) ──
+        company_parts: List[str] = []
         chars_used = 0
         companies_included = 0
-        for c in companies[:12]:
+        for c in companies:  # iterate ALL companies — char budget alone controls truncation
             block = self._summarize_company(c)
             if chars_used + len(block) > company_budget and companies_included > 0:
                 remaining = len(companies) - companies_included
@@ -817,7 +1053,7 @@ class LightweightMemoService:
         if len(fund_text) > fund_budget:
             fund_text = fund_text[:fund_budget] + "\n... (fund data truncated)"
 
-        return "\n".join(company_parts) + "\n" + fund_text
+        return agg_block + "\n".join(company_parts) + "\n" + fund_text
 
     def _format_title(self, template: Dict, data: Dict, prompt: str) -> str:
         """Format the title pattern with available data."""
@@ -839,6 +1075,97 @@ class LightweightMemoService:
             query_summary=prompt[:60] if prompt else "Analysis",
         )
 
+    def _suggest_chart_type(self, section_def: Dict, data: Dict, companies: List[Dict]) -> Optional[str]:
+        """Inspect what data actually exists and pick the best chart.
+
+        Doesn't trust template data_keys — looks at real values in ``data``
+        and ``companies``.  Designed to always return *something* useful even
+        when fund-level data is incomplete or estimated.
+        """
+        fund_metrics = data.get("fund_metrics") or {}
+        fund_ctx = data.get("fund_context") or {}
+        heading = (section_def.get("heading") or "").lower()
+        num_companies = len(companies) if companies else 0
+
+        # ── Score each candidate by how much real data backs it ──────────
+        candidates: List[tuple] = []  # (score, chart_type)
+
+        # DPI / distribution flow — works even with estimates (strategy 3
+        # in _build_chart synthesizes from companies with total_funding)
+        if fund_metrics.get("investments") or fund_metrics.get("dpi_sankey"):
+            candidates.append((3, "dpi_sankey"))
+        elif num_companies >= 1 and any(
+            ensure_numeric(c.get("total_funding")) for c in companies
+        ):
+            # Strategy 3 can synthesize from companies alone
+            candidates.append((1, "dpi_sankey"))
+
+        # NAV waterfall — needs at least company valuations
+        if fund_metrics.get("nav_by_company"):
+            candidates.append((3, "waterfall"))
+        elif num_companies >= 2 and any(
+            ensure_numeric(c.get("valuation")) for c in companies
+        ):
+            candidates.append((1, "waterfall"))
+
+        # Scenario / exit data
+        scenario_analysis = data.get("scenario_analysis") or {}
+        if scenario_analysis:
+            has_breakpoints = any(
+                isinstance(sc, dict) and sc.get("breakpoints")
+                for sc in scenario_analysis.values()
+                if isinstance(sc, dict)
+            )
+            candidates.append((3, "breakpoint_chart" if has_breakpoints else "probability_cloud"))
+        elif num_companies == 1:
+            # CDS can generate probability_cloud from a single company
+            candidates.append((1, "probability_cloud"))
+
+        # Cap table evolution — works from company stage alone (CDS synthesizes)
+        cap_history = data.get("cap_table_history") or {}
+        if cap_history:
+            candidates.append((3, "cap_table_evolution"))
+        elif num_companies >= 1 and any(c.get("stage") for c in companies):
+            candidates.append((1, "cap_table_evolution"))
+
+        # Revenue scatter — needs 2+ companies with some revenue signal
+        cos_with_rev = sum(
+            1 for c in (companies or [])
+            if ensure_numeric(c.get("revenue") or c.get("inferred_revenue"))
+        )
+        if cos_with_rev >= 3:
+            candidates.append((2, "scatter_multiples"))
+        if cos_with_rev >= 1:
+            candidates.append((1, "revenue_forecast"))
+
+        # Radar — needs 2+ companies for meaningful comparison
+        if num_companies >= 2:
+            candidates.append((1, "radar_comparison"))
+
+        if not candidates:
+            return None
+
+        # ── Pick best candidate, use heading as tiebreaker hint ──────────
+        # If the section heading hints at a specific domain, boost matching types
+        heading_boosts = {
+            "dpi": "dpi_sankey", "distribution": "dpi_sankey", "flow": "dpi_sankey",
+            "nav": "waterfall", "waterfall": "waterfall",
+            "exit": "probability_cloud", "scenario": "probability_cloud", "return": "probability_cloud",
+            "cap table": "cap_table_evolution", "ownership": "cap_table_evolution", "dilution": "cap_table_evolution",
+            "revenue": "revenue_forecast", "growth": "revenue_forecast", "forecast": "revenue_forecast",
+            "market": "scatter_multiples", "positioning": "scatter_multiples", "landscape": "scatter_multiples",
+            "moat": "radar_comparison", "team": "radar_comparison", "scoring": "radar_comparison",
+        }
+        for hint_word, boosted_type in heading_boosts.items():
+            if hint_word in heading:
+                for i, (score, ctype) in enumerate(candidates):
+                    if ctype == boosted_type:
+                        candidates[i] = (score + 2, ctype)
+                break
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
     def _build_chart(
         self, section_def: Dict, data: Dict, companies: List[Dict]
     ) -> Optional[Dict[str, Any]]:
@@ -847,10 +1174,22 @@ class LightweightMemoService:
         Uses ChartDataService for company-derived charts and shared format
         helpers for artifact-derived charts.  All numeric access goes through
         ensure_numeric so None / InferenceResult never cause silent failures.
+
+        When chart_type="auto", inspects available data to pick the best chart.
         """
         chart_type = section_def.get("chart_type")
         if not chart_type:
             return None
+
+        data_keys = section_def.get("data_keys", [])
+
+        # Dynamic chart selection — inspect data and pick the best chart
+        if chart_type == "auto":
+            chart_type = self._suggest_chart_type(section_def, data, companies)
+            if not chart_type:
+                return None
+            # Update section_def so downstream code sees the resolved type
+            section_def = {**section_def, "chart_type": chart_type}
 
         data_keys = section_def.get("data_keys", [])
         heading = section_def.get("heading", "Chart")
@@ -866,14 +1205,41 @@ class LightweightMemoService:
                 260_000_000,
             )
 
-            # Fix 3: Ensure every company dict has a numeric "revenue" field so that
-            # CDS methods never receive None.  Prefer actual revenue, fall back to
-            # inferred_revenue (which the gap-filler guarantees to always set).
+            # Hydrate company dicts from pre-computed shared_data so CDS methods
+            # see complete data (pwerm_scenarios, revenue, growth_rate) instead of
+            # trying to regenerate from scratch and failing on incomplete inputs.
+            scenario_analysis = data.get("scenario_analysis") or {}
+            revenue_projections = data.get("revenue_projections") or {}
+            cap_table_history = data.get("cap_table_history") or {}
+
             for _co in companies:
+                _name = _co.get("company") or _co.get("name", "")
+
+                # Revenue: prefer actual, then inferred
                 if not ensure_numeric(_co.get("revenue")):
                     _inferred = ensure_numeric(_co.get("inferred_revenue"))
                     if _inferred:
                         _co["revenue"] = _inferred
+
+                # PWERM scenarios: inject from scenario_analysis if missing
+                if not _co.get("pwerm_scenarios") and _name in scenario_analysis:
+                    sc = scenario_analysis[_name]
+                    if isinstance(sc, dict) and sc.get("scenarios"):
+                        _co["full_exit_distribution"] = sc["scenarios"]
+                        if sc.get("pwerm_valuation"):
+                            _co["pwerm_valuation"] = sc["pwerm_valuation"]
+
+                # Growth rate: inject from revenue_projections if missing
+                if not _co.get("growth_rate") and _name in revenue_projections:
+                    rp = revenue_projections[_name]
+                    if isinstance(rp, dict) and rp.get("growth_rate"):
+                        _co["growth_rate"] = rp["growth_rate"]
+
+                # Valuation: ensure numeric so CDS probability_cloud can compute
+                if not ensure_numeric(_co.get("valuation")):
+                    _inferred_val = ensure_numeric(_co.get("inferred_valuation"))
+                    if _inferred_val:
+                        _co["valuation"] = _inferred_val
 
             cds_dispatch = {
                 "probability_cloud": lambda: cds.generate_probability_cloud(
@@ -882,8 +1248,14 @@ class LightweightMemoService:
                 "scatter_multiples": lambda: cds.generate_revenue_multiple_scatter(companies),
                 "revenue_multiple_scatter": lambda: cds.generate_revenue_multiple_scatter(companies),
                 "treemap": lambda: cds.generate_revenue_treemap(companies),
-                "revenue_forecast": lambda: cds.generate_path_to_100m(companies),
-                "growth_decay": lambda: cds.generate_cashflow_projection(companies),
+                "revenue_forecast": lambda: (
+                    self._build_revenue_decay_chart(cds, data, companies)
+                    or cds.generate_path_to_100m(companies)
+                ),
+                "growth_decay": lambda: (
+                    self._build_revenue_decay_chart(cds, data, companies)
+                    or cds.generate_cashflow_projection(companies)
+                ),
                 "next_round_treemap": lambda: cds.generate_next_round_treemap(companies),
                 "revenue_growth_treemap": lambda: cds.generate_revenue_growth_treemap(companies),
                 "product_velocity": lambda: cds.generate_product_velocity_ranking(companies),
@@ -896,11 +1268,17 @@ class LightweightMemoService:
                     data.get("fpa_result", {})),
                 "monte_carlo_histogram": lambda: cds.generate_monte_carlo_histogram(
                     data.get("monte_carlo_result", {})),
-                "revenue_forecast_decay": lambda: cds.generate_revenue_forecast(
-                    data.get("revenue_projections", {}).get(
-                        (companies[0].get("name", "") if companies else ""), [])),
+                "revenue_forecast_decay": lambda: self._build_revenue_decay_chart(cds, data, companies),
                 "fund_scenarios": lambda: cds.generate_fund_scenario_comparison(
                     data.get("scenario_all_charts", {})),
+                # LTM/NTM regression
+                "ltm_ntm_regression": lambda: cds.generate_ltm_ntm_regression(companies),
+                # Radar / moat scoring from company data
+                "radar_comparison": lambda: cds.generate_radar_comparison(companies) if hasattr(cds, "generate_radar_comparison") else None,
+                # Bar comparison across portfolio
+                "bar_comparison": lambda: cds.generate_bar_comparison(companies),
+                # Bull/bear/base from scenario tree
+                "bull_bear_base": lambda: cds.generate_bull_bear_base(companies),
             }
             generator = cds_dispatch.get(chart_type)
             if generator:
@@ -1032,6 +1410,94 @@ class LightweightMemoService:
                         }],
                         title="Fund MOIC by Scenario",
                     )
+
+        elif chart_type == "portfolio_scatter":
+            # Fallback scatter that works from just companies list
+            if companies and len(companies) >= 2:
+                scatter_points = []
+                for c in companies:
+                    rev = ensure_numeric(c.get("revenue") or c.get("inferred_revenue"), 0)
+                    val = ensure_numeric(c.get("valuation") or c.get("inferred_valuation"), 0)
+                    name = c.get("company") or c.get("name", "Unknown")
+                    if rev > 0 or val > 0:
+                        scatter_points.append({
+                            "x": rev / 1e6,
+                            "y": val / 1e6,
+                            "label": name,
+                            "r": 8,
+                        })
+                if scatter_points:
+                    return {
+                        "type": "scatter",
+                        "title": heading,
+                        "data": {
+                            "datasets": [{
+                                "label": "Portfolio Companies",
+                                "data": scatter_points,
+                            }],
+                        },
+                        "options": {
+                            "scales": {
+                                "x": {"title": {"display": True, "text": "Revenue ($M)"}},
+                                "y": {"title": {"display": True, "text": "Valuation ($M)"}},
+                            }
+                        },
+                        "renderType": "chartjs",
+                    }
+
+        elif chart_type == "portfolio_bar":
+            # Fallback bar chart built from companies list — sector or stage distribution
+            if companies:
+                from collections import Counter
+                sectors = Counter(
+                    c.get("sector") or c.get("industry") or "Other"
+                    for c in companies
+                )
+                if len(sectors) >= 2:
+                    top = sectors.most_common(10)
+                    return format_bar_chart(
+                        labels=[s[0] for s in top],
+                        datasets=[{"label": "Companies", "data": [s[1] for s in top]}],
+                        title="Portfolio by Sector",
+                    )
+
+        elif chart_type == "cohort_revenue_chart":
+            # Revenue by stage cohort from companies list
+            if companies:
+                from collections import defaultdict
+                cohorts: Dict[str, List[float]] = defaultdict(list)
+                for c in companies:
+                    stage = c.get("stage") or "Unknown"
+                    rev = ensure_numeric(c.get("revenue") or c.get("inferred_revenue"), 0)
+                    cohorts[stage].append(rev / 1e6)
+                if cohorts:
+                    labels = sorted(cohorts.keys())
+                    datasets = [{
+                        "label": "Median Revenue ($M)",
+                        "data": [
+                            sorted(cohorts[s])[len(cohorts[s]) // 2] if cohorts[s] else 0
+                            for s in labels
+                        ],
+                    }]
+                    return format_bar_chart(labels=labels, datasets=datasets, title=heading)
+
+        elif chart_type == "fund_return_waterfall_chart":
+            # Build from companies + scenario data
+            if companies:
+                items = []
+                for c in companies:
+                    rev = ensure_numeric(c.get("revenue") or c.get("inferred_revenue"), 0)
+                    name = c.get("company") or c.get("name", "Unknown")
+                    # Use a simple 5x multiple estimate if no scenario data
+                    est_proceeds = rev * 5 / 1e6  # rough $M
+                    items.append({
+                        "label": name,
+                        "value": round(est_proceeds, 1),
+                        "type": "positive" if est_proceeds > 0 else "negative",
+                    })
+                items.sort(key=lambda x: x["value"], reverse=True)
+                if items:
+                    return format_waterfall_chart(items[:12], title=heading)
 
         elif chart_type == "cap_table_evolution":
             cap_history = data.get("cap_table_history") or {}
@@ -1369,6 +1835,58 @@ class LightweightMemoService:
         logger.info("[MEMO] No chart data for type=%s, available_keys=%s", chart_type, list(data.keys()))
         return None
 
+    @staticmethod
+    def _build_revenue_decay_chart(cds, data: Dict, companies: List[Dict]) -> Optional[Dict]:
+        """Build revenue forecast decay chart from enriched revenue_projections.
+
+        Uses yearly decay data populated by RevenueProjectionService in
+        _populate_memo_service_data().  Falls back to first company's data
+        if projections exist, or returns None.
+        """
+        rev_proj = data.get("revenue_projections") or {}
+        if not rev_proj:
+            return None
+
+        # Try to build a multi-company overlay chart
+        from app.services.chart_data_service import format_line_chart
+        all_labels = None
+        datasets = []
+        COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"]
+
+        for idx, (company_name, rp) in enumerate(rev_proj.items()):
+            if not isinstance(rp, dict):
+                continue
+            yearly = rp.get("yearly", [])
+            if not yearly:
+                continue
+            labels = [str(p.get("year", i + 1)) for i, p in enumerate(yearly)]
+            if all_labels is None:
+                all_labels = labels
+            revenues = [round(ensure_numeric(p.get("revenue"), 0) / 1e6, 2) for p in yearly]
+            datasets.append({
+                "label": company_name,
+                "data": revenues,
+                "borderColor": COLORS[idx % len(COLORS)],
+                "backgroundColor": COLORS[idx % len(COLORS)] + "22",
+                "fill": idx == 0,
+                "tension": 0.3,
+            })
+
+        if datasets and all_labels:
+            return format_line_chart(
+                labels=all_labels,
+                datasets=datasets,
+                title="Revenue Forecast with Growth Decay",
+            )
+
+        # Single company fallback via CDS
+        for company_name, rp in rev_proj.items():
+            if isinstance(rp, dict):
+                yearly = rp.get("yearly", [])
+                if yearly:
+                    return cds.generate_revenue_forecast(yearly, company_name=company_name)
+        return None
+
     def _synthesize_dpi_sankey(
         self, investments: List[Dict], fund_metrics: Dict, title: str
     ) -> Optional[Dict[str, Any]]:
@@ -1456,7 +1974,8 @@ class LightweightMemoService:
             return None
 
         nodes.append({"id": "unrealized", "label": "Unrealized NAV"})
-        return format_sankey_chart(nodes, links, title=title)
+        est_title = title if "(Estimated)" in title else f"{title} (Estimated)"
+        return format_sankey_chart(nodes, links, title=est_title)
 
     def _build_metrics(
         self, section_def: Dict, data: Dict, companies: List[Dict]
@@ -1466,40 +1985,99 @@ class LightweightMemoService:
         data_keys = section_def.get("data_keys", [])
         key = section_def["key"]
 
-        # Company metrics
+        # Company metrics — use table for multi-company, list for single
         if "companies" in data_keys and companies:
-            for c in companies:
-                name = c.get("company", "Unknown")
-                items = []
+            if len(companies) >= 2:
+                # Multi-company comparison table
+                header = "| Metric |"
+                separator = "| --- |"
+                rows = {
+                    "Stage": [],
+                    "Valuation": [],
+                    "Revenue (ARR)": [],
+                    "Rev Multiple": [],
+                    "Total Funding": [],
+                    "Growth": [],
+                    "Team Size": [],
+                    "Gross Margin": [],
+                    "Capital Efficiency": [],
+                }
+                for c in companies[:6]:
+                    name = c.get("company", "Unknown")
+                    header += f" **{name}** |"
+                    separator += " --- |"
+                    val = ensure_numeric(c.get("valuation"))
+                    rev = ensure_numeric(c.get("revenue")) or ensure_numeric(c.get("inferred_revenue"))
+                    funding = ensure_numeric(c.get("total_funding"))
+                    growth = c.get("revenue_growth")
+                    gm = (c.get("key_metrics") or {}).get("gross_margin")
+                    rev_mult = val / rev if val and rev and rev > 0 else 0
+                    cap_eff = rev / funding if rev and funding and funding > 0 else 0
 
-                val = ensure_numeric(c.get("valuation"))
-                rev = ensure_numeric(c.get("revenue")) or ensure_numeric(c.get("inferred_revenue"))
-                stage = c.get("stage", "Unknown")
-                rev_mult = val / rev if val and rev and rev > 0 else 0
+                    rows["Stage"].append(c.get("stage", "—"))
+                    rows["Valuation"].append(f"${val / 1e6:,.0f}M" if val else "—")
+                    rows["Revenue (ARR)"].append(f"${rev / 1e6:,.1f}M" if rev else "—")
+                    rows["Rev Multiple"].append(f"{rev_mult:.1f}x" if rev_mult else "—")
+                    rows["Total Funding"].append(f"${funding / 1e6:,.0f}M" if funding else "—")
+                    rows["Growth"].append(f"{growth * 100:.0f}%" if growth and isinstance(growth, (int, float)) else "—")
+                    rows["Team Size"].append(str(c.get("team_size", "—")))
+                    rows["Gross Margin"].append(f"{gm * 100:.0f}%" if gm and isinstance(gm, (int, float)) else "—")
+                    rows["Capital Efficiency"].append(f"{cap_eff:.2f}x" if cap_eff else "—")
 
-                overview = f"**{name}** — {stage}"
-                if val:
-                    overview += f" | ${val / 1e6:,.1f}M valuation"
-                if rev:
-                    overview += f" | ${rev / 1e6:,.1f}M ARR"
-                if rev_mult:
-                    overview += f" | {rev_mult:.1f}x revenue multiple"
-                items.append(overview)
+                table_lines = [header, separator]
+                for metric, vals in rows.items():
+                    # Skip rows where all values are "—"
+                    if all(v == "—" for v in vals):
+                        continue
+                    row = f"| {metric} |"
+                    for v in vals:
+                        row += f" {v} |"
+                    table_lines.append(row)
 
-                funding = ensure_numeric(c.get("total_funding"))
-                if funding:
-                    items.append(f"Total Funding: ${funding / 1e6:,.1f}M")
-                if c.get("team_size"):
-                    items.append(f"Team: {c['team_size']}")
-                growth = c.get("revenue_growth")
-                if growth and isinstance(growth, (int, float)):
-                    items.append(f"Growth: {growth * 100:.0f}% YoY")
-                gm = (c.get("key_metrics") or {}).get("gross_margin")
-                if gm and isinstance(gm, (int, float)):
-                    items.append(f"Gross Margin: {gm * 100:.0f}%")
+                if len(table_lines) > 3:  # header + separator + at least 1 data row
+                    sections.append({"type": "paragraph", "content": "\n".join(table_lines)})
+            else:
+                # Single company — detailed list
+                for c in companies:
+                    name = c.get("company", "Unknown")
+                    items = []
+                    val = ensure_numeric(c.get("valuation"))
+                    rev = ensure_numeric(c.get("revenue")) or ensure_numeric(c.get("inferred_revenue"))
+                    stage = c.get("stage", "Unknown")
+                    funding = ensure_numeric(c.get("total_funding"))
+                    rev_mult = val / rev if val and rev and rev > 0 else 0
+                    cap_eff = rev / funding if rev and funding and funding > 0 else 0
 
-                if items:
-                    sections.append({"type": "list", "items": items})
+                    overview = f"**{name}** — {stage}"
+                    if val:
+                        overview += f" | ${val / 1e6:,.1f}M valuation"
+                    if rev:
+                        overview += f" | ${rev / 1e6:,.1f}M ARR"
+                    if rev_mult:
+                        overview += f" | {rev_mult:.1f}x revenue multiple"
+                    items.append(overview)
+
+                    if funding:
+                        items.append(f"Total Funding: ${funding / 1e6:,.1f}M")
+                    if cap_eff:
+                        items.append(f"Capital Efficiency: {cap_eff:.2f}x (ARR / Funding)")
+                    if c.get("team_size"):
+                        items.append(f"Team: {c['team_size']}")
+                    growth = c.get("revenue_growth")
+                    if growth and isinstance(growth, (int, float)):
+                        items.append(f"Growth: {growth * 100:.0f}% YoY")
+                    gm = (c.get("key_metrics") or {}).get("gross_margin")
+                    if gm and isinstance(gm, (int, float)):
+                        items.append(f"Gross Margin: {gm * 100:.0f}%")
+                    burn = ensure_numeric(c.get("monthly_burn"))
+                    if burn:
+                        items.append(f"Monthly Burn: ${burn / 1e6:,.2f}M")
+                    runway = ensure_numeric(c.get("runway_months"))
+                    if runway:
+                        items.append(f"Runway: {runway:.0f} months")
+
+                    if items:
+                        sections.append({"type": "list", "items": items})
 
         # Follow-on metrics
         if "followon_strategy" in data_keys:

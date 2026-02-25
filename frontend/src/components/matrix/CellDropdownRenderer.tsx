@@ -282,6 +282,28 @@ export function buildActionInputs(
     inputs.data = rowData;
   }
 
+  // Enrichment / company data fetch: pass all known row data so backend can search + infer
+  if (actionId === 'skill.company_data_fetch' || actionId.startsWith('enrich.') || actionId === 'grid-fetch-company-data') {
+    const nameVal = cellStr(r, cols, /company|companyName|^name$/i);
+    if (nameVal) {
+      inputs.company = nameVal;
+      inputs.company_name = nameVal;
+      inputs.name = nameVal;
+      inputs.prompt_handle = nameVal;
+    }
+    const stageVal = cellStr(r, cols, /stage|round/i);
+    if (stageVal) inputs.stage = stageVal;
+    const arrRev = cellValue(r, cols, /arr|revenue|current_arr/i);
+    if (arrRev) { inputs.revenue = arrRev; inputs.current_arr_usd = arrRev; }
+    const sectorVal = cellStr(r, cols, /sector/i);
+    if (sectorVal) inputs.sector = sectorVal;
+    const valuationVal = cellValue(r, cols, /valuation|value|currentValuation/i);
+    if (valuationVal && Number.isFinite(valuationVal)) inputs.current_valuation_usd = valuationVal;
+    // Tell backend to return data mapped to column IDs for multi-cell fill
+    inputs.enrich_mode = 'row';
+    inputs.target_columns = cols.map(c => c.id);
+  }
+
   // Document actions: require document_id from a column (document_id, document, doc_id, documentId)
   if (actionId.startsWith('document.') || actionId.includes('document.extract') || actionId.includes('document.analyze')) {
     const docIdStr = cellStr(r, cols, /document_id|document|doc_id|documentId/i);
@@ -292,6 +314,24 @@ export function buildActionInputs(
       inputs.extraction_type = (r?.cells && cols.find(c => /extraction_type|extract_type/i.test(c.id)))
         ? cellStr(r, cols, /extraction_type|extract_type/i) || 'structured'
         : 'structured';
+    }
+  }
+
+  // Catch-all: always include company name so backend can resolve even when company_id is a row ID
+  if (!inputs.name && !inputs.company_name && !inputs.company) {
+    const nameVal = cellStr(r, cols, /company|companyName|^name$/i);
+    if (nameVal) {
+      inputs.name = nameVal;
+      inputs.company_name = nameVal;
+    }
+    // Also try companyName property directly from row object
+    const rowAny = r as Record<string, unknown> | null;
+    if (!nameVal && rowAny) {
+      const fallback = rowAny.companyName || rowAny.company;
+      if (typeof fallback === 'string' && fallback) {
+        inputs.name = fallback;
+        inputs.company_name = fallback;
+      }
     }
   }
 
@@ -488,12 +528,12 @@ export function CellDropdownRenderer(props: CellDropdownRendererProps) {
         )}
 
         {/* In-cell suggestion sparkle badge — reads from React context, not AG Grid props */}
-        {suggestionsCtx && suggestionsCtx.suggestions.length > 0 && (
+        {suggestionsCtx && suggestionsCtx.visibleSuggestions.length > 0 && (
           <DocumentSuggestionBadge
             rowId={rowId}
             columnId={columnId}
             cell={cell}
-            suggestions={suggestionsCtx.suggestions}
+            suggestions={suggestionsCtx.visibleSuggestions}
             onAccept={(suggestionId, payload) => suggestionsCtx.onAccept?.(suggestionId, payload)}
             onReject={(suggestionId) => suggestionsCtx.onReject?.(suggestionId)}
           />

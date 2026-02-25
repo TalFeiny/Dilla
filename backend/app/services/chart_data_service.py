@@ -1734,6 +1734,98 @@ class ChartDataService:
             logger.warning(f"Regression line generation failed: {e}")
             return None
 
+    def generate_ltm_ntm_regression(
+        self,
+        companies: List[Dict[str, Any]],
+        title: str = "LTM vs NTM Revenue — Portfolio Regression",
+    ) -> Optional[Dict[str, Any]]:
+        """Plot LTM and NTM revenue per company with regression trend lines.
+
+        For each company, LTM = current ARR / trailing revenue,
+        NTM = LTM × (1 + growth_rate).  X-axis = company index (ordered by LTM).
+        Two scatter series (LTM, NTM) plus fitted regression lines for each.
+        """
+        if not companies:
+            return None
+        try:
+            points = []
+            for c in companies:
+                name = c.get("company") or c.get("companyName") or c.get("name") or "?"
+                ltm = ensure_numeric(
+                    c.get("arr") or c.get("revenue") or c.get("inferred_revenue"), 0
+                )
+                if ltm <= 0:
+                    continue
+                growth = ensure_numeric(c.get("growth_rate") or c.get("yoy_growth"), 0)
+                if growth > 10:
+                    growth = growth / 100.0  # normalise 250 → 2.5
+                ntm = ltm * (1 + growth) if growth else ltm * 1.20  # default 20% growth
+                points.append({"name": name, "ltm": ltm, "ntm": ntm})
+
+            if not points:
+                return None
+
+            points.sort(key=lambda p: p["ltm"])
+            labels = [p["name"] for p in points]
+            ltm_vals = [round(p["ltm"] / 1e6, 2) for p in points]
+            ntm_vals = [round(p["ntm"] / 1e6, 2) for p in points]
+
+            # Simple OLS regression y = mx + b
+            def _ols(ys):
+                n = len(ys)
+                if n < 2:
+                    return ys[:]
+                xs = list(range(n))
+                x_mean = sum(xs) / n
+                y_mean = sum(ys) / n
+                num = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys))
+                den = sum((x - x_mean) ** 2 for x in xs)
+                slope = num / den if den else 0
+                intercept = y_mean - slope * x_mean
+                return [round(slope * x + intercept, 2) for x in xs]
+
+            ltm_trend = _ols(ltm_vals)
+            ntm_trend = _ols(ntm_vals)
+
+            datasets = [
+                {
+                    "label": "LTM Revenue ($M)",
+                    "data": ltm_vals,
+                    "borderColor": "#3b82f6",
+                    "backgroundColor": "#3b82f6",
+                },
+                {
+                    "label": "NTM Revenue ($M)",
+                    "data": ntm_vals,
+                    "borderColor": "#22c55e",
+                    "backgroundColor": "#22c55e",
+                },
+                {
+                    "label": "LTM Trend",
+                    "data": ltm_trend,
+                    "borderColor": "#93bbfc",
+                    "backgroundColor": "transparent",
+                    "strokeDasharray": "6 3",
+                },
+                {
+                    "label": "NTM Trend",
+                    "data": ntm_trend,
+                    "borderColor": "#86efac",
+                    "backgroundColor": "transparent",
+                    "strokeDasharray": "6 3",
+                },
+            ]
+
+            return {
+                "type": "ltm_ntm_regression",
+                "title": title,
+                "data": {"labels": labels, "datasets": datasets},
+                "renderType": "tableau",
+            }
+        except Exception as e:
+            logger.warning(f"LTM/NTM regression generation failed: {e}")
+            return None
+
     def generate_monte_carlo_histogram(
         self,
         mc_result: Dict[str, Any],

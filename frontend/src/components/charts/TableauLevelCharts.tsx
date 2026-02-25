@@ -60,7 +60,7 @@ interface TableauChartProps {
         'scatter_multiples' | 'breakpoint_chart' | 'dpi_sankey' | 'cap_table_evolution' | 'radar_comparison' | 'funnel_pipeline' |
         'scenario_tree' | 'scenario_paths' | 'tornado' | 'cash_flow_waterfall' |
         'bull_bear_base' | 'bar_comparison' | 'cap_table_sankey' | 'revenue_forecast' | 'fpa_stress_test' | 'stacked_bar' | 'nav_live' | 'market_map' |
-        'sensitivity_tornado' | 'regression_line' | 'monte_carlo_histogram' | 'revenue_forecast_decay' | 'fund_scenarios' | 'multi_chart';
+        'sensitivity_tornado' | 'regression_line' | 'monte_carlo_histogram' | 'revenue_forecast_decay' | 'fund_scenarios' | 'multi_chart' | 'ltm_ntm_regression';
   data: any;
   title?: string;
   subtitle?: string;
@@ -1645,6 +1645,8 @@ export default function TableauLevelCharts({
               stroke={ds.borderColor || colors[i % colors.length]}
               fill={ds.backgroundColor || colors[i % colors.length]}
               fillOpacity={type === 'bar' ? 0.8 : 0}
+              strokeDasharray={ds.strokeDasharray}
+              dot={ds.backgroundColor === 'transparent' ? false : undefined}
             />
           ))}
         </ChartComponent>
@@ -2951,6 +2953,7 @@ export default function TableauLevelCharts({
         case 'regression_line':
         case 'monte_carlo_histogram':
         case 'revenue_forecast_decay':
+        case 'ltm_ntm_regression':
           // All use labels+datasets shape — handled by the existing line/bar renderer
           return renderLineOrBarChart();
         case 'cash_flow_waterfall':

@@ -26,7 +26,7 @@ const ADVANCED_CHART_TYPES = [
   'scenario_tree', 'scenario_paths', 'tornado', 'cash_flow_waterfall',
   // Analytics-bridge chart types
   'sensitivity_tornado', 'regression_line', 'monte_carlo_histogram',
-  'revenue_forecast_decay', 'fund_scenarios', 'multi_chart',
+  'revenue_forecast_decay', 'fund_scenarios', 'multi_chart', 'ltm_ntm_regression',
 ];
 
 /**

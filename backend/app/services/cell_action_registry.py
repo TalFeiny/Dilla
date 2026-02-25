@@ -1194,6 +1194,16 @@ class CellActionRegistry:
         )
         
         self.register_workflow(
+            action_id="portfolio.ltm_ntm_regression",
+            name="LTM/NTM Revenue Regression",
+            service_name="portfolio_service",
+            required_inputs={"fund_id": "string"},
+            output_type=OutputType.CHART,
+            description="Portfolio-level LTM vs NTM revenue scatter with regression trend lines",
+            column_compatibility=['chart', 'object']
+        )
+
+        self.register_workflow(
             action_id="portfolio.optimize",
             name="Portfolio Optimization",
             service_name="portfolio_service",
@@ -1203,7 +1213,7 @@ class CellActionRegistry:
             description="Mean-variance portfolio optimization with efficient frontier",
             column_compatibility=['object', 'chart']
         )
-        
+
         # Waterfall services
         self.register_workflow(
             action_id="waterfall.calculate",
@@ -1393,6 +1403,18 @@ class CellActionRegistry:
             column_compatibility=['number', 'currency']
         )
         
+        # Enrichment: fetch company data and map to all columns in the row
+        self.register_workflow(
+            action_id="enrich.company_row",
+            name="Enrich Company Row",
+            service_name="enrichment_service",
+            required_inputs={"company": "string"},
+            output_type=OutputType.OBJECT,
+            description="Fetch company data and fill all matching columns in the row",
+            column_compatibility=['string', 'number', 'currency', 'object', 'array'],
+            config={"output_structure": "enrichment_row_map"}
+        )
+
         # Unified MCP Orchestrator Skills - Data Gathering (ALL skills from registry)
         self.register_workflow(
             action_id="skill.company_data_fetch",

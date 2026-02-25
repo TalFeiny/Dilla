@@ -1,0 +1,17 @@
+name = "dilla-email-inbound"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+# Environment variables — set via Cloudflare Dashboard or `wrangler secret put`
+# BACKEND_URL = "https://api.dilla.ai"
+# WEBHOOK_SECRET = "your-shared-secret"
+#
+# To set secrets:
+#   npx wrangler secret put WEBHOOK_SECRET
+#   npx wrangler secret put BACKEND_URL
+#
+# To deploy:
+#   cd workers/email-inbound && npx wrangler deploy
+#
+# Then in Cloudflare Dashboard:
+#   Email Routing → Routing Rules → Catch-all → Send to Worker → dilla-email-inbound

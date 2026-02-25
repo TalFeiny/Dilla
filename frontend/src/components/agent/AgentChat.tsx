@@ -126,7 +126,7 @@ export interface MatrixContext {
   gridSnapshot?: { rows: Array<{ rowId: string; companyName: string; cells: Record<string, unknown> }>; columns: Array<{ id: string; name: string }> };
 }
 
-import type { DocumentSuggestion } from '@/components/matrix/DocumentSuggestions';
+import { SuggestionCard, type DocumentSuggestion } from '@/components/matrix/DocumentSuggestions';
 
 interface AgentChatProps {
   sessionId?: string;
@@ -396,6 +396,8 @@ export default function AgentChat({
   const [documentViewerMessage, setDocumentViewerMessage] = useState<Message | null>(null);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [pendingApprovedPlan, setPendingApprovedPlan] = useState(false);
+  const [streamingSteps, setStreamingSteps] = useState<Array<{ id: string; label: string; status: 'pending' | 'running' | 'done' | 'failed'; detail?: string }>>([]);
+  const [streamingStage, setStreamingStage] = useState<string>('');
   const approvedPlanStepsRef = useRef<any[]>([]);
   const workingMemoryRef = useRef<Array<{ tool: string; summary: string }>>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -705,14 +707,26 @@ export default function AgentChat({
             if (!line.trim()) continue;
             try {
               const event = JSON.parse(line);
-              if (event.type === 'progress' && onPlanStepsUpdate && event.plan_steps) {
-                const steps = event.plan_steps.map((s: any, i: number) => ({
-                  id: s.id ?? `step-${i}`,
-                  label: s.label ?? s.action ?? `Step ${i + 1}`,
-                  status: (s.status ?? 'running') as 'pending' | 'running' | 'done' | 'failed',
-                  detail: s.detail,
-                }));
-                onPlanStepsUpdate(steps);
+              if (event.type === 'progress') {
+                // Update streaming stage indicator
+                if (event.stage) setStreamingStage(event.stage);
+                if (event.plan_steps) {
+                  const steps = event.plan_steps.map((s: any, i: number) => ({
+                    id: s.id ?? `step-${i}`,
+                    label: s.label ?? s.description ?? s.action ?? `Step ${i + 1}`,
+                    status: (s.status ?? 'running') as 'pending' | 'running' | 'done' | 'failed',
+                    detail: s.detail,
+                  }));
+                  setStreamingSteps(steps);
+                  if (onPlanStepsUpdate) onPlanStepsUpdate(steps);
+                } else if (event.message) {
+                  // Progress event without plan_steps — show as a single step
+                  setStreamingSteps(prev => {
+                    const existing = prev.find(s => s.label === event.message);
+                    if (existing) return prev;
+                    return [...prev, { id: `prog-${prev.length}`, label: event.message, status: 'running' as const }];
+                  });
+                }
               } else if (event.type === 'memo_section' && event.section && onMemoUpdates) {
                 // Stream memo sections to MemoEditor in real-time
                 onMemoUpdates({ action: 'append', sections: [event.section] });
@@ -930,14 +944,21 @@ export default function AgentChat({
       const synthesis = result.content || result.summary || result.synthesis || '';
 
       // Last resort: parse synthesis markdown into sections for memo when content is substantial
-      if (!docsSections?.length && typeof synthesis === 'string' && synthesis.length > 200) {
+      if (!docsSections?.length && typeof synthesis === 'string' && synthesis.length > 100) {
         const parsed = parseMarkdownToSections(synthesis);
-        if (parsed.length > 1) {
+        if (parsed.length >= 1) {
           docsSections = parsed.map(s => ({
             title: s.title || (s.type?.startsWith('heading') ? s.content : undefined),
             content: s.type === 'paragraph' || s.type === 'list' ? (s.content || s.items?.join('\n')) : s.content,
             level: s.level ?? 2,
           }));
+          // If we only got 1 section (no headings in content), wrap it with a title
+          if (docsSections.length === 1 && !docsSections[0].title) {
+            docsSections = [
+              { title: 'Executive Summary', content: undefined, level: 1 },
+              ...docsSections,
+            ];
+          }
         }
       }
 
@@ -1053,8 +1074,8 @@ export default function AgentChat({
           }
         }
 
-        // Add citations
-        if (allCitations?.length) {
+        // Add citations ONLY if they won't already be rendered as citation pills
+        if (allCitations?.length && !citations.length) {
           const citationText = allCitations
             .filter((c: any) => c.url)
             .map((c: any, i: number) => `${i + 1}. [${c.source || c.title || 'Source'}](${c.url})`)
@@ -1199,6 +1220,8 @@ export default function AgentChat({
     } finally {
       abortControllerRef.current = null;
       setIsLoading(false);
+      setStreamingSteps([]);
+      setStreamingStage('');
     }
   };
 
@@ -1245,14 +1268,20 @@ export default function AgentChat({
     if (!message.docsSections?.length) return;
     setExportingPdf(true);
     try {
+      // Derive a title: prefer the first heading's content, fall back to title field
+      const firstSection = message.docsSections[0] as any;
+      const title = firstSection?.title
+        || (firstSection?.type?.startsWith?.('heading') ? firstSection.content : null)
+        || 'Investment Memo';
+
       const res = await fetch('/api/memos/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sections: message.docsSections,
           charts: message.docsCharts || message.charts || [],
-          title: message.docsSections[0]?.title || 'Investment Memo',
-          companies: message.companies?.map((c: any) => c.company || c.name) || [],
+          chartPositions: message.docsChartPositions || [],
+          title,
         }),
       });
       if (!res.ok) {
@@ -1263,7 +1292,7 @@ export default function AgentChat({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${(message.docsSections[0]?.title || 'memo').replace(/\s+/g, '_')}.pdf`;
+      a.download = `${title.replace(/[^a-zA-Z0-9 ]/g, '').replace(/\s+/g, '_').substring(0, 50)}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -1456,9 +1485,37 @@ export default function AgentChat({
                     }`}
                   >
                     {message.processing ? (
-                      <div className="flex items-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span className="text-sm">Analyzing...</span>
+                      <div className="space-y-1.5 min-w-[180px]">
+                        <div className="flex items-center gap-2">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />
+                          <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
+                            {streamingStage === 'execution' ? 'Running workflows...' :
+                             streamingStage === 'formatting' ? 'Formatting output...' :
+                             streamingStage === 'initialization' ? 'Analyzing request...' :
+                             streamingStage ? streamingStage.charAt(0).toUpperCase() + streamingStage.slice(1) + '...' :
+                             'Analyzing...'}
+                          </span>
+                        </div>
+                        {streamingSteps.length > 0 && (
+                          <div className="pl-1 space-y-0.5 max-h-[160px] overflow-y-auto">
+                            {streamingSteps.map((step) => (
+                              <div key={step.id} className="flex items-center gap-1.5 text-[10px]">
+                                {step.status === 'done' ? (
+                                  <span className="text-green-500 shrink-0">✓</span>
+                                ) : step.status === 'failed' ? (
+                                  <span className="text-red-500 shrink-0">✗</span>
+                                ) : step.status === 'running' ? (
+                                  <Loader2 className="h-2.5 w-2.5 animate-spin text-blue-500 shrink-0" />
+                                ) : (
+                                  <span className="text-gray-300 shrink-0">○</span>
+                                )}
+                                <span className={`truncate ${step.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-600 dark:text-gray-300'}`}>
+                                  {step.label}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <>
@@ -1651,7 +1708,9 @@ export default function AgentChat({
                                 {step.status === 'done' && <Check className="h-3 w-3 text-green-500" />}
                                 {step.status === 'failed' && <X className="h-3 w-3 text-red-500" />}
                                 {step.status === 'pending' && <div className="h-3 w-3 rounded-full border border-gray-300" />}
-                                <span className={step.status === 'done' ? 'text-muted-foreground' : ''}>{step.label}</span>
+                                <span className={step.status === 'done' ? 'text-muted-foreground line-through' : ''}>
+                                  {step.label.includes(':') ? step.label.split(':')[1]?.trim() || step.label : step.label}
+                                </span>
                                 {step.tool && <Badge variant="outline" className="text-[9px] h-4 px-1">{step.tool}</Badge>}
                               </div>
                             ))}

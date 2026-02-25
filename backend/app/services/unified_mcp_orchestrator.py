@@ -4490,7 +4490,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
                 if col_names:
                     summary += f", columns: {', '.join(col_names[:10])}"
                 logger.info(f"[TOOL] query_portfolio served from grid context: {len(rows_out)} rows")
-                return {"rows": rows_out[:30], "summary": summary, "columns": col_names, "source": "grid_context"}
+                return {"rows": rows_out, "summary": summary, "columns": col_names, "source": "grid_context"}
 
             # FALLBACK PATH: MatrixQueryOrchestrator (Supabase)
             if MATRIX_QUERY_ORCHESTRATOR_AVAILABLE and self.matrix_query_orchestrator:
@@ -4500,7 +4500,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
                     fund_id=fund_ctx.get("fundId"),
                     context={"gridSnapshot": grid_snapshot, "filters": filters},
                 )
-                return {"rows": result.get("rows", [])[:20], "summary": result.get("summary", ""), "source": "supabase"}
+                return {"rows": result.get("rows", []), "summary": result.get("summary", ""), "source": "supabase"}
 
             # LAST RESORT: Try portfolio_service (with or without fund_id)
             try:
@@ -4512,7 +4512,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
                     portfolio = await portfolio_service.get_all_companies()
                 companies = portfolio.get("companies", [])
                 if companies:
-                    return {"rows": companies[:30], "summary": f"Portfolio: {len(companies)} companies from DB", "source": "portfolio_service"}
+                    return {"rows": companies, "summary": f"Portfolio: {len(companies)} companies from DB", "source": "portfolio_service"}
             except Exception as ps_err:
                 logger.debug(f"[TOOL] portfolio_service fallback failed: {ps_err}")
 
@@ -8766,33 +8766,44 @@ Look at the user's request and the scoreboard. Is the request fully satisfied?
         use_memo_format = has_company_data or has_portfolio_data
 
         if use_memo_format:
-            # Concise chat summary — detailed analysis goes into memo sections
+            # Structured markdown synthesis — headings ensure parseMarkdownToSections works
             synth_prompt = f"""User asked: {prompt}{memo_context}{portfolio_context}
 Tool results:
 {synth_context}{correction_ctx}
 
-Write 2-3 short paragraphs answering the user's question with specific numbers from the tool results.
+Write a structured investment analysis using markdown headings and paragraphs.
+
+FORMAT:
+## Executive Summary
+1-2 paragraphs with the key finding and investment narrative.
+
+## Key Metrics
+A markdown table of the most important numbers. Use | Col | Col | format.
+
+## Analysis
+1-2 paragraphs of detailed analysis with specific numbers.
+
+## Risks & Next Steps
+1 paragraph on risks, 1-2 concrete next steps.
+
 Rules:
-- NO markdown tables, bullet lists, headers, or metric dumps
+- Every section MUST have a ## heading
+- Start each section with the most important finding
+- Only cite numbers from tool results — do not invent figures
+- Bold key metrics: **$150M ARR**, **2.5x revenue multiple**
+- If data is estimated, say "[Est]" with confidence
 - NO filler: never start with "Based on my analysis", "Let me break this down", "Here's what I found"
-- Start with the most important finding or number
-- Only cite numbers that appear in the tool results — do not invent figures
-- The frontend separately renders metric cards, charts, and cap tables — do NOT repeat those metrics
-- Focus on: investment narrative, one key insight, one risk or open question
 
 ABSOLUTE RULES:
 - NEVER write "cannot be completed", "no data available", "data retrieval returned no results"
 - If you have estimates/benchmarks, present them with confidence levels
 - If you have partial data, show what you have and flag what's estimated
 - Present ranges (low/mid/high) rather than saying "unknown"
-- Always show SOMETHING — even stage benchmarks are more useful than "no data"
-- Format: "Based on [source] (confidence: X%): [value]"
-
-Example: 'Mercury generates ~$150M ARR growing 80% YoY with 65% gross margins, positioning it as a strong Series C candidate at ~$1.5B. The key risk is margin compression as they expand into lending.'"""
+- Always show SOMETHING — even stage benchmarks are more useful than "no data""""
 
             synthesis_response = await self.model_router.get_completion(
                 prompt=synth_prompt,
-                system_prompt="You are a portfolio CFO. Write 2-3 concise paragraphs of flowing prose — narrative only. The frontend renders structured data (cards, charts, cap tables) separately, so never repeat raw metrics. Only use numbers from the tool results. NEVER say 'I don't have data', 'cannot be completed', 'no data available', or 'Based on my analysis'. If data is estimated, say 'estimated at' with confidence. Start with the key finding. End with one actionable insight or open question.",
+                system_prompt="You are a portfolio CFO. Write a structured analysis with ## markdown headings for each section. Use **bold** for key numbers. Use markdown tables for comparisons. Start with the key finding. NEVER say 'I don't have data'. If estimated, say '[Est: confidence%]'.",
                 capability=ModelCapability.ANALYSIS,
                 max_tokens=2000,
                 temperature=0.3,
@@ -8817,17 +8828,18 @@ Example: 'Mercury generates ~$150M ARR growing 80% YoY with 65% gross margins, p
                     timeout=120,  # 2 minutes max for full memo generation
                 )
                 if memo_result and memo_result.get("sections"):
-                    # Use LightweightMemoService output as the primary memo
+                    # Use LightweightMemoService output as the primary memo.
+                    # The 3-shot pipeline already produces complete output —
+                    # do NOT append raw tool_emitted_sections or synthesis
+                    # as they dump JSON noise into the memo.
                     memo_sections.clear()
                     memo_sections.extend(memo_result["sections"])
-                    # Append tool-emitted sections that aren't already covered
-                    # (charts, metrics from tools that the template didn't generate)
-                    if tool_emitted_sections:
-                        memo_sections.append({"type": "heading2", "content": "Additional Data"})
-                        memo_sections.extend(tool_emitted_sections)
-                    # Add synthesis as final section
-                    memo_sections.append({"type": "heading2", "content": "Summary"})
-                    memo_sections.append({"type": "paragraph", "content": synthesis})
+                    # Extract chart sections from memo into top-level charts array
+                    for sec in memo_result["sections"]:
+                        if sec.get("type") == "chart" and sec.get("chart"):
+                            charts.append(sec["chart"])
+                    if charts:
+                        logger.info(f"[AGENT_LOOP] Extracted {len(charts)} charts from memo sections")
                     async with self.shared_data_lock:
                         artifacts = self.shared_data.get("memo_artifacts", [])
                         artifacts.append(memo_result)
@@ -8995,14 +9007,20 @@ ABSOLUTE RULES:
                           if memo_sections and any(s.get("id", id(s)) not in _streamed_memo_ids for s in memo_sections)
                           else ({"action": "append", "sections": charts_as_memo} if charts else None))
                 ),
-                "plan_steps": plan_steps,
+                # For docs format, strip internal planner noise that pollutes
+                # the frontend when section extraction fails.
+                # Also strip from extra_result_fields to prevent leaking via **spread
+                if detected_format == "docs":
+                    for noise_key in ("plan_steps", "working_memory", "session_plan", "plan_context"):
+                        extra_result_fields.pop(noise_key, None)
+                "plan_steps": None if detected_format == "docs" else plan_steps,
                 "charts": charts,
                 "citations": self._extract_citations_from_results(tool_results),
-                "working_memory": working_memory,
+                "working_memory": None if detected_format == "docs" else working_memory,
                 "memo_artifacts": memo_artifacts if memo_artifacts else None,
                 "artifacts": result_artifacts if result_artifacts else None,
-                "session_plan": session_plan_dict,
-                "plan_context": plan_ctx_dict,
+                "session_plan": None if detected_format == "docs" else session_plan_dict,
+                "plan_context": None if detected_format == "docs" else plan_ctx_dict,
             },
         }
 
@@ -23987,6 +24005,46 @@ Return a JSON with this structure:
                 logger.debug("[MEMO] _populate_memo_service_data: no companies, skipping")
                 return
 
+            # ── Selective Tavily enrichment for companies missing critical data ──
+            if self.tavily_api_key:
+                gaps = [c for c in companies
+                        if not (c.get("revenue") or c.get("inferred_revenue"))
+                        or not c.get("valuation")]
+                if gaps:
+                    logger.info(f"[MEMO] Enriching {len(gaps)} companies with gaps via Tavily")
+                    try:
+                        from app.services.micro_skills.gap_resolver import resolve_gaps
+
+                        async def _tavily_fn(query: str) -> dict:
+                            return await self._tavily_search(query)
+
+                        async def _llm_fn(prompt: str, system: str = "") -> str:
+                            from app.services.model_router import ModelCapability
+                            resp = await self.model_router.get_completion(
+                                prompt=prompt, system_prompt=system,
+                                capability=ModelCapability.EXTRACTION,
+                                max_tokens=2000, caller_context="memo_gap_fill",
+                            )
+                            return resp.get("response", "") if isinstance(resp, dict) else str(resp)
+
+                        enriched = await resolve_gaps(
+                            companies=gaps,
+                            fund_id=self.shared_data.get("fund_context", {}).get("fund_id"),
+                            tavily_search_fn=_tavily_fn,
+                            llm_extract_fn=_llm_fn,
+                        )
+                        # Merge enriched data back
+                        enriched_map = {(e.get("company") or "").lower(): e
+                                        for e in (enriched.get("companies") or enriched if isinstance(enriched, list) else [])}
+                        for c in companies:
+                            key = (c.get("company") or "").lower()
+                            if key in enriched_map:
+                                for field, val in enriched_map[key].items():
+                                    if val and not c.get(field):
+                                        c[field] = val
+                    except Exception as enrich_err:
+                        logger.warning(f"[MEMO] Tavily enrichment failed (non-fatal): {enrich_err}")
+
             fund_context = self.shared_data.get("fund_context") or {}
             cap_table_history: Dict[str, Any] = dict(self.shared_data.get("cap_table_history") or {})
             scenario_analysis: Dict[str, Any] = dict(self.shared_data.get("scenario_analysis") or {})
@@ -24091,12 +24149,144 @@ Return a JSON with this structure:
                 except Exception as company_err:
                     logger.error("[MEMO] _populate_memo_service_data failed for %s: %s", company_name, company_err, exc_info=True)
 
-            # ── Fund-level chart data ─────────────────────────────────────
+            # ── Revenue decay projections via RevenueProjectionService ───
+            # Upgrade raw revenue_projections from basic {current, growth_rate}
+            # to full year-by-year decay curves that ChartDataService can plot.
+            try:
+                from app.services.revenue_projection_service import RevenueProjectionService
+                for company_name, rp in list(revenue_projections.items()):
+                    if isinstance(rp, dict) and not rp.get("yearly"):
+                        base_rev = ensure_numeric(rp.get("current_revenue"), 0)
+                        growth = ensure_numeric(rp.get("growth_rate"), 0.5)
+                        if base_rev > 0:
+                            company = next((c for c in companies if c.get("company") == company_name), {})
+                            yearly = RevenueProjectionService.project_revenue_with_decay(
+                                base_revenue=base_rev,
+                                initial_growth=growth,
+                                years=6,
+                                quality_score=1.0,
+                                stage=company.get("stage"),
+                                sector=company.get("sector") or company.get("business_model"),
+                                investor_quality=company.get("investor_quality"),
+                                geography=company.get("geography"),
+                                return_projections=True,
+                            )
+                            if isinstance(yearly, list):
+                                rp["yearly"] = yearly
+                                logger.debug("[MEMO] Decay projections for %s: %d years", company_name, len(yearly))
+            except Exception as rps_err:
+                logger.warning("[MEMO] RevenueProjectionService enrichment failed: %s", rps_err)
+
+            # ── ScenarioTreeService: portfolio-level bull/base/bear ─────
+            if not self.shared_data.get("fund_scenarios"):
+                try:
+                    from app.services.scenario_tree_service import ScenarioTreeService
+                    sts = ScenarioTreeService()
+                    companies_for_scenarios = {
+                        c.get("company", "Unknown"): c for c in companies
+                        if c.get("company")
+                    }
+                    if companies_for_scenarios:
+                        tree = sts.build_portfolio_scenarios(companies_for_scenarios, fund_context, years=5)
+                        scenario_all_charts = sts.to_all_charts(tree)
+                        scenario_analysis["_portfolio_tree"] = {
+                            "path_count": len(tree.paths),
+                            "companies": tree.companies,
+                            "expected_value": {
+                                "nav": tree.expected_value.nav if tree.expected_value else 0,
+                                "tvpi": tree.expected_value.tvpi if tree.expected_value else 0,
+                                "dpi": tree.expected_value.dpi if tree.expected_value else 0,
+                                "irr": tree.expected_value.irr if tree.expected_value else 0,
+                            } if tree.expected_value else {},
+                        }
+                        logger.info("[MEMO] ScenarioTree: %d paths for %d companies",
+                                    len(tree.paths), len(companies_for_scenarios))
+                except Exception as sts_err:
+                    logger.warning("[MEMO] ScenarioTreeService failed: %s", sts_err)
+                    scenario_all_charts = {}
+            else:
+                scenario_all_charts = {}
+
+            # ── FPA: Monte Carlo + Sensitivity (if available) ──────────
+            fpa_result = {}
+            monte_carlo_result = {}
+            if not self.shared_data.get("fpa_result"):
+                try:
+                    fpa_svc = self._get_fpa_regression_service() if hasattr(self, "_get_fpa_regression_service") else None
+                    if fpa_svc and companies:
+                        # Sensitivity: how does each company's growth affect portfolio NAV
+                        revenues = [ensure_numeric(c.get("revenue") or c.get("inferred_revenue"), 0) for c in companies]
+                        growth_rates = [ensure_numeric(c.get("growth_rate"), 0.5) for c in companies]
+                        if any(r > 0 for r in revenues):
+                            fpa_result = fpa_svc.sensitivity_analysis(
+                                base_inputs={
+                                    "revenues": revenues,
+                                    "growth_rates": growth_rates,
+                                },
+                                variable_ranges={f"growth_{c.get('company', i)}": (0.1, 3.0)
+                                                 for i, c in enumerate(companies)},
+                                model_fn=lambda inputs: sum(
+                                    r * g for r, g in zip(inputs.get("revenues", revenues),
+                                                          inputs.get("growth_rates", growth_rates))
+                                ),
+                            )
+                            logger.debug("[MEMO] FPA sensitivity computed")
+
+                        # Monte Carlo on portfolio revenue
+                        total_rev = sum(r for r in revenues if r > 0)
+                        if total_rev > 0:
+                            monte_carlo_result = fpa_svc.monte_carlo_simulation(
+                                base_scenario={"revenue": total_rev, "growth": 0.5},
+                                distributions={"revenue": ("normal", total_rev, total_rev * 0.3),
+                                               "growth": ("normal", 0.5, 0.2)},
+                                iterations=1000,
+                            )
+                            logger.debug("[MEMO] FPA Monte Carlo computed")
+                except Exception as fpa_err:
+                    logger.warning("[MEMO] FPA analysis failed: %s", fpa_err)
+
+            # ── Fund-level metrics (TVPI, DPI, IRR) ────────────────────
+            # Compute actual fund metrics if not already present
+            fund_metrics: Dict[str, Any] = dict(self.shared_data.get("fund_metrics") or {})
+            if "metrics" not in fund_metrics or fund_metrics.get("_source") == "fallback_stub":
+                try:
+                    fm_result = await self._execute_fund_metrics({
+                        "fund_id": fund_context.get("fund_id") or fund_context.get("fundId"),
+                        "context": fund_context,
+                    })
+                    if isinstance(fm_result, dict) and not fm_result.get("error"):
+                        fm_data = fm_result.get("fund_metrics", fm_result)
+                        fund_metrics.update(fm_data)
+                        logger.info("[MEMO] Fund metrics computed: %s", list(fm_data.keys()))
+                except Exception as fm_err:
+                    logger.warning("[MEMO] Fund metrics computation failed: %s", fm_err)
+
+            # ── Portfolio health ────────────────────────────────────────
+            if not self.shared_data.get("portfolio_health"):
+                try:
+                    ph_result = await self._tool_portfolio_health({
+                        "fund_id": fund_context.get("fund_id") or fund_context.get("fundId"),
+                    })
+                    if isinstance(ph_result, dict) and not ph_result.get("error"):
+                        logger.info("[MEMO] Portfolio health computed")
+                except Exception as ph_err:
+                    logger.warning("[MEMO] Portfolio health failed: %s", ph_err)
+
+            # ── Follow-on strategy ─────────────────────────────────────
+            if not self.shared_data.get("followon_strategy"):
+                try:
+                    fo_result = await self._execute_followon_strategy({
+                        "fund_id": fund_context.get("fund_id") or fund_context.get("fundId"),
+                    })
+                    if isinstance(fo_result, dict) and not fo_result.get("error"):
+                        logger.info("[MEMO] Follow-on strategy computed")
+                except Exception as fo_err:
+                    logger.warning("[MEMO] Follow-on strategy failed: %s", fo_err)
+
+            # ── Fund-level chart data ──────────────────────────────────
             # Compute aggregated charts that memo templates need but that the
             # per-company loop above cannot produce (DPI Sankey, NAV waterfall,
-            # heatmap, bar comparison).  These use the same ChartDataService
-            # helpers the matrix viewport already relies on.
-            fund_metrics: Dict[str, Any] = dict(self.shared_data.get("fund_metrics") or {})
+            # heatmap, bar comparison).
             try:
                 from app.services.chart_data_service import ChartDataService
                 cds = ChartDataService()
@@ -24135,6 +24325,15 @@ Return a JSON with this structure:
                     except Exception as exc:
                         logger.warning("[MEMO] fund heatmap failed: %s", exc)
 
+                # Bull/bear/base bar chart from scenario tree
+                if "fund_scenarios_bar" not in fund_metrics and scenario_all_charts:
+                    try:
+                        bar = scenario_all_charts.get("scenario_comparison")
+                        if bar:
+                            fund_metrics["fund_scenarios_bar"] = bar
+                    except Exception as exc:
+                        logger.warning("[MEMO] fund scenarios bar failed: %s", exc)
+
             except Exception as fund_exc:
                 logger.warning("[MEMO] fund-level chart generation failed: %s", fund_exc)
 
@@ -24148,13 +24347,23 @@ Return a JSON with this structure:
                     self.shared_data["revenue_projections"] = revenue_projections
                 if fund_metrics:
                     self.shared_data["fund_metrics"] = fund_metrics
+                if scenario_all_charts:
+                    self.shared_data["scenario_all_charts"] = scenario_all_charts
+                if fpa_result:
+                    self.shared_data["fpa_result"] = fpa_result
+                if monte_carlo_result:
+                    self.shared_data["monte_carlo_result"] = monte_carlo_result
 
             logger.info(
-                "[MEMO] _populate_memo_service_data done: scenario_analysis=%s, cap_table_history=%s, revenue_projections=%s, fund_metrics=%s",
+                "[MEMO] _populate_memo_service_data done: scenario_analysis=%s, cap_table_history=%s, "
+                "revenue_projections=%s, fund_metrics=%s, scenario_all_charts=%s, fpa=%s, monte_carlo=%s",
                 list(scenario_analysis.keys()),
                 list(cap_table_history.keys()),
                 list(revenue_projections.keys()),
                 list(fund_metrics.keys()),
+                bool(scenario_all_charts),
+                bool(fpa_result),
+                bool(monte_carlo_result),
             )
 
         except Exception as e:

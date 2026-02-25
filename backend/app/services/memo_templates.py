@@ -41,7 +41,7 @@ IC_MEMO = {
     "id": "ic_memo",
     "title_pattern": "Investment Committee Memo — {companies}",
     "required_data": ["companies"],
-    "optional_data": ["fund_context", "cap_table_history", "scenario_analysis", "revenue_projections"],
+    "optional_data": ["fund_context", "fund_metrics", "portfolio_health", "cap_table_history", "scenario_analysis", "revenue_projections"],
     "sections": [
         _section("thesis", "Investment Thesis",
                  prompt_hint="Why invest? 3-4 sentences on the opportunity, market timing, and team."),
@@ -706,18 +706,25 @@ PORTFOLIO_REVIEW = {
     "optional_data": [
         "fund_context", "portfolio_analysis", "scenario_analysis",
         "cap_table_history", "revenue_projections", "followon_strategy",
+        "fund_metrics", "portfolio_health",
     ],
     "sections": [
         _section("executive_summary", "Executive Summary",
-                 data_keys=["companies", "portfolio_analysis", "fund_context"],
+                 data_keys=["companies", "portfolio_analysis", "fund_context", "fund_metrics"],
                  prompt_hint=(
                      "3-4 bullets: total NAV, MOIC to date, number of companies by stage, "
                      "capital deployed vs remaining. Lead with the headline number."
                  )),
         _section("portfolio_snapshot", "Portfolio Snapshot", type="chart",
                  data_keys=["companies", "portfolio_analysis"],
-                 chart_type="portfolio_scatter",
+                 chart_type="scatter_multiples",
                  prompt_hint="Revenue vs valuation scatter; bubble size = our ownership %."),
+        _section("dpi_flow", "DPI Flow", type="chart",
+                 data_keys=["fund_metrics"], chart_type="dpi_sankey",
+                 prompt_hint="Fund → Companies → Exits → LP Distributions."),
+        _section("ltm_ntm", "LTM vs NTM Revenue", type="chart",
+                 data_keys=["companies"], chart_type="ltm_ntm_regression",
+                 prompt_hint="LTM/NTM revenue per company with trend lines."),
         _section("cohort_analysis", "Cohort Analysis",
                  data_keys=["companies", "portfolio_analysis"],
                  prompt_hint=(
@@ -725,10 +732,13 @@ PORTFOLIO_REVIEW = {
                      "For each cohort: count, median MOIC, median revenue growth, "
                      "capital deployed. Which cohort is outperforming?"
                  )),
-        _section("cohort_revenue_curves", "Revenue Trajectories", type="chart",
+        _section("revenue_trajectories", "Revenue Trajectories", type="chart",
                  data_keys=["companies", "revenue_projections"],
-                 chart_type="cohort_revenue_chart",
-                 prompt_hint="ARR over time by stage cohort."),
+                 chart_type="revenue_forecast_decay",
+                 prompt_hint="ARR projections with growth decay per company."),
+        _section("moic_ranking", "Portfolio MOIC", type="chart",
+                 data_keys=["portfolio_health"], chart_type="bar",
+                 prompt_hint="MOIC by company, sorted descending. Color by quartile."),
         _section("at_risk", "At-Risk Companies",
                  data_keys=["companies", "portfolio_analysis"],
                  prompt_hint=(
@@ -741,10 +751,9 @@ PORTFOLIO_REVIEW = {
                      "Companies likely to exit in next 18 months via IPO or M&A. "
                      "For each: expected exit value, our ownership at exit, proceeds to fund."
                  )),
-        _section("fund_return_waterfall", "Fund Return Waterfall", type="chart",
-                 data_keys=["companies", "portfolio_analysis", "scenario_analysis"],
-                 chart_type="fund_return_waterfall_chart",
-                 prompt_hint="Proceeds by company across base exit scenario."),
+        _section("nav_waterfall", "NAV Waterfall", type="chart",
+                 data_keys=["fund_metrics"], chart_type="waterfall",
+                 prompt_hint="NAV contribution by company."),
         _section("fund_scenarios", "Fund-Level Scenarios",
                  data_keys=["portfolio_analysis", "scenario_analysis", "fund_context"],
                  prompt_hint=(

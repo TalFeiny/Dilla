@@ -131,23 +131,29 @@ body {
 }
 
 /* Day/Night theme variables (switch via html[data-theme]) */
-:root[data-theme="day"] {
+[data-theme="day"] {
   --background: 0 0% 100%;
-  --foreground: 210 10% 8%;
+  --foreground: 210 10% 23%;
   --card: 0 0% 100%;
-  --card-foreground: 210 10% 8%;
+  --card-foreground: 210 10% 23%;
   --popover: 0 0% 100%;
-  --popover-foreground: 210 10% 8%;
+  --popover-foreground: 210 10% 23%;
+  --primary: 210 10% 15%;
+  --primary-foreground: 0 0% 100%;
   --secondary: 210 16% 96%;
   --secondary-foreground: 210 10% 18%;
   --muted: 210 16% 94%;
-  --muted-foreground: 210 10% 40%;
+  --muted-foreground: 210 10% 46%;
+  --accent: 210 16% 94%;
+  --accent-foreground: 210 10% 23%;
+  --destructive: 0 62% 45%;
+  --destructive-foreground: 0 0% 100%;
   --border: 210 12% 86%;
   --input: 210 12% 86%;
-  --ring: 186 88% 56%;
+  --ring: 210 10% 15%;
 }
 
-:root[data-theme="night"] {
+[data-theme="night"] {
   --background: 0 0% 0%;
   --foreground: 0 0% 100%;
   --card: 0 0% 5%;

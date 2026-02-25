@@ -2079,6 +2079,44 @@ export function UnifiedMatrix({
     return { ...data, columns: updatedColumns, rows: updatedRows };
   }
 
+  /** Apply enrichment result: update multiple cells in a row from column_values map. */
+  function applyEnrichmentResult(
+    data: MatrixData,
+    rowId: string,
+    columnValues: Record<string, unknown>,
+    actionId: string
+  ): MatrixData {
+    const row = data.rows.find((r) => r.id === rowId);
+    if (!row) return data;
+
+    const updatedRows = data.rows.map((r) => {
+      if (r.id !== rowId) return r;
+      const cells: Record<string, MatrixCell> = { ...r.cells };
+      for (const [colId, val] of Object.entries(columnValues)) {
+        if (val === null || val === undefined || val === '') continue;
+        // Skip company name column — already set
+        if (/^company$|^name$/i.test(colId)) continue;
+        const displayVal = typeof val === 'number'
+          ? val.toLocaleString(undefined, { maximumFractionDigits: 2 })
+          : String(val);
+        cells[colId] = {
+          ...cells[colId],
+          value: val,
+          displayValue: displayVal,
+          source: 'api' as const,
+          lastUpdated: new Date().toISOString(),
+          metadata: {
+            ...cells[colId]?.metadata,
+            explanation: `Enriched via ${actionId}`,
+          },
+        };
+      }
+      return { ...r, cells };
+    });
+
+    return { ...data, rows: updatedRows };
+  }
+
   const handleCellActionResult = async (
     rowId: string,
     columnId: string,
@@ -2095,47 +2133,102 @@ export function UnifiedMatrix({
     const row = matrixData.rows.find((r) => r.id === rowId || r.companyId === rowId || (r.companyName && r.companyName.toLowerCase() === rowId.toLowerCase()));
     const companyId = row?.companyId ?? row?.id ?? rowId;
 
+    // Detect enrichment response: backend returns column_values map for multi-cell fill
+    const meta = response.metadata as Record<string, unknown> | undefined;
+    const isEnrichment = meta?.enrich_mode === 'row' && meta?.column_values && typeof meta.column_values === 'object';
+    const columnValues = isEnrichment ? (meta!.column_values as Record<string, unknown>) : null;
+
     if (suggestBeforeApply && fundId) {
-      const result = await addServiceSuggestion({
-        fundId,
-        company_id: companyId,
-        column_id: columnId,
-        suggested_value: value,
-        source_service: response.action_id,
-        reasoning: (response.metadata as Record<string, unknown>|undefined)?.explanation as string | undefined,
-        metadata: response.metadata ? { explanation: response.metadata.explanation, citations: response.metadata.citations } : undefined,
-      });
-      setCellActionStatus((prev) => ({ ...prev, [key]: { state: 'success', message: 'Suggestion added' } }));
-      setTimeout(() => setCellActionStatus((p) => { const next = { ...p }; delete next[key]; return next; }), 3000);
-      if (result.success) {
-        await refreshSuggestions();
-        toast.success('Suggestion added — review in chat');
+      if (isEnrichment && columnValues) {
+        // Create a suggestion per enriched column so user can review each
+        let addedCount = 0;
+        for (const [colId, val] of Object.entries(columnValues)) {
+          if (val === null || val === undefined || val === '') continue;
+          const res = await addServiceSuggestion({
+            fundId,
+            company_id: companyId,
+            column_id: colId,
+            suggested_value: val,
+            source_service: response.action_id,
+            reasoning: meta?.explanation as string | undefined,
+            metadata: response.metadata ? { explanation: response.metadata.explanation, citations: response.metadata.citations } : undefined,
+          });
+          if (res.success) addedCount++;
+        }
+        setCellActionStatus((prev) => ({ ...prev, [key]: { state: 'success', message: `${addedCount} suggestions added` } }));
+        setTimeout(() => setCellActionStatus((p) => { const next = { ...p }; delete next[key]; return next; }), 3000);
+        if (addedCount > 0) {
+          await refreshSuggestions();
+          toast.success(`${addedCount} enrichment suggestions added — review in chat`);
+        }
       } else {
-        toast.error(result.error ?? 'Failed to add suggestion');
+        const result = await addServiceSuggestion({
+          fundId,
+          company_id: companyId,
+          column_id: columnId,
+          suggested_value: value,
+          source_service: response.action_id,
+          reasoning: (response.metadata as Record<string, unknown>|undefined)?.explanation as string | undefined,
+          metadata: response.metadata ? { explanation: response.metadata.explanation, citations: response.metadata.citations } : undefined,
+        });
+        setCellActionStatus((prev) => ({ ...prev, [key]: { state: 'success', message: 'Suggestion added' } }));
+        setTimeout(() => setCellActionStatus((p) => { const next = { ...p }; delete next[key]; return next; }), 3000);
+        if (result.success) {
+          await refreshSuggestions();
+          toast.success('Suggestion added — review in chat');
+        } else {
+          toast.error(result.error ?? 'Failed to add suggestion');
+        }
       }
       onServiceResultLog?.(rowId, columnId, response);
       return;
     }
 
-    const updatedData = applySingleActionResult(matrixData, rowId, columnId, response);
+    // Direct apply path (no suggestions)
+    let updatedData: MatrixData;
+    if (isEnrichment && columnValues) {
+      // Enrichment: apply all column values at once
+      updatedData = applyEnrichmentResult(matrixData, rowId, columnValues, response.action_id);
+      const enrichedCount = Object.keys(columnValues).length;
+      setCellActionStatus((prev) => ({ ...prev, [key]: { state: 'success', message: `${enrichedCount} cells enriched` } }));
+    } else {
+      updatedData = applySingleActionResult(matrixData, rowId, columnId, response);
+      setCellActionStatus((prev) => ({ ...prev, [key]: { state: 'success', message: 'Done' } }));
+    }
     setMatrixData(updatedData);
     onDataChange?.(updatedData);
-    setCellActionStatus((prev) => ({ ...prev, [key]: { state: 'success', message: 'Done' } }));
     setTimeout(() => setCellActionStatus((p) => { const next = { ...p }; delete next[key]; return next; }), 3000);
     if (columnId === 'documents') {
       refreshSuggestions();
     }
     if (onCellEdit) {
       try {
-        const cellDocs = matrixData?.rows.find((r) => r.id === rowId)?.cells?.[columnId]?.metadata?.documents;
-        const documents = (response.metadata as Record<string, unknown>|undefined)?.documents ?? cellDocs;
-        await onCellEdit(rowId, columnId, value, {
-          data_source: 'service',
-          metadata: {
-            ...(response.metadata ? { explanation: response.metadata.explanation, citations: response.metadata.citations, service_name: response.action_id } : {}),
-            ...(documents != null ? { documents } : {}),
-          },
-        });
+        if (isEnrichment && columnValues) {
+          // Persist each enriched cell
+          const persistTasks = Object.entries(columnValues)
+            .filter(([, v]) => v !== null && v !== undefined && v !== '')
+            .map(([colId, val]) =>
+              onCellEdit(rowId, colId, val, {
+                data_source: 'service',
+                metadata: {
+                  explanation: meta?.explanation as string | undefined,
+                  citations: response.metadata?.citations,
+                  service_name: response.action_id,
+                },
+              }).catch((err: unknown) => console.warn(`Enrichment persist failed for ${colId}:`, err))
+            );
+          await Promise.all(persistTasks);
+        } else {
+          const cellDocs = matrixData?.rows.find((r) => r.id === rowId)?.cells?.[columnId]?.metadata?.documents;
+          const documents = (response.metadata as Record<string, unknown>|undefined)?.documents ?? cellDocs;
+          await onCellEdit(rowId, columnId, value, {
+            data_source: 'service',
+            metadata: {
+              ...(response.metadata ? { explanation: response.metadata.explanation, citations: response.metadata.citations, service_name: response.action_id } : {}),
+              ...(documents != null ? { documents } : {}),
+            },
+          });
+        }
       } catch (err) {
         console.warn('Cell action result persist (onCellEdit) failed:', err);
         toast.error(err instanceof Error ? err.message : 'Failed to save edit');

@@ -59,6 +59,7 @@ api_router.include_router(matrix_charts_router, tags=["matrix-charts"])
 # Optional routers that may rely on heavy service dependencies
 # Use short key for health response (e.g. cell_actions, valuation)
 OPTIONAL_ROUTERS = {
+    "app.api.endpoints.email_inbound": {"tags": ["email"], "key": "email_inbound"},
     "app.api.endpoints.model_router_test": {"tags": ["test"], "key": "model_router_test"},
     "app.api.endpoints.python_executor": {"tags": ["python"], "key": "python_executor"},
     "app.api.endpoints.python_exec": {"prefix": "/python-scripts", "tags": ["python-scripts"], "key": "python_exec"},

@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     FIRECRAWL_API_KEY: Optional[str] = Field(None, env="FIRECRAWL_API_KEY")
     CLAUDE_API_KEY: Optional[str] = Field(None, env="CLAUDE_API_KEY")
     GOOGLE_API_KEY: Optional[str] = Field(None, env="GOOGLE_API_KEY")
+
+    # Email integration (Resend + Cloudflare Email Workers)
+    RESEND_API_KEY: Optional[str] = Field(None, env="RESEND_API_KEY")
+    EMAIL_WEBHOOK_SECRET: Optional[str] = Field(None, env="EMAIL_WEBHOOK_SECRET")
+    EMAIL_FROM_DOMAIN: str = Field("dilla.ai", env="EMAIL_FROM_DOMAIN")
     
     # Model configuration for extraction with fallbacks
     PRIMARY_EXTRACTION_MODEL: str = Field("claude-sonnet-4-5", env="PRIMARY_EXTRACTION_MODEL")

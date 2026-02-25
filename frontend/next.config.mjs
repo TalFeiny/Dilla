@@ -8,6 +8,7 @@ if (process.env.NODE_ENV !== 'production') {
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'standalone',
   env: {
     NEXTAUTH_URL: process.env.NEXTAUTH_URL || 'http://localhost:3001',
     NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET || 'dev-secret-change-in-production',
@@ -27,6 +28,9 @@ const nextConfig = {
   
   // Module transpilation for faster builds
   transpilePackages: ['@supabase/ssr', '@supabase/supabase-js'],
+
+  // Keep heavy server-only packages out of function bundles
+  serverExternalPackages: ['@react-pdf/renderer'],
   
   // Enable type checking in build for production safety
   typescript: {

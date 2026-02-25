@@ -223,6 +223,10 @@ async def execute_action(
                 for col in cols:
                     if isinstance(col, dict) and 'values' in col and isinstance(col['values'], dict):
                         col['values'] = {str(k): _make_json_safe(v) for k, v in col['values'].items()}
+        # Promote enrichment fields from service output to top-level metadata for frontend
+        if isinstance(service_output, dict) and service_output.get('enrich_mode') and isinstance(safe_metadata, dict):
+            safe_metadata['enrich_mode'] = service_output['enrich_mode']
+            safe_metadata['column_values'] = _make_json_safe(service_output.get('column_values', {}))
         return ActionExecutionResponse(
             success=True,
             action_id=action_id,
@@ -1430,19 +1434,60 @@ async def _route_to_service(
                         total_invested = sum(pc.get('investment_amount', 0) or 0 for pc in companies)
                         return total_invested
                     
+                    elif 'ltm_ntm' in action_id:
+                        # LTM/NTM regression chart
+                        from app.services.chart_data_service import ChartDataService
+                        from app.services.data_validator import ensure_numeric
+                        flat_companies = []
+                        for pc in companies:
+                            co = pc.get('companies', {}) or {}
+                            flat_companies.append({
+                                "company": co.get('name', 'Unknown'),
+                                "revenue": ensure_numeric(co.get('current_arr_usd') or co.get('revenue'), 0),
+                                "arr": ensure_numeric(co.get('current_arr_usd'), 0),
+                                "growth_rate": ensure_numeric(co.get('growth_rate'), 0),
+                                "inferred_revenue": ensure_numeric(co.get('inferred_revenue'), 0),
+                            })
+                        cds = ChartDataService()
+                        chart = cds.generate_ltm_ntm_regression(flat_companies)
+                        return chart or {"type": "ltm_ntm_regression", "data": {"labels": [], "datasets": []}, "title": "No data"}
+
+                    elif 'dpi_sankey' in action_id:
+                        # DPI Sankey chart — returns chart data, not scalar
+                        from app.services.chart_data_service import ChartDataService
+                        from app.services.data_validator import ensure_numeric
+                        fund_response = client.from_("funds").select("size").eq("id", fund_id).single().execute()
+                        fund_size = (fund_response.data.get('size', 260_000_000) if fund_response.data else 260_000_000)
+                        # Flatten portfolio_companies join into CDS-compatible dicts
+                        flat_companies = []
+                        for pc in companies:
+                            co = pc.get('companies', {}) or {}
+                            flat_companies.append({
+                                "company": co.get('name', 'Unknown'),
+                                "investment_amount": ensure_numeric(pc.get('investment_amount'), 0),
+                                "cost_basis": ensure_numeric(pc.get('investment_amount'), 0),
+                                "ownership_pct": ensure_numeric(pc.get('ownership_pct'), 0),
+                                "valuation": ensure_numeric(co.get('current_valuation_usd'), 0),
+                                "total_funding": ensure_numeric(co.get('total_funding_usd') or co.get('total_raised'), 0),
+                                "stage": co.get('stage', 'Series A'),
+                                "status": pc.get('status') or co.get('status', 'active'),
+                                "realized": ensure_numeric(pc.get('exit_value_usd') or co.get('exit_value_usd'), 0),
+                                "last_round_date": co.get('last_round_date'),
+                            })
+                        cds = ChartDataService()
+                        chart = cds.generate_dpi_sankey(flat_companies, fund_size)
+                        return chart or {"type": "dpi_sankey", "data": {"nodes": [], "links": []}, "title": "No data"}
+
                     elif 'dpi' in action_id:
-                        # DPI = distributed / paid-in
+                        # Scalar DPI = distributed / paid-in
                         total_invested = sum(pc.get('investment_amount', 0) or 0 for pc in companies)
-                        # Get actual distributed amounts from exited companies
                         total_distributed = 0
                         for pc in companies:
                             company = pc.get('companies', {})
-                            # Check if company has exited
                             status = pc.get('status') or company.get('status', 'active')
                             if status == 'exited':
                                 exit_value = pc.get('exit_value_usd') or company.get('exit_value_usd', 0) or 0
                                 ownership_pct = pc.get('ownership_pct', 0) or 0
-                                # Distributed amount = ownership % * exit value
                                 distributed = (ownership_pct / 100) * exit_value
                                 total_distributed += distributed
                         return total_distributed / total_invested if total_invested > 0 else 0
@@ -2489,6 +2534,95 @@ async def _route_to_service(
             
             return result
         
+        # Enrichment: fetch company data via orchestrator and map to target columns
+        elif action_id.startswith('enrich.') or service_name == 'enrichment_service':
+            try:
+                from app.services.unified_mcp_orchestrator import UnifiedMCPOrchestrator
+                from app.core.dependencies import ServiceFactory
+
+                company_name = (
+                    request.inputs.get('company')
+                    or request.inputs.get('company_name')
+                    or request.inputs.get('name')
+                    or request.inputs.get('prompt_handle')
+                )
+                if not company_name:
+                    raise ValueError("Company name required for enrichment (pass 'company' or 'name' in inputs)")
+
+                orchestrator = ServiceFactory.create_orchestrator()
+                fetch_result = await orchestrator._execute_company_fetch({
+                    'company': company_name,
+                    'prompt_handle': company_name,
+                })
+
+                companies = fetch_result.get('companies', [])
+                if not companies:
+                    raise ValueError(f"No data returned for '{company_name}'")
+
+                company_data = companies[0]
+                if company_data.get('extraction_failed'):
+                    raise ValueError(company_data.get('error', f"Extraction failed for '{company_name}'"))
+
+                # Map extracted company data fields to common matrix column patterns
+                # Keys: regex-compatible column id/name patterns → extracted data field paths
+                COLUMN_FIELD_MAP = {
+                    r'revenue|arr|current_arr': lambda d: d.get('revenue') or d.get('arr') or d.get('current_arr_usd'),
+                    r'valuation|currentValuation': lambda d: d.get('valuation') or d.get('current_valuation_usd') or d.get('last_round_valuation'),
+                    r'stage|round': lambda d: d.get('stage') or d.get('funding_stage'),
+                    r'sector|industry|vertical': lambda d: d.get('sector') or d.get('vertical') or d.get('industry'),
+                    r'team_size|employees|headcount': lambda d: d.get('team_size') or d.get('employee_count'),
+                    r'total_funding|total_raised|raised': lambda d: d.get('total_funding') or d.get('total_raised'),
+                    r'founded|founding|year_founded': lambda d: d.get('founded_year') or d.get('year_founded'),
+                    r'location|hq|headquarters|geo': lambda d: d.get('location') or d.get('headquarters') or d.get('geography'),
+                    r'business_model|model': lambda d: d.get('business_model'),
+                    r'category': lambda d: d.get('category'),
+                    r'description|product|what_they_do': lambda d: d.get('product_description') or d.get('description') or d.get('what_they_do'),
+                    r'growth|revenueGrowth|growth_rate': lambda d: d.get('revenue_growth_annual_pct') or d.get('growth_rate'),
+                    r'gross_margin|margin': lambda d: d.get('gross_margin'),
+                    r'burn|burn_rate|monthly_burn': lambda d: d.get('burn_rate') or d.get('monthly_burn'),
+                    r'runway|runway_months': lambda d: d.get('runway_months'),
+                    r'founder|ceo|leadership': lambda d: d.get('founders') or d.get('ceo') or d.get('leadership'),
+                    r'investors|lead_investor': lambda d: d.get('key_investors') or d.get('investors') or d.get('lead_investor'),
+                    r'customers|notable_customers': lambda d: d.get('customers') or d.get('notable_customers'),
+                    r'competitors': lambda d: d.get('competitors'),
+                    r'pricing|pricing_model': lambda d: d.get('pricing_model') or d.get('pricing'),
+                    r'target_market|tam': lambda d: d.get('target_market'),
+                }
+
+                import re
+                target_columns = request.inputs.get('target_columns', [])
+                column_values: Dict[str, Any] = {}
+
+                for col_id in target_columns:
+                    col_lower = col_id.lower()
+                    for pattern, extractor in COLUMN_FIELD_MAP.items():
+                        if re.search(pattern, col_lower):
+                            val = extractor(company_data)
+                            if val is not None and val != '' and val != 0:
+                                column_values[col_id] = val
+                            break
+
+                # Build citations from search
+                citations = []
+                for key in ('citations', 'sources'):
+                    if company_data.get(key):
+                        citations = company_data[key] if isinstance(company_data[key], list) else []
+                        break
+
+                return {
+                    'value': company_data.get('company') or company_name,
+                    'column_values': column_values,
+                    'enrich_mode': 'row',
+                    'company_data': {k: v for k, v in company_data.items() if k not in ('_fetched_at',)},
+                    'explanation': f"Enriched {len(column_values)} columns for {company_data.get('company', company_name)}",
+                    'citations': citations,
+                    'confidence': company_data.get('overall_confidence', 0.7),
+                }
+
+            except Exception as e:
+                logger.error(f"Error in enrich.company_row for {request.inputs}: {e}", exc_info=True)
+                return {'error': str(e)}
+
         # Unified MCP Orchestrator Skills
         elif 'skill.' in action_id or service_name == 'unified_mcp_orchestrator':
             try:

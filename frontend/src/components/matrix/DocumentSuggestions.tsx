@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Check, X, FileText, Sparkles, ChevronDown, ChevronUp, Zap, ArrowRight } from 'lucide-react';
+import { Check, X, FileText, Sparkles, ChevronDown, ChevronUp, Zap, ArrowRight, Cpu, TrendingUp, TrendingDown, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -9,8 +9,14 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { MatrixCell, MatrixRow, MatrixData } from './UnifiedMatrix';
-import { formatSuggestionValue } from '@/lib/matrix/cell-formatters';
+import { formatSuggestionValue, getColumnLabel } from '@/lib/matrix/cell-formatters';
 
 export interface DocumentSuggestion {
   id: string;
@@ -126,35 +132,37 @@ export function DocumentSuggestionBadge({
           {pendingSuggestions.length} suggestion{pendingSuggestions.length > 1 ? 's' : ''}
         </Badge>
       </PopoverTrigger>
-      <PopoverContent className="w-96" align="start">
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h4 className="font-semibold text-sm">Document Suggestions</h4>
-            <Badge variant="secondary" className="text-xs">
-              {pendingSuggestions.length} pending
-            </Badge>
-          </div>
+      <PopoverContent className="w-[420px] max-h-[70vh] overflow-y-auto" align="start">
+        <TooltipProvider delayDuration={150}>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="font-semibold text-sm">Suggested Updates</h4>
+              <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                {pendingSuggestions.length} to review
+              </span>
+            </div>
 
-          {pendingSuggestions.map((suggestion) => (
-            <SuggestionCard
-              key={suggestion.id}
-              suggestion={suggestion}
-              onAccept={() => {
-                onAccept(suggestion.id, {
-                  rowId: suggestion.rowId,
-                  columnId: suggestion.columnId,
-                  suggestedValue: suggestion.suggestedValue,
-                  sourceDocumentId: suggestion.sourceDocumentId,
-                });
-                setIsOpen(false);
-              }}
-              onReject={() => {
-                onReject(suggestion.id);
-                setIsOpen(false);
-              }}
-            />
-          ))}
-        </div>
+            {pendingSuggestions.map((suggestion) => (
+              <SuggestionCard
+                key={suggestion.id}
+                suggestion={suggestion}
+                onAccept={() => {
+                  onAccept(suggestion.id, {
+                    rowId: suggestion.rowId,
+                    columnId: suggestion.columnId,
+                    suggestedValue: suggestion.suggestedValue,
+                    sourceDocumentId: suggestion.sourceDocumentId,
+                  });
+                  setIsOpen(false);
+                }}
+                onReject={() => {
+                  onReject(suggestion.id);
+                  setIsOpen(false);
+                }}
+              />
+            ))}
+          </div>
+        </TooltipProvider>
       </PopoverContent>
     </Popover>
   );
@@ -196,7 +204,7 @@ function parseReasoningSteps(reasoning: string): { signal?: string; steps: strin
   return { steps: parts, inferred };
 }
 
-function SuggestionCard({
+export function SuggestionCard({
   suggestion,
   onAccept,
   onReject,
@@ -210,134 +218,204 @@ function SuggestionCard({
     () => parseReasoningSteps(suggestion.reasoning),
     [suggestion.reasoning]
   );
-  const hasChain = !!signal || steps.length > 1;
+  // Determine which steps are "reasoning" vs final "extrapolation"
+  const reasoningSteps = steps.length > 1 ? steps.slice(0, -1) : [];
+  const extrapolation = steps.length > 1 ? steps[steps.length - 1] : steps[0] ?? '';
 
-  const changeBadge = useMemo(() => {
+  /** Delta: the hero of the card — direction, magnitude, color */
+  const delta = useMemo(() => {
     if (!suggestion.changeType) return null;
-    const change = suggestion.changePercentage ?? suggestion.changeAmount;
-
     if (suggestion.changeType === 'new') {
-      return { label: 'New', cls: 'bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400' };
+      return { label: 'New', Icon: Plus, colorCls: 'text-blue-600 dark:text-blue-400' };
     }
-    if (change == null) return null;
-
-    const formatted = typeof change === 'number' && change < 1
-      ? `${(change * 100).toFixed(1)}%`
-      : formatSuggestionValue(change);
-    if (suggestion.changeType === 'increase') {
-      return { label: `+${formatted}`, cls: 'bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400' };
+    const isUp = suggestion.changeType === 'increase';
+    const sign = isUp ? '+' : '−';
+    // Percentage and absolute shown separately when both exist
+    const pct = suggestion.changePercentage;
+    const amt = suggestion.changeAmount;
+    let label = '';
+    if (pct != null) {
+      label = `${sign}${(Math.abs(pct) * 100).toFixed(1)}%`;
+    } else if (amt != null) {
+      label = `${sign}${formatSuggestionValue(Math.abs(amt), suggestion.columnId)}`;
     }
-    if (suggestion.changeType === 'decrease') {
-      return { label: `-${formatted}`, cls: 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-400' };
-    }
-    return null;
-  }, [suggestion.changeType, suggestion.changePercentage, suggestion.changeAmount]);
+    if (!label) return null;
+    return {
+      label,
+      Icon: isUp ? TrendingUp : TrendingDown,
+      colorCls: isUp
+        ? 'text-emerald-600 dark:text-emerald-400'
+        : 'text-red-600 dark:text-red-400',
+    };
+  }, [suggestion.changeType, suggestion.changePercentage, suggestion.changeAmount, suggestion.columnId]);
 
   const confidencePct = Math.round(suggestion.confidence * 100);
-  const confColor = confidencePct >= 75
-    ? 'text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/20'
-    : confidencePct >= 50
-      ? 'text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20'
-      : 'text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/20';
+  const confDots = Math.round(suggestion.confidence * 5);
+  const confDotColor = confidencePct >= 75
+    ? 'bg-emerald-500' : confidencePct >= 50 ? 'bg-amber-500' : 'bg-red-400';
 
   return (
-    <div className="border rounded-lg p-3 space-y-2">
-      {/* Header: source doc + change badge */}
-      <div className="flex items-center gap-2">
-        <FileText className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-        <span className="text-xs text-gray-500 dark:text-gray-400 truncate flex-1">
-          {suggestion.sourceDocumentName}
-        </span>
-        {changeBadge && (
-          <Badge variant="outline" className={`text-[10px] shrink-0 ${changeBadge.cls}`}>
-            {changeBadge.label}
-          </Badge>
-        )}
-      </div>
-
-      {/* Value change: current → suggested */}
-      <div className="flex items-baseline gap-1.5 px-1">
-        <span className="text-sm text-gray-500 dark:text-gray-400 font-medium tabular-nums">
-          {formatSuggestionValue(suggestion.currentValue, suggestion.columnId)}
-        </span>
-        <ArrowRight className="w-3 h-3 text-gray-400 shrink-0" />
-        <span className="text-sm font-semibold text-blue-600 dark:text-blue-400 tabular-nums">
-          {formatSuggestionValue(suggestion.suggestedValue, suggestion.columnId)}
-        </span>
-      </div>
-
-      {/* Reasoning chain — collapsed: first step only; expanded: full chain */}
-      {hasChain ? (
-        <div className="space-y-1">
-          {/* Signal line */}
-          {signal && (
-            <div className="flex items-start gap-1.5 px-1">
-              <Zap className="w-3 h-3 text-amber-500 mt-0.5 shrink-0" />
-              <span className="text-xs text-gray-700 dark:text-gray-300 leading-snug">
-                &ldquo;{signal}&rdquo;
-              </span>
+    <div className="border rounded-lg overflow-hidden">
+      {/* Header: metric label, values, delta — the hero section */}
+      <div className="p-3 pb-2">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">
+            {getColumnLabel(suggestion.columnId)}
+          </span>
+          {/* Confidence dots */}
+          <div className="flex items-center gap-1" title={`${confidencePct}% confidence`}>
+            <div className="flex gap-0.5">
+              {[1, 2, 3, 4, 5].map(i => (
+                <div key={i} className={`w-1.5 h-1.5 rounded-full ${i <= confDots ? confDotColor : 'bg-gray-200 dark:bg-gray-700'}`} />
+              ))}
             </div>
-          )}
-
-          {/* Steps — show first always, rest only when expanded */}
-          {steps.slice(0, expanded ? steps.length : 1).map((step, i) => (
-            <div key={i} className="flex items-start gap-1.5 px-1 pl-3">
-              <ArrowRight className="w-3 h-3 text-gray-400 mt-0.5 shrink-0" />
-              <span className="text-xs text-gray-600 dark:text-gray-400 leading-snug">{step}</span>
+            <span className="text-[10px] text-gray-400 tabular-nums">{confidencePct}%</span>
+          </div>
+        </div>
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="flex items-baseline gap-1.5 min-w-0">
+            <span className="text-sm text-gray-400 dark:text-gray-500 line-through tabular-nums">
+              {formatSuggestionValue(suggestion.currentValue, suggestion.columnId)}
+            </span>
+            <ArrowRight className="w-3 h-3 text-gray-300 dark:text-gray-600 shrink-0 relative top-[1px]" />
+            <span className="text-base font-semibold text-gray-900 dark:text-gray-100 tabular-nums">
+              {formatSuggestionValue(suggestion.suggestedValue, suggestion.columnId)}
+            </span>
+          </div>
+          {delta && (
+            <div className={`flex items-center gap-1 text-sm font-semibold shrink-0 ${delta.colorCls}`}>
+              <delta.Icon className="w-3.5 h-3.5" />
+              {delta.label}
             </div>
-          ))}
-
-          {/* Expand/collapse toggle */}
-          {steps.length > 1 && (
-            <button
-              type="button"
-              onClick={() => setExpanded(e => !e)}
-              className="flex items-center gap-1 px-1 pl-3 text-[11px] text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
-            >
-              {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-              {expanded ? 'Less' : `${steps.length - 1} more step${steps.length - 1 > 1 ? 's' : ''}`}
-            </button>
           )}
         </div>
-      ) : (
-        /* Fallback: single-line reasoning (no chain structure) */
-        <p className="text-xs text-gray-600 dark:text-gray-400 px-1 leading-snug">
-          {steps[0] ?? suggestion.reasoning}
-        </p>
-      )}
+      </div>
 
-      {/* Metadata row: confidence + inferred tag + citation */}
-      <div className="flex items-center gap-1.5 flex-wrap px-1">
-        <Badge variant="outline" className={`text-[10px] ${confColor}`}>
-          {confidencePct}%
-        </Badge>
-        {inferred && (
-          <Badge variant="outline" className="text-[10px] bg-orange-50 text-orange-600 dark:bg-orange-900/20 dark:text-orange-400">
-            inferred
-          </Badge>
-        )}
-        {suggestion.citationPage != null && (
-          <span className="text-[10px] text-gray-400 dark:text-gray-500">
-            p.{suggestion.citationPage}{suggestion.citationSection ? ` — ${suggestion.citationSection}` : ''}
+      {/* Source + expand — always visible middle band */}
+      <div className="px-3 py-2 bg-gray-50/80 dark:bg-gray-800/40 border-t">
+        {/* Source line — always visible so you know where this came from */}
+        <div className="flex items-center gap-1.5 min-w-0">
+          {suggestion.source === 'service'
+            ? <Cpu className="w-3 h-3 text-violet-500 shrink-0" />
+            : <FileText className="w-3 h-3 text-gray-400 shrink-0" />}
+          <span className="text-xs text-gray-600 dark:text-gray-300 truncate">
+            {suggestion.sourceDocumentName}
           </span>
-        )}
-        {suggestion.extractedMetric && (
-          <span className="text-[10px] text-gray-400 dark:text-gray-500">
-            {suggestion.extractedMetric}
-          </span>
+          {suggestion.citationPage != null && (
+            <span className="text-[10px] text-gray-400 shrink-0">p.{suggestion.citationPage}</span>
+          )}
+          {inferred && (
+            <Badge variant="outline" className="text-[9px] px-1 py-0 bg-orange-50 text-orange-600 dark:bg-orange-900/20 dark:text-orange-400 shrink-0 ml-auto">
+              inferred
+            </Badge>
+          )}
+        </div>
+
+        {/* Expand toggle — clear affordance */}
+        <button
+          type="button"
+          onClick={() => setExpanded(e => !e)}
+          className="flex items-center gap-1 mt-1.5 text-[11px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+        >
+          {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          <span>{expanded ? 'Hide evidence' : 'View evidence chain'}</span>
+        </button>
+
+        {/* Expanded: connected stepper — Source → Reasoning → Conclusion */}
+        {expanded && (
+          <div className="mt-2.5 ml-0.5" onClick={(e) => e.stopPropagation()}>
+            {/* Step 1: SOURCE — signal from document/service */}
+            <div className="flex gap-2.5">
+              <div className="flex flex-col items-center">
+                <div className="w-2 h-2 rounded-full bg-blue-500 ring-2 ring-blue-500/20 shrink-0 mt-0.5" />
+                {(reasoningSteps.length > 0 || extrapolation) && (
+                  <div className="w-px flex-1 bg-gray-200 dark:bg-gray-700 my-0.5" />
+                )}
+              </div>
+              <div className="pb-2 min-w-0">
+                <span className="text-[9px] font-semibold uppercase tracking-wider text-blue-500 dark:text-blue-400">
+                  Source
+                </span>
+                {suggestion.citationSection && (
+                  <span className="text-[10px] text-gray-400 ml-1.5">
+                    &ldquo;{suggestion.citationSection}&rdquo;
+                  </span>
+                )}
+                {suggestion.documentSummary && (
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 leading-snug line-clamp-2">
+                    {suggestion.documentSummary}
+                  </p>
+                )}
+                {signal && (
+                  <div className="flex items-start gap-1 mt-1">
+                    <Zap className="w-3 h-3 text-amber-500 mt-0.5 shrink-0" />
+                    <span className="text-xs text-gray-600 dark:text-gray-300 leading-snug italic">
+                      &ldquo;{signal}&rdquo;
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Step 2: REASONING (only if multi-step chain) */}
+            {reasoningSteps.length > 0 && (
+              <div className="flex gap-2.5">
+                <div className="flex flex-col items-center">
+                  <div className="w-2 h-2 rounded-full bg-amber-500 ring-2 ring-amber-500/20 shrink-0 mt-0.5" />
+                  {extrapolation && (
+                    <div className="w-px flex-1 bg-gray-200 dark:bg-gray-700 my-0.5" />
+                  )}
+                </div>
+                <div className="pb-2 min-w-0">
+                  <span className="text-[9px] font-semibold uppercase tracking-wider text-amber-500 dark:text-amber-400">
+                    Reasoning
+                  </span>
+                  {reasoningSteps.map((step, i) => (
+                    <p key={i} className="text-xs text-gray-600 dark:text-gray-400 mt-0.5 leading-snug">{step}</p>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Step 3: CONCLUSION */}
+            {extrapolation && (
+              <div className="flex gap-2.5">
+                <div className="flex flex-col items-center">
+                  <div className="w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-emerald-500/20 shrink-0 mt-0.5" />
+                </div>
+                <div className="min-w-0">
+                  <span className="text-[9px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                    {inferred ? 'Extrapolation' : 'Conclusion'}
+                  </span>
+                  <p className="text-xs text-gray-700 dark:text-gray-300 font-medium mt-0.5 leading-snug">{extrapolation}</p>
+                  {inferred && (
+                    <Badge variant="outline" className="text-[9px] px-1 py-0 mt-1 bg-orange-50 text-orange-600 dark:bg-orange-900/20 dark:text-orange-400">
+                      inferred — verify manually
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {suggestion.extractedMetric && (
+              <div className="text-[10px] text-gray-400 dark:text-gray-500 ml-[18px] mt-1">
+                Metric: {suggestion.extractedMetric}
+              </div>
+            )}
+          </div>
         )}
       </div>
 
       {/* Actions */}
-      <div className="flex gap-2 pt-1.5 border-t">
+      <div className="flex gap-2 p-2 border-t">
         <Button
           size="sm"
-          variant="outline"
-          className="flex-1 h-7 text-xs"
+          variant="ghost"
+          className="flex-1 h-7 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
           onClick={onReject}
         >
           <X className="w-3 h-3 mr-1" />
-          Reject
+          Dismiss
         </Button>
         <Button
           size="sm"

@@ -1,4 +1,9 @@
 import { NextResponse } from 'next/server';
+import { Resend } from 'resend';
+
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+const NOTIFY_EMAIL = 'talfeingold6@gmail.com';
 
 const freeEmailDomains = new Set([
   'gmail.com',
@@ -25,6 +30,12 @@ interface LeadPayload {
   notes?: string;
 }
 
+const firmLabels: Record<string, string> = {
+  solo: 'Solo VC / Angel',
+  mid: 'Mid-Sized Shop',
+  mega: 'Megafund / Financial Institution'
+};
+
 function isWorkEmail(email: string): boolean {
   const domain = email.split('@')[1]?.toLowerCase();
   if (!domain) return false;
@@ -43,81 +54,35 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Personal email domains are not supported.' }, { status: 400 });
     }
 
-    const webhook = process.env.LEAD_ALERT_WEBHOOK;
-    const beehiivEndpoint = process.env.BEEHIIV_WEBHOOK_URL;
+    const submittedAt = new Date().toISOString();
+    const firmLabel = firmLabels[firmType] ?? firmType;
 
-    const payload = {
-      name,
-      email,
-      firmType,
-      notes: notes ?? '',
-      submittedAt: new Date().toISOString(),
-      source: 'marketing-site'
-    };
+    // Send notification email via Resend
+    const { error: resendError } = await resend.emails.send({
+      from: 'Dilla Leads <onboarding@resend.dev>',
+      to: NOTIFY_EMAIL,
+      subject: `New lead: ${name} (${firmLabel})`,
+      html: `
+        <h2>New Lead from dilla-ai.com</h2>
+        <table style="border-collapse:collapse;font-family:sans-serif;font-size:14px;">
+          <tr><td style="padding:6px 12px;font-weight:bold;">Name</td><td style="padding:6px 12px;">${name}</td></tr>
+          <tr><td style="padding:6px 12px;font-weight:bold;">Email</td><td style="padding:6px 12px;"><a href="mailto:${email}">${email}</a></td></tr>
+          <tr><td style="padding:6px 12px;font-weight:bold;">Firm Profile</td><td style="padding:6px 12px;">${firmLabel}</td></tr>
+          <tr><td style="padding:6px 12px;font-weight:bold;">Notes</td><td style="padding:6px 12px;">${notes || '—'}</td></tr>
+          <tr><td style="padding:6px 12px;font-weight:bold;">Submitted</td><td style="padding:6px 12px;">${submittedAt}</td></tr>
+        </table>
+      `
+    });
 
-    let delivered = false;
-    const failures: string[] = [];
-
-    if (webhook) {
-      try {
-        const webhookResponse = await fetch(webhook, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
-
-        if (!webhookResponse.ok) {
-          failures.push(`Webhook responded with ${webhookResponse.status}`);
-        } else {
-          delivered = true;
-        }
-      } catch (error) {
-        failures.push(`Webhook delivery failed: ${(error as Error).message}`);
-      }
-    }
-
-    if (beehiivEndpoint) {
-      try {
-        const beehiivResponse = await fetch(beehiivEndpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
-
-        if (!beehiivResponse.ok) {
-          failures.push(`Beehiiv webhook responded with ${beehiivResponse.status}`);
-        } else {
-          delivered = true;
-        }
-      } catch (error) {
-        failures.push(`Beehiiv webhook delivery failed: ${(error as Error).message}`);
-      }
-    }
-
-    if (!webhook && !beehiivEndpoint) {
-      console.warn('Lead captured but no webhook configured.', payload);
-    }
-
-    if (failures.length > 0 && delivered) {
-      console.warn('Lead captured with partial delivery failures', { failures });
-    }
-
-    if (!delivered && failures.length > 0) {
+    if (resendError) {
+      console.error('Resend email failed:', resendError);
       return NextResponse.json(
-        { error: 'Lead captured but delivery failed. Check server logs.' },
+        { error: 'Lead captured but notification failed. We will follow up.' },
         { status: 502 }
       );
     }
 
-    return NextResponse.json({
-      success: true,
-      delivered,
-      requiresConfiguration: !webhook && !beehiivEndpoint
-    });
+    return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Lead submission error', error);
     return NextResponse.json({ error: 'Unexpected error.' }, { status: 500 });
