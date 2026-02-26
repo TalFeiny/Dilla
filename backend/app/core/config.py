@@ -33,8 +33,11 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: List[str] = Field(
         default_factory=lambda: [
             "http://localhost:3000",
+            "http://localhost:3001",
             "http://localhost:8000",
-            "https://dilla.ai"
+            "https://dilla.ai",
+            "https://dilla-ai.com",
+            "https://www.dilla-ai.com",
         ]
     )
     

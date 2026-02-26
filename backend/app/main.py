@@ -77,8 +77,11 @@ app.add_exception_handler(Exception, general_exception_handler)
 # CORS middleware with proper security
 allowed_origins = [
     "http://localhost:3000",
-    "http://localhost:3001", 
+    "http://localhost:3001",
     "http://localhost:8000",
+    "https://dilla.ai",
+    "https://dilla-ai.com",
+    "https://www.dilla-ai.com",
 ]
 
 # Add production origins from environment

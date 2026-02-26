@@ -24,7 +24,7 @@ const SECURITY_HEADERS = isDevelopment ? {
     "style-src 'self' 'unsafe-inline' data: http://localhost:* https://fonts.googleapis.com https://api.fontshare.com https://cdn.fontshare.com",
     "img-src 'self' data: https: blob:",
     "font-src 'self' data: https://fonts.gstatic.com https://api.fontshare.com https://cdn.fontshare.com",
-    "connect-src 'self' https://api.anthropic.com https://api.tavily.com https://api.firecrawl.dev https://*.supabase.co wss://*.supabase.co http://localhost:8000 https://dilla-production.up.railway.app",
+    "connect-src 'self' https://api.anthropic.com https://api.tavily.com https://api.firecrawl.dev https://*.supabase.co wss://*.supabase.co http://localhost:8000 https://dilla-production.up.railway.app https://dilla-ai.com https://www.dilla-ai.com",
     "frame-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",
@@ -194,7 +194,7 @@ export function middleware(request: NextRequest) {
     
     // Add CORS headers for FastAPI responses
     const origin = request.headers.get('origin')
-    const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com']
+    const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com', 'https://dilla.ai']
 
     if (origin && allowedOrigins.includes(origin)) {
       response.headers.set('Access-Control-Allow-Origin', origin)
@@ -230,7 +230,7 @@ export function middleware(request: NextRequest) {
     
     // CORS handling for API routes
     const origin = request.headers.get('origin')
-    const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com']
+    const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com', 'https://dilla.ai']
 
     if (origin && allowedOrigins.includes(origin)) {
       response.headers.set('Access-Control-Allow-Origin', origin)
