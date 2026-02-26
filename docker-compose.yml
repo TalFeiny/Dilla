@@ -18,7 +18,7 @@ services:
       - ENVIRONMENT=development
       - DEBUG=True
     volumes:
-      - ./backend:/app
+      - ./backend:/code
     depends_on:
       - redis
     networks:
