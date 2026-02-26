@@ -10,14 +10,14 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
+# Copy requirements first for better caching (build context is backend/)
 COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt && \
     which gunicorn && gunicorn --version
 
-# Copy application code
+# Copy backend application code (build context is backend/)
 COPY . .
 
 # Create non-root user for security
