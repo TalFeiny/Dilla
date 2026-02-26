@@ -1,13 +1,21 @@
 import { NextAuthOptions } from 'next-auth';
 import GoogleProvider from 'next-auth/providers/google';
 import CredentialsProvider from 'next-auth/providers/credentials';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-// Create Supabase client with server-side key
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || ''
-);
+// Lazy Supabase client - avoids crashing at module load if env vars are missing
+let _supabase: SupabaseClient | null = null;
+function getSupabase(): SupabaseClient {
+  if (!_supabase) {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
+    if (!url || !key) {
+      throw new Error(`Supabase not configured: missing ${!url ? 'SUPABASE_URL' : 'SUPABASE_SERVICE_ROLE_KEY'}`);
+    }
+    _supabase = createClient(url, key);
+  }
+  return _supabase;
+}
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -48,7 +56,7 @@ export const authOptions: NextAuthOptions = {
       if (account?.provider === 'google') {
         try {
           // Check if user exists in Supabase
-          const { data: existingUser, error: fetchError } = await supabase
+          const { data: existingUser, error: fetchError } = await getSupabase()
             .from('users')
             .select('*')
             .eq('email', user.email!)
@@ -61,14 +69,14 @@ export const authOptions: NextAuthOptions = {
 
           if (!existingUser) {
             // Check if this is the first free generation
-            const { data: anonSession } = await supabase
+            const { data: anonSession } = await getSupabase()
               .from('anonymous_sessions')
               .select('*')
               .eq('session_id', profile?.sub)
               .single();
 
             // Create new user
-            const { data: newUser, error: createError } = await supabase
+            const { data: newUser, error: createError } = await getSupabase()
               .from('users')
               .insert({
                 email: user.email!,
@@ -87,14 +95,14 @@ export const authOptions: NextAuthOptions = {
 
             // Update anonymous session if exists
             if (anonSession) {
-              await supabase
+              await getSupabase()
                 .from('anonymous_sessions')
                 .update({ converted_user_id: newUser.id })
                 .eq('id', anonSession.id);
             }
           } else {
             // Update existing user
-            await supabase
+            await getSupabase()
               .from('users')
               .update({
                 google_id: profile?.sub,
@@ -117,7 +125,7 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       if (session.user?.email) {
         // Fetch user data from Supabase
-        const { data: userData } = await supabase
+        const { data: userData } = await getSupabase()
           .from('users')
           .select('*, organizations(*)')
           .eq('email', session.user.email)

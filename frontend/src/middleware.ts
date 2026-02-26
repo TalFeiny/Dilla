@@ -21,9 +21,9 @@ const SECURITY_HEADERS = isDevelopment ? {
   'Content-Security-Policy': [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",
-    "style-src 'self' 'unsafe-inline' data: http://localhost:* https://fonts.googleapis.com https://api.fontshare.com",
+    "style-src 'self' 'unsafe-inline' data: http://localhost:* https://fonts.googleapis.com https://api.fontshare.com https://cdn.fontshare.com",
     "img-src 'self' data: https: blob:",
-    "font-src 'self' data: https://fonts.gstatic.com https://api.fontshare.com",
+    "font-src 'self' data: https://fonts.gstatic.com https://api.fontshare.com https://cdn.fontshare.com",
     "connect-src 'self' https://api.anthropic.com https://api.tavily.com https://api.firecrawl.dev https://*.supabase.co wss://*.supabase.co http://localhost:8000 https://dilla-production.up.railway.app",
     "frame-src 'self'",
     "object-src 'none'",

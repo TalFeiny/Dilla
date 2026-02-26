@@ -8,7 +8,7 @@ if (process.env.NODE_ENV !== 'production') {
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
+  // output: 'standalone', // Only for self-hosted (Railway/Docker). Vercel needs default output for serverless API routes.
   env: {
     NEXTAUTH_URL: process.env.NEXTAUTH_URL || 'http://localhost:3001',
     NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET || 'dev-secret-change-in-production',
