@@ -17,8 +17,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
     which gunicorn && gunicorn --version
 
-# Copy application code
-COPY . .
+# Copy backend application code (build context is repo root)
+COPY backend/ .
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
