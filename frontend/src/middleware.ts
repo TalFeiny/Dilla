@@ -24,7 +24,7 @@ const SECURITY_HEADERS = isDevelopment ? {
     "style-src 'self' 'unsafe-inline' data: http://localhost:* https://fonts.googleapis.com https://api.fontshare.com https://cdn.fontshare.com",
     "img-src 'self' data: https: blob:",
     "font-src 'self' data: https://fonts.gstatic.com https://api.fontshare.com https://cdn.fontshare.com",
-    "connect-src 'self' https://api.anthropic.com https://api.tavily.com https://api.firecrawl.dev https://*.supabase.co wss://*.supabase.co http://localhost:8000 https://dilla-production.up.railway.app https://dilla-ai.com https://www.dilla-ai.com",
+    "connect-src 'self' https://api.anthropic.com https://api.tavily.com https://api.firecrawl.dev https://*.supabase.co wss://*.supabase.co http://localhost:8000 https://dilla-copy-production.up.railway.app https://dilla-ai.com https://www.dilla-ai.com",
     "frame-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",
