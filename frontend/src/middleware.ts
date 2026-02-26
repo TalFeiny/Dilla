@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
 // Single source of truth: same resolution as getBackendUrl() so proxy and API routes use same host
-const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || process.env.FASTAPI_URL || 'http://localhost:8000'
+const BACKEND_URL = (process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || process.env.FASTAPI_URL || 'http://localhost:8000').replace(/\/+$/, '')
 
 // Security headers configuration - relaxed for development
 const isDevelopment = process.env.NODE_ENV !== 'production'
@@ -97,7 +97,7 @@ const NEXTJS_ONLY_ROUTES = [
 ]
 
 // Performance-optimized middleware with API gateway functionality and security
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname
   
   // Skip middleware for static assets and fast paths
@@ -178,34 +178,59 @@ export function middleware(request: NextRequest) {
   const shouldProxy = !isNextJSOnly && PYTHON_API_ROUTES.some(route => pathname.startsWith(route))
   
   if (shouldProxy) {
-    // Proxy to FastAPI backend
+    // Proxy to FastAPI backend via fetch (not rewrite — rewrite is unreliable
+    // on Vercel when Next.js API route handlers exist at the same paths)
     const backendUrl = `${BACKEND_URL}${pathname}${request.nextUrl.search}`
-    
-    // Log the proxy for debugging
-    console.log(`[Middleware] Proxying ${pathname} to ${backendUrl}`)
-    
-    // Create a rewrite response to FastAPI
-    const response = NextResponse.rewrite(backendUrl)
-    
-    // Add security headers to proxied responses
-    Object.entries(SECURITY_HEADERS).forEach(([key, value]) => {
-      response.headers.set(key, value)
-    })
-    
-    // Add CORS headers for FastAPI responses
-    const origin = request.headers.get('origin')
-    const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com', 'https://dilla.ai']
 
-    if (origin && allowedOrigins.includes(origin)) {
-      response.headers.set('Access-Control-Allow-Origin', origin)
-      response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-      response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token')
+    try {
+      // Forward request headers but replace host with backend host
+      const headers = new Headers(request.headers)
+      headers.set('host', new URL(BACKEND_URL).host)
+      headers.delete('connection')
+
+      // Read body for non-GET/HEAD requests
+      let body: string | null = null
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        body = await request.text()
+      }
+
+      const proxyRes = await fetch(backendUrl, {
+        method: request.method,
+        headers,
+        body,
+      })
+
+      // Build response from backend
+      const responseHeaders = new Headers(proxyRes.headers)
+
+      // Add security headers
+      Object.entries(SECURITY_HEADERS).forEach(([key, value]) => {
+        responseHeaders.set(key, value)
+      })
+
+      // Add CORS headers
+      const origin = request.headers.get('origin')
+      if (origin) {
+        responseHeaders.set('Access-Control-Allow-Origin', origin)
+        responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+        responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token')
+        responseHeaders.set('Access-Control-Allow-Credentials', 'true')
+      }
+
+      responseHeaders.set('X-Request-ID', globalThis.crypto.randomUUID())
+
+      return new Response(proxyRes.body, {
+        status: proxyRes.status,
+        statusText: proxyRes.statusText,
+        headers: responseHeaders,
+      })
+    } catch (error) {
+      // Backend unreachable — return JSON error, not HTML
+      return NextResponse.json(
+        { error: 'Backend unreachable', path: pathname },
+        { status: 502, headers: SECURITY_HEADERS }
+      )
     }
-    
-    // Add request ID for tracing
-    response.headers.set('X-Request-ID', globalThis.crypto.randomUUID())
-    
-    return response
   }
   
   // Regular Next.js request handling

@@ -15,10 +15,10 @@ export function getBackendUrl(): string {
       process.env.NEXT_PUBLIC_BACKEND_URL ||
       process.env.FASTAPI_URL ||
       'http://localhost:8000'
-    );
+    ).replace(/\/+$/, '');
   }
   // Client-side: only NEXT_PUBLIC_* (server vars not available in browser)
-  return process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000';
+  return (process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000').replace(/\/+$/, '');
 }
 
 /**
@@ -26,5 +26,5 @@ export function getBackendUrl(): string {
  * Only uses NEXT_PUBLIC_ prefixed env vars
  */
 export function getClientBackendUrl(): string {
-  return process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000';
+  return (process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000').replace(/\/+$/, '');
 }
