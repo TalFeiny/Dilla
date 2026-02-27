@@ -178,32 +178,42 @@ class LightweightMemoService:
         company_names = [c.get("company", "Unknown") for c in companies[:5]]
         company_str = f"Companies under analysis: {', '.join(company_names)}. " if company_names else ""
 
+        # Determine if this is a large portfolio (changes format guidance)
+        num_companies = len(companies)
+        is_portfolio = num_companies > 3
+
         system_prompt = (
-            "You are a senior investment analyst at a top-tier venture capital fund writing a memo for Investment Committee review. "
+            "You are a senior investment analyst at a top-tier venture capital fund. "
             "Write with authority and precision — this memo drives multi-million dollar decisions. "
             f"{fund_size_str}"
             f"{company_str}"
-            "\n\nQUALITY REQUIREMENTS:\n"
-            "1. Each narrative section MUST be 3-5 dense paragraphs (150-400 words). Sections shorter than 100 words are unacceptable.\n"
-            "2. Use markdown tables for ALL structured comparisons — financials, round history, comp tables, side-by-side data.\n"
-            "3. Use flowing prose for analysis — every number woven into a sentence with context and significance.\n"
-            "4. Cite every key figure with source: 'per Pitchbook Q3 2024', 'company-reported FY24', '[Estimated based on stage benchmarks]'.\n"
-            "5. Lead each section with the MOST IMPORTANT finding. No filler, no preamble ('In this section...'), no hedging ('It is worth noting...').\n"
-            "6. Only use numbers from the provided data — never invent figures. Mark inferred values: '[Est: $XM ARR]'.\n"
-            "7. For multi-company analysis: always compare and contrast — never describe companies in isolation.\n"
-            "8. Calculate derived metrics: revenue multiples (valuation ÷ ARR), capital efficiency (ARR ÷ total funding), implied burn rate.\n"
-            "9. End each analytical section with a clear takeaway or implication for the investment decision.\n"
-            "\nFORMATTING RULES:\n"
+            "\n\nFORMAT RULES — match format to data density:\n"
+            f"{'1. PORTFOLIO MODE (' + str(num_companies) + ' companies): Lead with a summary TABLE showing ALL companies (Company | Stage | Sector | ARR | Valuation | Data Quality). Follow with prose commentary on patterns, themes, and outliers. Use tables for any section covering 4+ companies.' if is_portfolio else '1. DEEP-DIVE MODE: Use 3-5 dense paragraphs per section (150-400 words). Weave numbers into flowing prose with context and significance.'}\n"
+            "2. NEVER skip a company because data is sparse. Show what you have:\n"
+            "   - Real data: bold, cited ('$14.8M ARR, company-reported')\n"
+            "   - Estimated data: labeled ('[Est: $5M ARR based on Series A benchmarks]')\n"
+            "   - Unknown: '—' in tables, noted in prose as 'data pending'\n"
+            "3. For portfolio analysis, lead with the BIG PICTURE before individual companies:\n"
+            "   - Stage distribution, sector concentration, total capital deployed\n"
+            "   - Themes and clusters (e.g., '6 of 22 are AI infrastructure')\n"
+            "   - Outliers, top performers, and gaps\n"
+            "4. Every section MUST have substance. If per-company data is sparse, analyze portfolio-level patterns instead.\n"
+            "   A 'Financial Overview' with only 2 data-rich companies should STILL cover all — show a table, note what's known, flag what's missing.\n"
+            "5. Use markdown tables for ALL structured comparisons of 3+ items.\n"
+            "6. Cite key figures with source: 'per Pitchbook Q3 2024', 'company-reported', '[Est: stage benchmark]'.\n"
+            "7. Lead each section with the MOST IMPORTANT finding. No filler, no preamble ('In this section...'), no hedging.\n"
+            "8. For multi-company analysis: always compare and contrast — never describe companies in isolation.\n"
+            "9. Calculate derived metrics where possible: revenue multiples, capital efficiency, implied burn rate.\n"
+            "10. End each section with a clear takeaway or action item.\n"
+            "\nSTRUCTURE RULES:\n"
             "- Bold (**text**) key metrics and company names on first mention.\n"
-            "- Use `| Col1 | Col2 |` markdown tables for any comparison of 3+ items.\n"
             "- Numbers: $XM for millions, $XB for billions, X% for percentages, Xx for multiples.\n"
-            "- Each paragraph should contain at least one concrete data point.\n"
-            "- For recommendations: state conviction level (High/Medium/Low) and check size.\n"
-            "\n10. Separate each section with its exact ## heading as shown below. "
+            "- Separate each section with its exact ## heading as shown below. "
             "The headings are used to split your output — they MUST match exactly.\n"
-            "11. Within sections, use ### sub-headings, markdown tables, and bullet lists freely — "
+            "- Within sections, use ### sub-headings, markdown tables, and bullet lists freely — "
             "they will be rendered as proper structured elements.\n"
-            "12. Do NOT use ---SECTION_BREAK--- delimiters."
+            "- Do NOT use ---SECTION_BREAK--- delimiters.\n"
+            "- For recommendations: state conviction level (High/Medium/Low) and check size."
         )
 
         user_prompt = (
@@ -339,10 +349,15 @@ class LightweightMemoService:
                     else:
                         memo_sections.append({"type": "paragraph", "content": narrative})
                 else:
-                    # Strip blank sections entirely — remove the heading we just added
-                    if memo_sections and memo_sections[-1].get("type") == "heading2":
-                        memo_sections.pop()
-                    logger.debug(f"[MEMO] Stripping empty narrative section: {key}")
+                    # Instead of stripping, build a fallback table from available data
+                    _fallback = self._build_section_fallback(section_def, companies)
+                    if _fallback:
+                        memo_sections.append(_fallback)
+                    else:
+                        # Only strip heading if we truly have nothing
+                        if memo_sections and memo_sections[-1].get("type") == "heading2":
+                            memo_sections.pop()
+                    logger.debug(f"[MEMO] Empty narrative for section {key} — used fallback: {bool(_fallback)}")
 
         return {
             "format": "docs",
@@ -957,14 +972,55 @@ class LightweightMemoService:
                     lines.append(f"    - {t.get('title', '')} ({t.get('url', '')})")
         return "\n".join(lines)
 
+    def _summarize_company_compact(self, c: Dict[str, Any]) -> str:
+        """Single markdown table row for compact portfolio mode."""
+        name = c.get("company", "Unknown")
+        stage = c.get("stage", "—")
+        sector = c.get("sector", c.get("industry", "—")) or "—"
+
+        rev = ensure_numeric(c.get("revenue")) or ensure_numeric(c.get("inferred_revenue")) or 0
+        val = ensure_numeric(c.get("valuation")) or ensure_numeric(c.get("inferred_valuation")) or 0
+        growth = c.get("revenue_growth") or c.get("growth_rate") or c.get("inferred_growth_rate")
+        total_funding = ensure_numeric(c.get("total_funding")) or 0
+
+        est_r = c.get("_revenue_estimated", False)
+        est_v = c.get("_valuation_estimated", False)
+        est_g = c.get("_growth_estimated", False)
+
+        def _fmt_money(v, est):
+            if not v:
+                return "—"
+            label = f"${v / 1e6:,.1f}M" if v >= 1_000_000 else f"${v / 1e3:,.0f}K"
+            return f"[Est] {label}" if est else label
+
+        def _fmt_growth(g, est):
+            if not g or not isinstance(g, (int, float)):
+                return "—"
+            pct = g * 100 if 0 < abs(g) < 10 else g
+            return f"[Est] {pct:.0f}%" if est else f"{pct:.0f}%"
+
+        # Data quality: count non-empty real (non-estimated) fields
+        _real_fields = sum(1 for f in ("revenue", "valuation", "total_funding", "description",
+                                        "team_size", "burn_rate") if c.get(f))
+        quality = "High" if _real_fields >= 4 else "Med" if _real_fields >= 2 else "Low"
+
+        return (
+            f"| **{name}** | {stage} | {sector} | {_fmt_money(rev, est_r)} | "
+            f"{_fmt_money(val, est_v)} | {_fmt_growth(growth, est_g)} | "
+            f"{_fmt_money(total_funding, False)} | {quality} |"
+        )
+
     def _summarize_data(self, data: Dict[str, Any], max_chars: int = 60000) -> str:
         """Create a compact text summary of available data for LLM context.
+
+        For portfolios with >8 companies, uses a compact TABLE format so the LLM
+        sees ALL companies in ~3-5K chars instead of narrative blocks that eat budget.
+        For ≤8 companies, uses the detailed narrative format.
 
         Budget: 5% for aggregate stats, 65% for companies, 30% for fund/portfolio data.
         Respects company boundaries — never truncates mid-company.
         """
-        # ── Portfolio aggregate stats (always included, even when individual
-        #    companies get truncated) ──
+        # ── Portfolio aggregate stats (always included) ──
         companies = data.get("companies", [])
         agg_parts: List[str] = []
         if companies:
@@ -975,30 +1031,75 @@ class LightweightMemoService:
                 ensure_numeric(c.get("total_funding") or c.get("inferred_total_funding"), 0)
                 for c in companies
             )
+            # Count data quality tiers
+            data_rich = [c for c in companies if c.get("revenue") and not c.get("_revenue_estimated")]
+            sparse = [c for c in companies if c not in data_rich]
+
             agg_parts.append(f"\n**Portfolio Aggregate** ({len(companies)} companies):")
             agg_parts.append(f"  Stages: {dict(stages.most_common(8))}")
             agg_parts.append(f"  Sectors: {dict(sectors.most_common(8))}")
             if total_deployed:
                 agg_parts.append(f"  Total deployed: ${total_deployed / 1e6:,.0f}M")
+            agg_parts.append(f"  Data quality: {len(data_rich)} data-rich, {len(sparse)} sparse/estimated")
+
+            # Approximate fund-level metrics from whatever data exists (including estimates)
+            total_val = sum(ensure_numeric(c.get("valuation") or c.get("inferred_valuation"), 0) for c in companies)
+            total_rev = sum(ensure_numeric(c.get("revenue") or c.get("inferred_revenue"), 0) for c in companies)
+            if total_val:
+                has_est = any(c.get("_valuation_estimated") for c in companies)
+                est_label = " [includes stage-based estimates]" if has_est else ""
+                agg_parts.append(f"  Approx. total portfolio NAV: ${total_val / 1e6:,.0f}M{est_label}")
+            if total_rev:
+                has_est = any(c.get("_revenue_estimated") for c in companies)
+                est_label = " [includes stage-based estimates]" if has_est else ""
+                agg_parts.append(f"  Approx. total portfolio ARR: ${total_rev / 1e6:,.0f}M{est_label}")
+            if total_deployed and total_val:
+                agg_parts.append(f"  Approx. portfolio TVPI: {total_val / total_deployed:.2f}x")
+            if total_deployed and total_rev:
+                agg_parts.append(f"  Approx. portfolio revenue multiple (deployed): {total_rev / total_deployed:.2f}x")
+
         agg_block = "\n".join(agg_parts) + "\n" if agg_parts else ""
 
         company_budget = int((max_chars - len(agg_block)) * 0.7)
         fund_budget = max_chars - len(agg_block) - company_budget
 
-        # ── Companies (70% of remaining budget) ──
+        # ── Companies: compact table for >8 companies, narrative for ≤8 ──
         company_parts: List[str] = []
         chars_used = 0
         companies_included = 0
-        for c in companies:  # iterate ALL companies — char budget alone controls truncation
-            block = self._summarize_company(c)
-            if chars_used + len(block) > company_budget and companies_included > 0:
-                remaining = len(companies) - companies_included
-                if remaining > 0:
-                    company_parts.append(f"\n... (+{remaining} companies omitted)")
-                break
-            company_parts.append(block)
-            chars_used += len(block)
-            companies_included += 1
+
+        if len(companies) > 8:
+            # COMPACT TABLE MODE — every company visible in ~3-5K chars
+            company_parts.append("\n**All Portfolio Companies**:")
+            company_parts.append("| Company | Stage | Sector | ARR | Valuation | Growth | Funding | Data |")
+            company_parts.append("|---------|-------|--------|-----|-----------|--------|---------|------|")
+            for c in companies:
+                company_parts.append(self._summarize_company_compact(c))
+
+            # Add detailed narrative ONLY for data-rich companies (real revenue, not estimated)
+            data_rich = [c for c in companies
+                         if c.get("revenue") and not c.get("_revenue_estimated")]
+            if data_rich:
+                company_parts.append(f"\n**Detailed Profiles ({len(data_rich)} data-rich companies)**:")
+                for c in data_rich:
+                    block = self._summarize_company(c)
+                    if chars_used + len(block) > company_budget * 0.6:
+                        break
+                    company_parts.append(block)
+                    chars_used += len(block)
+            companies_included = len(companies)
+        else:
+            # NARRATIVE MODE — detailed per-company blocks (original behavior)
+            for c in companies:
+                block = self._summarize_company(c)
+                if chars_used + len(block) > company_budget and companies_included > 0:
+                    remaining = len(companies) - companies_included
+                    if remaining > 0:
+                        company_parts.append(f"\n... (+{remaining} companies omitted)")
+                    break
+                company_parts.append(block)
+                chars_used += len(block)
+                companies_included += 1
 
         # ── Fund & portfolio data (30% budget) ──
         fund_parts: List[str] = []
@@ -1976,6 +2077,127 @@ class LightweightMemoService:
         nodes.append({"id": "unrealized", "label": "Unrealized NAV"})
         est_title = title if "(Estimated)" in title else f"{title} (Estimated)"
         return format_sankey_chart(nodes, links, title=est_title)
+
+    def _build_section_fallback(
+        self, section_def: Dict[str, Any], companies: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Build a fund-level fallback when the LLM produces no narrative.
+
+        By this point the gap-filler has run — every company has revenue,
+        valuation, and growth (actual or stage-benchmark estimate).  This
+        method aggregates those into rough fund-level metrics: NAV, TVPI,
+        implied IRR, portfolio ARR.  The heading stays alive so any
+        adjacent chart slot still renders.
+        """
+        if not companies:
+            return None
+
+        key = section_def.get("key", "")
+        n = len(companies)
+
+        # ── Fund context for ownership / deployed estimates ──────────
+        fund_ctx = self.shared_data.get("fund_context", {})
+        fund_size = ensure_numeric(
+            fund_ctx.get("fund_size") or fund_ctx.get("total_committed")
+        ) or 0
+        avg_check = ensure_numeric(fund_ctx.get("avg_check_size")) or 0
+        if not avg_check and fund_size:
+            avg_check = (fund_size / max(n, 1)) * 0.6
+
+        # ── Aggregate all companies (actual + estimated) ─────────────
+        stages: Dict[str, int] = {}
+        sectors: Dict[str, int] = {}
+        total_rev = 0.0
+        total_val = 0.0
+        total_funding = 0.0
+        total_nav = 0.0
+        est_count = 0
+        actual_count = 0
+        growth_rates: List[float] = []
+
+        for c in companies:
+            st = c.get("stage", "Unknown")
+            stages[st] = stages.get(st, 0) + 1
+            sec = c.get("sector") or c.get("industry") or ""
+            if sec:
+                sectors[sec] = sectors.get(sec, 0) + 1
+
+            rev = ensure_numeric(c.get("revenue")) or ensure_numeric(c.get("inferred_revenue")) or 0
+            val = ensure_numeric(c.get("valuation")) or ensure_numeric(c.get("inferred_valuation")) or 0
+            funding = ensure_numeric(c.get("total_funding")) or 0
+
+            total_rev += rev
+            total_val += val
+            total_funding += funding
+
+            if c.get("_revenue_estimated") or c.get("_valuation_estimated"):
+                est_count += 1
+            else:
+                actual_count += 1
+
+            # Rough per-co NAV: our check × markup from entry
+            if val > 0 and funding > 0:
+                ownership = min((avg_check / funding) if avg_check else 0.10, 0.30)
+                total_nav += val * ownership
+            elif val > 0:
+                total_nav += val * 0.10
+
+            gr = c.get("revenue_growth")
+            if gr and isinstance(gr, (int, float)):
+                growth_rates.append(gr)
+
+        total_deployed = total_funding if total_funding > 0 else (avg_check * n if avg_check else 0)
+        median_growth = sorted(growth_rates)[len(growth_rates) // 2] if growth_rates else None
+
+        # ── Fund-level metrics ───────────────────────────────────────
+        tvpi = total_nav / total_deployed if total_nav > 0 and total_deployed > 0 else None
+        irr = None
+        if tvpi and tvpi > 0:
+            irr = (tvpi ** (1.0 / 3.0) - 1.0) * 100  # ~3yr avg hold assumption
+
+        est_tag = " [includes estimates]" if est_count > 0 else ""
+
+        # ── Build paragraph ──────────────────────────────────────────
+        parts: List[str] = []
+
+        # Shape
+        if stages:
+            top = sorted(stages.items(), key=lambda x: -x[1])[:4]
+            parts.append(
+                f"**{n} companies** — "
+                + ", ".join(f"{s} ({ct})" for s, ct in top) + "."
+            )
+        if sectors and len(sectors) > 1:
+            top_sec = sorted(sectors.items(), key=lambda x: -x[1])[:3]
+            parts.append("Sectors: " + ", ".join(f"{s} ({ct})" for s, ct in top_sec) + ".")
+
+        # Fund metrics
+        metrics = []
+        if total_nav > 0:
+            metrics.append(f"Portfolio NAV: ~${total_nav / 1e6:,.0f}M{est_tag}")
+        if tvpi is not None:
+            metrics.append(f"TVPI: ~{tvpi:.1f}x")
+        if irr is not None:
+            metrics.append(f"Implied IRR: ~{irr:.0f}%")
+        if total_rev > 0:
+            metrics.append(f"Portfolio ARR: ~${total_rev / 1e6:,.0f}M")
+        if total_deployed > 0:
+            metrics.append(f"Deployed: ~${total_deployed / 1e6:,.0f}M")
+        if median_growth is not None:
+            gr_pct = median_growth * 100 if 0 < abs(median_growth) < 10 else median_growth
+            metrics.append(f"Median growth: ~{gr_pct:.0f}%")
+        if metrics:
+            parts.append(" | ".join(metrics) + ".")
+
+        if est_count > 0:
+            parts.append(
+                f"*{actual_count} reported, {est_count} stage-benchmarked.*"
+            )
+
+        if not parts:
+            parts.append(f"Portfolio of {n} companies — run enrichment for detailed analysis.")
+
+        return {"type": "paragraph", "content": "\n\n".join(parts)}
 
     def _build_metrics(
         self, section_def: Dict, data: Dict, companies: List[Dict]
