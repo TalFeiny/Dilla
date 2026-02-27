@@ -965,10 +965,7 @@ class ChartDataService:
                     0,
                 )
                 if invested <= 0:
-                    # Estimate: ~5-10% of total funding or proportional to fund
-                    total_funding = ensure_numeric(c.get("total_funding") or c.get("total_raised"), 0)
-                    invested = total_funding * 0.08 if total_funding > 0 else fund_size * 0.04
-                if invested <= 0:
+                    # No actual investment data — skip rather than fabricate
                     continue
 
                 nodes.append({"id": node_id, "label": name})
@@ -983,7 +980,8 @@ class ChartDataService:
 
                 if realized > 0 or status == "exited":
                     if realized <= 0:
-                        realized = invested * 2  # conservative exit estimate
+                        # Exited but no proceeds data — use cost basis as floor
+                        realized = invested
                     links.append({"source": node_id, "target": "realized", "value": realized, "type": "realized"})
                     total_realized += realized
                 else:
@@ -1527,9 +1525,7 @@ class ChartDataService:
                     c.get("investment_amount") or c.get("cost_basis") or c.get("invested"), 0
                 )
                 if invested <= 0:
-                    total_funding = ensure_numeric(c.get("total_funding"), 0)
-                    invested = total_funding * 0.08 if total_funding > 0 else fund_size * 0.04
-                if invested <= 0:
+                    # No actual investment data — skip rather than fabricate
                     continue
 
                 nav = self._infer_nav(c, invested)

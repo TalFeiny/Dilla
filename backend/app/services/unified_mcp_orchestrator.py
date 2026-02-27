@@ -24046,6 +24046,64 @@ Return a JSON with this structure:
                     except Exception as enrich_err:
                         logger.warning(f"[MEMO] Tavily enrichment failed (non-fatal): {enrich_err}")
 
+            # ── Sourcing context: comparable companies + scoring ──────────
+            if not self.shared_data.get("sourcing_context"):
+                try:
+                    from app.services.sourcing_service import query_companies as sourcing_query, score_companies as sourcing_score
+
+                    fund_id = (self.shared_data.get("fund_context") or {}).get("fund_id")
+                    # Gather sectors from portfolio for comparable lookup
+                    sectors = {c.get("sector") or c.get("industry", "") for c in companies}
+                    sectors.discard("")
+                    comparables: List[Dict[str, Any]] = []
+                    for sector in list(sectors)[:5]:  # cap to avoid excessive queries
+                        sr = await sourcing_query(
+                            filters={"sector": sector},
+                            sort_by="name", sort_desc=False,
+                            limit=100, fund_id=fund_id,
+                        )
+                        comparables.extend(sr.get("companies", []))
+
+                    if comparables:
+                        # De-dup by name
+                        seen = set()
+                        unique = []
+                        for comp in comparables:
+                            key = (comp.get("name") or "").lower()
+                            if key and key not in seen:
+                                seen.add(key)
+                                unique.append(comp)
+
+                        scored_comps = sourcing_score(unique)
+                        self.shared_data["sourcing_context"] = {
+                            "comparables": scored_comps[:50],  # top 50 by score
+                            "total_in_db": len(unique),
+                            "sectors_queried": list(sectors),
+                        }
+
+                        # Enrich each portfolio company with its sector benchmarks
+                        sector_benchmarks: Dict[str, Dict[str, Any]] = {}
+                        for comp in scored_comps:
+                            s = (comp.get("sector") or "").lower()
+                            if s and s not in sector_benchmarks:
+                                sector_comps = [x for x in scored_comps if (x.get("sector") or "").lower() == s]
+                                arrs = [x.get("arr") for x in sector_comps if (x.get("arr") or 0) > 0]
+                                vals = [x.get("valuation") for x in sector_comps if (x.get("valuation") or 0) > 0]
+                                sector_benchmarks[s] = {
+                                    "median_arr": sorted(arrs)[len(arrs) // 2] if arrs else 0,
+                                    "median_valuation": sorted(vals)[len(vals) // 2] if vals else 0,
+                                    "count": len(sector_comps),
+                                }
+
+                        for c in companies:
+                            s = (c.get("sector") or c.get("industry") or "").lower()
+                            if s in sector_benchmarks:
+                                c["_sector_benchmark"] = sector_benchmarks[s]
+
+                        logger.info(f"[MEMO] Sourcing context: {len(unique)} comparables across {len(sectors)} sectors")
+                except Exception as src_err:
+                    logger.warning(f"[MEMO] Sourcing enrichment failed (non-fatal): {src_err}")
+
             fund_context = self.shared_data.get("fund_context") or {}
             cap_table_history: Dict[str, Any] = dict(self.shared_data.get("cap_table_history") or {})
             scenario_analysis: Dict[str, Any] = dict(self.shared_data.get("scenario_analysis") or {})

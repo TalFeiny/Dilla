@@ -1064,17 +1064,23 @@ class LightweightMemoService:
             for c in companies:
                 company_parts.append(self._summarize_company_compact(c))
 
-            # Add detailed narrative ONLY for data-rich companies (real revenue, not estimated)
+            # Add detailed narrative for all companies, data-rich first
             data_rich = [c for c in companies
                          if c.get("revenue") and not c.get("_revenue_estimated")]
-            if data_rich:
-                company_parts.append(f"\n**Detailed Profiles ({len(data_rich)} data-rich companies)**:")
-                for c in data_rich:
-                    block = self._summarize_company(c)
-                    if chars_used + len(block) > company_budget * 0.6:
-                        break
-                    company_parts.append(block)
-                    chars_used += len(block)
+            sparse = [c for c in companies if c not in data_rich]
+            ordered = data_rich + sparse  # data-rich first, then rest
+
+            company_parts.append(f"\n**Detailed Profiles ({len(ordered)} companies)**:")
+            profiled = 0
+            for c in ordered:
+                block = self._summarize_company(c)
+                if chars_used + len(block) > company_budget * 0.6 and profiled > 0:
+                    remaining = len(ordered) - profiled
+                    company_parts.append(f"\n... (+{remaining} more, see table above)")
+                    break
+                company_parts.append(block)
+                chars_used += len(block)
+                profiled += 1
             companies_included = len(companies)
         else:
             # NARRATIVE MODE — detailed per-company blocks (original behavior)
@@ -1123,6 +1129,21 @@ class LightweightMemoService:
                         fv = fo.get(fk)
                         if fv is not None:
                             fund_parts.append(f"    {fk}: {fv}")
+
+        sourcing_ctx = data.get("sourcing_context", {})
+        if sourcing_ctx:
+            comps = sourcing_ctx.get("comparables", [])
+            if comps:
+                fund_parts.append(f"\n**Sourcing Context** ({sourcing_ctx.get('total_in_db', 0)} companies in DB, sectors: {', '.join(sourcing_ctx.get('sectors_queried', [])[:5])}):")
+                fund_parts.append("| Company | Sector | Stage | ARR | Score |")
+                fund_parts.append("|---------|--------|-------|-----|-------|")
+                for comp in comps[:10]:
+                    arr = comp.get("arr") or 0
+                    arr_str = f"${arr / 1e6:.1f}M" if arr > 0 else "—"
+                    fund_parts.append(
+                        f"| {comp.get('name', '?')} | {comp.get('sector', '?')} | "
+                        f"{comp.get('stage', '?')} | {arr_str} | {comp.get('score', 0):.0f} |"
+                    )
 
         portfolio_health = data.get("portfolio_health", {})
         if portfolio_health:
@@ -1231,6 +1252,38 @@ class LightweightMemoService:
         if num_companies >= 2:
             candidates.append((1, "radar_comparison"))
 
+        # Heatmap — needs 3+ companies with multiple metrics
+        if num_companies >= 3:
+            candidates.append((1, "heatmap"))
+
+        # Market map — needs 4+ companies for a meaningful map
+        if num_companies >= 4:
+            candidates.append((1, "market_map"))
+
+        # Stacked bar — needs 2+ companies with stage or sector data
+        if num_companies >= 2 and any(c.get("stage") or c.get("sector") for c in companies):
+            candidates.append((1, "stacked_bar"))
+
+        # NAV live — needs fund metrics with NAV data
+        if fund_metrics.get("nav_by_company") or fund_metrics.get("nav"):
+            candidates.append((2, "nav_live"))
+
+        # Tornado / sensitivity — needs FPA or scenario results
+        if data.get("fpa_result"):
+            candidates.append((2, "sensitivity_tornado"))
+
+        # Monte carlo — needs pre-computed monte carlo results
+        if data.get("monte_carlo_result"):
+            candidates.append((2, "monte_carlo_histogram"))
+
+        # Bar comparison — needs 2+ companies
+        if num_companies >= 2:
+            candidates.append((1, "bar_comparison"))
+
+        # LTM/NTM regression — needs 3+ companies with revenue
+        if cos_with_rev >= 3:
+            candidates.append((1, "ltm_ntm_regression"))
+
         if not candidates:
             return None
 
@@ -1244,6 +1297,13 @@ class LightweightMemoService:
             "revenue": "revenue_forecast", "growth": "revenue_forecast", "forecast": "revenue_forecast",
             "market": "scatter_multiples", "positioning": "scatter_multiples", "landscape": "scatter_multiples",
             "moat": "radar_comparison", "team": "radar_comparison", "scoring": "radar_comparison",
+            "heatmap": "heatmap", "heat map": "heatmap", "matrix": "heatmap",
+            "map": "market_map", "sector map": "market_map",
+            "sensitivity": "sensitivity_tornado", "tornado": "sensitivity_tornado",
+            "monte carlo": "monte_carlo_histogram", "simulation": "monte_carlo_histogram",
+            "bar": "bar_comparison", "comparison": "bar_comparison",
+            "ltm": "ltm_ntm_regression", "ntm": "ltm_ntm_regression", "regression": "ltm_ntm_regression",
+            "stacked": "stacked_bar", "allocation": "stacked_bar",
         }
         for hint_word, boosted_type in heading_boosts.items():
             if hint_word in heading:
@@ -1331,12 +1391,14 @@ class LightweightMemoService:
                         _co["valuation"] = _inferred_val
 
             cds_dispatch = {
+                # ── Company-derived charts ─────────────────────────────────
                 "probability_cloud": lambda: cds.generate_probability_cloud(
                     companies[0], check_size
                 ),
                 "scatter_multiples": lambda: cds.generate_revenue_multiple_scatter(companies),
                 "revenue_multiple_scatter": lambda: cds.generate_revenue_multiple_scatter(companies),
                 "treemap": lambda: cds.generate_revenue_treemap(companies),
+                "revenue_treemap": lambda: cds.generate_revenue_treemap(companies),
                 "revenue_forecast": lambda: (
                     self._build_revenue_decay_chart(cds, data, companies)
                     or cds.generate_path_to_100m(companies)
@@ -1345,29 +1407,41 @@ class LightweightMemoService:
                     self._build_revenue_decay_chart(cds, data, companies)
                     or cds.generate_cashflow_projection(companies)
                 ),
+                "path_to_100m": lambda: cds.generate_path_to_100m(companies),
                 "next_round_treemap": lambda: cds.generate_next_round_treemap(companies),
                 "revenue_growth_treemap": lambda: cds.generate_revenue_growth_treemap(companies),
                 "product_velocity": lambda: cds.generate_product_velocity_ranking(companies),
                 "cashflow_projection": lambda: cds.generate_cashflow_projection(companies),
                 "dpi_sankey": lambda: cds.generate_dpi_sankey(companies, fund_size),
+                "bar_comparison": lambda: cds.generate_bar_comparison(companies),
+                "bull_bear_base": lambda: cds.generate_bull_bear_base(companies),
+                "radar_comparison": lambda: cds.generate_radar_comparison(companies) if hasattr(cds, "generate_radar_comparison") else None,
+                "heatmap": lambda: cds.generate_heatmap(companies) if hasattr(cds, "generate_heatmap") else None,
+                "market_map": lambda: cds.generate_market_map(companies) if hasattr(cds, "generate_market_map") else None,
+                "stacked_bar": lambda: cds.generate_stacked_bar(companies) if hasattr(cds, "generate_stacked_bar") else None,
+                "nav_live": lambda: cds.generate_nav_live(companies) if hasattr(cds, "generate_nav_live") else None,
+                "cap_table_sankey": lambda: cds.generate_cap_table_sankey(companies[0]) if hasattr(cds, "generate_cap_table_sankey") else None,
+                "waterfall_cds": lambda: cds.generate_waterfall(companies) if hasattr(cds, "generate_waterfall") else None,
+                "fpa_stress_test": lambda: cds.generate_fpa_stress_test(
+                    data.get("fpa_result", {})) if hasattr(cds, "generate_fpa_stress_test") else None,
                 # ── Analytics-bridge charts (use stored results from shared_data) ──
                 "sensitivity_tornado": lambda: cds.generate_sensitivity_tornado(
+                    data.get("fpa_result", {})),
+                "tornado": lambda: cds.generate_sensitivity_tornado(
                     data.get("fpa_result", {})),
                 "regression_line": lambda: cds.generate_regression_line(
                     data.get("fpa_result", {})),
                 "monte_carlo_histogram": lambda: cds.generate_monte_carlo_histogram(
                     data.get("monte_carlo_result", {})),
+                "monte_carlo": lambda: cds.generate_monte_carlo_histogram(
+                    data.get("monte_carlo_result", {})),
                 "revenue_forecast_decay": lambda: self._build_revenue_decay_chart(cds, data, companies),
                 "fund_scenarios": lambda: cds.generate_fund_scenario_comparison(
                     data.get("scenario_all_charts", {})),
-                # LTM/NTM regression
+                "fund_scenario_comparison": lambda: cds.generate_fund_scenario_comparison(
+                    data.get("scenario_all_charts", {})),
                 "ltm_ntm_regression": lambda: cds.generate_ltm_ntm_regression(companies),
-                # Radar / moat scoring from company data
-                "radar_comparison": lambda: cds.generate_radar_comparison(companies) if hasattr(cds, "generate_radar_comparison") else None,
-                # Bar comparison across portfolio
-                "bar_comparison": lambda: cds.generate_bar_comparison(companies),
-                # Bull/bear/base from scenario tree
-                "bull_bear_base": lambda: cds.generate_bull_bear_base(companies),
+                "revenue_forecast_line": lambda: cds.generate_revenue_forecast(companies) if hasattr(cds, "generate_revenue_forecast") else None,
             }
             generator = cds_dispatch.get(chart_type)
             if generator:
