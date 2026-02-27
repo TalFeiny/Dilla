@@ -349,14 +349,11 @@ class LightweightMemoService:
                     else:
                         memo_sections.append({"type": "paragraph", "content": narrative})
                 else:
-                    # Instead of stripping, build a fallback table from available data
+                    # Try fallback metrics, but never strip the heading —
+                    # it anchors chart slots and keeps the document structure.
                     _fallback = self._build_section_fallback(section_def, companies)
                     if _fallback:
                         memo_sections.append(_fallback)
-                    else:
-                        # Only strip heading if we truly have nothing
-                        if memo_sections and memo_sections[-1].get("type") == "heading2":
-                            memo_sections.pop()
                     logger.debug(f"[MEMO] Empty narrative for section {key} — used fallback: {bool(_fallback)}")
 
         return {
@@ -797,41 +794,32 @@ class LightweightMemoService:
                 if any(r.strip() for r in result):
                     return result
 
-        # Strategy 2: generic markdown H2/H3 headings
-        parts = re.split(r"\n#{2,3}\s+", raw_text)
-        # First part may be preamble — keep it as section 0
-        if len(parts) >= expected_count:
-            return parts[:expected_count]
+        # Strategy 2: split on whatever ## headings the LLM actually wrote.
+        # Accept fewer parts than expected — pad with "" rather than
+        # destroying text by forcing it into the wrong number of buckets.
+        heading_splits = re.split(r"(?=\n#{2,3}\s+)", raw_text)
+        # Filter out empty leading split
+        heading_splits = [s for s in heading_splits if s.strip()]
+        if heading_splits:
+            # Pad to expected_count so callers don't index-error
+            while len(heading_splits) < expected_count:
+                heading_splits.append("")
+            return heading_splits[:expected_count]
 
-        # Strategy 3 (legacy fallback): exact ---SECTION_BREAK--- delimiter
-        parts = raw_text.split("---SECTION_BREAK---")
-        if len(parts) >= expected_count:
-            return parts[:expected_count]
+        # Strategy 3: delimiter-based splits (legacy)
+        for splitter in [
+            lambda t: t.split("---SECTION_BREAK---"),
+            lambda t: re.split(r"-{2,}\s*SECTION[_\s]*BREAK\s*-{2,}", t, flags=re.IGNORECASE),
+            lambda t: re.split(r"\n\s*---+\s*\n", t),
+        ]:
+            parts = splitter(raw_text)
+            if len(parts) >= expected_count:
+                return parts[:expected_count]
 
-        # Strategy 4 (legacy fallback): fuzzy regex for SECTION_BREAK variations
-        parts = re.split(r"-{2,}\s*SECTION[_\s]*BREAK\s*-{2,}", raw_text, flags=re.IGNORECASE)
-        if len(parts) >= expected_count:
-            return parts[:expected_count]
-
-        # Strategy 5: triple-dash separator
-        parts = re.split(r"\n\s*---+\s*\n", raw_text)
-        if len(parts) >= expected_count:
-            return parts[:expected_count]
-
-        # Strategy 6: proportional split — divide text evenly
-        text_len = len(raw_text)
-        chunk_size = max(text_len // expected_count, 1)
-        parts = []
-        for i in range(expected_count):
-            start = i * chunk_size
-            end = start + chunk_size if i < expected_count - 1 else text_len
-            # Try to split at paragraph boundaries
-            if i < expected_count - 1 and end < text_len:
-                para_break = raw_text.rfind("\n\n", start + chunk_size // 2, end + chunk_size // 2)
-                if para_break > start:
-                    end = para_break
-            parts.append(raw_text[start:end])
-        return parts
+        # Strategy 4 (last resort): return full text as first section.
+        # Never chop text proportionally — that destroys content.
+        result = [raw_text] + [""] * (expected_count - 1)
+        return result
 
     def _summarize_company(self, c: Dict[str, Any]) -> str:
         """Summarize a single company as a self-contained text block with derived metrics."""
