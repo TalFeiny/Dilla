@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseService } from '@/lib/supabase';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 const BACKEND_URL = getBackendUrl();
 
@@ -132,9 +132,7 @@ Return probability-weighted exit scenarios for every company, including exit val
 
     const response = await fetch(`${BACKEND_URL}/api/agent/unified-brain`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: getBackendHeaders(),
       body: JSON.stringify(unifiedBrainPayload),
     });
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 const BACKEND_URL = getBackendUrl();
 
@@ -10,10 +10,9 @@ export async function POST(request: NextRequest) {
     // Forward request to backend
     const response = await fetch(`${BACKEND_URL}/api/stripe/portal/sessions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
+      headers: getBackendHeaders({
         'Authorization': request.headers.get('Authorization') || '',
-      },
+      }),
       body: JSON.stringify(body),
     });
 

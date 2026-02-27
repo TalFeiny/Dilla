@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseService } from '@/lib/supabase';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 const MAX_CONCURRENT_VALUATIONS = 5; // Process 5 companies at a time
 const VALUATION_TIMEOUT_MS = 60000; // 60 seconds per valuation
@@ -147,7 +147,7 @@ async function processBatchValuation(
         const valuationResult = await Promise.race([
           fetch(`${getBackendUrl()}/api/valuation/value-company`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getBackendHeaders(),
             body: JSON.stringify({
               company_data: { company_id: companyId },
               method,

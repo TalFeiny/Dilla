@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 /**
  * Proxy to FastAPI backend-agnostic document processing.
@@ -30,12 +30,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     console.log('[documents/process] Calling backend', backendUrl, '/api/documents/process');
     const response = await fetch(`${backendUrl}/api/documents/process`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
+      headers: getBackendHeaders({
         ...(request.headers.get('Authorization') && {
           Authorization: request.headers.get('Authorization')!,
         }),
-      },
+      }),
       body: JSON.stringify({
         document_id: String(documentId ?? ''),
         file_path: filePath,

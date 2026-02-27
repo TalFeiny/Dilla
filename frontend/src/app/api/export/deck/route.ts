@@ -4,7 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 const BACKEND_URL = getBackendUrl();
 
@@ -38,9 +38,7 @@ export async function POST(request: NextRequest) {
     // Forward to backend deck export service - fixed endpoint path
     const response = await fetch(`${BACKEND_URL}/api/export/deck`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: getBackendHeaders(),
       body: JSON.stringify({
         deck_data: deck,
         format: format,

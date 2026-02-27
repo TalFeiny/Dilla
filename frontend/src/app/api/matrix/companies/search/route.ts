@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 // In-memory job storage (for MVP - use Redis in production)
 const searchJobs = new Map<string, {
@@ -71,7 +71,7 @@ async function performBatchSearch(jobId: string, companyNames: string[]) {
     const backendUrl = getBackendUrl();
     const response = await fetch(`${backendUrl}/api/mcp/batch-search-companies`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getBackendHeaders(),
       body: JSON.stringify({ companyNames }),
     });
 

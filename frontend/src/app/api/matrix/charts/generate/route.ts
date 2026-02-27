@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 /**
  * POST /api/matrix/charts/generate
@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
     const backendUrl = getBackendUrl();
     const res = await fetch(`${backendUrl}/api/matrix/charts/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: getBackendHeaders(),
       body: JSON.stringify({ fund_id, matrix_data, chart_type }),
     });
 

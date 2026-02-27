@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 /** Minimal fallback when backend cell_actions router returns 404 so UI still shows action list; execute may fail until backend loads. */
 const FALLBACK_ACTIONS = [
@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
     const backendUrl = getBackendUrl();
     const res = await fetch(
       `${backendUrl}/api/cell-actions/actions?${params.toString()}`,
-      { headers: { Accept: 'application/json' } }
+      { headers: getBackendHeaders() }
     );
 
     if (res.status === 404) {

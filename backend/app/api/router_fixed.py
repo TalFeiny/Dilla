@@ -61,9 +61,10 @@ api_router.include_router(matrix_charts_router, tags=["matrix-charts"])
 OPTIONAL_ROUTERS = {
     "app.api.endpoints.email_inbound": {"tags": ["email"], "key": "email_inbound"},
     "app.api.endpoints.model_router_test": {"tags": ["test"], "key": "model_router_test"},
-    "app.api.endpoints.python_executor": {"tags": ["python"], "key": "python_executor"},
-    "app.api.endpoints.python_exec": {"prefix": "/python-scripts", "tags": ["python-scripts"], "key": "python_exec"},
-    "app.api.endpoints.javascript_executor": {"tags": ["javascript"], "key": "javascript_executor"},
+    # DISABLED — code execution endpoints not in use, re-enable with auth when needed
+    # "app.api.endpoints.python_executor": {"tags": ["python"], "key": "python_executor"},
+    # "app.api.endpoints.python_exec": {"prefix": "/python-scripts", "tags": ["python-scripts"], "key": "python_exec"},
+    # "app.api.endpoints.javascript_executor": {"tags": ["javascript"], "key": "javascript_executor"},
     "app.api.endpoints.mcp": {"tags": ["mcp"], "key": "mcp"},
     "app.api.endpoints.companies": {"prefix": "/companies", "tags": ["companies"], "key": "companies"},
     "app.api.endpoints.portfolio": {"prefix": "/portfolio", "tags": ["portfolio"], "key": "portfolio"},
@@ -98,5 +99,4 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "dilla-ai-backend",
-        "routers": LOADED_OPTIONAL_ROUTERS,
     }

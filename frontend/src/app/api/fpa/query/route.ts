@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 /**
  * POST /api/fpa/query
@@ -20,9 +20,7 @@ export async function POST(request: NextRequest) {
     const backendUrl = getBackendUrl();
     const res = await fetch(`${backendUrl}/api/fpa/query`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: getBackendHeaders(),
       body: JSON.stringify({
         query,
         fund_id,

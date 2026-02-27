@@ -20,7 +20,7 @@ const uuidv4 = () => {
     .replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
 };
 
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 const BACKEND_URL = getBackendUrl();
 type AnyRecord = Record<string, any>;
@@ -96,9 +96,7 @@ export async function POST(request: NextRequest) {
       : `${BACKEND_URL}/api/agent/unified-brain`;
     const response = await fetch(backendEndpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: getBackendHeaders(),
         body: JSON.stringify({
         prompt: body.prompt,
         output_format: body.output_format || body.outputFormat || 'analysis',

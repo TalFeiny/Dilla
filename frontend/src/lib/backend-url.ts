@@ -28,3 +28,33 @@ export function getBackendUrl(): string {
 export function getClientBackendUrl(): string {
   return (process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000').replace(/\/+$/, '');
 }
+
+/**
+ * Get headers that must be included on every server-side fetch to the backend.
+ * Includes the backend API secret so the backend accepts the request.
+ */
+export function getBackendHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    ...extra,
+  };
+  const secret = process.env.BACKEND_API_SECRET;
+  if (secret) {
+    headers['X-Backend-Secret'] = secret;
+  }
+  return headers;
+}
+
+/**
+ * Fetch wrapper for server-side calls to the backend.
+ * Automatically prepends the backend URL and injects the API secret header.
+ */
+export async function backendFetch(path: string, init?: RequestInit): Promise<Response> {
+  const url = `${getBackendUrl()}${path}`;
+  const headers = new Headers(init?.headers);
+  if (!headers.has('Accept')) headers.set('Accept', 'application/json');
+  const secret = process.env.BACKEND_API_SECRET;
+  if (secret) headers.set('X-Backend-Secret', secret);
+  return fetch(url, { ...init, headers });
+}

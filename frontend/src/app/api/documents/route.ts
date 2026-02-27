@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseService } from '@/lib/supabase';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 /** Trigger backend processing (fire-and-forget).
  *  The frontend cell action `document.extract` will poll/wait for results.
@@ -19,7 +19,7 @@ function triggerProcessing(doc: {
   // handles waiting for results and emitting suggestions.
   fetch(`${backendUrl}/api/documents/process-batch`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getBackendHeaders(),
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(300_000),
   })
@@ -28,7 +28,7 @@ function triggerProcessing(doc: {
       // Fallback to async Celery
       fetch(`${backendUrl}/api/documents/process-batch-async`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getBackendHeaders(),
         body: JSON.stringify(payload),
       }).catch((e) => console.error('[documents] All processing failed for', doc.id, e));
     });

@@ -187,6 +187,11 @@ export async function middleware(request: NextRequest) {
       const headers = new Headers(request.headers)
       headers.set('host', new URL(BACKEND_URL).host)
       headers.delete('connection')
+      // Add backend API secret so the backend knows this came from our frontend
+      const backendSecret = process.env.BACKEND_API_SECRET
+      if (backendSecret) {
+        headers.set('X-Backend-Secret', backendSecret)
+      }
 
       // Read body for non-GET/HEAD requests
       let body: string | null = null
@@ -208,9 +213,10 @@ export async function middleware(request: NextRequest) {
         responseHeaders.set(key, value)
       })
 
-      // Add CORS headers
+      // Add CORS headers — only for whitelisted origins (not any origin)
       const origin = request.headers.get('origin')
-      if (origin) {
+      const proxyAllowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com']
+      if (origin && proxyAllowedOrigins.includes(origin)) {
         responseHeaders.set('Access-Control-Allow-Origin', origin)
         responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
         responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token')

@@ -20,7 +20,7 @@ class AuthService:
     """Handles authentication and authorization"""
     
     def __init__(self):
-        self.secret_key = settings.SECRET_KEY if hasattr(settings, 'SECRET_KEY') else "default-secret-key"
+        self.secret_key = settings.SECRET_KEY
         self.algorithm = settings.ALGORITHM if hasattr(settings, 'ALGORITHM') else "HS256"
         self.access_token_expire = settings.ACCESS_TOKEN_EXPIRE_MINUTES if hasattr(settings, 'ACCESS_TOKEN_EXPIRE_MINUTES') else 30
     
@@ -91,12 +91,8 @@ class AuthService:
         try:
             client = supabase_service.get_client()
             if not client:
-                # Return mock user if database not available
-                return {
-                    "id": user_id,
-                    "email": "user@example.com",
-                    "role": "user"
-                }
+                logger.error("Database unavailable — cannot authenticate user %s", user_id)
+                return None
             
             response = client.table("users").select("*").eq("id", user_id).execute()
             
@@ -117,7 +113,6 @@ class AuthService:
             valid_keys = [
                 settings.OPENAI_API_KEY,
                 settings.ANTHROPIC_API_KEY,
-                "test-api-key"  # For testing
             ]
             
             return api_key in valid_keys

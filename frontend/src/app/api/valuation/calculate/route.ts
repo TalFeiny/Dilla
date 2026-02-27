@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 import { supabaseService } from '@/lib/supabase';
 
 /**
@@ -72,9 +72,7 @@ export async function POST(request: NextRequest) {
     const backendUrl = getBackendUrl();
     const response = await fetch(`${backendUrl}/api/valuation/value-company`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: getBackendHeaders(),
       body: JSON.stringify(valuationRequest),
     });
 

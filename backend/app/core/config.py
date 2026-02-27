@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     NEXT_PUBLIC_SUPABASE_ANON_KEY: Optional[str] = Field(None, env="NEXT_PUBLIC_SUPABASE_ANON_KEY")
     
     # Security
-    SECRET_KEY: str = Field("change-me-in-production", env="SECRET_KEY")
+    SECRET_KEY: str = Field(..., env="SECRET_KEY")  # Required — no default, must be set in .env
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7

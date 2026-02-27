@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 /**
  * PUT /api/fpa/models/[id]/formula
@@ -26,7 +26,7 @@ export async function PUT(
       `${backendUrl}/api/fpa/models/${encodeURIComponent(id)}/formula?step_id=${encodeURIComponent(step_id)}&formula=${encodeURIComponent(formula)}`,
       {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getBackendHeaders(),
       }
     );
 

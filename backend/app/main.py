@@ -1,7 +1,9 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
 import logging
 import json
@@ -59,13 +61,16 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Dilla AI Backend...")
 
 
+_is_production = settings.ENVIRONMENT != "development"
+
 app = FastAPI(
     title="Dilla AI Backend",
     description="FastAPI backend for Dilla AI platform with WebSocket support",
     version="2.0.0",
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc"
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
 )
 
 # Add exception handlers
@@ -94,6 +99,37 @@ if os.getenv("ALLOWED_ORIGINS"):
 if settings.ENVIRONMENT == "development" and settings.DEBUG:
     allowed_origins = ["*"]
 
+# Backend API secret — frontend must send this header to talk to the backend.
+# Without it, anyone who finds the Railway URL can call every endpoint.
+# Set BACKEND_API_SECRET in both the backend and frontend env vars.
+BACKEND_API_SECRET = os.getenv("BACKEND_API_SECRET")
+
+
+class BackendGateMiddleware(BaseHTTPMiddleware):
+    """Reject requests without the correct X-Backend-Secret header in production."""
+
+    # Paths that must remain open (health checks, CORS preflight)
+    OPEN_PATHS = ("/health", "/api/health", "/api/email/inbound")
+
+    async def dispatch(self, request: Request, call_next):
+        # Always allow in development, OPTIONS preflight, and health checks
+        if (
+            not _is_production
+            or not BACKEND_API_SECRET
+            or request.method == "OPTIONS"
+            or request.url.path in self.OPEN_PATHS
+        ):
+            return await call_next(request)
+
+        if request.headers.get("X-Backend-Secret") != BACKEND_API_SECRET:
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+
+        return await call_next(request)
+
+
+# Gate middleware runs BEFORE CORS so unauthenticated requests never reach handlers
+app.add_middleware(BackendGateMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -114,31 +150,19 @@ app.include_router(deck_storage_router)
 
 @app.get("/")
 async def root():
-    return {
-        "message": "Dilla AI Backend API",
-        "version": "2.0.0",
-        "docs": "/docs",
-        "health": "/health",
-        "websocket": "/ws"
-    }
+    return {"status": "ok"}
 
 
 @app.get("/ws")
 async def websocket_info():
     """WebSocket information endpoint"""
-    return {
-        "status": "available",
-        "message": "WebSocket endpoint available. Connect using WebSocket protocol.",
-        "url": "ws://localhost:8000/ws",
-        "example": "const ws = new WebSocket('ws://localhost:8000/ws')",
-        "protocols": ["chat", "streaming", "updates"]
-    }
+    return {"status": "available"}
 
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint - kept lightweight for Railway health checks"""
-    return {"status": "healthy", "environment": settings.ENVIRONMENT}
+    return {"status": "healthy"}
 
 
 # @app.websocket("/ws")

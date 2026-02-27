@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 export async function GET(
   request: NextRequest,
@@ -25,9 +25,7 @@ export async function GET(
     
     const response = await fetch(backendEndpoint, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: getBackendHeaders(),
       // Add timeout to prevent hanging
       signal: AbortSignal.timeout(30000), // 30 second timeout
     });

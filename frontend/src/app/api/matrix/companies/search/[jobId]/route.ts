@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 // Import the same job storage (in a real app, this would be in a shared module or Redis)
 // For now, we'll recreate the map structure - in production use Redis or a database
@@ -25,6 +25,7 @@ export async function GET(
     const backendUrl = getBackendUrl();
     const response = await fetch(`${backendUrl}/api/mcp/batch-search-status/${jobId}`, {
       method: 'GET',
+      headers: getBackendHeaders(),
     });
 
     if (response.ok) {

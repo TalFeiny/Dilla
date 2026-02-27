@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 /**
  * GET /api/fpa/models/[id]
@@ -17,7 +17,7 @@ export async function GET(
 
     const backendUrl = getBackendUrl();
     const res = await fetch(`${backendUrl}/api/fpa/models/${encodeURIComponent(id)}`, {
-      headers: { Accept: 'application/json' },
+      headers: getBackendHeaders(),
     });
 
     if (!res.ok) {

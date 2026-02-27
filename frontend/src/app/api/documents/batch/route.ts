@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseService } from '@/lib/supabase';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB per file
 
@@ -148,7 +148,7 @@ export async function POST(request: NextRequest) {
     try {
       const streamRes = await fetch(`${backendUrl}/api/documents/process-batch-stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getBackendHeaders(),
         body: JSON.stringify({ documents: docsPayload }),
         signal: AbortSignal.timeout(600_000), // 10 min for streaming
       });
@@ -187,7 +187,7 @@ export async function POST(request: NextRequest) {
         try {
           const processRes = await fetch(`${backendUrl}/api/documents/process-batch`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getBackendHeaders(),
             body: JSON.stringify({ documents: remainingDocs }),
             signal: AbortSignal.timeout(300_000),
           });
@@ -213,7 +213,7 @@ export async function POST(request: NextRequest) {
           try {
             await fetch(`${backendUrl}/api/documents/process-batch-async`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: getBackendHeaders(),
               body: JSON.stringify({ documents: stillRemaining }),
             });
           } catch (e) {

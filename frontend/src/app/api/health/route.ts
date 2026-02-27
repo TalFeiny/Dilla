@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 /**
  * GET /api/health
@@ -10,7 +10,7 @@ export async function GET() {
   try {
     const backendUrl = getBackendUrl();
     const res = await fetch(`${backendUrl}/api/health`, {
-      headers: { Accept: 'application/json' },
+      headers: getBackendHeaders(),
       next: { revalidate: 0 },
     });
     const data = await res.json().catch(() => ({}));

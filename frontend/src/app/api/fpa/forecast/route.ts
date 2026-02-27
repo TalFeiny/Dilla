@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBackendUrl } from '@/lib/backend-url';
+import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 /**
  * POST /api/fpa/forecast
@@ -12,9 +12,7 @@ export async function POST(request: NextRequest) {
     
     const res = await fetch(`${backendUrl}/api/fpa/forecast`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: getBackendHeaders(),
       body: JSON.stringify(body),
     });
 
