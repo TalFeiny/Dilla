@@ -1,11 +1,14 @@
 """
 Sourcing Service — Fast local query + scoring engine for companies.
 
-No LLM, no web calls. Pure SQL + math.
+No LLM, no web calls in the core path. Pure SQL + math.
 Works on the existing companies table (1k+ rows from CSV imports, enrichments).
 Results are ephemeral — returned inline to the agent, not persisted.
 
 The LLM populates filters directly as structured JSON — no NL regex parsing.
+
+When DB results are thin, generate_rubric() provides intent + search_context
+that feeds into LLM-driven web discovery (handled by the orchestrator).
 """
 import logging
 import re
@@ -559,6 +562,9 @@ async def upsert_sourced_companies(
         if not name:
             continue
 
+        # Map score → thesis_match_score for DB persistence
+        _score_val = _safe_float(c.get("score")) or _safe_float(c.get("composite_score"))
+
         row = {
             "name": name,
             "sector": c.get("sector") or None,
@@ -573,6 +579,7 @@ async def upsert_sourced_companies(
             "revenue_model": c.get("business_model") or None,
             "funding_stage": c.get("latest_round") or None,
             "tam": _safe_float(c.get("tam")) or None,
+            "thesis_match_score": _score_val if _score_val > 0 else None,
         }
         if fund_id:
             row["fund_id"] = fund_id
@@ -602,3 +609,452 @@ async def upsert_sourced_companies(
             logger.warning(f"upsert_sourced_companies failed for {name}: {e}")
 
     return upserted
+
+
+# ---------------------------------------------------------------------------
+# Rubric generation — turn a natural-language thesis into a complete
+# sourcing instruction set: intent, weights, filters, scoring profile,
+# entity type, and search context for LLM-driven web discovery.
+# ---------------------------------------------------------------------------
+
+# Predefined weight templates keyed by common thesis archetypes
+_WEIGHT_TEMPLATES: Dict[str, Dict[str, Any]] = {
+    "growth": {
+        "weights": {
+            "growth_signal": 0.35,
+            "scale": 0.20,
+            "capital_efficiency": 0.15,
+            "stage_fit": 0.10,
+            "market_size": 0.10,
+            "recency": 0.05,
+            "data_completeness": 0.05,
+        },
+        "description": "Growth-first: prioritises high growth rate and scale.",
+    },
+    "efficiency": {
+        "weights": {
+            "capital_efficiency": 0.35,
+            "growth_signal": 0.20,
+            "scale": 0.15,
+            "stage_fit": 0.10,
+            "market_size": 0.10,
+            "recency": 0.05,
+            "data_completeness": 0.05,
+        },
+        "description": "Efficiency-first: rewards high ARR/funding ratio.",
+    },
+    "market_size": {
+        "weights": {
+            "market_size": 0.30,
+            "growth_signal": 0.20,
+            "scale": 0.15,
+            "capital_efficiency": 0.15,
+            "stage_fit": 0.10,
+            "recency": 0.05,
+            "data_completeness": 0.05,
+        },
+        "description": "TAM-first: favours large addressable markets.",
+    },
+    "balanced": {
+        "weights": dict(DEFAULT_WEIGHTS),
+        "description": "Balanced: equal emphasis across all dimensions.",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Intent classification — determines how we search, extract, and score
+# ---------------------------------------------------------------------------
+
+# Each intent defines:
+#   - patterns: keywords that trigger this intent
+#   - entity_type: what shape of thing we're looking for
+#   - search_context: instructions for the LLM query generator
+#   - extraction_hint: what to tell the LLM to pull out of search results
+#   - scoring_emphasis: which weight dimensions matter most
+_INTENT_PROFILES: Dict[str, Dict[str, Any]] = {
+    "dealflow": {
+        "patterns": [
+            "startup", "series", "funding", "raised", "pre-seed", "seed",
+            "venture", "portfolio", "invest", "deal", "round", "valuation",
+            "arr", "revenue", "growth", "b2b", "b2c", "saas",
+        ],
+        "entity_type": "startup",
+        "search_context": (
+            "Find startup companies that match this investment thesis. "
+            "Look for companies that have raised venture funding, have traction "
+            "(revenue, customers, growth), and fit the sector/stage/geography described. "
+            "Prioritise sources where company names appear densely: funding announcements, "
+            "Crunchbase profiles, TechCrunch articles, VC portfolio pages, startup lists."
+        ),
+        "extraction_hint": (
+            "Extract company/startup names only. Not investors, not people, not products. "
+            "Each name should be an actual company that could be in a VC pipeline."
+        ),
+        "scoring_emphasis": {
+            "growth_signal": 1.2,
+            "capital_efficiency": 1.2,
+            "stage_fit": 1.1,
+        },
+    },
+    "acquirer": {
+        "patterns": [
+            "acquirer", "acquire", "acquisition", "buy-side", "strategic",
+            "mid-market", "mid market", "buyer", "m&a", "roll-up", "rollup",
+            "consolidat", "bolt-on", "platform acquisition",
+        ],
+        "entity_type": "company",
+        "search_context": (
+            "Find companies that are active acquirers or likely acquisition candidates. "
+            "Look for companies with acquisition track records, PE-backed platforms doing "
+            "roll-ups, strategic buyers expanding via M&A. Search for M&A announcements, "
+            "PE portfolio companies, corporate development activity, deal tombstones."
+        ),
+        "extraction_hint": (
+            "Extract company names that are acquirers or buyers — not the targets being acquired. "
+            "Include PE-backed platforms, strategics, and serial acquirers."
+        ),
+        "scoring_emphasis": {
+            "scale": 1.5,
+            "market_size": 1.2,
+            "recency": 1.3,
+        },
+    },
+    "gtm_leads": {
+        "patterns": [
+            "lead", "prospect", "customer", "gtm", "go-to-market", "go to market",
+            "sell to", "icp", "ideal customer", "target account", "buyer",
+            "pipeline", "sales", "outbound",
+        ],
+        "entity_type": "company",
+        "search_context": (
+            "Find companies that match this ideal customer profile or go-to-market target. "
+            "Look for companies by size, industry, technology stack, pain points, or buying signals. "
+            "Search for industry directories, G2/Capterra listings, conference attendee lists, "
+            "job postings that signal need, case studies from competitors, industry reports."
+        ),
+        "extraction_hint": (
+            "Extract company names that are potential customers or buyers of a product/service. "
+            "Not the product companies themselves — the companies that would buy from them."
+        ),
+        "scoring_emphasis": {
+            "scale": 1.3,
+            "data_completeness": 1.3,
+            "market_size": 1.0,
+        },
+    },
+    "lp_investor": {
+        "patterns": [
+            "lp", "limited partner", "family office", "endowment", "allocator",
+            "fund of funds", "institutional investor", "pension", "sovereign wealth",
+            "anchor", "commitment", "allocation",
+        ],
+        "entity_type": "investor",
+        "search_context": (
+            "Find institutional investors, family offices, or LPs that allocate to this "
+            "type of fund or asset class. Look for commitment announcements, LP directories, "
+            "conference speaker lists, Preqin-style databases, annual reports mentioning "
+            "alternative allocations."
+        ),
+        "extraction_hint": (
+            "Extract names of institutional investors, family offices, endowments, pension funds, "
+            "or fund-of-funds. Not the fund managers — the capital allocators."
+        ),
+        "scoring_emphasis": {
+            "scale": 1.5,
+            "recency": 1.3,
+            "data_completeness": 1.2,
+        },
+    },
+    "service_provider": {
+        "patterns": [
+            "law firm", "lawyer", "legal", "bank", "banker", "advisor",
+            "consultant", "accounting", "auditor", "recruiter", "placement agent",
+        ],
+        "entity_type": "company",
+        "search_context": (
+            "Find professional service providers (law firms, banks, consultants, etc.) "
+            "active in this sector or deal type. Search for deal tombstones, league tables, "
+            "Chambers rankings, advisor credits on recent transactions."
+        ),
+        "extraction_hint": (
+            "Extract names of firms (law firms, banks, advisory firms, consultancies). "
+            "Not individual people — the firms/organisations."
+        ),
+        "scoring_emphasis": {
+            "scale": 1.2,
+            "recency": 1.4,
+            "data_completeness": 1.0,
+        },
+    },
+    "talent": {
+        "patterns": [
+            "hire", "recruit", "cto", "cfo", "vp ", "head of", "executive",
+            "advisor", "board member", "founder", "operator", "talent",
+        ],
+        "entity_type": "person",
+        "search_context": (
+            "Find people who match this role/profile. Search LinkedIn-style results, "
+            "press mentions, speaker lists, board announcements, team pages. "
+            "Focus on professional background, current role, and relevant experience."
+        ),
+        "extraction_hint": (
+            "Extract full names of people — not company names. "
+            "Include their most recent title/company if mentioned."
+        ),
+        "scoring_emphasis": {
+            "recency": 1.5,
+            "data_completeness": 1.3,
+        },
+    },
+}
+
+
+def _classify_intent(thesis_lower: str) -> str:
+    """Classify query intent by scoring pattern matches.
+
+    Returns the intent with the most keyword hits, or 'dealflow' as default.
+    Scores are weighted: more specific patterns (multi-word) count more.
+    """
+    scores: Dict[str, float] = {}
+    for intent, profile in _INTENT_PROFILES.items():
+        score = 0.0
+        for pattern in profile["patterns"]:
+            if pattern in thesis_lower:
+                # Multi-word patterns are more specific, weight them higher
+                score += len(pattern.split()) * 1.5
+        scores[intent] = score
+
+    best = max(scores, key=scores.get)  # type: ignore
+    # Only return non-dealflow if we have a meaningful signal
+    if best != "dealflow" and scores[best] < 1.5:
+        return "dealflow"
+    return best
+
+
+def generate_rubric(
+    thesis_description: str,
+    weight_overrides: Optional[Dict[str, float]] = None,
+    target_stage: Optional[str] = None,
+    filters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Turn a natural-language thesis into a complete sourcing rubric.
+
+    Returns a dict with:
+      - weights: Dict[str, float]       (scoring weights for score_companies)
+      - filters: Dict[str, Any]         (suggested query_companies filters)
+      - target_stage: Optional[str]
+      - description: str                (human-readable summary)
+      - intent: str                     (dealflow/acquirer/gtm_leads/lp_investor/service_provider/talent)
+      - entity_type: str                (startup/company/investor/person)
+      - search_context: str             (instructions for LLM query generation)
+      - extraction_hint: str            (instructions for LLM name extraction)
+      - thesis_input: str               (original query)
+
+    The intent determines how the entire sourcing loop behaves:
+      - What the LLM query generator optimises for
+      - What entity shape the extractor looks for
+      - Which scoring dimensions get emphasised
+    """
+    thesis_lower = thesis_description.lower()
+
+    # ── 1. Classify intent ──
+    intent = _classify_intent(thesis_lower)
+    intent_profile = _INTENT_PROFILES[intent]
+
+    # ── 2. Pick base weight template ──
+    if any(kw in thesis_lower for kw in ("high growth", "hypergrowth", "fast growing", "100% nrr", ">100%", "triple")):
+        base = dict(_WEIGHT_TEMPLATES["growth"]["weights"])
+        desc = _WEIGHT_TEMPLATES["growth"]["description"]
+    elif any(kw in thesis_lower for kw in ("efficient", "capital efficient", "lean", "profitable", "cash flow")):
+        base = dict(_WEIGHT_TEMPLATES["efficiency"]["weights"])
+        desc = _WEIGHT_TEMPLATES["efficiency"]["description"]
+    elif any(kw in thesis_lower for kw in ("large market", "big tam", "massive market", "huge tam", "tam")):
+        base = dict(_WEIGHT_TEMPLATES["market_size"]["weights"])
+        desc = _WEIGHT_TEMPLATES["market_size"]["description"]
+    else:
+        base = dict(_WEIGHT_TEMPLATES["balanced"]["weights"])
+        desc = _WEIGHT_TEMPLATES["balanced"]["description"]
+
+    # ── 3. Apply intent scoring emphasis ──
+    # The intent profile boosts/dampens certain dimensions
+    for dim, multiplier in intent_profile.get("scoring_emphasis", {}).items():
+        if dim in base:
+            base[dim] = base[dim] * multiplier
+
+    # ── 4. Apply explicit overrides ──
+    if weight_overrides:
+        for dim, val in weight_overrides.items():
+            if dim in base:
+                base[dim] = float(val)
+
+    # Normalise weights to sum to 1.0
+    total = sum(base.values())
+    if total > 0:
+        base = {k: round(v / total, 4) for k, v in base.items()}
+
+    # ── 5. Extract implicit filters from thesis text ──
+    extracted_filters: Dict[str, Any] = dict(filters or {})
+
+    # Stage hints
+    _stage_map = {
+        "pre-seed": "Pre-Seed", "preseed": "Pre-Seed",
+        "seed": "Seed",
+        "series a": "Series A",
+        "series b": "Series B",
+        "series c": "Series C",
+        "series d": "Series D",
+    }
+    detected_stage = target_stage
+    for pattern, stage_val in _stage_map.items():
+        if pattern in thesis_lower:
+            detected_stage = stage_val
+            extracted_filters.setdefault("stage", stage_val)
+            break
+
+    # Sector hints
+    _sector_keywords = [
+        "fintech", "healthtech", "health tech", "edtech", "saas", "b2b saas",
+        "ai", "artificial intelligence", "ml", "machine learning",
+        "cybersecurity", "security", "climate", "cleantech", "biotech",
+        "e-commerce", "ecommerce", "marketplace", "infrastructure", "devtools",
+        "developer tools", "data infrastructure", "proptech",
+    ]
+    for kw in _sector_keywords:
+        if kw in thesis_lower:
+            extracted_filters.setdefault("sector", kw)
+            break
+
+    # ARR hints — match patterns like "$3M ARR", "$3-10M ARR", ">$5M ARR"
+    arr_match = re.search(r'[\$>]?\s*(\d+(?:\.\d+)?)\s*[–\-]?\s*(?:(\d+(?:\.\d+)?)\s*)?[mM]\s*(?:arr|ARR|revenue)', thesis_lower)
+    if arr_match:
+        arr_low = float(arr_match.group(1)) * 1_000_000
+        extracted_filters.setdefault("arr_min", arr_low)
+        if arr_match.group(2):
+            arr_high = float(arr_match.group(2)) * 1_000_000
+            extracted_filters.setdefault("arr_max", arr_high)
+
+    # Geography hints
+    _geo_keywords = ["us", "usa", "united states", "europe", "uk", "apac", "latam", "india", "emea"]
+    for gk in _geo_keywords:
+        if gk in thesis_lower.split():
+            extracted_filters.setdefault("geography", gk.upper() if len(gk) <= 4 else gk.title())
+            break
+
+    # ── 6. Build search context for LLM query generation ──
+    # This is the full instruction set that tells the LLM what kind of
+    # searches to run when DB results are thin.
+    search_context_parts = [intent_profile["search_context"]]
+    if extracted_filters.get("sector"):
+        search_context_parts.append(f"Sector focus: {extracted_filters['sector']}")
+    if detected_stage:
+        search_context_parts.append(f"Stage: {detected_stage}")
+    if extracted_filters.get("geography"):
+        search_context_parts.append(f"Geography: {extracted_filters['geography']}")
+    if extracted_filters.get("arr_min"):
+        search_context_parts.append(f"Minimum ARR: ${extracted_filters['arr_min']/1e6:.0f}M")
+
+    return {
+        "weights": base,
+        "filters": extracted_filters,
+        "target_stage": detected_stage,
+        "description": desc,
+        "thesis_input": thesis_description,
+        # New fields for the sourcing loop
+        "intent": intent,
+        "entity_type": intent_profile["entity_type"],
+        "search_context": " ".join(search_context_parts),
+        "extraction_hint": intent_profile["extraction_hint"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# LLM query generation prompt — used by the orchestrator's web fallback
+# ---------------------------------------------------------------------------
+
+def build_query_gen_prompt(
+    rubric: Dict[str, Any],
+    db_result_count: int = 0,
+    db_top_names: Optional[List[str]] = None,
+    round_num: int = 1,
+) -> str:
+    """Build the prompt that tells the LLM to generate web search queries.
+
+    The rubric provides all context: intent, thesis, filters, search_context.
+    The LLM decides what queries will actually surface the right entities —
+    no templates, fully dynamic.
+
+    Args:
+        rubric: Output of generate_rubric()
+        db_result_count: How many results the DB returned (0 = nothing)
+        db_top_names: Names of top-scored DB results (for expansion/dedup)
+        round_num: 1 = first search round, 2 = adaptive follow-up
+    """
+    thesis = rubric.get("thesis_input", "")
+    intent = rubric.get("intent", "dealflow")
+    entity_type = rubric.get("entity_type", "startup")
+    search_context = rubric.get("search_context", "")
+    filters = rubric.get("filters", {})
+
+    # Round 1: broad discovery
+    if round_num == 1:
+        return (
+            f"Generate 6 targeted web search queries to find {entity_type}s.\n\n"
+            f"USER REQUEST: {thesis}\n"
+            f"INTENT: {intent}\n"
+            f"SEARCH STRATEGY: {search_context}\n"
+            f"{'FILTERS: ' + str(filters) if filters else ''}\n"
+            f"{'DB already returned ' + str(db_result_count) + ' results — find MORE, different ones.' if db_result_count > 0 else 'DB returned nothing — cast a wide net.'}\n"
+            f"{'Avoid duplicating these (already found): ' + ', '.join(db_top_names[:5]) if db_top_names else ''}\n\n"
+            f"QUERY GUIDELINES:\n"
+            f"- Each query should find DIFFERENT {entity_type}s (don't overlap)\n"
+            f"- Mix broad and narrow: some queries cast wide, some target specific data sources\n"
+            f"- Think about WHERE {entity_type} names appear densely on the web\n"
+            f"- Use year filters (2024, 2025) for recency where it helps\n"
+            f"- If the request mentions a specific geography/sector/stage, vary HOW you search for it\n"
+            f"- Queries should surface NAMES, not generic articles\n\n"
+            f"Return JSON: {{\"queries\": [\"query1\", \"query2\", ..., \"query6\"]}}"
+        )
+
+    # Round 2: adaptive — we know what round 1 returned, go deeper
+    return (
+        f"Round 1 search found {db_result_count} {entity_type}s but we need more.\n\n"
+        f"USER REQUEST: {thesis}\n"
+        f"INTENT: {intent}\n"
+        f"Already found: {', '.join(db_top_names[:10]) if db_top_names else 'very few'}\n\n"
+        f"Generate 4 DIFFERENT search queries to find MORE {entity_type}s we missed.\n"
+        f"Strategies for round 2:\n"
+        f"- Search for competitors/alternatives to the best results from round 1\n"
+        f"- Try adjacent sectors or geographies the first round didn't cover\n"
+        f"- Look at investor portfolios, industry reports, or conference lists\n"
+        f"- Use more specific or more creative search angles\n\n"
+        f"Return JSON: {{\"queries\": [\"query1\", \"query2\", \"query3\", \"query4\"]}}"
+    )
+
+
+def build_name_extraction_prompt(
+    rubric: Dict[str, Any],
+    search_snippets: str,
+    existing_names: Optional[List[str]] = None,
+) -> str:
+    """Build the prompt that extracts entity names from search results.
+
+    Uses the rubric's entity_type and extraction_hint to tell the LLM
+    exactly what kind of names to pull out.
+    """
+    entity_type = rubric.get("entity_type", "startup")
+    extraction_hint = rubric.get("extraction_hint", "Extract company names.")
+    thesis = rubric.get("thesis_input", "")
+
+    return (
+        f"From the search results below, extract all {entity_type} names mentioned.\n\n"
+        f"{extraction_hint}\n\n"
+        f"CONTEXT: {thesis}\n"
+        f"{'SKIP these (already known): ' + ', '.join(existing_names[:20]) if existing_names else ''}\n\n"
+        f"SEARCH RESULTS:\n{search_snippets}\n\n"
+        f"Return JSON: {{\"names\": [\"Name1\", \"Name2\", ...]}}\n"
+        f"RULES:\n"
+        f"- Only real {entity_type} names, not generic terms\n"
+        f"- No duplicates\n"
+        f"- If uncertain whether something is a {entity_type} name, include it"
+    )

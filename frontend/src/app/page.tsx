@@ -424,6 +424,10 @@ function LeadCaptureForm() {
 
   const handleChange = (field: keyof LeadFormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setForm(prev => ({ ...prev, [field]: e.target.value }));
+    if (status === 'success' || status === 'error') {
+      setStatus('idle');
+      setError(null);
+    }
   };
 
   const validateWorkEmail = (email: string) => {

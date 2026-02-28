@@ -23,7 +23,7 @@ async def get_companies(
         # Determine which fields to select
         select_string = "*"
         if fields == "minimal":
-            select_string = "id,name,current_arr_usd,sector,current_valuation_usd,year_founded"
+            select_string = "id,name,current_arr_usd,sector,current_valuation_usd,founded_year"
         elif fields:
             select_string = fields
         

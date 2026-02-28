@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { getClientBackendUrl } from '@/lib/backend-url';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -96,8 +95,8 @@ export default function CompaniesPage() {
 
   const loadCompanies = async () => {
     try {
-      const backendUrl = getClientBackendUrl();
-      const response = await fetch(`${backendUrl}/api/companies/?limit=1000`);
+      // Use Next.js API route which queries Supabase directly (no Pydantic schema validation)
+      const response = await fetch('/api/companies-all');
       if (response.ok) {
         const data = await response.json();
         setCompanies(data);

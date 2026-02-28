@@ -778,7 +778,10 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="build_company_list",
-        description="Search for companies matching criteria (sector, stage, geography, revenue range) and build an enriched list. Returns structured company profiles.",
+        description=(
+            "LEGACY — prefer source_companies with discover_web=true instead. "
+            "Delegates to source_companies internally. Kept for backward compatibility."
+        ),
         handler="_tool_build_company_list",
         input_schema={"criteria": "str", "sector": "str?", "stage": "str?", "geography": "str?", "max_results": "int?"},
         cost_tier="expensive",
@@ -1346,7 +1349,7 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
 
     # ------------------------------------------------------------------
-    # Sourcing & List Engine — fast local query + scoring
+    # Sourcing & List Engine — DB query + rubric-driven web discovery + scoring
     # ------------------------------------------------------------------
     AgentTool(
         name="source_companies",
@@ -1362,7 +1365,12 @@ AGENT_TOOLS: list[AgentTool] = [
             "latest_round_date_after/latest_round_date_before (str date, e.g. '2024-01-01'). "
             "sort_by: name|arr|valuation|total_funding|growth_rate|employee_count|founded_year|burn_rate|runway. "
             "Set enrich_top_n to run microskills (benchmarks + Tavily searches + valuations) on the top N results. "
-            "Set persist_results=true to upsert enriched results back to the DB."
+            "Set persist_results=true to upsert enriched results back to the DB. "
+            "Set discover_web=true to search the web for NEW companies when DB results are thin "
+            "(< min_web_threshold, default 5). Web discovery uses LLM-generated Tavily queries, "
+            "extracts company names, enriches via parallel fetch, normalises to DB schema, "
+            "scores with the same rubric, deduplicates, and merges into the ranked list. "
+            "Pass thesis (str) to guide web query generation — reuse the thesis from generate_rubric."
         ),
         handler="_tool_source_companies",
         input_schema={
@@ -1375,9 +1383,38 @@ AGENT_TOOLS: list[AgentTool] = [
             "custom_weights": "dict?",
             "enrich_top_n": "int?",
             "persist_results": "bool?",
+            "discover_web": "bool?",
+            "min_web_threshold": "int?",
+            "thesis": "str?",
         },
         cost_tier="cheap",
-        timeout_ms=60_000,  # 15s for DB-only, up to 60s when enrich_top_n is set
+        timeout_ms=120_000,  # 15s DB-only, up to 120s with web discovery
+    ),
+    # ------------------------------------------------------------------
+    # Rubric generation — turn thesis into scoring weights before sourcing
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="generate_rubric",
+        description=(
+            "Turn a natural-language investment thesis into a scoring rubric with custom weights and filters. "
+            "Call this BEFORE source_companies when the user describes an investment thesis "
+            "(e.g. 'Series A B2B SaaS in fintech, $3-10M ARR, >100% NRR'). "
+            "Returns: weights dict, filters dict, target_stage, description, "
+            "intent (dealflow/acquirer/gtm_leads/lp_investor/service_provider/talent), "
+            "entity_type (startup/company/investor/person), search_context, extraction_hint. "
+            "Flow: generate_rubric → source_companies(custom_weights=rubric.weights, filters=rubric.filters, "
+            "discover_web=true, thesis=<original request>). "
+            "The rubric auto-classifies intent and adapts the entire sourcing pipeline."
+        ),
+        handler="_tool_generate_rubric",
+        input_schema={
+            "thesis": "str",
+            "weight_overrides": "dict?",
+            "target_stage": "str?",
+            "filters": "dict?",
+        },
+        cost_tier="cheap",
+        timeout_ms=5_000,
     ),
 ]
 
@@ -1422,6 +1459,10 @@ TOOL_WIRING: dict[str, dict] = {
     "source_companies": {
         "requires": [],
         "produces": ["companies"],
+    },
+    "generate_rubric": {
+        "requires": [],
+        "produces": [],
     },
     "search_and_extract": {
         "requires": [],
@@ -1914,10 +1955,10 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "emit_todo",                # action items
     ],
     "sourcing": [
-        "source_companies",         # primary action — fast DB query + scoring
+        "generate_rubric",          # thesis → weights + filters (call first)
+        "source_companies",         # primary action — DB query + web discovery + scoring
         "query_portfolio",          # portfolio context
         "generate_chart",           # visualize results
-        "build_company_list",       # fallback to web discovery
         "suggest_grid_edit",        # push to grid
     ],
     "market": [
@@ -2319,9 +2360,9 @@ PLAN_TEMPLATES: Dict[str, List[str]] = {
     "sensitivity_analysis": ["query_portfolio", "run_regression", "sensitivity_matrix", "generate_chart"],
     "search_extract_combo": ["search_and_extract", "run_valuation", "suggest_grid_edit"],
     "sparse_grid_enrich": ["enrich_sparse_grid", "suggest_grid_edit"],
-    "sourcing": ["source_companies", "generate_chart"],
-    "sourcing_with_web": ["source_companies", "build_company_list", "generate_memo"],
-    "market_mapping": ["source_companies", "build_company_list", "web_search", "generate_memo"],
+    "sourcing": ["generate_rubric", "source_companies", "generate_chart"],
+    "sourcing_with_web": ["generate_rubric", "source_companies", "build_company_list", "generate_memo"],
+    "market_mapping": ["generate_rubric", "source_companies", "build_company_list", "web_search", "generate_memo"],
     # Phase 9: Gap-resolution-first templates
     "followon_analysis": ["resolve_data_gaps", "run_valuation", "cap_table_evolution", "run_followon_strategy", "run_round_modeling", "run_projection", "generate_memo"],
     "enrichment_first": ["resolve_data_gaps", "suggest_grid_edit", "generate_memo"],
@@ -2545,7 +2586,14 @@ class UnifiedMCPOrchestrator:
             "- Deck: deck-storytelling (16–18 slide investment presentation)\n\n"
             "MEMO RULE: For formal deliverables (IC memo, LP report, comparison) — fetch data → run valuations → generate cap table THEN call memo-writer. "
             "Use write_to_memo only for exploratory inline analysis.\n"
-            "CHART RULE: Charts are analytical tools. State what the chart reveals before rendering it.\n\n"
+            "CHART RULE: Charts are analytical tools. State what the chart reveals before rendering it.\n"
+            "SOURCING RULE: When asked to find, source, or build a list of companies/acquirers/leads/investors/LPs:\n"
+            "  1. Call generate_rubric(thesis=<user's request>) — returns weights, filters, intent, entity_type, search_context, extraction_hint.\n"
+            "  2. Call source_companies(filters=rubric.filters, custom_weights=rubric.weights, "
+            "discover_web=true, thesis=<user's request>, min_web_threshold=5, persist_results=true).\n"
+            "  3. The rubric auto-classifies intent (dealflow/acquirer/gtm_leads/lp_investor/service_provider/talent) "
+            "and adapts search queries, entity extraction, and scoring accordingly.\n"
+            "  4. For sourcing, prefer source_companies with discover_web=true over build_company_list.\n\n"
             f"{task_instruction}"
         )
 
@@ -2567,6 +2615,16 @@ class UnifiedMCPOrchestrator:
                 "category": SkillCategory.DATA_GATHERING,
                 "handler": self._execute_market_research,
                 "description": "Market analysis, TAM, trends"
+            },
+            "source-companies": {
+                "category": SkillCategory.DATA_GATHERING,
+                "handler": self._tool_source_companies,
+                "description": "Query, filter, score, rank companies from DB with optional web discovery"
+            },
+            "generate-rubric": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._tool_generate_rubric,
+                "description": "Turn investment thesis into scoring weights + filters"
             },
             "competitive-intelligence": {
                 "category": SkillCategory.DATA_GATHERING,
@@ -5157,17 +5215,22 @@ Answer using specific company names and numbers from the portfolio grid above.""
         """Query, filter, score, and rank companies from the database.
 
         Fast path — works on existing data (no web calls by default).
-        Optional enrich_top_n runs microskills on top N results.
-        The LLM populates filters directly as structured JSON — no NL parsing.
+        When discover_web=true AND DB results are thin, enters the web
+        discovery loop: rubric → LLM query gen → Tavily → extract names →
+        enrich → score with same rubric → merge + dedupe → return.
+
         1. query_companies() — Supabase query with filters
         2. score_companies() — pure math scoring
-        3. Optional microskills enrichment on top N
-        4. Optional persistence back to DB
-        5. Pick display mode and format response
+        3. If discover_web and results < threshold → web discovery loop
+        4. Optional microskills enrichment on top N
+        5. Optional persistence back to DB
+        6. Pick display mode and format response
         """
         from app.services.sourcing_service import (
             query_companies, score_companies,
             pick_display_mode, format_as_markdown_table,
+            generate_rubric, build_query_gen_prompt,
+            build_name_extraction_prompt,
         )
 
         filters = inputs.get("filters") or {}
@@ -5179,6 +5242,10 @@ Answer using specific company names and numbers from the portfolio grid above.""
         display = inputs.get("display")
         enrich_top_n = inputs.get("enrich_top_n", 0)  # enrich top N results via microskills
         persist_results = inputs.get("persist_results", False)
+        # Web discovery params
+        discover_web = inputs.get("discover_web", False)
+        min_web_threshold = inputs.get("min_web_threshold", 5)
+        thesis = inputs.get("thesis", "")
 
         try:
             # Extract target_stage from filters if not provided directly
@@ -5206,6 +5273,228 @@ Answer using specific company names and numbers from the portfolio grid above.""
 
             # Trim to max_results
             scored = scored[:max_results]
+
+            # ── Web discovery loop ───────────────────────────────────
+            # When discover_web=true and DB results are thin, the rubric
+            # drives LLM-generated search queries → Tavily → name extraction
+            # → enrichment → scoring → merge.  Up to 2 rounds.
+            _web_discovery_info = None
+            if discover_web and thesis and self.tavily_api_key:
+                db_count = len(scored)
+                top_score = scored[0].get("score", 0) if scored else 0
+                needs_web = db_count < min_web_threshold or top_score < 40
+
+                if needs_web:
+                    try:
+                        from app.services.model_router import ModelCapability
+
+                        # Build rubric from thesis (or use custom_weights if provided)
+                        rubric = generate_rubric(
+                            thesis_description=thesis,
+                            weight_overrides=custom_weights,
+                            target_stage=target_stage,
+                            filters=filters,
+                        )
+
+                        existing_names = {c.get("name", "").lower() for c in scored}
+                        all_web_companies = []
+                        round_num = 0
+
+                        # Up to 2 search rounds
+                        for round_num in (1, 2):
+                            db_top_names = [c.get("name", "") for c in scored[:10]]
+
+                            # 1. LLM generates search queries from rubric context
+                            query_gen_prompt = build_query_gen_prompt(
+                                rubric=rubric,
+                                db_result_count=len(scored),
+                                db_top_names=db_top_names + [c.get("name", "") for c in all_web_companies],
+                                round_num=round_num,
+                            )
+                            try:
+                                qg_result = await self.model_router.get_completion(
+                                    prompt=query_gen_prompt,
+                                    system_prompt="Generate targeted search queries. Return valid JSON only.",
+                                    capability=ModelCapability.FAST,
+                                    max_tokens=400, temperature=0.3,
+                                    json_mode=True,
+                                    caller_context=f"source_companies_querygen_r{round_num}",
+                                )
+                                raw_qg = qg_result.get("response", "{}") if isinstance(qg_result, dict) else str(qg_result)
+                                parsed_qg = json.loads(raw_qg) if isinstance(raw_qg, str) else raw_qg
+                                web_queries = parsed_qg.get("queries", [])[:6]
+                            except Exception as e:
+                                logger.warning(f"[source_companies] LLM query gen round {round_num} failed: {e}")
+                                # Fallback: simple thesis-based queries
+                                web_queries = [
+                                    f"{thesis} companies 2024 2025",
+                                    f"{thesis} {rubric.get('entity_type', 'company')} list",
+                                ]
+
+                            if not web_queries:
+                                break
+
+                            logger.info(
+                                "[source_companies] web discovery round %d: %d queries for intent=%s",
+                                round_num, len(web_queries), rubric.get("intent", "dealflow"),
+                            )
+
+                            # 2. Run Tavily searches in parallel
+                            async def _run_tavily(q: str) -> list:
+                                try:
+                                    r = await self._tavily_search(q)
+                                    return r.get("results", []) if isinstance(r, dict) else []
+                                except Exception:
+                                    return []
+
+                            search_tasks = [_run_tavily(q) for q in web_queries]
+                            search_results = await asyncio.gather(*search_tasks)
+                            all_snippets = []
+                            for batch in search_results:
+                                for sr in batch[:5]:
+                                    title = sr.get("title", "") or ""
+                                    content = sr.get("content", "") or sr.get("snippet", "") or ""
+                                    all_snippets.append(f"Title: {title}\nSnippet: {content[:300]}")
+
+                            if not all_snippets:
+                                break
+
+                            # 3. LLM extracts entity names from search results
+                            snippet_text = "\n---\n".join(all_snippets[:25])
+                            extraction_prompt = build_name_extraction_prompt(
+                                rubric=rubric,
+                                search_snippets=snippet_text,
+                                existing_names=list(existing_names),
+                            )
+                            try:
+                                ext_result = await self.model_router.get_completion(
+                                    prompt=extraction_prompt,
+                                    system_prompt="Extract entity names from search results. Return valid JSON only.",
+                                    capability=ModelCapability.FAST,
+                                    max_tokens=500, temperature=0.0,
+                                    json_mode=True,
+                                    caller_context=f"source_companies_extract_r{round_num}",
+                                )
+                                raw_ext = ext_result.get("response", "{}") if isinstance(ext_result, dict) else str(ext_result)
+                                parsed_ext = json.loads(raw_ext) if isinstance(raw_ext, str) else raw_ext
+                                extracted_names = parsed_ext.get("names", []) or parsed_ext.get("companies", [])
+                            except Exception as e:
+                                logger.warning(f"[source_companies] name extraction round {round_num} failed: {e}")
+                                extracted_names = []
+
+                            # Filter to new names only
+                            new_names = []
+                            for name in extracted_names:
+                                name_clean = name.strip()
+                                if (
+                                    2 < len(name_clean) < 60
+                                    and name_clean.lower() not in existing_names
+                                ):
+                                    new_names.append(name_clean)
+                                    existing_names.add(name_clean.lower())
+
+                            logger.info(
+                                "[source_companies] round %d: extracted %d new names from %d snippets",
+                                round_num, len(new_names), len(all_snippets),
+                            )
+
+                            if not new_names:
+                                break
+
+                            # 4. Enrich each new name via _execute_company_fetch (parallel, capped)
+                            remaining_slots = max(0, max_results - len(scored) - len(all_web_companies))
+                            names_to_enrich = new_names[:min(remaining_slots, 8)]
+                            semaphore = asyncio.Semaphore(3)
+
+                            async def _enrich_one(name: str) -> Optional[dict]:
+                                async with semaphore:
+                                    try:
+                                        result = await self._execute_company_fetch({
+                                            "company": name,
+                                            "fund_id": fund_id,
+                                        })
+                                        clist = result.get("companies", []) if isinstance(result, dict) else []
+                                        cdata = clist[0] if clist else (result if isinstance(result, dict) else {})
+
+                                        arr_val = cdata.get("arr") or cdata.get("revenue") or cdata.get("inferred_revenue")
+                                        if hasattr(arr_val, "value"):
+                                            arr_val = arr_val.value
+                                        val_val = cdata.get("valuation") or cdata.get("inferred_valuation")
+                                        if hasattr(val_val, "value"):
+                                            val_val = val_val.value
+
+                                        return {
+                                            "name": name,
+                                            "company_id": cdata.get("id"),
+                                            "sector": cdata.get("sector", ""),
+                                            "stage": cdata.get("stage", ""),
+                                            "description": (cdata.get("description") or cdata.get("product_description") or "")[:200],
+                                            "arr": arr_val,
+                                            "valuation": val_val,
+                                            "total_funding": cdata.get("total_funding") or cdata.get("total_raised"),
+                                            "employee_count": cdata.get("employee_count") or cdata.get("team_size"),
+                                            "growth_rate": cdata.get("growth_rate"),
+                                            "hq": cdata.get("hq_location") or cdata.get("geography", ""),
+                                            "business_model": cdata.get("business_model", ""),
+                                            "source": "web_discovery",
+                                        }
+                                    except Exception as e:
+                                        logger.warning(f"[source_companies] enrich failed for '{name}': {e}")
+                                        return None
+
+                            enrich_tasks = [_enrich_one(n) for n in names_to_enrich]
+                            enriched = await asyncio.gather(*enrich_tasks)
+                            round_companies = [c for c in enriched if c is not None]
+                            all_web_companies.extend(round_companies)
+
+                            # Check if we have enough now
+                            total_count = len(scored) + len(all_web_companies)
+                            if total_count >= max_results or round_num == 2:
+                                break
+
+                        # 5. Score web-discovered companies with same rubric, merge + dedupe
+                        if all_web_companies:
+                            web_scored = score_companies(
+                                all_web_companies,
+                                weights=custom_weights or rubric.get("weights"),
+                                target_stage=target_stage or rubric.get("target_stage"),
+                            )
+
+                            # Deduplicate: remove DB entries that overlap with web results (web has fresher data)
+                            web_names_lower = {c.get("name", "").lower() for c in web_scored}
+                            scored = [c for c in scored if c.get("name", "").lower() not in web_names_lower]
+
+                            # Merge: combine DB + web, re-sort by score
+                            scored = scored + web_scored
+                            scored.sort(key=lambda x: x.get("score", 0), reverse=True)
+                            scored = scored[:max_results]
+
+                            # Re-assign ranks after merge
+                            for i, item in enumerate(scored):
+                                item["rank"] = i + 1
+
+                            # Count actual sources in the final trimmed list
+                            web_in_final = sum(1 for c in scored if c.get("source") == "web_discovery")
+                            db_in_final = len(scored) - web_in_final
+
+                            _web_discovery_info = {
+                                "web_companies_found": len(all_web_companies),
+                                "web_in_final_list": web_in_final,
+                                "db_in_final_list": db_in_final,
+                                "intent": rubric.get("intent", "dealflow"),
+                                "entity_type": rubric.get("entity_type", "startup"),
+                                "search_rounds": round_num,
+                            }
+                            logger.info(
+                                "[source_companies] web discovery complete: %d new %ss found (%d in final list), intent=%s",
+                                len(all_web_companies), rubric.get("entity_type", "startup"),
+                                web_in_final, rubric.get("intent", "dealflow"),
+                            )
+
+                    except Exception as e:
+                        logger.warning(f"[source_companies] web discovery failed (non-fatal): {e}")
+
+            # ── End web discovery loop ───────────────────────────────
 
             # Optional microskills enrichment on top N results
             _enrichment_info = None
@@ -5317,9 +5606,19 @@ Answer using specific company names and numbers from the portfolio grid above.""
                     for c in scored
                 ]
 
-            # Attach enrichment and persistence metadata
+            # Attach enrichment, web discovery, and persistence metadata
             if _enrichment_info:
                 result["enrichment"] = _enrichment_info
+            if _web_discovery_info:
+                result["web_discovery"] = _web_discovery_info
+                # Update summary with actual final-list counts (not raw discovery totals)
+                _web_final = _web_discovery_info.get("web_in_final_list", 0)
+                _db_final = _web_discovery_info.get("db_in_final_list", len(scored))
+                result["summary"] = (
+                    f"Found {len(scored)}{stage_str}{sector_str} companies "
+                    f"({_db_final} from DB, {_web_final} from web). "
+                    f"Top scorer: {top_name} ({top_score}/100)."
+                )
             if _enrich_grid_cmds:
                 result["grid_commands"] = result.get("grid_commands", []) + _enrich_grid_cmds
             if _persisted_count:
@@ -5330,6 +5629,32 @@ Answer using specific company names and numbers from the portfolio grid above.""
         except Exception as e:
             logger.error(f"[TOOL] source_companies failed: {e}")
             return {"companies": [], "count": 0, "error": str(e)}
+
+    async def _tool_generate_rubric(self, inputs: dict) -> dict:
+        """Generate a scoring rubric from a natural-language investment thesis.
+
+        Now returns intent, entity_type, and search_context alongside
+        weights and filters — the full instruction set for sourcing.
+        """
+        from app.services.sourcing_service import generate_rubric
+
+        thesis = inputs.get("thesis", "")
+        if not thesis.strip():
+            return {"error": "A thesis description is required (e.g. 'Series A B2B SaaS in fintech, $3-10M ARR')"}
+
+        rubric = generate_rubric(
+            thesis_description=thesis,
+            weight_overrides=inputs.get("weight_overrides"),
+            target_stage=inputs.get("target_stage"),
+            filters=inputs.get("filters"),
+        )
+
+        logger.info(
+            "[TOOL] generate_rubric: thesis=%s intent=%s entity=%s stage=%s weights=%s filters=%s",
+            thesis[:60], rubric.get("intent"), rubric.get("entity_type"),
+            rubric.get("target_stage"), rubric.get("weights"), rubric.get("filters"),
+        )
+        return rubric
 
     async def _tool_add_company_to_matrix(self, inputs: dict) -> dict:
         """Add a company from the rich DB to the portfolio matrix grid."""
@@ -7950,6 +8275,23 @@ Rules:
                 tool_results.append({"tool": mem.get("tool", "prior"), "input": {}, "output": mem.get("summary", "")})
             logger.info(f"[AGENT_LOOP] Restored {len(prior_memory)} prior tool results from working_memory")
 
+        # ── Sourcing pre-fetch: load top companies into shared_data so the
+        # agent has DB context from the first reasoning step (not only after
+        # a tool happens to populate it).  Runs only when companies are not
+        # already present (e.g. from an @-mention or a previous turn).
+        if not self.shared_data.get("companies"):
+            try:
+                from app.services.sourcing_service import query_companies
+                _fund_id = (self.shared_data.get("fund_context") or {}).get("fundId") or getattr(self, "fund_id", None)
+                _prefetch = await query_companies(filters={}, sort_by="name", sort_desc=False, limit=100, fund_id=_fund_id)
+                _prefetch_companies = _prefetch.get("companies", [])
+                if _prefetch_companies:
+                    async with self.shared_data_lock:
+                        self.shared_data["companies"] = _prefetch_companies
+                    logger.info(f"[AGENT_LOOP] Pre-fetched {len(_prefetch_companies)} companies into shared_data for context")
+            except Exception as _pf_err:
+                logger.warning(f"[AGENT_LOOP] Sourcing pre-fetch failed (non-fatal): {_pf_err}")
+
         # Build intent-scoped tool catalog — only relevant categories
         _intent = classification.intent if classification else "general"
         _scoped_tools = get_tools_for_intent(_intent)
@@ -8144,6 +8486,17 @@ Rules:
                         f"NEEDS EXTERNAL LOOKUP: {classification.needs_external}\n"
                         f"Use this as guidance — adapt based on results.\n"
                     )
+                    # Inject sourcing-specific guidance when intent is sourcing-related
+                    _sourcing_intents = {"sourcing", "dealflow", "market", "company_search", "list_building"}
+                    if classification.intent in _sourcing_intents:
+                        intent_guidance += (
+                            "\nSOURCING WORKFLOW: "
+                            "1) Call generate_rubric(thesis=<user request>) to get intent-aware weights + filters. "
+                            "2) Call source_companies(filters=rubric.filters, custom_weights=rubric.weights, "
+                            "discover_web=true, thesis=<user request>, min_web_threshold=5) to search DB + web. "
+                            "The rubric auto-classifies intent (acquirer/gtm_leads/lp_investor/dealflow/etc.) "
+                            "and adapts queries, extraction, and scoring. No need to call build_company_list separately.\n"
+                        )
                 else:
                     # Legacy fallback
                     intent = self._classify_query_intent(prompt)
@@ -31495,347 +31848,55 @@ Return your analysis with inline citations for ALL factual claims.
         }
 
     async def _tool_build_company_list(self, inputs: dict) -> dict:
-        """Search for companies by thesis/criteria, enrich matches, score, and persist.
+        """LEGACY — delegates to source_companies with discover_web=true.
 
-        Replaces naive keyword concat with:
-        1. LLM query generation — turns thesis into 4 targeted Tavily queries
-        2. Portfolio dedup — checks DB for existing companies
-        3. LLM name extraction — extracts company names from search snippets
-        4. Parallel enrichment — _execute_company_fetch + _persist_company_to_db
-        5. Multi-dimensional scoring — fund_fit, growth, moat, stage_match, data_quality
+        Kept for backward compatibility. All new sourcing should go through
+        source_companies directly, which has the same rubric-driven pipeline
+        but with 2-round web discovery and proper DB+web merge.
         """
+        from app.services.sourcing_service import generate_rubric
+
         criteria = inputs.get("criteria", "")
         sector = inputs.get("sector", "")
         stage = inputs.get("stage", "")
         geography = inputs.get("geography", "")
-        min_arr = inputs.get("min_arr")
-        scoring_rubric = inputs.get("scoring_rubric") or {}
-        persist = inputs.get("persist", True)
-        add_to_matrix = inputs.get("add_to_matrix", False)
         max_results = min(inputs.get("max_results", 10), 20)
-        fund_id = inputs.get("fund_id") or self.shared_data.get("fund_id")
 
         thesis = " ".join(filter(None, [criteria, sector, stage, geography]))
         if not thesis.strip():
             return {"error": "At least one search criterion required (criteria, sector, stage, or geography)"}
 
-        # ------------------------------------------------------------------
-        # Step 1: LLM query generation — turn thesis into targeted queries
-        # ------------------------------------------------------------------
-        try:
-            from app.services.model_router import ModelCapability
-            query_gen_prompt = (
-                f"Generate exactly 4 targeted web search queries to find startup companies matching this thesis:\n"
-                f"Thesis: {thesis}\n"
-                f"{'Stage filter: ' + stage if stage else ''}\n"
-                f"{'Geography: ' + geography if geography else ''}\n"
-                f"{'Min ARR: $' + str(min_arr) if min_arr else ''}\n\n"
-                f"Return JSON: {{\"queries\": [\"query1\", \"query2\", \"query3\", \"query4\"]}}\n"
-                f"Query guidelines:\n"
-                f"- Query 1: Direct company names + sector + stage\n"
-                f"- Query 2: Recent funding rounds in the space\n"
-                f"- Query 3: Market landscape / competitor mapping\n"
-                f"- Query 4: Industry reports or lists mentioning companies\n"
-                f"Make queries specific enough to surface real company names, not generic articles."
-            )
-            query_result = await self.model_router.get_completion(
-                prompt=query_gen_prompt,
-                system_prompt="Generate targeted search queries. Return valid JSON only.",
-                capability=ModelCapability.FAST,
-                max_tokens=300,
-                temperature=0.0,
-                json_mode=True,
-                caller_context="build_company_list_query_gen",
-            )
-            raw = query_result.get("response", "{}") if isinstance(query_result, dict) else str(query_result)
-            parsed_queries = json.loads(raw) if isinstance(raw, str) else raw
-            web_queries = parsed_queries.get("queries", [])[:4]
-        except Exception as e:
-            logger.warning(f"[BUILD_COMPANY_LIST] LLM query gen failed, using fallback: {e}")
-            web_queries = [
-                f"{thesis} startup funding valuation",
-                f"{thesis} companies startups 2024 2025",
-                f"{thesis} series {stage or 'A B'} funding round",
-                f"{thesis} market landscape competitors",
-            ]
+        # Generate rubric to get weights + filters
+        rubric = generate_rubric(
+            thesis_description=thesis,
+            weight_overrides=inputs.get("scoring_rubric") or None,
+            target_stage=stage or None,
+            filters={"sector": sector, "geography": geography} if (sector or geography) else None,
+        )
 
-        logger.info(f"[BUILD_COMPANY_LIST] Generated {len(web_queries)} search queries for thesis: {thesis[:80]}")
+        logger.info(
+            "[BUILD_COMPANY_LIST] delegating to source_companies(discover_web=true) intent=%s",
+            rubric.get("intent"),
+        )
 
-        # ------------------------------------------------------------------
-        # Step 2: Portfolio dedup — get existing company names from DB
-        # ------------------------------------------------------------------
-        existing_names: set = set()
-        db_results = []
-        try:
-            from app.services.portfolio_service import portfolio_service
-            existing_names = await portfolio_service.get_portfolio_company_names(fund_id)
-            db_response = await portfolio_service.search_companies_db(thesis, limit=max_results)
-            db_results = db_response.get("companies", [])
-        except Exception as e:
-            logger.warning(f"[BUILD_COMPANY_LIST] DB search/dedup failed: {e}")
+        # Delegate to source_companies with web discovery enabled
+        result = await self._tool_source_companies({
+            "filters": rubric.get("filters", {}),
+            "custom_weights": rubric.get("weights"),
+            "target_stage": stage or rubric.get("target_stage"),
+            "discover_web": True,
+            "thesis": thesis,
+            "min_web_threshold": 5,
+            "max_results": max_results,
+            "persist_results": inputs.get("persist", True),
+            "display": "ranked_list",
+        })
 
-        # ------------------------------------------------------------------
-        # Step 3: Web search — run generated queries in parallel
-        # ------------------------------------------------------------------
-        web_results = []
-        if len(db_results) < max_results and hasattr(self, '_execute_web_search'):
-            async def run_query(q: str) -> list:
-                try:
-                    wr = await self._execute_web_search({"query": q, "max_results": 5})
-                    return wr.get("results", []) if isinstance(wr, dict) else []
-                except Exception:
-                    return []
-
-            query_tasks = [run_query(q) for q in web_queries]
-            query_results = await asyncio.gather(*query_tasks)
-            for batch in query_results:
-                web_results.extend(batch)
-
-        # ------------------------------------------------------------------
-        # Step 4: LLM name extraction — extract company names from snippets
-        # ------------------------------------------------------------------
-        web_company_names: set = set()
-        if web_results:
-            snippets = []
-            for wr in web_results[:20]:
-                title = wr.get("title", "") or ""
-                snippet = wr.get("snippet", "") or wr.get("content", "") or ""
-                snippets.append(f"Title: {title}\nSnippet: {snippet[:300]}")
-
-            try:
-                extraction_prompt = (
-                    f"From the search results below, extract all company/startup names mentioned.\n"
-                    f"Only include actual company names, not people, products, or generic terms.\n"
-                    f"Search context: {thesis}\n\n"
-                    f"Search results:\n" + "\n---\n".join(snippets) + "\n\n"
-                    f"Return JSON: {{\"companies\": [\"CompanyA\", \"CompanyB\", ...]}}"
-                )
-                extract_result = await self.model_router.get_completion(
-                    prompt=extraction_prompt,
-                    system_prompt="Extract company names from search results. Return valid JSON only.",
-                    capability=ModelCapability.FAST,
-                    max_tokens=500,
-                    temperature=0.0,
-                    json_mode=True,
-                    caller_context="build_company_list_name_extraction",
-                )
-                raw = extract_result.get("response", "{}") if isinstance(extract_result, dict) else str(extract_result)
-                parsed_names = json.loads(raw) if isinstance(raw, str) else raw
-                extracted = parsed_names.get("companies", [])
-                db_names_lower = {c.get("name", "").lower() for c in db_results}
-                for name in extracted:
-                    name_clean = name.strip()
-                    if (
-                        2 < len(name_clean) < 60
-                        and name_clean.lower() not in existing_names
-                        and name_clean.lower() not in db_names_lower
-                    ):
-                        web_company_names.add(name_clean)
-            except Exception as e:
-                logger.warning(f"[BUILD_COMPANY_LIST] LLM name extraction failed, using title split: {e}")
-                db_names_lower = {c.get("name", "").lower() for c in db_results}
-                for wr in web_results:
-                    title = wr.get("title", "") or ""
-                    for sep in [" - ", " | ", ": ", " — ", " – "]:
-                        if sep in title:
-                            candidate = title.split(sep)[0].strip()
-                            if 2 < len(candidate) < 40 and candidate.lower() not in existing_names and candidate.lower() not in db_names_lower:
-                                web_company_names.add(candidate)
-                            break
-
-        logger.info(f"[BUILD_COMPANY_LIST] Extracted {len(web_company_names)} new company names from web")
-
-        # ------------------------------------------------------------------
-        # Step 5: Parallel enrichment via _execute_company_fetch
-        # ------------------------------------------------------------------
-        remaining_slots = max(0, max_results - len(db_results))
-        enriched_new = []
-        if web_company_names and remaining_slots > 0:
-            semaphore = asyncio.Semaphore(3)
-
-            async def enrich_and_persist(name: str) -> dict:
-                async with semaphore:
-                    try:
-                        result = await self._execute_company_fetch({
-                            "company": name,
-                            "fund_id": fund_id,
-                        })
-                        # _execute_company_fetch returns {"companies": [data]}
-                        companies_list = result.get("companies", []) if isinstance(result, dict) else []
-                        if not companies_list:
-                            company_data = result if isinstance(result, dict) else {}
-                        else:
-                            company_data = companies_list[0]
-
-                        # Extract summary fields
-                        arr_val = company_data.get("arr") or company_data.get("revenue") or company_data.get("inferred_revenue")
-                        if hasattr(arr_val, "value"):
-                            arr_val = arr_val.value
-
-                        valuation_val = company_data.get("valuation") or company_data.get("inferred_valuation")
-                        if hasattr(valuation_val, "value"):
-                            valuation_val = valuation_val.value
-
-                        return {
-                            "name": name,
-                            "company_id": company_data.get("id"),
-                            "sector": company_data.get("sector", ""),
-                            "stage": company_data.get("stage", ""),
-                            "description": (company_data.get("description") or company_data.get("product_description") or "")[:200],
-                            "arr": arr_val,
-                            "valuation": valuation_val,
-                            "total_funding": company_data.get("total_funding") or company_data.get("total_raised"),
-                            "employee_count": company_data.get("employee_count") or company_data.get("team_size"),
-                            "growth_rate": company_data.get("growth_rate"),
-                            "hq": company_data.get("hq_location") or company_data.get("geography", ""),
-                            "business_model": company_data.get("business_model", ""),
-                            "fund_fit_score": company_data.get("fund_fit_score"),
-                            "source": "web_enriched",
-                            "enriched": True,
-                            "_full_data": company_data,  # Keep for scoring
-                        }
-                    except Exception as e:
-                        logger.warning(f"[BUILD_COMPANY_LIST] Enrichment failed for '{name}': {e}")
-                        return {"name": name, "error": str(e), "source": "web_failed"}
-
-            tasks = [enrich_and_persist(n) for n in list(web_company_names)[:remaining_slots]]
-            enriched_new = await asyncio.gather(*tasks)
-            enriched_new = [e for e in enriched_new if not e.get("error")]
-
-        # ------------------------------------------------------------------
-        # Step 6: Combine, filter, and score
-        # ------------------------------------------------------------------
-        all_companies = []
-        for c in db_results:
-            c["source"] = "database"
-            c["enriched"] = True
-            all_companies.append(c)
-        for c in enriched_new:
-            all_companies.append(c)
-
-        # Apply min_arr filter
-        if min_arr:
-            filtered = [c for c in all_companies if (c.get("arr") or 0) >= min_arr]
-            if filtered:
-                all_companies = filtered
-
-        # Apply stage filter
-        if stage:
-            stage_lower = stage.lower()
-            filtered = [c for c in all_companies if stage_lower in (c.get("stage") or "").lower()]
-            if filtered:
-                all_companies = filtered
-
-        # Apply geography filter
-        if geography:
-            geo_lower = geography.lower()
-            filtered = [c for c in all_companies if geo_lower in (c.get("hq") or "").lower()]
-            if filtered:
-                all_companies = filtered
-
-        # Multi-dimensional scoring
-        # Default rubric weights
-        weights = {
-            "fund_fit": scoring_rubric.get("fund_fit", 0.25),
-            "growth": scoring_rubric.get("growth", 0.20),
-            "moat": scoring_rubric.get("moat", 0.15),
-            "stage_match": scoring_rubric.get("stage_match", 0.15),
-            "data_quality": scoring_rubric.get("data_quality", 0.25),
-        }
-
-        for c in all_companies:
-            scores = {}
-
-            # Fund fit (0-10) — from enrichment or estimate
-            fund_fit_raw = c.get("fund_fit_score") or 0
-            if hasattr(fund_fit_raw, "value"):
-                fund_fit_raw = fund_fit_raw.value
-            scores["fund_fit"] = min(10, float(fund_fit_raw or 0))
-
-            # Growth (0-10) — based on growth rate
-            gr = c.get("growth_rate") or 0
-            if hasattr(gr, "value"):
-                gr = gr.value
-            gr = float(gr or 0)
-            if gr > 3.0:
-                scores["growth"] = 10
-            elif gr > 2.0:
-                scores["growth"] = 8
-            elif gr > 1.0:
-                scores["growth"] = 6
-            elif gr > 0.5:
-                scores["growth"] = 4
-            else:
-                scores["growth"] = 2
-
-            # Moat (0-10) — from full data if available
-            full_data = c.get("_full_data", {})
-            moat_score = full_data.get("moat_score") or full_data.get("switching_costs")
-            if moat_score:
-                if hasattr(moat_score, "value"):
-                    moat_score = moat_score.value
-                scores["moat"] = min(10, float(moat_score or 5))
-            else:
-                scores["moat"] = 5  # neutral default
-
-            # Stage match (0-10)
-            if stage:
-                c_stage = (c.get("stage") or "").lower()
-                scores["stage_match"] = 10 if stage.lower() in c_stage else 3
-            else:
-                scores["stage_match"] = 7  # no filter = neutral
-
-            # Data quality (0-10) — count of non-empty key fields
-            filled = 0
-            for field in ("arr", "valuation", "total_funding", "stage", "employee_count",
-                          "description", "growth_rate", "business_model", "hq", "sector"):
-                if c.get(field):
-                    filled += 1
-            scores["data_quality"] = min(10, filled)
-
-            # Weighted composite
-            composite = sum(scores[dim] * weights[dim] for dim in weights)
-            c["scores"] = scores
-            c["composite_score"] = round(composite, 2)
-
-            # Strip internal _full_data before returning
-            c.pop("_full_data", None)
-
-        all_companies.sort(key=lambda x: x.get("composite_score", 0), reverse=True)
-        final_list = all_companies[:max_results]
-
-        # Build summary
-        total_arr = sum(c.get("arr") or 0 for c in final_list)
-        stages_breakdown = {}
-        for c in final_list:
-            s = c.get("stage", "Unknown")
-            stages_breakdown[s] = stages_breakdown.get(s, 0) + 1
-
-        result = {
-            "companies": final_list,
-            "count": len(final_list),
-            "query": thesis,
-            "search_queries_used": web_queries,
-            "summary": {
-                "total_companies": len(final_list),
-                "from_database": sum(1 for c in final_list if c.get("source") == "database"),
-                "from_web": sum(1 for c in final_list if c.get("source") == "web_enriched"),
-                "total_arr": total_arr,
-                "avg_composite_score": round(sum(c.get("composite_score", 0) for c in final_list) / max(len(final_list), 1), 2),
-                "stage_breakdown": stages_breakdown,
-                "persisted": persist,
-            },
-            "filters_applied": {
-                "sector": sector, "stage": stage, "geography": geography,
-                "min_arr": min_arr,
-            },
-            "scoring_weights": weights,
-        }
-
-        # Emit add_to_matrix grid commands if requested
-        if add_to_matrix and final_list:
+        # Add grid commands if requested
+        add_to_matrix = inputs.get("add_to_matrix", False)
+        if add_to_matrix and result.get("companies"):
             grid_commands = []
-            for c in final_list:
+            for c in result["companies"]:
                 grid_commands.append({
                     "action": "add_row",
                     "companyName": c.get("name", ""),
@@ -31851,7 +31912,7 @@ Return your analysis with inline citations for ALL factual claims.
                     },
                     "source_service": "build_company_list",
                 })
-            result["grid_commands"] = grid_commands
+            result["grid_commands"] = result.get("grid_commands", []) + grid_commands
 
         return result
 
