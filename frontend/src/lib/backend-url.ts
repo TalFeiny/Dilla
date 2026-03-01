@@ -42,6 +42,8 @@ export function getBackendHeaders(extra?: Record<string, string>): Record<string
   const secret = process.env.BACKEND_API_SECRET;
   if (secret) {
     headers['X-Backend-Secret'] = secret;
+  } else {
+    console.error('[getBackendHeaders] BACKEND_API_SECRET is missing — backend will return 403');
   }
   return headers;
 }

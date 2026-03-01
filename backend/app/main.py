@@ -122,6 +122,13 @@ class BackendGateMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if request.headers.get("X-Backend-Secret") != BACKEND_API_SECRET:
+            got = (request.headers.get("X-Backend-Secret") or "")[:8]
+            expected = (BACKEND_API_SECRET or "")[:8]
+            logger.warning(
+                f"Gate rejected: got={got}... expected={expected}... "
+                f"path={request.url.path} method={request.method} "
+                f"has_header={'X-Backend-Secret' in request.headers}"
+            )
             return JSONResponse({"error": "Unauthorized"}, status_code=403)
 
         return await call_next(request)

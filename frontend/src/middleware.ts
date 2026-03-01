@@ -191,6 +191,8 @@ export async function middleware(request: NextRequest) {
       const backendSecret = process.env.BACKEND_API_SECRET
       if (backendSecret) {
         headers.set('X-Backend-Secret', backendSecret)
+      } else {
+        console.error(`[Middleware] BACKEND_API_SECRET is not set — backend will reject with 403`)
       }
 
       // Read body for non-GET/HEAD requests
@@ -224,6 +226,11 @@ export async function middleware(request: NextRequest) {
       }
 
       responseHeaders.set('X-Request-ID', globalThis.crypto.randomUUID())
+
+      if (proxyRes.status === 403) {
+        const body = await proxyRes.clone().text()
+        console.error(`[Middleware] Backend returned 403 for ${pathname} — secret prefix: ${(backendSecret || '').slice(0, 8)}... body: ${body}`)
+      }
 
       return new Response(proxyRes.body, {
         status: proxyRes.status,
