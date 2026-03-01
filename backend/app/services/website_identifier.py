@@ -144,9 +144,9 @@ CRITICAL: Return ONLY the JSON object. No explanations, no markdown, just pure J
                 result = await self.model_router.get_completion(
                     prompt=identification_prompt,
                     capability=ModelCapability.ANALYSIS,
-                    max_tokens=500,  # Much smaller response needed
+                    max_tokens=500,
                     temperature=0,
-                    preferred_models=["claude-sonnet-4-5"]  # Prefer Claude but allow fallback
+                    caller_context="extraction"
                 )
                 response_text = result["response"]
                 

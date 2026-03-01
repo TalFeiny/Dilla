@@ -2996,7 +2996,8 @@ JUST THE JSON:"""
                 max_tokens=1200,
                 temperature=0,
                 json_mode=True,
-                fallback_enabled=True
+                fallback_enabled=True,
+                caller_context="extraction"
             )
             content = (result.get("response") or "").strip()
             from app.services.micro_skills.search_skills import _parse_llm_json
@@ -8451,7 +8452,39 @@ Rules:
             for s in summaries[:-8]:
                 compressed.append({"tool": s["tool"], "ok": s.get("ok", True),
                                     "count": s.get("count", 1)})
-            return json.dumps(compressed + summaries[-8:])
+            summaries = compressed + summaries[-8:]
+
+        # ── Append accumulated shared_data snapshot so the LLM sees the FULL
+        # picture, not just the current iteration's truncated tool outputs.
+        # This is the single biggest fix: the agent now knows what it HAS. ──
+        accumulated = {}
+        sd_companies = self.shared_data.get("companies", [])
+        if sd_companies:
+            accumulated["total_companies"] = len(sd_companies)
+            accumulated["company_names"] = [
+                c.get("company") or c.get("name") or "?" for c in sd_companies
+            ]
+            # Field coverage: how many companies have key fields filled
+            _key_fields = ("revenue", "arr", "valuation", "total_funding", "stage", "sector", "growth_rate")
+            field_coverage = {}
+            for fk in _key_fields:
+                filled = sum(1 for c in sd_companies if c.get(fk) or c.get(f"inferred_{fk}"))
+                if filled:
+                    field_coverage[fk] = f"{filled}/{len(sd_companies)}"
+            if field_coverage:
+                accumulated["field_coverage"] = field_coverage
+        # Portfolio enrichment
+        if self.shared_data.get("portfolio_enrichment"):
+            accumulated["portfolio_enrichment"] = True
+        if self.shared_data.get("fund_metrics"):
+            accumulated["fund_metrics"] = True
+        # Memo artifacts already generated
+        memo_arts = self.shared_data.get("memo_artifacts", [])
+        if memo_arts:
+            accumulated["memos_generated"] = len(memo_arts)
+
+        if accumulated:
+            summaries.append({"_accumulated_data": accumulated})
 
         return json.dumps(summaries)
 
@@ -8578,7 +8611,7 @@ Rules:
         tool_catalog = "\n".join(f"- {t.name}: {t.description}" for t in _scoped_tools)
 
         ROUTE_MAX_TOKENS = 500
-        REFLECT_MAX_TOKENS = 150
+        REFLECT_MAX_TOKENS = 300
         SYNTH_MAX_TOKENS = 4000
 
         # Track correction count at loop start for mid-loop interruption detection
@@ -8832,30 +8865,41 @@ Rules:
                 )
 
             # Company context — directives, not hints
+            # Track whether gap-fill tools have already been attempted this loop
+            _gap_fill_tools = {"resolve_data_gaps", "fetch_company_data"}
+            _gap_fill_attempted = any(r["tool"] in _gap_fill_tools for r in tool_results)
+
             auto_enrich_guidance = ""
             _enrich_parts: list = []
 
-            if self.shared_data.get("needs_auto_enrich"):
+            if self.shared_data.get("needs_auto_enrich") and not _gap_fill_attempted:
+                # Only fire on the FIRST pass — once gap-fill has run, stop demanding more
                 sparse_fields = self.shared_data.get("auto_enrich_fields", [])
                 _enrich_parts.append(
-                    f"MISSING DATA: {', '.join(sparse_fields)} fields are sparse — call resolve_data_gaps NOW before answering."
+                    f"MISSING DATA: {', '.join(sparse_fields)} fields are sparse — call resolve_data_gaps to fill what's available."
+                )
+            elif _gap_fill_attempted and self.shared_data.get("needs_auto_enrich"):
+                # Gap-fill already ran — tell the LLM to work with what it has
+                _enrich_parts.append(
+                    "DATA COLLECTION DONE. Some fields remain unfillable (TAM, team size, etc. aren't always public). "
+                    "Work with the data you have — proceed to analysis/memo. Do NOT re-call resolve_data_gaps or fetch_company_data."
                 )
 
             new_mentions = self.shared_data.get("mentioned_new_companies", [])
-            if new_mentions:
+            if new_mentions and not _gap_fill_attempted:
                 _enrich_parts.append(
-                    f"UNKNOWN COMPANIES: {', '.join(new_mentions)} are not in the grid — call fetch_company_data NOW."
+                    f"UNKNOWN COMPANIES: {', '.join(new_mentions)} are not in the grid — call fetch_company_data."
                 )
 
             sparse_mentions = self.shared_data.get("mentioned_sparse_companies", [])
-            if sparse_mentions:
+            if sparse_mentions and not _gap_fill_attempted:
                 _enrich_parts.append(
-                    f"SPARSE COMPANIES: {', '.join(sparse_mentions)} have thin grid data — call resolve_data_gaps NOW."
+                    f"SPARSE COMPANIES: {', '.join(sparse_mentions)} have thin grid data — call resolve_data_gaps."
                 )
 
             if _enrich_parts:
                 auto_enrich_guidance = (
-                    "\nDATA DIRECTIVES (act on these before anything else):\n"
+                    "\nDATA DIRECTIVES:\n"
                     + "\n".join(f"- {p}" for p in _enrich_parts) + "\n"
                 )
 
@@ -8906,14 +8950,16 @@ State:
 {_results_display}
 {_goals_status}{intent_guidance}{plan_guidance}{correction_guidance}{_tool_history}
 RULES:
-1. Look at State — what data exists? What's missing for the user's request?
-2. Pick tool(s) from the list above to close the gap. Prerequisites auto-resolve.
+1. Look at State — what data exists? Use available data to answer the user's request.
+2. If a CRITICAL field is truly missing (e.g. no revenue at all), fetch it ONCE. Do NOT chase every '-' in the checklist.
 3. Run independent calls in parallel. Never say "no data" — use tools to get it.
 4. NEVER repeat a tool call that already ran — check TOOLS ALREADY CALLED above.
 5. After data tools finish, ALWAYS write results somewhere persistent:
    - Use generate_memo or write_to_memo to write analysis to the memo (context bridge for future turns)
    - Use nl-matrix-controller to push extracted values (ARR, valuation, runway) back into the grid
    - The memo is NOT optional — it preserves context across agent turns
+6. NEVER loop trying to get a "complete dataset". Some fields (TAM, team size, etc.) are often unavailable.
+   Work with what you have. Incomplete data with analysis > perfect data with no output.
 6. Charts go in the memo, not the chat. Generate charts as part of memo/analysis output.
 7. You are done when: data is fetched AND written to memo AND grid values updated.
    Do NOT say "done" if you only searched/fetched but never wrote to memo or grid.
@@ -9026,13 +9072,32 @@ When done: {{"action":"done"}}"""
                             }
                             logger.info(f"[AGENT_LOOP] Iter 0 quit blocked — dispatching 1 ledger task: {pending_actions[0]['tool']}")
                         else:
-                            action = {
-                                "action": "call_tool",
-                                "tool": "query_portfolio",
-                                "input": {"query": prompt},
-                                "reasoning": "Fallback — no pending ledger tasks",
-                            }
-                            logger.info("[AGENT_LOOP] Iter 0 quit blocked — fallback to query_portfolio")
+                            # Sourcing fallback: empty grid + sourcing intent → kick off discovery
+                            _sourcing_intents = {"sourcing", "dealflow", "market", "company_search", "list_building"}
+                            _is_sourcing = (
+                                (_intent in _sourcing_intents)
+                                or any(kw in _lower_prompt for kw in [
+                                    "find", "source", "discover", "build a list", "search for",
+                                    "companies in", "startups in", "who are the", "market map",
+                                ])
+                            )
+                            if _is_sourcing and not _has_companies:
+                                action = {
+                                    "action": "call_tools",
+                                    "tools": [
+                                        {"tool": "generate_rubric", "input": {"thesis": prompt}},
+                                    ],
+                                    "reasoning": "Empty grid + sourcing request — generating rubric first, then will source companies",
+                                }
+                                logger.info("[AGENT_LOOP] Iter 0 quit blocked — sourcing kickoff: generate_rubric")
+                            else:
+                                action = {
+                                    "action": "call_tool",
+                                    "tool": "query_portfolio",
+                                    "input": {"query": prompt},
+                                    "reasoning": "Fallback — no pending ledger tasks",
+                                }
+                                logger.info("[AGENT_LOOP] Iter 0 quit blocked — fallback to query_portfolio")
                 else:
                     break
 
@@ -9284,10 +9349,35 @@ When done: {{"action":"done"}}"""
                     "Do NOT mark as sufficient without writing to the memo.\n"
                 )
 
+            # Build a compact but COMPLETE summary of what the last tool returned.
+            # Instead of blind 1500-char truncation that makes the LLM think it got
+            # nothing, extract structured signals: counts, names, field coverage.
+            _last_result_summary = ""
+            if isinstance(last_result, dict):
+                _lr_companies = last_result.get("companies", [])
+                if _lr_companies:
+                    _lr_names = [c.get("company") or c.get("name") or "?" for c in _lr_companies]
+                    _lr_with_rev = sum(1 for c in _lr_companies if c.get("revenue") or c.get("inferred_revenue") or c.get("arr"))
+                    _lr_with_val = sum(1 for c in _lr_companies if c.get("valuation") or c.get("inferred_valuation"))
+                    _last_result_summary = (
+                        f"Returned {len(_lr_companies)} companies: {', '.join(_lr_names[:20])}"
+                        f" | {_lr_with_rev} have revenue data | {_lr_with_val} have valuation data"
+                    )
+                else:
+                    _last_result_summary = self._truncate(json.dumps(last_result), 2000)
+            else:
+                _last_result_summary = self._truncate(json.dumps(last_result), 2000)
+
+            # Also show total accumulated data from shared_data so reflection sees the full picture
+            _sd_companies = self.shared_data.get("companies", [])
+            _accumulated_line = ""
+            if _sd_companies:
+                _accumulated_line = f"\nACCUMULATED DATA: {len(_sd_companies)} total companies in shared_data"
+
             reflect_prompt = f"""Task: {prompt}
 Tools called so far: {', '.join(r['tool'] for r in tool_results)}
 Latest tool: {last_tool_name}
-Result summary: {self._truncate(json.dumps(last_result), 1500)}
+Result summary: {_last_result_summary}{_accumulated_line}
 {_dedup_warning}{_escalation_hint}
 {_goals_checklist}SCOREBOARD:
 - Portfolio companies: {portfolio_size}
@@ -9332,7 +9422,25 @@ Look at the user's request and the scoreboard. Is the request fully satisfied?
             # ── Anti-loop: force memo generation if stuck ──
             # If we've done 3+ iterations with data but no memo, force generate_memo
             _any_repeated = any(c >= 3 for c in _tool_call_counts.values())
-            if i >= 2 and fetch_count > 0 and memo_count == 0 and memo_section_count == 0:
+            # Also detect gap-fill cycling: alternating between fetch/resolve counts as looping
+            _gap_fill_total = sum(
+                _tool_call_counts.get(t, 0) for t in ("resolve_data_gaps", "fetch_company_data")
+            )
+            _gap_fill_looping = _gap_fill_total >= 3 and i >= 2
+
+            if _gap_fill_looping and memo_count == 0 and memo_section_count == 0:
+                logger.warning(
+                    f"[REFLECT] iter={i} — gap-fill loop detected "
+                    f"({_gap_fill_total} fetch/resolve calls), forcing generate_memo"
+                )
+                action = {
+                    "action": "call_tool",
+                    "tool": "generate_memo",
+                    "input": {"prompt": prompt},
+                    "reasoning": f"Gap-fill loop — {_gap_fill_total} data calls but 0 memo sections, proceeding with available data",
+                }
+                continue
+            elif i >= 2 and fetch_count > 0 and memo_count == 0 and memo_section_count == 0:
                 logger.warning(f"[REFLECT] iter={i} — data fetched but no memo after {i+1} iterations, forcing generate_memo")
                 action = {
                     "action": "call_tool",
@@ -9365,13 +9473,45 @@ Look at the user's request and the scoreboard. Is the request fully satisfied?
                 parts.append(f"Queued {len(run_cmds)} service run(s): {', '.join(action_ids)}")
             grid_summary_ctx = f'\nGrid operations performed: {"; ".join(parts)}.'
 
-        synth_context = json.dumps([
-            {
-                "tool": r["tool"],
-                "output": self._truncate(json.dumps(r.get("output", {})), 3000),
-            }
-            for r in tool_results
-        ]) + grid_summary_ctx
+        # ── Build synthesis context from SHARED_DATA (complete) rather than
+        # truncated per-tool outputs. shared_data has the full accumulated
+        # company list, merged and deduplicated. Tool outputs are only used
+        # for non-company results (valuations, charts, etc.) ──
+        _synth_company_data = ""
+        _sd_companies = self.shared_data.get("companies", [])
+        if _sd_companies:
+            # Build a compact but COMPLETE company dataset for synthesis
+            _company_records = []
+            for c in _sd_companies:
+                rec = {}
+                for k in ("company", "name", "revenue", "arr", "valuation",
+                          "total_funding", "growth_rate", "stage", "sector",
+                          "team_size", "hq_location", "business_model", "category",
+                          "description", "runway_months", "burn_rate",
+                          "inferred_revenue", "inferred_valuation", "inferred_growth_rate",
+                          "last_round", "last_round_date", "lead_investor",
+                          "reporting_currency", "confidence"):
+                    v = c.get(k)
+                    if v and v not in (0, "Unknown", "N/A", "", None):
+                        rec[k] = v
+                if rec:
+                    _company_records.append(rec)
+            if _company_records:
+                _synth_company_data = f"\n\nFULL COMPANY DATA ({len(_company_records)} companies):\n{json.dumps(_company_records, default=str)}\n"
+
+        # Non-company tool outputs (valuations, searches, etc.) — keep with higher limit
+        _non_company_results = []
+        for r in tool_results:
+            tool_name = r.get("tool", "")
+            if tool_name in ("fetch_company_data", "resolve_data_gaps", "build_company_list", "lightweight_diligence"):
+                # Company data is already in _synth_company_data from shared_data
+                continue
+            _non_company_results.append({
+                "tool": tool_name,
+                "output": self._truncate(json.dumps(r.get("output", {})), 4000),
+            })
+
+        synth_context = json.dumps(_non_company_results) + _synth_company_data + grid_summary_ctx
 
         # Inject corrections from feedback loop — fall back to grid companies when no @mentions
         entity_companies = (entities or {}).get("companies", [])
@@ -9438,7 +9578,7 @@ ABSOLUTE RULES:
                 prompt=synth_prompt,
                 system_prompt="You are a portfolio CFO. Write a structured analysis with ## markdown headings for each section. Use **bold** for key numbers. Use markdown tables for comparisons. Start with the key finding. NEVER say 'I don't have data'. If estimated, say '[Est: confidence%]'.",
                 capability=ModelCapability.ANALYSIS,
-                max_tokens=2000,
+                max_tokens=SYNTH_MAX_TOKENS,
                 temperature=0.3,
                 caller_context="agent_loop_synthesize_brief",
             )
@@ -10162,7 +10302,8 @@ Return ONLY the JSON array, no other text."""
                 max_tokens=1500,
                 temperature=0,
                 json_mode=True,
-                fallback_enabled=True
+                fallback_enabled=True,
+                caller_context="plan_generation"
             )
             content = result.get("response", "[]")
             import re
@@ -11174,7 +11315,8 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
                 max_tokens=1000,
                 temperature=0,
                 json_mode=True,
-                fallback_enabled=True
+                fallback_enabled=True,
+                caller_context="extraction"
             )
             content = result.get('response', '{}')
             # Extract JSON from response
@@ -12316,6 +12458,9 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
                             else:
                                 logger.info(f"[TAVILY] Search successful: {results_count} results for query: {query[:50]}")
                             self._tavily_cache[query] = result
+                            # Track Tavily cost in active budget (~$0.01 per advanced search)
+                            if hasattr(self, 'model_router') and self.model_router.budget:
+                                self.model_router.budget.record_external("tavily", 0.01)
                             return result
                         else:
                             error_text = await response.text()
@@ -14000,7 +14145,8 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
                 prompt=extraction_prompt,
                 capability=ModelCapability.STRUCTURED,
                 temperature=0.1,
-                json_mode=True
+                json_mode=True,
+                caller_context="find_comparables_extract"
             )
             
             # ModelRouter returns dict with 'response' key
@@ -17236,7 +17382,8 @@ Return a JSON with this structure:
             response = await self.model_router.get_completion(
                 prompt=prompt,
                 json_mode=True,
-                capability=ModelCapability.ANALYSIS
+                capability=ModelCapability.ANALYSIS,
+                caller_context="narrative"
             )
             
             # Parse the response
@@ -27941,11 +28088,15 @@ Return a JSON with this structure:
             logger.info(f"Using {len(companies_list)} companies from final_data")
             
         # Add exit scenarios (bull/base/bear) for each company
+        # SKIP if upstream already computed PWERM (valuation-engine skill or _populate_memo_service_data)
+        _pwerm_skip_count = 0
+        _pwerm_run_count = 0
         for company in companies_list:
+            if company.get("pwerm_valuation") and company.get("exit_scenarios"):
+                _pwerm_skip_count += 1
+                continue  # Already computed upstream — no duplicate work
             if company.get("valuation") or company.get("inferred_valuation"):
                 try:
-                    # Create valuation request for scenarios
-                    # Determine stage
                     stage_map = {
                         "Pre-Seed": Stage.PRE_SEED,
                         "Pre Seed": Stage.PRE_SEED,
@@ -27960,8 +28111,7 @@ Return a JSON with this structure:
                         "Late Stage": Stage.LATE
                     }
                     company_stage = stage_map.get(company.get("stage", "Series A"), Stage.SERIES_A)
-                    
-                    # Use inferred_revenue if revenue is None - CRITICAL FIX
+
                     revenue = ensure_numeric(company.get("revenue"), 0)
                     if revenue == 0:
                         revenue = ensure_numeric(company.get("inferred_revenue"), 0)
@@ -27969,21 +28119,17 @@ Return a JSON with this structure:
                             revenue = ensure_numeric(company.get("arr"), 0)
                             if revenue == 0:
                                 revenue = ensure_numeric(company.get("inferred_arr"), 1_000_000)
-                    
-                    # Use inferred_growth_rate if growth_rate is None
+
                     growth_rate = ensure_numeric(company.get("growth_rate"), 0)
                     if growth_rate == 0:
                         growth_rate = ensure_numeric(company.get("inferred_growth_rate"), 1.5)
-                    
-                    # Use inferred_valuation if valuation is None - CRITICAL FIX
+
                     valuation = ensure_numeric(company.get("valuation"), 0)
                     if valuation == 0:
                         valuation = ensure_numeric(company.get("inferred_valuation"), 0)
                         if valuation == 0:
-                            # Calculate from total_funding as fallback
                             valuation = ensure_numeric(company.get("total_funding"), 0) * 3
-                    
-                    # Extract inferred_valuation if available
+
                     inferred_val = ensure_numeric(company.get("inferred_valuation"), None) if company.get("inferred_valuation") is not None else None
                     val_request = ValuationRequest(
                         company_name=company.get("company", "Unknown"),
@@ -27994,17 +28140,11 @@ Return a JSON with this structure:
                         inferred_valuation=inferred_val,
                         total_raised=self._get_field_safe(company, "total_funding")
                     )
-                    
-                    # Use FULL PWERM calculation with stage-specific scenarios
+
                     pwerm_result = await self.valuation_engine._calculate_pwerm(val_request)
-                    
-                    # Get the full scenario distribution (10+ scenarios)
                     full_scenarios = pwerm_result.scenarios
-                    
-                    # Also get simplified bear/base/bull for easy display
                     simple_scenarios = self.valuation_engine.generate_simple_scenarios(val_request)
-                    
-                    # Add both full and simple scenarios to company data
+
                     company["exit_scenarios"] = simple_scenarios
                     company["full_exit_distribution"] = [
                         {
@@ -28016,25 +28156,15 @@ Return a JSON with this structure:
                         } for s in full_scenarios
                     ]
                     company["pwerm_valuation"] = pwerm_result.fair_value
-                    
-                    # Add PWERM scenarios to company for waterfall analysis
                     company["pwerm_scenarios"] = full_scenarios
-                    
-                    # NOTE: ComprehensiveDealAnalyzer and AdvancedWaterfallCalculator 
-                    # will be called during skill execution (_execute_valuation)
-                    # to avoid duplicate calculations
-                    
-                    # The services integration flow:
-                    # 1. PWERM scenarios calculated here (stage-specific, 10+ scenarios)
-                    # 2. _execute_valuation skill uses these scenarios 
-                    # 3. ComprehensiveDealAnalyzer runs waterfall for each scenario
-                    # 4. AdvancedWaterfallCalculator calculates breakpoints
-                    # 5. Results appear in deal_comparison output
-                    
+                    _pwerm_run_count += 1
+
                     logger.info(f"Added PWERM scenarios for {company.get('company', 'Unknown')}: {len(full_scenarios)} scenarios, PWERM value: ${pwerm_result.fair_value:,.0f}")
-                    
+
                 except Exception as e:
                     logger.error(f"Failed to generate exit scenarios for {company.get('company', 'Unknown')}: {e}")
+        if _pwerm_skip_count:
+            logger.info(f"[FORMAT_OUTPUT] Skipped PWERM for {_pwerm_skip_count} companies (already computed upstream), ran for {_pwerm_run_count}")
             
         # Update final data with companies list (should already be there but ensure it)
         final_data["companies"] = companies_list
@@ -31301,7 +31431,8 @@ Return your analysis with inline citations for ALL factual claims.
                     capability=ModelCapability.ANALYSIS,
                     max_tokens=2000,
                     temperature=0.3,
-                    fallback_enabled=True
+                    fallback_enabled=True,
+                    caller_context="narrative"
                 )
                 
                 if result and result.get('response'):
@@ -31434,7 +31565,8 @@ Return your analysis with inline citations for ALL factual claims.
                 capability=ModelCapability.ANALYSIS,
                 max_tokens=1500,
                 temperature=0.3,
-                fallback_enabled=True
+                fallback_enabled=True,
+                caller_context="narrative"
             )
             
             if result and result.get('response'):

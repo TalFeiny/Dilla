@@ -5666,7 +5666,8 @@ class IntelligentGapFiller:
                 prompt=prompt,
                 capability=ModelCapability.STRUCTURED,
                 max_tokens=1000,
-                temperature=0.1
+                temperature=0.1,
+                caller_context="extraction"
             )
             return response
         except Exception as e:
@@ -5797,7 +5798,8 @@ RESPOND NOW WITH PURE JSON. FIRST CHARACTER MUST BE {{.
                     capability=ModelCapability.STRUCTURED,
                     max_tokens=2000,
                     temperature=0.1,
-                    json_mode=True
+                    json_mode=True,
+                    caller_context="extraction"
                 )
                 logger.info(f"[TAM_EXTRACTION] ModelRouter response received: {response is not None}")
                 logger.info(f"[TAM_EXTRACTION] Model used: {response.get('model', 'unknown') if response else 'no response'}")

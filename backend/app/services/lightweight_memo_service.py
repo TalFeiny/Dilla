@@ -513,22 +513,21 @@ class LightweightMemoService:
         prompt: str,
         memo_type: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Full 3-shot pipeline: detect → narratives + charts (parallel) → assemble.
+        """Freeform memo generation: give the LLM the data and prompt,
+        let it write whatever structure makes sense, parse the markdown.
 
+        No templates, no section-slot matching, no fallbacks.
         Returns docs-format dict ready for frontend rendering.
         """
-        # Shot 1: Template selection + data audit
-        template_id = self.detect_memo_type(prompt, memo_type)
-        available_data, missing_req, missing_opt = self.audit_data(template_id)
+        import re
+        from app.services.model_router import ModelCapability
 
-        if missing_req:
-            logger.warning(
-                f"[MEMO] Template {template_id} missing required data: {missing_req}. "
-                f"Proceeding with available data."
-            )
+        # Gather all available data (reuse existing summarizer)
+        # Use a dummy template just to pull all data keys from shared_data
+        template_id = self.detect_memo_type(prompt, memo_type)
+        available_data, _, _ = self.audit_data(template_id)
 
         # Estimation fallback: ensure every company has revenue, valuation, growth
-        # so charts and metrics never return empty due to missing fundamentals.
         companies = available_data.get("companies", [])
         if companies:
             _STAGE_BENCHMARKS = {
@@ -542,72 +541,146 @@ class LightweightMemoService:
             for c in companies:
                 stage = str(c.get("stage") or "series a").lower().strip()
                 bench = _STAGE_BENCHMARKS.get(stage, _STAGE_BENCHMARKS["series a"])
-                # Revenue
                 rev = ensure_numeric(c.get("revenue")) or ensure_numeric(c.get("inferred_revenue"))
                 if not rev:
                     c["revenue"] = bench["revenue"]
                     c["_revenue_estimated"] = True
-                # Valuation
                 val = ensure_numeric(c.get("valuation"))
                 if not val:
                     c["valuation"] = bench["valuation"]
                     c["_valuation_estimated"] = True
-                # Growth rate
                 growth = c.get("revenue_growth")
                 if not growth or not isinstance(growth, (int, float)):
                     c["revenue_growth"] = bench["growth"]
                     c["_growth_estimated"] = True
 
-        # Shot 2: Generate narratives (LLM) + pre-build charts (CPU) IN PARALLEL
+        data_summary = self._summarize_data(available_data)
+
+        # Build context strings
+        fund_ctx = available_data.get("fund_context", {})
+        fund_str = ""
+        if fund_ctx:
+            fs = fund_ctx.get("fund_size", 0)
+            rem = fund_ctx.get("remaining_capital", 0)
+            fn = fund_ctx.get("fund_name", "")
+            if fs and isinstance(fs, (int, float)) and fs > 0:
+                fund_str = f"Fund: {fn + ' — ' if fn else ''}${fs / 1e6:,.0f}M total, ${rem / 1e6:,.0f}M remaining. "
+
+        num_companies = len(companies)
+        company_names = [c.get("company", c.get("name", "Unknown")) for c in companies[:8]]
+        company_str = f"Companies: {', '.join(company_names)}" + (f" (+{num_companies - 8} more)" if num_companies > 8 else "")
+
+        system_prompt = (
+            "You are a senior investment analyst at a top-tier venture capital fund. "
+            f"{fund_str}{company_str}\n\n"
+            "Write a complete investment memo as markdown. Structure it however makes sense for the data.\n"
+            "RULES:\n"
+            "1. Use ## headings to separate major sections. Choose sections that fit the data — "
+            "do NOT create sections you can't fill.\n"
+            "2. Use markdown tables for structured comparisons (3+ items).\n"
+            "3. Bold key metrics and company names. Cite sources: 'company-reported', '[Est: benchmark]'.\n"
+            "4. For sparse data, state what's known and flag gaps — never fill sections with generic filler.\n"
+            "5. Lead each section with the most important finding. No preamble.\n"
+            "6. Numbers: $XM for millions, $XB for billions, X% for percentages, Xx for multiples.\n"
+            f"7. {'Use tables showing ALL companies for portfolio-level analysis. Lead with big picture before individual companies.' if num_companies > 3 else 'Use detailed prose with numbers woven in.'}\n"
+            "8. End with actionable recommendations with conviction level (High/Medium/Low).\n"
+            "9. ONLY write sections where you have data to support them."
+        )
+
+        user_prompt = f"User request: {prompt}\n\n## Available Data\n{data_summary}"
+
         _t0 = datetime.now()
+        try:
+            response = await asyncio.wait_for(
+                self.model_router.get_completion(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    capability=ModelCapability.ANALYSIS,
+                    max_tokens=12000,
+                    temperature=0.25,
+                    caller_context="lightweight_memo_freeform",
+                ),
+                timeout=120,
+            )
+            raw_text = response.get("response", "") if isinstance(response, dict) else str(response)
+        except asyncio.TimeoutError:
+            logger.error("[MEMO] Freeform generation timed out after 120s")
+            raw_text = ""
+        except Exception as e:
+            logger.error(f"[MEMO] Freeform generation failed: {e}", exc_info=True)
+            raw_text = ""
 
-        narrative_task = asyncio.ensure_future(
-            self.generate_narratives(template_id, prompt, available_data)
-        )
-        loop = asyncio.get_running_loop()
-        chart_task = loop.run_in_executor(
-            None, self._prebuild_charts, template_id, available_data
-        )
-
-        narratives, prebuilt_charts = await asyncio.gather(narrative_task, chart_task)
         _elapsed = (datetime.now() - _t0).total_seconds()
-        logger.info(f"[MEMO] Parallel narratives+charts took {_elapsed:.1f}s")
+        logger.info(f"[MEMO] Freeform generation took {_elapsed:.1f}s, {len(raw_text)} chars")
 
-        # Validate narratives — if >50% are empty, retry with diagnostic hints
-        # But only retry if the first call completed quickly enough (< 60s)
-        # to avoid doubling an already-long wait.
-        narrative_keys = [
-            s["key"] for s in MEMO_TEMPLATES[template_id]["sections"]
-            if s["type"] in ("narrative", "metrics")
-        ]
-        if narrative_keys and _elapsed < 60:
-            empty_count = sum(1 for k in narrative_keys if not narratives.get(k, "").strip())
-            if empty_count > len(narrative_keys) * 0.5:
-                missing_sections = [k for k in narrative_keys if not narratives.get(k, "").strip()]
-                logger.warning(
-                    f"[MEMO] {empty_count}/{len(narrative_keys)} narrative sections empty — "
-                    f"retrying with hint for: {missing_sections}"
-                )
-                retry_prompt = (
-                    f"{prompt}\n\n"
-                    f"IMPORTANT: The following sections were empty in a previous attempt and MUST be filled: "
-                    f"{', '.join(missing_sections)}. "
-                    f"Generate substantive content for ALL sections, especially these."
-                )
-                retry_narratives = await self.generate_narratives(template_id, retry_prompt, available_data)
-                for k in narrative_keys:
-                    if not narratives.get(k, "").strip() and retry_narratives.get(k, "").strip():
-                        narratives[k] = retry_narratives[k]
-        elif narrative_keys and _elapsed >= 60:
-            logger.info(f"[MEMO] Skipping retry — first LLM call took {_elapsed:.1f}s")
+        if not raw_text.strip():
+            return {
+                "format": "docs",
+                "title": "Memo Generation Failed",
+                "date": datetime.now().strftime("%B %d, %Y"),
+                "sections": [{"type": "paragraph", "content": "LLM returned no content. Try again or simplify the request."}],
+                "memo_type": template_id,
+                "metadata": {"section_count": 1, "generated_at": datetime.now().isoformat()},
+            }
 
-        # Shot 3: Assemble final memo (no LLM) — use prebuilt charts
-        memo = self.assemble_memo(
-            template_id, prompt, narratives, available_data,
-            prebuilt_charts=prebuilt_charts,
-        )
+        # Parse: split on ## headings, then parse each chunk's markdown
+        memo_sections: List[Dict[str, Any]] = []
 
-        return memo
+        # Extract title from first # heading or first ## heading
+        title_match = re.match(r'^#\s+(.+?)(?:\n|$)', raw_text.strip())
+        if title_match:
+            title = title_match.group(1).strip()
+            raw_text = raw_text[title_match.end():]
+        else:
+            title = prompt[:80]
+
+        memo_sections.append({"type": "heading1", "content": title})
+        memo_sections.append({"type": "paragraph", "content": f"Prepared {datetime.now().strftime('%B %d, %Y')}"})
+
+        # Split on ## headings — each chunk becomes a section
+        chunks = re.split(r'(?=^##\s+)', raw_text, flags=re.MULTILINE)
+
+        for chunk in chunks:
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+
+            # Extract ## heading if present
+            heading_match = re.match(r'^##\s+(.+?)(?:\n|$)', chunk)
+            if heading_match:
+                heading = heading_match.group(1).strip()
+                body = chunk[heading_match.end():]
+                memo_sections.append({"type": "heading2", "content": heading})
+            else:
+                body = chunk
+
+            if body.strip():
+                parsed = self._parse_markdown_to_sections(body)
+                if parsed:
+                    memo_sections.extend(parsed)
+                else:
+                    memo_sections.append({"type": "paragraph", "content": body.strip()})
+
+        return {
+            "format": "docs",
+            "title": title,
+            "date": datetime.now().strftime("%B %d, %Y"),
+            "sections": memo_sections,
+            "memo_type": template_id,
+            "is_resumable": False,
+            "metadata": {
+                "word_count": sum(
+                    len(str(s.get("content", "") or s.get("items", [])).split())
+                    for s in memo_sections
+                ),
+                "section_count": len(memo_sections),
+                "generated_at": datetime.now().isoformat(),
+                "company_count": num_companies,
+                "has_charts": any(s.get("type") == "chart" for s in memo_sections),
+                "has_tables": any(s.get("type") == "table" for s in memo_sections),
+                "memo_type": template_id,
+            },
+        }
 
     # ------------------------------------------------------------------
     # Helpers

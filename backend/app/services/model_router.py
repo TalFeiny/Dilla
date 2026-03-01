@@ -46,6 +46,14 @@ class ModelCapability(Enum):
     CHEAP = "cheap"
 
 
+class ModelTier(Enum):
+    """Cost/quality tiers for intelligent routing."""
+    TRIVIAL = "trivial"    # Classification, routing, yes/no — cheapest possible
+    CHEAP = "cheap"        # Bulk extraction, simple structured output
+    QUALITY = "quality"    # Analysis, reasoning, narratives — primary workhorse
+    PREMIUM = "premium"    # Complex synthesis, deep reasoning, final memos
+
+
 @dataclass
 class IterationCost:
     """Track cost for a single agent loop iteration."""
@@ -66,6 +74,8 @@ class RequestBudget:
         self.total_cost = 0.0
         self.calls: List[Dict[str, Any]] = []
         self.iterations: List[IterationCost] = []
+        self.external_calls: int = 0
+        self.external_cost: float = 0.0
 
     @property
     def remaining_cost(self) -> float:
@@ -86,6 +96,18 @@ class RequestBudget:
             "cost": cost,
         })
 
+    def record_external(self, service: str, cost: float):
+        """Record an external API call (e.g. Tavily search)."""
+        self.external_calls += 1
+        self.external_cost += cost
+        self.total_cost += cost
+        self.calls.append({
+            "model": f"external:{service}",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost": cost,
+        })
+
     def warn_if_expensive(self, caller: str) -> Optional[str]:
         """Return warning string if budget is >60% consumed."""
         pct = self.total_cost / self.max_cost if self.max_cost > 0 else 0
@@ -102,6 +124,8 @@ class RequestBudget:
             "num_calls": len(self.calls),
             "exhausted": self.exhausted,
             "iterations": len(self.iterations),
+            "external_calls": self.external_calls,
+            "external_cost": round(self.external_cost, 4),
         }
 
 
@@ -131,10 +155,13 @@ class ModelRouter:
         self.request_queues: Dict[str, asyncio.Queue] = {}
         self.active_requests: Dict[str, int] = {}
         self.max_concurrent_per_model: Dict[str, int] = {
+            "claude-sonnet-4-6": 3,
             "claude-sonnet-4-5": 3,
+            "claude-haiku-4-5": 8,
             "gpt-5-mini": 5,
-            "gpt-5.2": 2,  # Lower concurrency for long-running compute model
-            "gemini-pro": 5,
+            "gpt-5.2": 2,
+            "gemini-2.5-flash": 10,
+            "gemini-2.5-pro": 5,
             "mixtral-8x7b": 10,
             "llama2-70b": 10,
         }
@@ -202,57 +229,93 @@ class ModelRouter:
         """Build the default set of model configurations with defensive logging."""
         try:
             configs: Dict[str, Dict[str, Any]] = {
-                # Anthropic Models
-                "claude-sonnet-4-5": {
+                # ── Anthropic Models ──────────────────────────────────
+                "claude-sonnet-4-6": {
                     "provider": ModelProvider.ANTHROPIC,
-                    "model": "claude-sonnet-4-5",
-                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.CODE, ModelCapability.STRUCTURED],
+                    "model": "claude-sonnet-4-6",
+                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.CODE, ModelCapability.STRUCTURED, ModelCapability.CREATIVE],
                     "max_tokens": 4096,
                     "cost_per_1k_input": 0.003,
                     "cost_per_1k_output": 0.015,
-                    "priority": 1
+                    "tier": ModelTier.QUALITY,
+                    "priority": 1,
                 },
-                
-                # OpenAI Models
+                "claude-haiku-4-5": {
+                    "provider": ModelProvider.ANTHROPIC,
+                    "model": "claude-haiku-4-5",
+                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.STRUCTURED, ModelCapability.FAST, ModelCapability.CHEAP],
+                    "max_tokens": 4096,
+                    "cost_per_1k_input": 0.001,
+                    "cost_per_1k_output": 0.005,
+                    "tier": ModelTier.TRIVIAL,
+                    "priority": 2,
+                },
+                # Keep legacy alias so existing preferred_models references don't break
+                "claude-sonnet-4-5": {
+                    "provider": ModelProvider.ANTHROPIC,
+                    "model": "claude-sonnet-4-6",  # silently upgraded
+                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.CODE, ModelCapability.STRUCTURED, ModelCapability.CREATIVE],
+                    "max_tokens": 4096,
+                    "cost_per_1k_input": 0.003,
+                    "cost_per_1k_output": 0.015,
+                    "tier": ModelTier.QUALITY,
+                    "priority": 1,
+                },
+
+                # ── OpenAI Models ─────────────────────────────────────
                 "gpt-5-mini": {
                     "provider": ModelProvider.OPENAI,
                     "model": "gpt-5-mini",
                     "capabilities": [ModelCapability.ANALYSIS, ModelCapability.CODE, ModelCapability.STRUCTURED, ModelCapability.FAST, ModelCapability.CHEAP],
                     "max_tokens": 4096,
-                    "cost_per_1k_input": 0.0005,
-                    "cost_per_1k_output": 0.0015,
-                    "priority": 2
+                    "cost_per_1k_input": 0.00025,   # corrected from 0.0005
+                    "cost_per_1k_output": 0.002,     # corrected from 0.0015
+                    "tier": ModelTier.CHEAP,
+                    "priority": 2,
                 },
                 "gpt-5.2": {
                     "provider": ModelProvider.OPENAI,
                     "model": "gpt-5.2",
                     "capabilities": [ModelCapability.ANALYSIS, ModelCapability.CODE, ModelCapability.STRUCTURED],
-                    "max_tokens": 8192,  # Higher token limit for long-running compute
-                    "cost_per_1k_input": 0.01,  # Higher cost for advanced model
+                    "max_tokens": 8192,
+                    "cost_per_1k_input": 0.01,
                     "cost_per_1k_output": 0.03,
-                    "priority": 1  # High priority for complex analysis tasks
+                    "tier": ModelTier.PREMIUM,
+                    "priority": 1,
                 },
-                
-                # Google Models
-                "gemini-pro": {
+
+                # ── Google Models ─────────────────────────────────────
+                "gemini-2.5-flash": {
                     "provider": ModelProvider.GOOGLE,
-                    "model": "gemini-pro",
-                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.FAST],
-                    "max_tokens": 2048,
-                    "cost_per_1k_input": 0.00025,
-                    "cost_per_1k_output": 0.0005,
-                    "priority": 3
+                    "model": "gemini-2.5-flash",
+                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.STRUCTURED, ModelCapability.FAST, ModelCapability.CHEAP],
+                    "max_tokens": 4096,
+                    "cost_per_1k_input": 0.00015,
+                    "cost_per_1k_output": 0.0006,
+                    "tier": ModelTier.TRIVIAL,
+                    "priority": 3,
                 },
-                
-                # Groq Models (Very fast inference)
+                "gemini-2.5-pro": {
+                    "provider": ModelProvider.GOOGLE,
+                    "model": "gemini-2.5-pro",
+                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.STRUCTURED],
+                    "max_tokens": 4096,
+                    "cost_per_1k_input": 0.00125,
+                    "cost_per_1k_output": 0.01,
+                    "tier": ModelTier.QUALITY,
+                    "priority": 3,
+                },
+
+                # ── Groq Models (ultra-fast inference) ────────────────
                 "mixtral-8x7b": {
                     "provider": ModelProvider.GROQ,
                     "model": "mixtral-8x7b-32768",
                     "capabilities": [ModelCapability.FAST, ModelCapability.CHEAP, ModelCapability.CODE],
                     "max_tokens": 4096,
-                    "cost_per_1k_input": 0.00027,
-                    "cost_per_1k_output": 0.00027,
-                    "priority": 2
+                    "cost_per_1k_input": 0.00024,
+                    "cost_per_1k_output": 0.00024,
+                    "tier": ModelTier.TRIVIAL,
+                    "priority": 2,
                 },
                 "llama2-70b": {
                     "provider": ModelProvider.GROQ,
@@ -261,21 +324,23 @@ class ModelRouter:
                     "max_tokens": 4096,
                     "cost_per_1k_input": 0.0007,
                     "cost_per_1k_output": 0.0008,
-                    "priority": 3
+                    "tier": ModelTier.CHEAP,
+                    "priority": 3,
                 },
-                
-                # Together AI Models
+
+                # ── Together AI Models ────────────────────────────────
                 "llama-3-70b": {
                     "provider": ModelProvider.TOGETHER,
                     "model": "meta-llama/Llama-3-70b-chat-hf",
                     "capabilities": [ModelCapability.FAST, ModelCapability.CHEAP],
                     "max_tokens": 4096,
-                    "cost_per_1k_input": 0.0009,
-                    "cost_per_1k_output": 0.0009,
-                    "priority": 3
+                    "cost_per_1k_input": 0.00059,    # corrected from 0.0009
+                    "cost_per_1k_output": 0.00079,   # corrected from 0.0009
+                    "tier": ModelTier.CHEAP,
+                    "priority": 3,
                 },
-                
-                # Ollama Local Models (free but slower)
+
+                # ── Ollama Local Models (free but slower) ─────────────
                 "ollama-mixtral": {
                     "provider": ModelProvider.OLLAMA,
                     "model": "mixtral:8x7b",
@@ -283,8 +348,9 @@ class ModelRouter:
                     "max_tokens": 4096,
                     "cost_per_1k_input": 0,
                     "cost_per_1k_output": 0,
-                    "priority": 5  # Last resort
-                }
+                    "tier": ModelTier.TRIVIAL,
+                    "priority": 5,
+                },
             }
             return configs
         except Exception as config_error:
@@ -531,7 +597,7 @@ class ModelRouter:
                         await self._apply_rate_limit(model_name)
                         
                         # Route to appropriate provider with json_mode for structured output
-                        response = await self._call_model(
+                        response_text, usage = await self._call_model(
                             model_config,
                             prompt,
                             system_prompt,
@@ -539,43 +605,38 @@ class ModelRouter:
                             temperature,
                             json_mode
                         )
-                        
-                        # Calculate cost and latency
+
+                        # Use real token counts from provider; fall back to estimate
+                        input_tokens = usage.get("input_tokens", 0) or int((prompt_length + system_length) / 4)
+                        output_tokens = usage.get("output_tokens", 0) or int(len(response_text) / 4)
+
+                        # Calculate cost and latency using real token counts
                         latency = time.time() - start_time
-                        cost = self._calculate_cost(
-                            model_config,
-                            len(prompt),
-                            len(response)
-                        )
-                        
+                        cost = self._calculate_cost(model_config, input_tokens, output_tokens)
+
                         # Reset error count on success
                         self.error_counts[model_name] = 0
-                        
+
                         # COMPREHENSIVE LOGGING: Log successful model router calls
-                        response_length = len(response)
                         logger.info(f"[MODEL_ROUTER] ✅ SUCCESS with {model_name}{context_info}")
                         logger.info(f"[MODEL_ROUTER] 📊 Model: {model_name} | Provider: {model_config['provider'].value}")
                         logger.info(f"[MODEL_ROUTER] ⏱️  Latency: {latency:.2f}s | Cost: ${cost:.4f}")
-                        logger.info(f"[MODEL_ROUTER] 📏 Response length: {response_length:,} chars | Retry count: {retry}")
-                        logger.info(f"[MODEL_ROUTER] 📝 Response preview (first 200 chars): {response[:200]}...")
-                        
-                        # Estimate tokens (4 chars ≈ 1 token)
-                        est_input_tokens = int((prompt_length + system_length) / 4)
-                        est_output_tokens = int(response_length / 4)
+                        logger.info(f"[MODEL_ROUTER] 📏 Tokens in={input_tokens} out={output_tokens} | Retry: {retry}")
+                        logger.info(f"[MODEL_ROUTER] 📝 Response preview: {response_text[:200]}...")
 
                         # Record in active budget if set
                         if self._active_budget:
-                            self._active_budget.record(est_input_tokens, est_output_tokens, cost, model_name)
+                            self._active_budget.record(input_tokens, output_tokens, cost, model_name)
 
                         result = {
-                            "response": response,
+                            "response": response_text,
                             "model": model_name,
                             "provider": model_config["provider"].value,
                             "cost": cost,
                             "latency": latency,
                             "retry_count": retry,
-                            "input_tokens_est": est_input_tokens,
-                            "output_tokens_est": est_output_tokens,
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
                         }
 
                         # Cache result (only for non-json_mode to avoid stale structured data)
@@ -659,15 +720,21 @@ class ModelRouter:
         max_tokens: int,
         temperature: float,
         json_mode: bool = False
-    ) -> str:
-        """Call specific model provider"""
+    ) -> Tuple[str, Dict[str, int]]:
+        """Call specific model provider.
+
+        Returns:
+            Tuple of (response_text, usage_dict) where usage_dict contains
+            ``{"input_tokens": int, "output_tokens": int}``.
+            If the provider does not return real token counts, values are
+            estimated as ``len(text) / 4``.
+        """
         provider = model_config["provider"]
         model_name = model_config["model"]
-        
+
         if provider == ModelProvider.ANTHROPIC:
             return await self._call_anthropic(model_name, prompt, system_prompt, max_tokens, temperature, json_mode)
         elif provider == ModelProvider.OPENAI:
-            # Pass json_mode for GPT-4 structured output
             return await self._call_openai(model_name, prompt, system_prompt, max_tokens, temperature, json_mode)
         elif provider == ModelProvider.GROQ:
             return await self._call_groq(model_name, prompt, system_prompt, max_tokens, temperature)
@@ -716,11 +783,11 @@ class ModelRouter:
                 logger.info("[_call_anthropic] JSON mode: prefilling '{' for %s", model)
 
             response = await self.anthropic_client.messages.create(**request_kwargs)
-            
+
             # Parse Anthropic response - handle both old and new format
             if not response.content or len(response.content) == 0:
                 raise ValueError("Anthropic API returned empty content")
-            
+
             # Extract text from first content block
             content_block = response.content[0]
             if hasattr(content_block, 'text'):
@@ -729,7 +796,7 @@ class ModelRouter:
                 text = content_block.get('text', '')
             else:
                 text = str(content_block)
-            
+
             if not text:
                 raise ValueError("Anthropic API returned empty text")
 
@@ -739,9 +806,15 @@ class ModelRouter:
             if json_mode and not text.lstrip().startswith("{"):
                 text = "{" + text
                 logger.info("[_call_anthropic] JSON mode: prepended '{' to response")
-            
-            logger.info(f"[_call_anthropic] ✅ Anthropic API call successful!")
-            return text
+
+            # Extract REAL token counts from Anthropic usage
+            usage = {"input_tokens": 0, "output_tokens": 0}
+            if hasattr(response, "usage") and response.usage:
+                usage["input_tokens"] = getattr(response.usage, "input_tokens", 0)
+                usage["output_tokens"] = getattr(response.usage, "output_tokens", 0)
+
+            logger.info(f"[_call_anthropic] ✅ Anthropic API call successful! tokens_in={usage['input_tokens']} tokens_out={usage['output_tokens']}")
+            return text, usage
             
         except Exception as e:
             # Re-raise API errors with context for proper retry handling
@@ -815,8 +888,15 @@ class ModelRouter:
             content = message.content
             if content is None:
                 raise ValueError("OpenAI API returned None content")
-            
-            return content
+
+            # Extract REAL token counts from OpenAI usage
+            usage = {"input_tokens": 0, "output_tokens": 0}
+            if hasattr(response, "usage") and response.usage:
+                usage["input_tokens"] = getattr(response.usage, "prompt_tokens", 0) or 0
+                usage["output_tokens"] = getattr(response.usage, "completion_tokens", 0) or 0
+
+            logger.info(f"[_call_openai] ✅ tokens_in={usage['input_tokens']} tokens_out={usage['output_tokens']}")
+            return content, usage
             
         except Exception as e:
             # Re-raise API errors with context for proper retry handling
@@ -857,8 +937,14 @@ class ModelRouter:
             max_tokens=max_tokens,
             temperature=temp
         )
-        
-        return response.choices[0].message.content
+
+        text = response.choices[0].message.content
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        if hasattr(response, "usage") and response.usage:
+            usage["input_tokens"] = getattr(response.usage, "prompt_tokens", 0) or 0
+            usage["output_tokens"] = getattr(response.usage, "completion_tokens", 0) or 0
+
+        return text, usage
     
     async def _call_gemini(self, model: str, prompt: str, system: Optional[str], max_tokens: int, temp: float) -> str:
         """Call Google Gemini API"""
@@ -881,8 +967,15 @@ class ModelRouter:
                 "temperature": temp
             }
         )
-        
-        return response.text
+
+        text = response.text
+        # Gemini returns usage_metadata with token counts
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            usage["input_tokens"] = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
+            usage["output_tokens"] = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
+
+        return text, usage
     
     async def _ensure_session(self):
         """Ensure aiohttp session is initialized"""
@@ -916,7 +1009,13 @@ class ModelRouter:
             json=data
         ) as response:
             result = await response.json()
-            return result["choices"][0]["message"]["content"]
+            text = result["choices"][0]["message"]["content"]
+            # Together API returns OpenAI-compatible usage block
+            usage = {"input_tokens": 0, "output_tokens": 0}
+            if "usage" in result:
+                usage["input_tokens"] = result["usage"].get("prompt_tokens", 0)
+                usage["output_tokens"] = result["usage"].get("completion_tokens", 0)
+            return text, usage
     
     async def _call_ollama(self, model: str, prompt: str, system: Optional[str], max_tokens: int, temp: float) -> str:
         """Call local Ollama API"""
@@ -941,7 +1040,12 @@ class ModelRouter:
                 timeout=aiohttp.ClientTimeout(total=60)
             ) as response:
                 result = await response.json()
-                return result["response"]
+                text = result["response"]
+                # Ollama returns token counts in the response
+                usage = {"input_tokens": 0, "output_tokens": 0}
+                usage["input_tokens"] = result.get("prompt_eval_count", 0) or 0
+                usage["output_tokens"] = result.get("eval_count", 0) or 0
+                return text, usage
         except Exception as e:
             raise Exception(f"Ollama not available: {e}")
     
@@ -966,10 +1070,9 @@ class ModelRouter:
         # Sort by priority (lower is better)
         capable_models.sort(key=lambda x: self.model_configs[x]["priority"])
         
-        # If no preference specified, ensure default order: Claude 4.5 -> GPT-5.2 -> GPT-5-Mini -> others
+        # If no preference specified, ensure default order: Sonnet 4.6 -> GPT-5.2 -> GPT-5-Mini -> Haiku -> others
         if not preferred:
-            # Reorder to put claude-sonnet-4-5 first, gpt-5.2 second (for long compute), gpt-5-mini third, then rest
-            default_order = ["claude-sonnet-4-5", "gpt-5.2", "gpt-5-mini"]
+            default_order = ["claude-sonnet-4-6", "gpt-5.2", "gpt-5-mini", "claude-haiku-4-5", "gemini-2.5-flash"]
             preferred_available = [m for m in default_order if m in capable_models]
             other_models = [m for m in capable_models if m not in default_order]
             result = preferred_available + other_models
@@ -1020,12 +1123,14 @@ class ModelRouter:
             
             # Model-specific rate limits (requests per second)
             min_delay = {
-                "claude-sonnet-4-5": 0.5,  # 2 requests per second
-                "gpt-5-mini": 0.1,          # 10 requests per second
-                "gpt-5.2": 1.0,            # 1 request per second (long-running compute model)
-                "gpt-4-turbo": 0.3,
-                "gpt-4": 0.5,
-                "gpt-3.5-turbo": 0.05,  # 20 requests per second
+                "claude-sonnet-4-6": 0.5,
+                "claude-sonnet-4-5": 0.5,
+                "claude-haiku-4-5": 0.15,   # faster model, higher throughput
+                "gpt-5-mini": 0.1,
+                "gpt-5.2": 1.0,
+                "gemini-2.5-flash": 0.05,   # very fast
+                "gemini-2.5-pro": 0.3,
+                "mixtral-8x7b": 0.05,
             }.get(model_name, 0.1)
             
             if elapsed < min_delay:
@@ -1054,14 +1159,9 @@ class ModelRouter:
             self.active_requests[model_name] = max(0, self.active_requests[model_name] - 1)
     
     def _calculate_cost(self, model_config: Dict, input_tokens: int, output_tokens: int) -> float:
-        """Calculate cost for a request"""
-        # Rough token estimation (4 chars per token)
-        input_token_count = input_tokens / 4
-        output_token_count = output_tokens / 4
-        
-        input_cost = (input_token_count / 1000) * model_config["cost_per_1k_input"]
-        output_cost = (output_token_count / 1000) * model_config["cost_per_1k_output"]
-        
+        """Calculate cost for a request using real token counts."""
+        input_cost = (input_tokens / 1000) * model_config["cost_per_1k_input"]
+        output_cost = (output_tokens / 1000) * model_config["cost_per_1k_output"]
         return input_cost + output_cost
     
     def _is_circuit_broken(self, model_name: str) -> bool:
@@ -1168,47 +1268,119 @@ class ModelRouter:
             logger.info(f"[MODEL_ROUTER] ✅ Reset all circuit breakers")
     
     # ------------------------------------------------------------------
-    # Task-based routing — route cheap vs quality models by caller intent
+    # 4-Tier Intelligent Task Routing
+    # ------------------------------------------------------------------
+    # Maps every caller_context → ModelTier so the router picks the
+    # cheapest model that can handle the job.
+    #
+    # TRIVIAL  → intent classification, routing, yes/no, scoring
+    #            Models: claude-haiku-4-5, gemini-2.5-flash, mixtral-8x7b
+    #
+    # CHEAP    → bulk extraction, structured JSON, enrichment, parsing
+    #            Models: gpt-5-mini, claude-haiku-4-5
+    #
+    # QUALITY  → analysis, reasoning, narratives, reflection
+    #            Models: claude-sonnet-4-6, gemini-2.5-pro
+    #
+    # PREMIUM  → complex synthesis, final memos, deep multi-step reasoning
+    #            Models: claude-sonnet-4-6, gpt-5.2
     # ------------------------------------------------------------------
 
-    # Tasks that can use the cheapest model (extraction, scoring, suggestions)
-    _CHEAP_TASKS = frozenset({
-        "enrichment", "extraction", "gap_filling", "suggestions",
-        "intent_classification", "single_shot_answer",
-        "sourcing_enrich", "granular_search_extract", "parse_accounts",
-        "lightweight_diligence_extract", "micro_skill_extract", "enrich_field",
-        "build_company_list_query_gen", "build_company_list_name_extraction",
-        "find_comparables_extract", "task_planner_decompose",
-        "lightweight_memo_polish",
-    })
+    _TASK_TIER_MAP: Dict[str, "ModelTier"] = {
+        # ── TRIVIAL: classification, routing, simple scoring ──────────
+        "intent_classification":              ModelTier.TRIVIAL,
+        "agent_loop_goal_extraction":         ModelTier.TRIVIAL,
+        "task_planner_decompose":             ModelTier.TRIVIAL,
+        "source_companies_semantic_score":    ModelTier.TRIVIAL,
+        "single_shot_answer":                 ModelTier.TRIVIAL,
 
-    # Tasks that need the quality model (narrative, reasoning, synthesis, document extraction)
-    _QUALITY_TASKS = frozenset({
-        "narrative", "memo_generation", "plan_generation",
-        "agent_loop_reason", "agent_loop_reflect",
-        "agent_loop_synthesize", "agent_loop_synthesize_brief",
-        "lightweight_memo_narratives",
-        "document_process_service.extract_structured",
-    })
+        # ── CHEAP: bulk extraction, enrichment, parsing ───────────────
+        "enrichment":                         ModelTier.CHEAP,
+        "extraction":                         ModelTier.CHEAP,
+        "gap_filling":                        ModelTier.CHEAP,
+        "suggestions":                        ModelTier.CHEAP,
+        "sourcing_enrich":                    ModelTier.CHEAP,
+        "granular_search_extract":            ModelTier.CHEAP,
+        "parse_accounts":                     ModelTier.CHEAP,
+        "lightweight_diligence_extract":      ModelTier.CHEAP,
+        "micro_skill_extract":                ModelTier.CHEAP,
+        "enrich_field":                       ModelTier.CHEAP,
+        "build_company_list_query_gen":       ModelTier.CHEAP,
+        "build_company_list_name_extraction": ModelTier.CHEAP,
+        "find_comparables_extract":           ModelTier.CHEAP,
+        "source_companies_rubric_llm":        ModelTier.CHEAP,
+        "source_companies_decompose":         ModelTier.CHEAP,
+        "generate_rubric_llm":                ModelTier.CHEAP,
+        "memo_gap_fill":                      ModelTier.CHEAP,
+        "lightweight_memo_polish":            ModelTier.CHEAP,
+
+        # ── QUALITY: analysis, reasoning, narratives ──────────────────
+        "narrative":                          ModelTier.QUALITY,
+        "plan_generation":                    ModelTier.QUALITY,
+        "agent_loop_reason":                  ModelTier.QUALITY,
+        "agent_loop_reflect":                 ModelTier.QUALITY,
+        "lightweight_memo_narratives":        ModelTier.QUALITY,
+        "lightweight_memo_freeform":          ModelTier.QUALITY,
+        "document_process_service.extract_structured": ModelTier.QUALITY,
+
+        # ── PREMIUM: deep synthesis, final deliverables ───────────────
+        "memo_generation":                    ModelTier.PREMIUM,
+        "agent_loop_synthesize":              ModelTier.PREMIUM,
+        "agent_loop_synthesize_brief":        ModelTier.PREMIUM,
+    }
+
+    # Preferred model fallback chains per tier
+    _TIER_MODEL_CHAINS: Dict["ModelTier", List[str]] = {
+        ModelTier.TRIVIAL: ["claude-haiku-4-5", "gemini-2.5-flash", "gpt-5-mini", "mixtral-8x7b", "claude-sonnet-4-6"],
+        ModelTier.CHEAP:   ["gpt-5-mini", "claude-haiku-4-5", "gemini-2.5-flash", "claude-sonnet-4-6"],
+        ModelTier.QUALITY: ["claude-sonnet-4-6", "gemini-2.5-pro", "gpt-5-mini", "gpt-5.2"],
+        ModelTier.PREMIUM: ["claude-sonnet-4-6", "gpt-5.2", "gemini-2.5-pro"],
+    }
 
     def preferred_models_for_task(self, caller_context: Optional[str] = None) -> Optional[List[str]]:
-        """Return preferred model list based on the caller's task type.
+        """Return preferred model list based on 4-tier intelligent routing.
 
-        Cheap tasks (extraction, enrichment, suggestions) → gpt-5-mini first.
-        Quality tasks (narrative, memo, reasoning) → claude-sonnet-4-5 first.
-        Unknown → None (use default order).
+        Looks up the caller_context in _TASK_TIER_MAP to find the tier,
+        then returns the corresponding fallback chain from _TIER_MODEL_CHAINS.
+
+        Handles dynamic caller_context patterns like:
+          "source_companies_bulk_r2"  → matches "source_companies_bulk" → CHEAP
+          "_extract_comprehensive_profile(Anthropic)" → matches on prefix
         """
         if not caller_context:
             return None
 
-        # Normalize: take the base task name (strip company names etc.)
+        # Normalize: strip parenthesized suffixes and lowercase
         task = caller_context.split("(")[0].strip().lower()
 
-        if task in self._CHEAP_TASKS:
-            return ["gpt-5-mini", "claude-sonnet-4-5"]
-        if task in self._QUALITY_TASKS:
-            return ["claude-sonnet-4-5", "gpt-5.2"]
-        return None
+        # Direct lookup
+        tier = self._TASK_TIER_MAP.get(task)
+
+        # Prefix matching for dynamic contexts like source_companies_bulk_r2
+        if tier is None:
+            for known_task, known_tier in self._TASK_TIER_MAP.items():
+                if task.startswith(known_task):
+                    tier = known_tier
+                    break
+
+        # Pattern matching for sourcing extraction rounds
+        if tier is None:
+            if "extract" in task or "enrich" in task or "parse" in task:
+                tier = ModelTier.CHEAP
+            elif "synthe" in task or "memo" in task:
+                tier = ModelTier.PREMIUM
+            elif "classif" in task or "routing" in task or "score" in task:
+                tier = ModelTier.TRIVIAL
+            elif "reason" in task or "reflect" in task or "narrat" in task:
+                tier = ModelTier.QUALITY
+
+        if tier is None:
+            return None
+
+        chain = self._TIER_MODEL_CHAINS.get(tier)
+        if chain:
+            logger.info(f"[TIER_ROUTING] {caller_context} → {tier.value} → {chain[0]}")
+        return chain
 
     # ------------------------------------------------------------------
     # Budget helpers
