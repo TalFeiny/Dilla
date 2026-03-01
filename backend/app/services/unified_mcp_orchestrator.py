@@ -1838,6 +1838,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "query_portfolio",          # check if already in portfolio
         "lightweight_diligence",    # quick snapshot
         "add_company_to_matrix",    # user may want to save it
+        "analyze_financials",       # compute derived metrics
         "emit_todo",                # track follow-ups
     ],
     "enrichment": [
@@ -1854,6 +1855,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "resolve_data_gaps",        # fix gaps found during edit
         "query_portfolio",          # read current grid
         "suggest_action",           # propose next steps
+        "emit_todo",                # track follow-ups
     ],
 
     # --- Analysis ---
@@ -1960,6 +1962,8 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "query_portfolio",          # portfolio context
         "generate_chart",           # visualize results
         "suggest_grid_edit",        # push to grid
+        "suggest_action",           # recommend next steps on sourced companies
+        "add_company_to_matrix",    # add sourced company to portfolio grid
     ],
     "market": [
         "market_landscape",         # primary action
@@ -2003,11 +2007,47 @@ def get_tools_for_intent(intent: str) -> list[AgentTool]:
     tool_names = INTENT_TOOLS.get(intent, INTENT_TOOLS["general"])
     tool_set = set(tool_names)
     # Preserve declaration order from INTENT_TOOLS for prompt consistency
-    return [
-        t for name in tool_names
-        for t in [AGENT_VISIBLE_TOOL_MAP.get(name)]
-        if t is not None
-    ]
+    result = []
+    for name in tool_names:
+        t = AGENT_VISIBLE_TOOL_MAP.get(name)
+        if t is not None:
+            result.append(t)
+        else:
+            logger.warning(f"[INTENT_TOOLS] Tool '{name}' referenced in intent '{intent}' not found in AGENT_VISIBLE_TOOL_MAP — check _INTERNAL_TOOLS or AGENT_TOOLS definition")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Startup validation: catch phantom tool references immediately
+# ---------------------------------------------------------------------------
+def _validate_intent_tools():
+    """Log warnings for any INTENT_TOOLS references that don't resolve."""
+    _missing = []
+    for intent, tool_names in INTENT_TOOLS.items():
+        for name in tool_names:
+            if name not in AGENT_VISIBLE_TOOL_MAP:
+                _missing.append((intent, name))
+                # Check if it's hidden vs truly missing
+                if name in ALL_TOOL_MAP:
+                    logger.warning(f"[VALIDATE] Tool '{name}' in intent '{intent}' exists but is HIDDEN (_INTERNAL_TOOLS). Agent can't see it.")
+                else:
+                    logger.error(f"[VALIDATE] Tool '{name}' in intent '{intent}' DOES NOT EXIST in AGENT_TOOLS. This is a bug.")
+    if _missing:
+        logger.warning(f"[VALIDATE] {len(_missing)} phantom tool references in INTENT_TOOLS: {_missing}")
+    else:
+        logger.info(f"[VALIDATE] All INTENT_TOOLS references valid ({sum(len(v) for v in INTENT_TOOLS.values())} tool refs across {len(INTENT_TOOLS)} intents)")
+
+    # Also validate handlers exist on the class
+    _handler_issues = []
+    for t in AGENT_TOOLS:
+        # We can't check getattr on the class without an instance, but we can
+        # check the handler name format
+        if not t.handler.startswith("_tool_") and not t.handler.startswith("_execute_"):
+            _handler_issues.append((t.name, t.handler))
+    if _handler_issues:
+        logger.warning(f"[VALIDATE] {len(_handler_issues)} tools with non-standard handler names: {_handler_issues}")
+
+_validate_intent_tools()
 
 
 # ---------------------------------------------------------------------------
@@ -8608,7 +8648,16 @@ Rules:
         # Build intent-scoped tool catalog — only relevant categories
         _intent = classification.intent if classification else "general"
         _scoped_tools = get_tools_for_intent(_intent)
-        tool_catalog = "\n".join(f"- {t.name}: {t.description}" for t in _scoped_tools)
+        # Include input_schema so the LLM knows exact parameter names
+        def _format_tool_for_catalog(t: AgentTool) -> str:
+            schema_parts = []
+            for k, v in (t.input_schema or {}).items():
+                optional = "?" in str(v)
+                clean_type = str(v).replace("?", "")
+                schema_parts.append(f"{k}: {clean_type}{' (optional)' if optional else ''}")
+            schema_str = f"  Params: {', '.join(schema_parts)}" if schema_parts else ""
+            return f"- {t.name}: {t.description}{schema_str}"
+        tool_catalog = "\n".join(_format_tool_for_catalog(t) for t in _scoped_tools)
 
         ROUTE_MAX_TOKENS = 500
         REFLECT_MAX_TOKENS = 300
@@ -9501,17 +9550,31 @@ Look at the user's request and the scoreboard. Is the request fully satisfied?
 
         # Non-company tool outputs (valuations, searches, etc.) — keep with higher limit
         _non_company_results = []
+        # Priority tools get more context budget
+        _priority_tools = {"run_valuation", "run_scenario", "generate_memo", "source_companies",
+                           "run_portfolio_health", "run_exit_modeling", "run_round_modeling",
+                           "run_bull_bear_base", "run_scenario_tree", "run_followon_strategy",
+                           "portfolio_comparison", "calculate_fund_metrics"}
         for r in tool_results:
             tool_name = r.get("tool", "")
             if tool_name in ("fetch_company_data", "resolve_data_gaps", "build_company_list", "lightweight_diligence"):
                 # Company data is already in _synth_company_data from shared_data
                 continue
+            # Priority tools (valuations, scenarios, sourcing) get more room
+            limit = 8000 if tool_name in _priority_tools else 4000
             _non_company_results.append({
                 "tool": tool_name,
-                "output": self._truncate(json.dumps(r.get("output", {})), 4000),
+                "output": self._truncate(json.dumps(r.get("output", {})), limit),
             })
 
-        synth_context = json.dumps(_non_company_results) + _synth_company_data + grid_summary_ctx
+        # Also pull valuations and sourcing results from shared_data if tools wrote there
+        _extra_shared = ""
+        for sd_key in ("valuations", "scenarios", "sourcing_results", "fund_metrics", "portfolio_health"):
+            sd_val = self.shared_data.get(sd_key)
+            if sd_val:
+                _extra_shared += f"\n\n{sd_key.upper()} (from shared_data):\n{self._truncate(json.dumps(sd_val, default=str), 6000)}\n"
+
+        synth_context = json.dumps(_non_company_results) + _synth_company_data + _extra_shared + grid_summary_ctx
 
         # Inject corrections from feedback loop — fall back to grid companies when no @mentions
         entity_companies = (entities or {}).get("companies", [])
