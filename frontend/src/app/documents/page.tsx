@@ -332,12 +332,12 @@ export default function DocumentsPage() {
           {companies.length > 0 && (
             <div className="flex items-center gap-2">
               <Label htmlFor="company-link" className="text-sm text-gray-600 whitespace-nowrap">Company:</Label>
-              <Select value={selectedCompanyId} onValueChange={setSelectedCompanyId}>
+              <Select value={selectedCompanyId || "__none__"} onValueChange={(v) => setSelectedCompanyId(v === "__none__" ? "" : v)}>
                 <SelectTrigger id="company-link" className="w-[160px]">
                   <SelectValue placeholder="None" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">None</SelectItem>
+                  <SelectItem value="__none__">None</SelectItem>
                   {companies.map((c) => (
                     <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
                   ))}
@@ -348,12 +348,12 @@ export default function DocumentsPage() {
           {funds.length > 0 && (
             <div className="flex items-center gap-2">
               <Label htmlFor="fund-link" className="text-sm text-gray-600 whitespace-nowrap">Fund:</Label>
-              <Select value={selectedFundId} onValueChange={setSelectedFundId}>
+              <Select value={selectedFundId || "__none__"} onValueChange={(v) => setSelectedFundId(v === "__none__" ? "" : v)}>
                 <SelectTrigger id="fund-link" className="w-[140px]">
                   <SelectValue placeholder="None" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">None</SelectItem>
+                  <SelectItem value="__none__">None</SelectItem>
                   {funds.map((f) => (
                     <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
                   ))}

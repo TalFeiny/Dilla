@@ -341,11 +341,8 @@ class ModelRouter:
                     if not self.openai_client:
                         raise ValueError("Failed to create OpenAI client - client is None")
                     logger.info("[_init_clients] ✅ OpenAI client initialized successfully")
-                except ImportError as exc:
-                    logger.warning(f"[_init_clients] ⚠️  OpenAI SDK not available: {exc}")
-                    self.openai_client = None
-                except AttributeError as exc:
-                    logger.error(f"[_init_clients] ❌ OpenAI SDK missing AsyncOpenAI: {exc}")
+                except Exception as exc:
+                    logger.warning(f"[_init_clients] ⚠️  OpenAI client init failed (non-fatal, Anthropic still available): {exc}")
                     self.openai_client = None
             else:
                 logger.warning("[_init_clients] ⚠️  NO OPENAI_API_KEY - OpenAI models will not work!")
@@ -364,11 +361,8 @@ class ModelRouter:
                             logger.warning("[_init_clients] ⚠️  Failed to create Groq client")
                         else:
                             logger.info("[_init_clients] ✅ Groq client initialized successfully")
-                    except ImportError as exc:
-                        logger.warning(f"[_init_clients] ⚠️  Groq SDK not available: {exc}")
-                        self.groq_client = None
-                    except AttributeError as exc:
-                        logger.error(f"[_init_clients] ❌ Groq SDK missing AsyncGroq: {exc}")
+                    except Exception as exc:
+                        logger.warning(f"[_init_clients] ⚠️  Groq client init failed (non-fatal): {exc}")
                         self.groq_client = None
             
             if self.google_key:
@@ -390,15 +384,20 @@ class ModelRouter:
             self._clients_initialized = True
             logger.info("[_init_clients] ✅ All clients initialized successfully")
         except Exception as e:
-            logger.error(f"[_init_clients] ❌ Error initializing clients: {e}")
+            logger.error(f"[_init_clients] ❌ Unexpected error during client init: {e}")
             import traceback
             logger.error(f"[_init_clients] Traceback: {traceback.format_exc()}")
-            # Reset initialization state so we can retry
-            self._clients_initialized = False
-            self.anthropic_client = None
-            self.openai_client = None
-            self.groq_client = None
-            raise
+            # Still mark as initialized — preserve any clients that succeeded
+            self._clients_initialized = True
+            initialized = []
+            if self.anthropic_client: initialized.append("Anthropic")
+            if self.openai_client: initialized.append("OpenAI")
+            if self.groq_client: initialized.append("Groq")
+            if self._genai_module: initialized.append("Google")
+            if initialized:
+                logger.warning(f"[_init_clients] ⚠️  Partial init — available providers: {', '.join(initialized)}")
+            else:
+                logger.error("[_init_clients] ❌ No providers initialized at all")
     
     async def get_completion(
         self,

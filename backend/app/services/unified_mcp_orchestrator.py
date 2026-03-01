@@ -5237,6 +5237,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
             merge_discovered_companies, build_round2_adaptive_queries,
             QUERY_INTENTS,
             build_rubric_classification_prompt, parse_llm_rubric,
+            build_semantic_scoring_prompt,
         )
 
         filters = inputs.get("filters") or {}
@@ -5258,7 +5259,57 @@ Answer using specific company names and numbers from the portfolio grid above.""
             if not target_stage and filters.get("stage"):
                 target_stage = filters["stage"]
 
-            # Query DB
+            # --- Step 0: Always generate rubric first (before DB query) ---
+            from app.services.model_router import ModelCapability
+            rubric = None
+            if thesis:
+                try:
+                    rubric_prompt = build_rubric_classification_prompt(thesis)
+                    rubric_result = await self.model_router.get_completion(
+                        prompt=rubric_prompt,
+                        system_prompt="Classify this list-building request. Return valid JSON only.",
+                        capability=ModelCapability.STRUCTURED,
+                        max_tokens=600, temperature=0.2,
+                        json_mode=True,
+                        caller_context="source_companies_rubric_llm",
+                    )
+                    raw_rubric = rubric_result.get("response", "{}") if isinstance(rubric_result, dict) else str(rubric_result)
+                    llm_rubric = json.loads(raw_rubric) if isinstance(raw_rubric, str) else raw_rubric
+                    rubric = parse_llm_rubric(
+                        llm_output=llm_rubric,
+                        query=thesis,
+                        weight_overrides=custom_weights,
+                        target_stage=target_stage,
+                        filters=filters,
+                    )
+                    logger.info(
+                        "[source_companies] LLM rubric: intent=%s entity=%s sector=%s",
+                        rubric.get("intent"), rubric.get("entity_type"),
+                        rubric.get("filters", {}).get("sector"),
+                    )
+                except Exception as e:
+                    logger.warning(f"[source_companies] LLM rubric failed, using pattern match: {e}")
+
+            if rubric is None and thesis:
+                rubric = generate_rubric(
+                    thesis_description=thesis,
+                    weight_overrides=custom_weights,
+                    target_stage=target_stage,
+                    filters=filters,
+                )
+
+            # --- Step 1: Merge rubric filters into DB query ---
+            if rubric:
+                rubric_filters = rubric.get("filters", {})
+                for key in ("sector", "stage", "geography", "arr_min", "arr_max"):
+                    if rubric_filters.get(key) and not filters.get(key):
+                        filters[key] = rubric_filters[key]
+                if rubric.get("target_stage") and not target_stage:
+                    target_stage = rubric["target_stage"]
+                if not custom_weights:
+                    custom_weights = rubric.get("weights")
+
+            # --- Step 2: DB query with enriched filters ---
             fund_id = getattr(self, "fund_id", None)
             db_result = await query_companies(
                 filters=filters,
@@ -5270,12 +5321,52 @@ Answer using specific company names and numbers from the portfolio grid above.""
 
             companies = db_result.get("companies", [])
 
-            # Score
+            # --- Step 3: Score with rubric context ---
             scored = score_companies(
                 companies,
                 weights=custom_weights,
                 target_stage=target_stage,
+                rubric=rubric,
             )
+
+            # --- Step 4: Semantic LLM scoring on top candidates ---
+            SEMANTIC_BATCH_SIZE = 20
+            if rubric and thesis and len(scored) > 0:
+                top_slice = scored[:SEMANTIC_BATCH_SIZE]
+                try:
+                    sem_prompt = build_semantic_scoring_prompt(thesis, top_slice)
+                    sem_result = await self.model_router.get_completion(
+                        prompt=sem_prompt,
+                        system_prompt="Score each company's relevance. Return valid JSON only.",
+                        capability=ModelCapability.STRUCTURED,
+                        max_tokens=1500, temperature=0.1,
+                        json_mode=True,
+                        caller_context="source_companies_semantic_score",
+                    )
+                    raw_sem = sem_result.get("response", "{}") if isinstance(sem_result, dict) else str(sem_result)
+                    parsed_sem = json.loads(raw_sem) if isinstance(raw_sem, str) else raw_sem
+                    sem_scores = {s["index"]: s for s in parsed_sem.get("scores", [])}
+
+                    # Blend: 70% quantitative + 30% semantic
+                    SEMANTIC_WEIGHT = 0.30
+                    for i, company in enumerate(top_slice):
+                        sem_entry = sem_scores.get(i + 1)
+                        if sem_entry:
+                            sem_score_normalized = sem_entry["relevance"] * 10  # 0-10 → 0-100
+                            old_score = company["score"]
+                            company["score"] = round(
+                                old_score * (1 - SEMANTIC_WEIGHT) + sem_score_normalized * SEMANTIC_WEIGHT, 1
+                            )
+                            company["score_breakdown"]["semantic_relevance"] = sem_entry["relevance"]
+                            company["semantic_reason"] = sem_entry.get("reason", "")
+
+                    # Re-sort after semantic adjustment
+                    scored.sort(key=lambda x: x["score"], reverse=True)
+                    for i, item in enumerate(scored):
+                        item["rank"] = i + 1
+
+                except Exception as e:
+                    logger.warning(f"[source_companies] semantic scoring failed, using quant only: {e}")
 
             # Trim to max_results
             scored = scored[:max_results]
@@ -5292,45 +5383,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
 
                 if needs_web:
                     try:
-                        from app.services.model_router import ModelCapability
-
-                        # ── Rubric generation: LLM-first, pattern-match fallback ──
-                        rubric = None
-                        try:
-                            rubric_prompt = build_rubric_classification_prompt(thesis)
-                            rubric_result = await self.model_router.get_completion(
-                                prompt=rubric_prompt,
-                                system_prompt="Classify this list-building request. Return valid JSON only.",
-                                capability=ModelCapability.FAST,
-                                max_tokens=600, temperature=0.2,
-                                json_mode=True,
-                                caller_context="source_companies_rubric_llm",
-                            )
-                            raw_rubric = rubric_result.get("response", "{}") if isinstance(rubric_result, dict) else str(rubric_result)
-                            llm_rubric = json.loads(raw_rubric) if isinstance(raw_rubric, str) else raw_rubric
-                            rubric = parse_llm_rubric(
-                                llm_output=llm_rubric,
-                                query=thesis,
-                                weight_overrides=custom_weights,
-                                target_stage=target_stage,
-                                filters=filters,
-                            )
-                            logger.info(
-                                "[source_companies] LLM rubric: intent=%s entity=%s sector=%s completeness_fields=%s",
-                                rubric.get("intent"), rubric.get("entity_type"),
-                                rubric.get("filters", {}).get("sector"), rubric.get("completeness_fields"),
-                            )
-                        except Exception as e:
-                            logger.warning(f"[source_companies] LLM rubric failed, using pattern match: {e}")
-
-                        if rubric is None:
-                            rubric = generate_rubric(
-                                thesis_description=thesis,
-                                weight_overrides=custom_weights,
-                                target_stage=target_stage,
-                                filters=filters,
-                            )
-
+                        # Rubric already generated in Step 0 above — reuse it
                         existing_names = {c.get("name", "").lower() for c in scored}
                         all_web_companies: list = []
                         round1_subcategories: list = []
@@ -5345,7 +5398,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
                             decomp_result = await self.model_router.get_completion(
                                 prompt=decomp_prompt,
                                 system_prompt="Decompose the search into subcategories. Return valid JSON only.",
-                                capability=ModelCapability.FAST,
+                                capability=ModelCapability.STRUCTURED,
                                 max_tokens=400, temperature=0.3,
                                 json_mode=True,
                                 caller_context="source_companies_decompose",
@@ -5458,8 +5511,8 @@ Answer using specific company names and numbers from the portfolio grid above.""
                                     ext_result = await self.model_router.get_completion(
                                         prompt=bulk_prompt,
                                         system_prompt="Extract ALL entity names from search results. Return valid JSON only.",
-                                        capability=ModelCapability.FAST,
-                                        max_tokens=800, temperature=0.0,
+                                        capability=ModelCapability.STRUCTURED,
+                                        max_tokens=2000, temperature=0.0,
                                         json_mode=True,
                                         caller_context=f"source_companies_bulk_r{round_num}",
                                     )
@@ -5493,8 +5546,8 @@ Answer using specific company names and numbers from the portfolio grid above.""
                                     ext_result = await self.model_router.get_completion(
                                         prompt=rich_prompt,
                                         system_prompt="Extract entity names with metadata. Return valid JSON only.",
-                                        capability=ModelCapability.FAST,
-                                        max_tokens=1000, temperature=0.0,
+                                        capability=ModelCapability.STRUCTURED,
+                                        max_tokens=2000, temperature=0.0,
                                         json_mode=True,
                                         caller_context=f"source_companies_rich_r{round_num}",
                                     )

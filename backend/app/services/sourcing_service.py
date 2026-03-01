@@ -48,13 +48,16 @@ SORT_COLUMN_MAP = {
 # Default scoring weights
 # ---------------------------------------------------------------------------
 DEFAULT_WEIGHTS = {
-    "data_completeness": 0.15,
-    "stage_fit": 0.15,
-    "growth_signal": 0.20,
-    "market_size": 0.10,
-    "capital_efficiency": 0.20,
-    "recency": 0.10,
+    "data_completeness": 0.05,
+    "stage_fit": 0.12,
+    "growth_signal": 0.15,
+    "market_size": 0.08,
+    "capital_efficiency": 0.15,
+    "recency": 0.08,
     "scale": 0.10,
+    "sector_match": 0.15,
+    "last_round_size": 0.07,
+    "runway_health": 0.05,
 }
 
 
@@ -254,10 +257,56 @@ def _format_company(c: dict) -> dict:
 # Core: score_companies — pure math scoring, no LLM
 # ---------------------------------------------------------------------------
 
+def _score_sector_match(
+    company_sector: str, company_description: str, target_sector: str
+) -> int:
+    """Score sector relevance via keyword overlap."""
+    if not target_sector:
+        return 5  # neutral if no target
+
+    target_lower = target_sector.lower()
+    sector_lower = (company_sector or "").lower()
+    desc_lower = (company_description or "").lower()[:500]
+
+    # Exact sector substring match
+    if target_lower in sector_lower or sector_lower in target_lower:
+        return 10
+
+    # Tokenize target sector and check overlap
+    target_tokens = set(target_lower.replace("-", " ").replace("/", " ").split())
+    target_tokens -= {"and", "or", "the", "of", "in", "for", "a"}
+
+    if not target_tokens:
+        return 5
+
+    # Check against sector field
+    sector_tokens = set(sector_lower.replace("-", " ").replace("/", " ").split())
+    sector_overlap = len(target_tokens & sector_tokens) / len(target_tokens)
+
+    # Check against description
+    desc_hits = sum(1 for t in target_tokens if t in desc_lower)
+    desc_overlap = desc_hits / len(target_tokens)
+
+    # Weighted: sector field match counts more
+    combined = sector_overlap * 0.7 + desc_overlap * 0.3
+
+    if combined >= 0.8:
+        return 10
+    elif combined >= 0.5:
+        return 8
+    elif combined >= 0.3:
+        return 6
+    elif combined > 0:
+        return 3
+    else:
+        return 0
+
+
 def score_companies(
     companies: List[Dict[str, Any]],
     weights: Optional[Dict[str, float]] = None,
     target_stage: Optional[str] = None,
+    rubric: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Score and rank a list of companies. Pure math, no LLM, no web.
@@ -272,6 +321,9 @@ def score_companies(
     total_w = sum(w.values())
     if total_w > 0:
         w = {k: v / total_w for k, v in w.items()}
+
+    # Extract thesis sector from rubric for sector_match scoring
+    thesis_sector = (rubric or {}).get("filters", {}).get("sector", "")
 
     scored = []
     for company in companies:
@@ -355,6 +407,45 @@ def score_companies(
             breakdown["scale"] = 2
         else:
             breakdown["scale"] = 0
+
+        # 8. Sector match (0-10): how well company sector matches thesis
+        breakdown["sector_match"] = _score_sector_match(
+            company.get("sector", ""), company.get("description", ""),
+            thesis_sector,
+        )
+
+        # 9. Last round size signal (0-10)
+        last_round = _safe_float(
+            company.get("last_funding_amount")
+            or (company.get("extra_data") or {}).get("last_round_amount")
+        )
+        if last_round >= 100_000_000:
+            breakdown["last_round_size"] = 10
+        elif last_round >= 50_000_000:
+            breakdown["last_round_size"] = 8
+        elif last_round >= 20_000_000:
+            breakdown["last_round_size"] = 7
+        elif last_round >= 5_000_000:
+            breakdown["last_round_size"] = 5
+        elif last_round > 0:
+            breakdown["last_round_size"] = 3
+        else:
+            breakdown["last_round_size"] = 0
+
+        # 10. Runway health (0-10)
+        runway = _safe_float(company.get("runway_months"))
+        if runway >= 24:
+            breakdown["runway_health"] = 10
+        elif runway >= 18:
+            breakdown["runway_health"] = 8
+        elif runway >= 12:
+            breakdown["runway_health"] = 6
+        elif runway >= 6:
+            breakdown["runway_health"] = 4
+        elif runway > 0:
+            breakdown["runway_health"] = 2
+        else:
+            breakdown["runway_health"] = 0
 
         # Composite: weighted sum normalized to 0–100
         composite = sum(breakdown.get(dim, 0) * w.get(dim, 0) for dim in w)
@@ -621,37 +712,46 @@ async def upsert_sourced_companies(
 _WEIGHT_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "growth": {
         "weights": {
-            "growth_signal": 0.35,
-            "scale": 0.20,
-            "capital_efficiency": 0.15,
+            "growth_signal": 0.25,
+            "scale": 0.15,
+            "capital_efficiency": 0.12,
             "stage_fit": 0.10,
-            "market_size": 0.10,
+            "market_size": 0.08,
             "recency": 0.05,
-            "data_completeness": 0.05,
+            "data_completeness": 0.03,
+            "sector_match": 0.12,
+            "last_round_size": 0.05,
+            "runway_health": 0.05,
         },
         "description": "Growth-first: prioritises high growth rate and scale.",
     },
     "efficiency": {
         "weights": {
-            "capital_efficiency": 0.35,
-            "growth_signal": 0.20,
-            "scale": 0.15,
+            "capital_efficiency": 0.25,
+            "growth_signal": 0.15,
+            "scale": 0.12,
             "stage_fit": 0.10,
-            "market_size": 0.10,
+            "market_size": 0.08,
             "recency": 0.05,
-            "data_completeness": 0.05,
+            "data_completeness": 0.03,
+            "sector_match": 0.12,
+            "last_round_size": 0.05,
+            "runway_health": 0.05,
         },
         "description": "Efficiency-first: rewards high ARR/funding ratio.",
     },
     "market_size": {
         "weights": {
-            "market_size": 0.30,
-            "growth_signal": 0.20,
-            "scale": 0.15,
-            "capital_efficiency": 0.15,
-            "stage_fit": 0.10,
+            "market_size": 0.22,
+            "growth_signal": 0.15,
+            "scale": 0.12,
+            "capital_efficiency": 0.12,
+            "stage_fit": 0.08,
             "recency": 0.05,
-            "data_completeness": 0.05,
+            "data_completeness": 0.03,
+            "sector_match": 0.13,
+            "last_round_size": 0.05,
+            "runway_health": 0.05,
         },
         "description": "TAM-first: favours large addressable markets.",
     },
@@ -702,6 +802,8 @@ _INTENT_PROFILES: Dict[str, Dict[str, Any]] = {
             "acquirer", "acquire", "acquisition", "buy-side", "strategic",
             "mid-market", "mid market", "buyer", "m&a", "roll-up", "rollup",
             "consolidat", "bolt-on", "platform acquisition",
+            "acquisition target", "companies to acquire", "tuck-in",
+            "add-on acquisition", "buyout target",
         ],
         "entity_type": "company",
         "search_context": (
@@ -725,6 +827,8 @@ _INTENT_PROFILES: Dict[str, Dict[str, Any]] = {
             "lead", "prospect", "customer", "gtm", "go-to-market", "go to market",
             "sell to", "icp", "ideal customer", "target account", "buyer",
             "pipeline", "sales", "outbound",
+            "revenue intelligence", "sales enablement", "crm", "prospecting",
+            "demand gen", "demand generation", "account based", "abm",
         ],
         "entity_type": "company",
         "search_context": (
@@ -914,11 +1018,15 @@ def generate_rubric(
 
     # Sector hints
     _sector_keywords = [
-        "fintech", "healthtech", "health tech", "edtech", "saas", "b2b saas",
-        "ai", "artificial intelligence", "ml", "machine learning",
-        "cybersecurity", "security", "climate", "cleantech", "biotech",
-        "e-commerce", "ecommerce", "marketplace", "infrastructure", "devtools",
-        "developer tools", "data infrastructure", "proptech",
+        # Multi-word first (more specific matches take priority)
+        "healthcare ai", "health tech", "b2b saas", "developer tools",
+        "data infrastructure", "sales enablement", "revenue intelligence",
+        "supply chain", "clinical ai", "medical device", "artificial intelligence",
+        "machine learning", "e-commerce", "go to market",
+        # Then single-word
+        "fintech", "healthtech", "edtech", "saas", "ai", "cybersecurity",
+        "security", "climate", "cleantech", "biotech", "ecommerce",
+        "marketplace", "infrastructure", "devtools", "proptech",
     ]
     for kw in _sector_keywords:
         if kw in thesis_lower:
@@ -1131,6 +1239,40 @@ def parse_llm_rubric(
 
 
 # ---------------------------------------------------------------------------
+# Semantic scoring — LLM relevance pass on top candidates
+# ---------------------------------------------------------------------------
+
+def build_semantic_scoring_prompt(
+    thesis: str,
+    companies: List[Dict[str, Any]],
+) -> str:
+    """Build prompt to score a batch of companies against a thesis."""
+    company_summaries = []
+    for i, c in enumerate(companies):
+        summary = (
+            f"[{i+1}] {c.get('name', 'Unknown')}"
+            f" | Sector: {c.get('sector', 'N/A')}"
+            f" | Stage: {c.get('stage', 'N/A')}"
+            f" | Desc: {(c.get('description') or 'N/A')[:200]}"
+        )
+        company_summaries.append(summary)
+
+    companies_block = "\n".join(company_summaries)
+
+    return (
+        f"Score each company's relevance to this investment thesis.\n\n"
+        f"THESIS: {thesis}\n\n"
+        f"COMPANIES:\n{companies_block}\n\n"
+        f"For each company, return a relevance score 0-10 and a 1-sentence reason.\n"
+        f"10 = perfect fit, 7 = strong fit, 4 = tangential, 1 = irrelevant, 0 = no data to judge.\n\n"
+        f'Return JSON: {{"scores": [\n'
+        f'  {{"index": 1, "relevance": 8, "reason": "..."}},\n'
+        f"  ...\n"
+        f"]}}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Search Strategy — intent-tagged query generation with template stamping
 # ---------------------------------------------------------------------------
 
@@ -1161,6 +1303,11 @@ QUERY_INTENTS = {
         "expected_yield": "5-15 names with sector classification",
         "extraction_tier": "bulk",
     },
+    "industry_directory": {
+        "description": "Find industry directories, databases, and market maps",
+        "expected_yield": "10-30+ names from structured listings",
+        "extraction_tier": "bulk",
+    },
 }
 
 # Query templates per intent, keyed by entity-level intent (dealflow, gtm_leads, etc.)
@@ -1171,21 +1318,31 @@ _QUERY_TEMPLATES: Dict[str, Dict[str, List[str]]] = {
             "top {subcategory} startups {year}",
             "best {subcategory} companies {year}",
             "fastest growing {subcategory} companies",
+            "{subcategory} startups crunchbase {year}",
         ],
         "funding_signal": [
             "{subcategory} companies funding raised {year_prev} {year}",
             "{subcategory} {target_stage} funding {year}",
+            "{subcategory} startup raised {target_stage} round {year}",
+            "site:techcrunch.com {subcategory} raises {year}",
         ],
         "competitor_map": [
             "{known_company} competitors alternatives",
+            "{known_company} vs alternatives {year}",
         ],
         "portfolio_mine": [
             "{investor} portfolio {sector}",
             "{investor} {sector} investments",
+            "site:crunchbase.com {investor} investments {sector}",
         ],
         "vertical_deep": [
             "{subcategory} software companies",
             "{subcategory} platform startups",
+            "{subcategory} companies Y Combinator Techstars {year}",
+        ],
+        "industry_directory": [
+            "{subcategory} companies database list",
+            "{subcategory} market map landscape {year}",
         ],
     },
     "acquirer": {
@@ -1256,6 +1413,10 @@ _FALLBACK_TEMPLATES: Dict[str, List[str]] = {
     ],
     "vertical_deep": [
         "{subcategory} companies",
+    ],
+    "industry_directory": [
+        "{subcategory} companies database list",
+        "{subcategory} market map landscape {year}",
     ],
 }
 
