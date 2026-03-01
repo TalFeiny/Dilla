@@ -9568,11 +9568,17 @@ Look at the user's request and the scoreboard. Is the request fully satisfied?
             })
 
         # Also pull valuations and sourcing results from shared_data if tools wrote there
+        # Budget: 12K total for extra shared_data keys (spread across all keys)
         _extra_shared = ""
+        _extra_budget = 12000
+        _extra_used = 0
         for sd_key in ("valuations", "scenarios", "sourcing_results", "fund_metrics", "portfolio_health"):
             sd_val = self.shared_data.get(sd_key)
-            if sd_val:
-                _extra_shared += f"\n\n{sd_key.upper()} (from shared_data):\n{self._truncate(json.dumps(sd_val, default=str), 6000)}\n"
+            if sd_val and _extra_used < _extra_budget:
+                per_key_limit = min(4000, _extra_budget - _extra_used)
+                chunk = self._truncate(json.dumps(sd_val, default=str), per_key_limit)
+                _extra_shared += f"\n\n{sd_key.upper()} (from shared_data):\n{chunk}\n"
+                _extra_used += len(chunk)
 
         synth_context = json.dumps(_non_company_results) + _synth_company_data + _extra_shared + grid_summary_ctx
 
