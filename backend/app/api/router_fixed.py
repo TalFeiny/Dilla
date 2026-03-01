@@ -60,6 +60,7 @@ api_router.include_router(matrix_charts_router, tags=["matrix-charts"])
 # Use short key for health response (e.g. cell_actions, valuation)
 OPTIONAL_ROUTERS = {
     "app.api.endpoints.email_inbound": {"tags": ["email"], "key": "email_inbound"},
+    "app.api.endpoints.slack_events": {"tags": ["slack"], "key": "slack_events"},
     "app.api.endpoints.model_router_test": {"tags": ["test"], "key": "model_router_test"},
     # DISABLED — code execution endpoints not in use, re-enable with auth when needed
     # "app.api.endpoints.python_executor": {"tags": ["python"], "key": "python_executor"},

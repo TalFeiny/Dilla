@@ -5231,6 +5231,12 @@ Answer using specific company names and numbers from the portfolio grid above.""
             pick_display_mode, format_as_markdown_table,
             generate_rubric, build_query_gen_prompt,
             build_name_extraction_prompt,
+            build_decomposition_prompt, stamp_queries_from_decomposition,
+            build_bulk_extraction_prompt, build_rich_extraction_prompt,
+            completeness_score, classify_enrichment_tier,
+            merge_discovered_companies, build_round2_adaptive_queries,
+            QUERY_INTENTS,
+            build_rubric_classification_prompt, parse_llm_rubric,
         )
 
         filters = inputs.get("filters") or {}
@@ -5288,127 +5294,299 @@ Answer using specific company names and numbers from the portfolio grid above.""
                     try:
                         from app.services.model_router import ModelCapability
 
-                        # Build rubric from thesis (or use custom_weights if provided)
-                        rubric = generate_rubric(
-                            thesis_description=thesis,
-                            weight_overrides=custom_weights,
-                            target_stage=target_stage,
-                            filters=filters,
-                        )
+                        # ── Rubric generation: LLM-first, pattern-match fallback ──
+                        rubric = None
+                        try:
+                            rubric_prompt = build_rubric_classification_prompt(thesis)
+                            rubric_result = await self.model_router.get_completion(
+                                prompt=rubric_prompt,
+                                system_prompt="Classify this list-building request. Return valid JSON only.",
+                                capability=ModelCapability.FAST,
+                                max_tokens=600, temperature=0.2,
+                                json_mode=True,
+                                caller_context="source_companies_rubric_llm",
+                            )
+                            raw_rubric = rubric_result.get("response", "{}") if isinstance(rubric_result, dict) else str(rubric_result)
+                            llm_rubric = json.loads(raw_rubric) if isinstance(raw_rubric, str) else raw_rubric
+                            rubric = parse_llm_rubric(
+                                llm_output=llm_rubric,
+                                query=thesis,
+                                weight_overrides=custom_weights,
+                                target_stage=target_stage,
+                                filters=filters,
+                            )
+                            logger.info(
+                                "[source_companies] LLM rubric: intent=%s entity=%s sector=%s completeness_fields=%s",
+                                rubric.get("intent"), rubric.get("entity_type"),
+                                rubric.get("filters", {}).get("sector"), rubric.get("completeness_fields"),
+                            )
+                        except Exception as e:
+                            logger.warning(f"[source_companies] LLM rubric failed, using pattern match: {e}")
+
+                        if rubric is None:
+                            rubric = generate_rubric(
+                                thesis_description=thesis,
+                                weight_overrides=custom_weights,
+                                target_stage=target_stage,
+                                filters=filters,
+                            )
 
                         existing_names = {c.get("name", "").lower() for c in scored}
-                        all_web_companies = []
+                        all_web_companies: list = []
+                        round1_subcategories: list = []
                         round_num = 0
+                        completeness_fields = rubric.get("completeness_fields")
+
+                        # ── Round 1: Decomposition + Template Stamping ──
+                        # Phase A: LLM decomposes request into subcategories
+                        decomposition = None
+                        try:
+                            decomp_prompt = build_decomposition_prompt(rubric)
+                            decomp_result = await self.model_router.get_completion(
+                                prompt=decomp_prompt,
+                                system_prompt="Decompose the search into subcategories. Return valid JSON only.",
+                                capability=ModelCapability.FAST,
+                                max_tokens=400, temperature=0.3,
+                                json_mode=True,
+                                caller_context="source_companies_decompose",
+                            )
+                            raw_decomp = decomp_result.get("response", "{}") if isinstance(decomp_result, dict) else str(decomp_result)
+                            decomposition = json.loads(raw_decomp) if isinstance(raw_decomp, str) else raw_decomp
+                            round1_subcategories = decomposition.get("subcategories", [])
+                        except Exception as e:
+                            logger.warning(f"[source_companies] decomposition failed: {e}")
+                            # Fallback: use rubric sector, or the full thesis as a single subcategory
+                            fallback_sector = rubric.get("filters", {}).get("sector") or thesis.strip()
+                            decomposition = {
+                                "subcategories": [fallback_sector],
+                                "known_companies": [],
+                                "known_investors": [],
+                            }
+                            round1_subcategories = decomposition["subcategories"]
+
+                        logger.info(
+                            "[source_companies] decomposed into %d subcategories: %s",
+                            len(round1_subcategories), round1_subcategories[:5],
+                        )
+
+                        # Phase B: Deterministic template stamping → intent-tagged queries
+                        tagged_queries = stamp_queries_from_decomposition(
+                            decomposition=decomposition,
+                            rubric=rubric,
+                            max_queries=10,
+                        )
 
                         # Up to 2 search rounds
                         for round_num in (1, 2):
-                            db_top_names = [c.get("name", "") for c in scored[:10]]
-
-                            # 1. LLM generates search queries from rubric context
-                            query_gen_prompt = build_query_gen_prompt(
-                                rubric=rubric,
-                                db_result_count=len(scored),
-                                db_top_names=db_top_names + [c.get("name", "") for c in all_web_companies],
-                                round_num=round_num,
-                            )
-                            try:
-                                qg_result = await self.model_router.get_completion(
-                                    prompt=query_gen_prompt,
-                                    system_prompt="Generate targeted search queries. Return valid JSON only.",
-                                    capability=ModelCapability.FAST,
-                                    max_tokens=400, temperature=0.3,
-                                    json_mode=True,
-                                    caller_context=f"source_companies_querygen_r{round_num}",
+                            if round_num == 2:
+                                # ── Round 2: Adaptive targeting of underrepresented subcategories ──
+                                tagged_queries = build_round2_adaptive_queries(
+                                    rubric=rubric,
+                                    round1_results=all_web_companies,
+                                    round1_subcategories=round1_subcategories,
+                                    existing_names=[c.get("name", "") for c in all_web_companies + scored[:10]],
+                                    max_queries=4,
                                 )
-                                raw_qg = qg_result.get("response", "{}") if isinstance(qg_result, dict) else str(qg_result)
-                                parsed_qg = json.loads(raw_qg) if isinstance(raw_qg, str) else raw_qg
-                                web_queries = parsed_qg.get("queries", [])[:6]
-                            except Exception as e:
-                                logger.warning(f"[source_companies] LLM query gen round {round_num} failed: {e}")
-                                # Fallback: simple thesis-based queries
-                                web_queries = [
-                                    f"{thesis} companies 2024 2025",
-                                    f"{thesis} {rubric.get('entity_type', 'company')} list",
-                                ]
 
-                            if not web_queries:
+                            if not tagged_queries:
                                 break
 
+                            web_queries = [tq["query"] for tq in tagged_queries]
+                            # Build intent lookup: query string → intent tag
+                            query_intent_map = {tq["query"]: tq.get("intent", "list_discovery") for tq in tagged_queries}
+                            query_subcategory_map = {tq["query"]: tq.get("subcategory", "") for tq in tagged_queries}
+
                             logger.info(
-                                "[source_companies] web discovery round %d: %d queries for intent=%s",
-                                round_num, len(web_queries), rubric.get("intent", "dealflow"),
+                                "[source_companies] web discovery round %d: %d queries (intents: %s)",
+                                round_num, len(web_queries),
+                                [tq.get("intent") for tq in tagged_queries],
                             )
 
                             # 2. Run Tavily searches in parallel
-                            async def _run_tavily(q: str) -> list:
+                            async def _run_tavily(q: str) -> dict:
                                 try:
                                     r = await self._tavily_search(q)
-                                    return r.get("results", []) if isinstance(r, dict) else []
+                                    results = r.get("results", []) if isinstance(r, dict) else []
+                                    return {"query": q, "results": results}
                                 except Exception:
-                                    return []
+                                    return {"query": q, "results": []}
 
                             search_tasks = [_run_tavily(q) for q in web_queries]
                             search_results = await asyncio.gather(*search_tasks)
-                            all_snippets = []
-                            for batch in search_results:
-                                for sr in batch[:5]:
+
+                            # 3. Two-tier extraction routed by query intent
+                            # Group results by extraction tier: bulk vs rich
+                            bulk_snippets: list = []
+                            rich_snippets: list = []
+                            bulk_subcategories: list = []
+                            rich_subcategories: list = []
+
+                            for sr_batch in search_results:
+                                q = sr_batch["query"]
+                                intent_tag = query_intent_map.get(q, "list_discovery")
+                                subcategory = query_subcategory_map.get(q, "")
+                                tier_info = QUERY_INTENTS.get(intent_tag, {})
+                                extraction_tier = tier_info.get("extraction_tier", "bulk")
+
+                                for sr in sr_batch["results"][:5]:
                                     title = sr.get("title", "") or ""
                                     content = sr.get("content", "") or sr.get("snippet", "") or ""
-                                    all_snippets.append(f"Title: {title}\nSnippet: {content[:300]}")
+                                    url = sr.get("url", "") or ""
+                                    snippet_entry = f"Title: {title}\nURL: {url}\nSnippet: {content[:400]}"
 
-                            if not all_snippets:
+                                    if extraction_tier == "rich":
+                                        rich_snippets.append(snippet_entry)
+                                        rich_subcategories.append(subcategory)
+                                    else:
+                                        bulk_snippets.append(snippet_entry)
+                                        bulk_subcategories.append(subcategory)
+
+                            if not bulk_snippets and not rich_snippets:
                                 break
 
-                            # 3. LLM extracts entity names from search results
-                            snippet_text = "\n---\n".join(all_snippets[:25])
-                            extraction_prompt = build_name_extraction_prompt(
-                                rubric=rubric,
-                                search_snippets=snippet_text,
-                                existing_names=list(existing_names),
-                            )
-                            try:
-                                ext_result = await self.model_router.get_completion(
-                                    prompt=extraction_prompt,
-                                    system_prompt="Extract entity names from search results. Return valid JSON only.",
-                                    capability=ModelCapability.FAST,
-                                    max_tokens=500, temperature=0.0,
-                                    json_mode=True,
-                                    caller_context=f"source_companies_extract_r{round_num}",
-                                )
-                                raw_ext = ext_result.get("response", "{}") if isinstance(ext_result, dict) else str(ext_result)
-                                parsed_ext = json.loads(raw_ext) if isinstance(raw_ext, str) else raw_ext
-                                extracted_names = parsed_ext.get("names", []) or parsed_ext.get("companies", [])
-                            except Exception as e:
-                                logger.warning(f"[source_companies] name extraction round {round_num} failed: {e}")
-                                extracted_names = []
+                            round_extracted: list = []  # companies extracted this round (dicts with metadata)
 
-                            # Filter to new names only
-                            new_names = []
-                            for name in extracted_names:
-                                name_clean = name.strip()
-                                if (
-                                    2 < len(name_clean) < 60
-                                    and name_clean.lower() not in existing_names
-                                ):
-                                    new_names.append(name_clean)
-                                    existing_names.add(name_clean.lower())
+                            # Tier A: Bulk extraction — max name yield
+                            if bulk_snippets:
+                                snippet_text = "\n---\n".join(bulk_snippets[:30])
+                                bulk_prompt = build_bulk_extraction_prompt(
+                                    rubric=rubric,
+                                    search_snippets=snippet_text,
+                                    existing_names=list(existing_names),
+                                )
+                                try:
+                                    ext_result = await self.model_router.get_completion(
+                                        prompt=bulk_prompt,
+                                        system_prompt="Extract ALL entity names from search results. Return valid JSON only.",
+                                        capability=ModelCapability.FAST,
+                                        max_tokens=800, temperature=0.0,
+                                        json_mode=True,
+                                        caller_context=f"source_companies_bulk_r{round_num}",
+                                    )
+                                    raw_ext = ext_result.get("response", "{}") if isinstance(ext_result, dict) else str(ext_result)
+                                    parsed_ext = json.loads(raw_ext) if isinstance(raw_ext, str) else raw_ext
+                                    bulk_companies = parsed_ext.get("companies", [])
+                                    # Normalize: ensure each entry is a dict
+                                    for entry in bulk_companies:
+                                        if isinstance(entry, str):
+                                            entry = {"name": entry}
+                                        if isinstance(entry, dict) and entry.get("name"):
+                                            name_clean = entry["name"].strip()
+                                            if 2 < len(name_clean) < 60 and name_clean.lower() not in existing_names:
+                                                existing_names.add(name_clean.lower())
+                                                entry["name"] = name_clean
+                                                entry["source"] = "web_discovery"
+                                                entry.setdefault("_extraction_tier", "bulk")
+                                                round_extracted.append(entry)
+                                except Exception as e:
+                                    logger.warning(f"[source_companies] bulk extraction round {round_num} failed: {e}")
+
+                            # Tier B: Rich extraction — fewer names but with funding/stage/investors
+                            if rich_snippets:
+                                snippet_text = "\n---\n".join(rich_snippets[:20])
+                                rich_prompt = build_rich_extraction_prompt(
+                                    rubric=rubric,
+                                    search_snippets=snippet_text,
+                                    existing_names=list(existing_names),
+                                )
+                                try:
+                                    ext_result = await self.model_router.get_completion(
+                                        prompt=rich_prompt,
+                                        system_prompt="Extract entity names with metadata. Return valid JSON only.",
+                                        capability=ModelCapability.FAST,
+                                        max_tokens=1000, temperature=0.0,
+                                        json_mode=True,
+                                        caller_context=f"source_companies_rich_r{round_num}",
+                                    )
+                                    raw_ext = ext_result.get("response", "{}") if isinstance(ext_result, dict) else str(ext_result)
+                                    parsed_ext = json.loads(raw_ext) if isinstance(raw_ext, str) else raw_ext
+                                    rich_companies = parsed_ext.get("companies", [])
+                                    for entry in rich_companies:
+                                        if isinstance(entry, str):
+                                            entry = {"name": entry}
+                                        if isinstance(entry, dict) and entry.get("name"):
+                                            name_clean = entry["name"].strip()
+                                            if 2 < len(name_clean) < 60 and name_clean.lower() not in existing_names:
+                                                existing_names.add(name_clean.lower())
+                                                entry["name"] = name_clean
+                                                entry["source"] = "web_discovery"
+                                                entry.setdefault("_extraction_tier", "rich")
+                                                round_extracted.append(entry)
+                                except Exception as e:
+                                    logger.warning(f"[source_companies] rich extraction round {round_num} failed: {e}")
 
                             logger.info(
-                                "[source_companies] round %d: extracted %d new names from %d snippets",
-                                round_num, len(new_names), len(all_snippets),
+                                "[source_companies] round %d: extracted %d companies (%d bulk, %d rich)",
+                                round_num, len(round_extracted),
+                                sum(1 for c in round_extracted if c.get("_extraction_tier") == "bulk"),
+                                sum(1 for c in round_extracted if c.get("_extraction_tier") == "rich"),
                             )
 
-                            if not new_names:
+                            if not round_extracted:
                                 break
 
-                            # 4. Enrich each new name via _execute_company_fetch (parallel, capped)
+                            # 4. Dedupe + Merge BEFORE enrichment
+                            # Merge all extracted companies so completeness gate sees best data
+                            round_merged = merge_discovered_companies(round_extracted)
+
+                            # 5. Completeness gate — route each company to skip/lightweight/full
                             remaining_slots = max(0, max_results - len(scored) - len(all_web_companies))
-                            names_to_enrich = new_names[:min(remaining_slots, 8)]
+                            companies_to_process = round_merged[:min(remaining_slots, 15)]
                             semaphore = asyncio.Semaphore(3)
 
-                            async def _enrich_one(name: str) -> Optional[dict]:
+                            skip_companies: list = []
+                            lightweight_names: list = []
+                            full_enrich_names: list = []
+
+                            for company in companies_to_process:
+                                tier = classify_enrichment_tier(company, fields=completeness_fields)
+                                if tier == "skip":
+                                    skip_companies.append(company)
+                                elif tier == "lightweight":
+                                    lightweight_names.append(company)
+                                else:
+                                    full_enrich_names.append(company)
+
+                            logger.info(
+                                "[source_companies] round %d enrichment gate: %d skip, %d lightweight, %d full",
+                                round_num, len(skip_companies), len(lightweight_names), len(full_enrich_names),
+                            )
+
+                            # 5a. Skip tier — already rich enough, add directly
+                            for company in skip_companies:
+                                company.setdefault("source", "web_discovery")
+                                all_web_companies.append(company)
+
+                            # 5b. Lightweight tier — 1 Tavily + 1 LLM call via _execute_lightweight_diligence
+                            async def _enrich_lightweight(company: dict) -> Optional[dict]:
                                 async with semaphore:
                                     try:
+                                        result = await self._execute_lightweight_diligence({
+                                            "company_name": company.get("name", ""),
+                                        })
+                                        cdata = result.get("company", {}) if isinstance(result, dict) else {}
+                                        # Merge lightweight result with existing extraction data
+                                        merged = dict(company)
+                                        for field, val in cdata.items():
+                                            if field.startswith("_"):
+                                                continue
+                                            existing = merged.get(field)
+                                            if (existing is None or existing == "" or existing == []) and \
+                                               val is not None and val != "" and val != []:
+                                                merged[field] = val
+                                        merged["source"] = "web_discovery"
+                                        merged["_enrichment"] = "lightweight"
+                                        return merged
+                                    except Exception as e:
+                                        logger.warning(f"[source_companies] lightweight enrich failed for '{company.get('name')}': {e}")
+                                        company["source"] = "web_discovery"
+                                        return company
+
+                            # 5c. Full tier — 6 Tavily searches via _execute_company_fetch
+                            async def _enrich_full(company: dict) -> Optional[dict]:
+                                async with semaphore:
+                                    try:
+                                        name = company.get("name", "")
                                         result = await self._execute_company_fetch({
                                             "company": name,
                                             "fund_id": fund_id,
@@ -5423,29 +5601,39 @@ Answer using specific company names and numbers from the portfolio grid above.""
                                         if hasattr(val_val, "value"):
                                             val_val = val_val.value
 
-                                        return {
+                                        enriched = {
                                             "name": name,
                                             "company_id": cdata.get("id"),
-                                            "sector": cdata.get("sector", ""),
-                                            "stage": cdata.get("stage", ""),
-                                            "description": (cdata.get("description") or cdata.get("product_description") or "")[:200],
+                                            "sector": cdata.get("sector", "") or company.get("sector", ""),
+                                            "stage": cdata.get("stage", "") or company.get("stage", ""),
+                                            "description": (cdata.get("description") or cdata.get("product_description") or company.get("description", "") or "")[:200],
                                             "arr": arr_val,
                                             "valuation": val_val,
-                                            "total_funding": cdata.get("total_funding") or cdata.get("total_raised"),
-                                            "employee_count": cdata.get("employee_count") or cdata.get("team_size"),
+                                            "total_funding": cdata.get("total_funding") or cdata.get("total_raised") or company.get("last_funding_amount"),
+                                            "employee_count": cdata.get("employee_count") or cdata.get("team_size") or company.get("employee_count"),
                                             "growth_rate": cdata.get("growth_rate"),
-                                            "hq": cdata.get("hq_location") or cdata.get("geography", ""),
+                                            "hq": cdata.get("hq_location") or cdata.get("geography", "") or company.get("hq", ""),
                                             "business_model": cdata.get("business_model", ""),
+                                            "investors": cdata.get("investors") or company.get("investors", []),
                                             "source": "web_discovery",
+                                            "_enrichment": "full",
                                         }
+                                        return enriched
                                     except Exception as e:
-                                        logger.warning(f"[source_companies] enrich failed for '{name}': {e}")
-                                        return None
+                                        logger.warning(f"[source_companies] full enrich failed for '{company.get('name')}': {e}")
+                                        company["source"] = "web_discovery"
+                                        return company
 
-                            enrich_tasks = [_enrich_one(n) for n in names_to_enrich]
-                            enriched = await asyncio.gather(*enrich_tasks)
-                            round_companies = [c for c in enriched if c is not None]
-                            all_web_companies.extend(round_companies)
+                            # Run lightweight + full enrichment in parallel
+                            all_enrich_tasks = (
+                                [_enrich_lightweight(c) for c in lightweight_names] +
+                                [_enrich_full(c) for c in full_enrich_names]
+                            )
+                            if all_enrich_tasks:
+                                enriched_results = await asyncio.gather(*all_enrich_tasks)
+                                for c in enriched_results:
+                                    if c is not None:
+                                        all_web_companies.append(c)
 
                             # Check if we have enough now
                             total_count = len(scored) + len(all_web_companies)
@@ -5477,6 +5665,11 @@ Answer using specific company names and numbers from the portfolio grid above.""
                             web_in_final = sum(1 for c in scored if c.get("source") == "web_discovery")
                             db_in_final = len(scored) - web_in_final
 
+                            # Enrichment tier stats for cost tracking
+                            skip_count = sum(1 for c in all_web_companies if c.get("_enrichment") is None or c.get("_extraction_tier") == "rich")
+                            lw_count = sum(1 for c in all_web_companies if c.get("_enrichment") == "lightweight")
+                            full_count = sum(1 for c in all_web_companies if c.get("_enrichment") == "full")
+
                             _web_discovery_info = {
                                 "web_companies_found": len(all_web_companies),
                                 "web_in_final_list": web_in_final,
@@ -5484,6 +5677,12 @@ Answer using specific company names and numbers from the portfolio grid above.""
                                 "intent": rubric.get("intent", "dealflow"),
                                 "entity_type": rubric.get("entity_type", "startup"),
                                 "search_rounds": round_num,
+                                "subcategories": round1_subcategories,
+                                "enrichment_tiers": {
+                                    "skipped": skip_count,
+                                    "lightweight": lw_count,
+                                    "full": full_count,
+                                },
                             }
                             logger.info(
                                 "[source_companies] web discovery complete: %d new %ss found (%d in final list), intent=%s",
@@ -5631,23 +5830,51 @@ Answer using specific company names and numbers from the portfolio grid above.""
             return {"companies": [], "count": 0, "error": str(e)}
 
     async def _tool_generate_rubric(self, inputs: dict) -> dict:
-        """Generate a scoring rubric from a natural-language investment thesis.
+        """Generate a scoring rubric from a natural-language query.
 
-        Now returns intent, entity_type, and search_context alongside
-        weights and filters — the full instruction set for sourcing.
+        LLM-first classification with pattern-match fallback.
+        Returns intent, entity_type, search_context, completeness_fields
+        alongside weights and filters — the full instruction set for sourcing.
         """
-        from app.services.sourcing_service import generate_rubric
+        from app.services.sourcing_service import (
+            generate_rubric, build_rubric_classification_prompt, parse_llm_rubric,
+        )
+        from app.services.model_router import ModelCapability
 
         thesis = inputs.get("thesis", "")
         if not thesis.strip():
-            return {"error": "A thesis description is required (e.g. 'Series A B2B SaaS in fintech, $3-10M ARR')"}
+            return {"error": "A query description is required (e.g. 'Series A B2B SaaS in fintech' or 'top AI consulting firms in NYC')"}
 
-        rubric = generate_rubric(
-            thesis_description=thesis,
-            weight_overrides=inputs.get("weight_overrides"),
-            target_stage=inputs.get("target_stage"),
-            filters=inputs.get("filters"),
-        )
+        rubric = None
+        try:
+            rubric_prompt = build_rubric_classification_prompt(thesis)
+            rubric_result = await self.model_router.get_completion(
+                prompt=rubric_prompt,
+                system_prompt="Classify this list-building request. Return valid JSON only.",
+                capability=ModelCapability.FAST,
+                max_tokens=600, temperature=0.2,
+                json_mode=True,
+                caller_context="generate_rubric_llm",
+            )
+            raw = rubric_result.get("response", "{}") if isinstance(rubric_result, dict) else str(rubric_result)
+            llm_output = json.loads(raw) if isinstance(raw, str) else raw
+            rubric = parse_llm_rubric(
+                llm_output=llm_output,
+                query=thesis,
+                weight_overrides=inputs.get("weight_overrides"),
+                target_stage=inputs.get("target_stage"),
+                filters=inputs.get("filters"),
+            )
+        except Exception as e:
+            logger.warning(f"[TOOL] generate_rubric LLM failed, using pattern match: {e}")
+
+        if rubric is None:
+            rubric = generate_rubric(
+                thesis_description=thesis,
+                weight_overrides=inputs.get("weight_overrides"),
+                target_stage=inputs.get("target_stage"),
+                filters=inputs.get("filters"),
+            )
 
         logger.info(
             "[TOOL] generate_rubric: thesis=%s intent=%s entity=%s stage=%s weights=%s filters=%s",

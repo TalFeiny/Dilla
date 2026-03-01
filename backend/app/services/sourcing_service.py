@@ -954,6 +954,7 @@ def generate_rubric(
     if extracted_filters.get("arr_min"):
         search_context_parts.append(f"Minimum ARR: ${extracted_filters['arr_min']/1e6:.0f}M")
 
+    entity_type = intent_profile["entity_type"]
     return {
         "weights": base,
         "filters": extracted_filters,
@@ -962,15 +963,470 @@ def generate_rubric(
         "thesis_input": thesis_description,
         # New fields for the sourcing loop
         "intent": intent,
-        "entity_type": intent_profile["entity_type"],
+        "entity_type": entity_type,
         "search_context": " ".join(search_context_parts),
         "extraction_hint": intent_profile["extraction_hint"],
+        "completeness_fields": _default_completeness_fields(entity_type),
     }
 
 
 # ---------------------------------------------------------------------------
-# LLM query generation prompt — used by the orchestrator's web fallback
+# LLM-based rubric generation — replaces brittle keyword pattern matching
 # ---------------------------------------------------------------------------
+
+# Default completeness fields per entity type.  Used when the LLM doesn't
+# provide them or when falling back to the pattern-matched rubric.
+_COMPLETENESS_FIELDS_BY_ENTITY: Dict[str, List[str]] = {
+    "startup": ["name", "sector", "stage", "last_funding_amount", "description", "investors"],
+    "company": ["name", "sector", "description", "employee_count", "hq", "website"],
+    "investor": ["name", "description", "sector", "geography", "aum", "specialization"],
+    "person": ["name", "title", "current_company", "description", "sector", "linkedin_url"],
+}
+
+
+def _default_completeness_fields(entity_type: str) -> List[str]:
+    """Default completeness fields when LLM doesn't provide them."""
+    return list(_COMPLETENESS_FIELDS_BY_ENTITY.get(
+        entity_type, _COMPLETENESS_FIELDS_BY_ENTITY["startup"]
+    ))
+
+
+def build_rubric_classification_prompt(query: str) -> str:
+    """Build prompt for LLM-based rubric generation.
+
+    The LLM classifies the user's list-building query into intent, entity type,
+    filters, and search strategy — replacing brittle keyword pattern matching.
+    """
+    return (
+        "Analyze this list-building request and classify it for a search pipeline.\n\n"
+        f"REQUEST: {query}\n\n"
+        "Return JSON:\n"
+        "{\n"
+        '  "intent": one of "dealflow", "acquirer", "gtm_leads", "lp_investor", "service_provider", "talent",\n'
+        '  "entity_type": one of "startup", "company", "investor", "person",\n'
+        '  "weight_profile": one of "growth", "efficiency", "market_size", "balanced",\n'
+        '  "sector": "detected sector/vertical or null",\n'
+        '  "stage": "Pre-Seed|Seed|Series A|Series B|Series C|Series D or null",\n'
+        '  "geography": "detected geography or null",\n'
+        '  "arr_min": integer dollar amount or null,\n'
+        '  "arr_max": integer dollar amount or null,\n'
+        '  "search_context": "2-3 sentence instruction for a web search agent",\n'
+        '  "extraction_hint": "1-2 sentence instruction for what entity names to extract",\n'
+        '  "completeness_fields": ["name", "sector", ...4-6 fields]\n'
+        "}\n\n"
+        "INTENT DEFINITIONS:\n"
+        "- dealflow: finding startups or companies for an investment pipeline\n"
+        "- acquirer: finding companies that acquire others (PE platforms, strategic buyers, roll-ups)\n"
+        "- gtm_leads: finding potential customers, sales prospects, ICP targets\n"
+        "- lp_investor: finding institutional investors, family offices, LPs, allocators\n"
+        "- service_provider: finding professional service firms (law, banking, consulting, recruiting)\n"
+        "- talent: finding people (executives, advisors, board members, operators)\n\n"
+        "WEIGHT PROFILE — pick the one that best matches the request's emphasis:\n"
+        "- growth: growth signals, revenue trajectory, market expansion\n"
+        "- efficiency: capital efficiency, profitability, unit economics\n"
+        "- market_size: TAM, market position, scale\n"
+        "- balanced: no strong emphasis (use when unclear)\n\n"
+        "COMPLETENESS FIELDS — pick 4-6 that define a 'complete' record for this query:\n"
+        "  Startup/company: name, sector, stage, last_funding_amount, description, investors, employee_count, hq, website\n"
+        "  Person/talent: name, title, current_company, description, linkedin_url, sector, years_experience\n"
+        "  Investor/LP: name, aum, fund_size, sector, geography, description, specialization\n\n"
+        "SEARCH CONTEXT — describe what to search for and where:\n"
+        "- What kind of entities to find and what makes them relevant\n"
+        "- What web sources to prioritize (directories, funding pages, LinkedIn, portfolios, league tables, etc.)\n"
+        "- Any specific criteria or constraints from the request\n\n"
+        "EXTRACTION HINT — describe what to pull from search results:\n"
+        "- What entity names to extract (company names, person names, firm names)\n"
+        "- What NOT to extract (e.g., investors when looking for startups, firms when looking for people)\n"
+    )
+
+
+def parse_llm_rubric(
+    llm_output: Dict[str, Any],
+    query: str,
+    weight_overrides: Optional[Dict[str, float]] = None,
+    target_stage: Optional[str] = None,
+    filters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Parse LLM rubric classification into the standard rubric dict.
+
+    Takes the raw LLM JSON output and produces the same shape as generate_rubric().
+    """
+    intent = llm_output.get("intent", "dealflow")
+    if intent not in _INTENT_PROFILES:
+        intent = "dealflow"
+
+    entity_type = llm_output.get("entity_type")
+    if entity_type not in ("startup", "company", "investor", "person"):
+        entity_type = _INTENT_PROFILES[intent]["entity_type"]
+
+    weight_profile = llm_output.get("weight_profile", "balanced")
+    if weight_profile not in _WEIGHT_TEMPLATES:
+        weight_profile = "balanced"
+
+    # Build weights from profile
+    base = dict(_WEIGHT_TEMPLATES[weight_profile]["weights"])
+    desc = _WEIGHT_TEMPLATES[weight_profile]["description"]
+
+    # Apply intent scoring emphasis from the profile
+    intent_profile = _INTENT_PROFILES[intent]
+    for dim, multiplier in intent_profile.get("scoring_emphasis", {}).items():
+        if dim in base:
+            base[dim] = base[dim] * multiplier
+
+    # Apply explicit overrides
+    if weight_overrides:
+        for dim, val in weight_overrides.items():
+            if dim in base:
+                base[dim] = float(val)
+
+    # Normalise weights to sum to 1.0
+    total = sum(base.values())
+    if total > 0:
+        base = {k: round(v / total, 4) for k, v in base.items()}
+
+    # Build filters from LLM output + explicit overrides
+    extracted_filters: Dict[str, Any] = dict(filters or {})
+    if llm_output.get("sector"):
+        extracted_filters.setdefault("sector", llm_output["sector"])
+    if llm_output.get("geography"):
+        extracted_filters.setdefault("geography", llm_output["geography"])
+    if llm_output.get("arr_min"):
+        extracted_filters.setdefault("arr_min", llm_output["arr_min"])
+    if llm_output.get("arr_max"):
+        extracted_filters.setdefault("arr_max", llm_output["arr_max"])
+
+    detected_stage = target_stage or llm_output.get("stage")
+    if detected_stage:
+        extracted_filters.setdefault("stage", detected_stage)
+
+    # Search context — use LLM's version (tailored to this specific query)
+    search_context = llm_output.get("search_context") or intent_profile["search_context"]
+    # Append structured filter info for downstream query generation
+    if extracted_filters.get("sector"):
+        search_context += f" Sector focus: {extracted_filters['sector']}."
+    if detected_stage:
+        search_context += f" Stage: {detected_stage}."
+    if extracted_filters.get("geography"):
+        search_context += f" Geography: {extracted_filters['geography']}."
+
+    extraction_hint = llm_output.get("extraction_hint") or intent_profile["extraction_hint"]
+
+    # Completeness fields — LLM picks what matters for this query type
+    completeness_fields = llm_output.get("completeness_fields")
+    if not completeness_fields or not isinstance(completeness_fields, list) or len(completeness_fields) < 3:
+        completeness_fields = _default_completeness_fields(entity_type)
+
+    return {
+        "weights": base,
+        "filters": extracted_filters,
+        "target_stage": detected_stage,
+        "description": desc,
+        "thesis_input": query,
+        "intent": intent,
+        "entity_type": entity_type,
+        "search_context": search_context,
+        "extraction_hint": extraction_hint,
+        "completeness_fields": completeness_fields,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Search Strategy — intent-tagged query generation with template stamping
+# ---------------------------------------------------------------------------
+
+# Query intent types: determines how results get extracted downstream
+QUERY_INTENTS = {
+    "list_discovery": {
+        "description": "Find aggregator list pages with many entity names",
+        "expected_yield": "20-50+ names per page",
+        "extraction_tier": "bulk",
+    },
+    "funding_signal": {
+        "description": "Find funding announcements with rich metadata",
+        "expected_yield": "1-3 names with stage, amount, investors",
+        "extraction_tier": "rich",
+    },
+    "competitor_map": {
+        "description": "Find competitor/alternative comparison pages",
+        "expected_yield": "3-10 names with relational context",
+        "extraction_tier": "rich",
+    },
+    "portfolio_mine": {
+        "description": "Find VC portfolio pages for bulk name extraction",
+        "expected_yield": "10-30 names with investor signal",
+        "extraction_tier": "bulk",
+    },
+    "vertical_deep": {
+        "description": "Find niche subcategory companies",
+        "expected_yield": "5-15 names with sector classification",
+        "extraction_tier": "bulk",
+    },
+}
+
+# Query templates per intent, keyed by entity-level intent (dealflow, gtm_leads, etc.)
+# {subcategory} and {year} are replaced at stamp time
+_QUERY_TEMPLATES: Dict[str, Dict[str, List[str]]] = {
+    "dealflow": {
+        "list_discovery": [
+            "top {subcategory} startups {year}",
+            "best {subcategory} companies {year}",
+            "fastest growing {subcategory} companies",
+        ],
+        "funding_signal": [
+            "{subcategory} companies funding raised {year_prev} {year}",
+            "{subcategory} {target_stage} funding {year}",
+        ],
+        "competitor_map": [
+            "{known_company} competitors alternatives",
+        ],
+        "portfolio_mine": [
+            "{investor} portfolio {sector}",
+            "{investor} {sector} investments",
+        ],
+        "vertical_deep": [
+            "{subcategory} software companies",
+            "{subcategory} platform startups",
+        ],
+    },
+    "acquirer": {
+        "list_discovery": [
+            "most active acquirers {subcategory} {year}",
+            "top {subcategory} acquisition platforms {year}",
+        ],
+        "funding_signal": [
+            "{subcategory} company acquired {year_prev} {year}",
+            "PE backed {subcategory} platform acquisitions",
+        ],
+        "vertical_deep": [
+            "{subcategory} roll-up platforms",
+            "{subcategory} consolidation companies",
+        ],
+    },
+    "gtm_leads": {
+        "list_discovery": [
+            "top {subcategory} companies {year}",
+            "largest {subcategory} companies list",
+            "fastest growing {subcategory} businesses {year}",
+        ],
+        "vertical_deep": [
+            "{subcategory} companies hiring",
+            "{subcategory} enterprise companies",
+        ],
+    },
+    "lp_investor": {
+        "list_discovery": [
+            "top family offices investing in {subcategory} {year}",
+            "institutional investors {subcategory} allocations",
+        ],
+        "funding_signal": [
+            "endowment {subcategory} allocation {year}",
+            "pension fund {subcategory} commitment {year}",
+        ],
+    },
+    "service_provider": {
+        "list_discovery": [
+            "top {subcategory} advisory firms {year}",
+            "best {subcategory} law firms league table",
+        ],
+        "vertical_deep": [
+            "{subcategory} investment banks boutique",
+            "{subcategory} consultants advisors",
+        ],
+    },
+    "talent": {
+        "list_discovery": [
+            "top {subcategory} executives leaders {year}",
+            "{subcategory} founders to watch {year}",
+        ],
+        "vertical_deep": [
+            "{subcategory} CTO VP engineering leaders",
+            "{subcategory} operator executives",
+        ],
+    },
+}
+
+# Fallback templates when entity intent has no specific templates for a query intent
+_FALLBACK_TEMPLATES: Dict[str, List[str]] = {
+    "list_discovery": [
+        "top {subcategory} companies {year}",
+        "best {subcategory} startups {year}",
+    ],
+    "funding_signal": [
+        "{subcategory} funding raised {year_prev} {year}",
+    ],
+    "vertical_deep": [
+        "{subcategory} companies",
+    ],
+}
+
+
+def build_decomposition_prompt(rubric: Dict[str, Any]) -> str:
+    """Build the prompt that decomposes a search request into subcategories.
+
+    The LLM's job is ONLY to break down the request into 3-5 searchable
+    subcategories. Query generation is then deterministic via templates.
+    """
+    thesis = rubric.get("thesis_input", "")
+    intent = rubric.get("intent", "dealflow")
+    entity_type = rubric.get("entity_type", "startup")
+    filters = rubric.get("filters", {})
+
+    sector = filters.get("sector", "")
+    stage = rubric.get("target_stage", "")
+    geography = filters.get("geography", "")
+
+    # Only ask for investor data when portfolio mining is relevant
+    if intent == "dealflow":
+        extra_identify = (
+            f"Also identify:\n"
+            f"- 1-2 known companies in this space (for competitor mapping)\n"
+            f"- 1-2 prominent investors in this space (for portfolio mining)\n\n"
+        )
+        json_schema = (
+            f'{{\n'
+            f'  "subcategories": ["subcategory1", "subcategory2", ...],\n'
+            f'  "known_companies": ["Company1", "Company2"],\n'
+            f'  "known_investors": ["Investor1", "Investor2"]\n'
+            f'}}'
+        )
+    else:
+        extra_identify = (
+            f"Also identify:\n"
+            f"- 1-2 known {entity_type}s or companies in this space (for finding similar ones)\n\n"
+        )
+        json_schema = (
+            f'{{\n'
+            f'  "subcategories": ["subcategory1", "subcategory2", ...],\n'
+            f'  "known_companies": ["Company1", "Company2"]\n'
+            f'}}'
+        )
+
+    return (
+        f"Decompose this search request into 3-5 specific subcategories for web search.\n\n"
+        f"REQUEST: {thesis}\n"
+        f"ENTITY TYPE: {entity_type}\n"
+        f"INTENT: {intent}\n"
+        f"{f'SECTOR: {sector}' if sector else ''}\n"
+        f"{f'STAGE: {stage}' if stage else ''}\n"
+        f"{f'GEOGRAPHY: {geography}' if geography else ''}\n\n"
+        f"Break this into 3-5 concrete subcategories that represent DIFFERENT segments "
+        f"of what the user is looking for. Each subcategory should be a specific niche "
+        f"that would appear on different web pages.\n\n"
+        f"Example: 'healthcare SaaS' → ['EHR systems', 'telehealth platforms', "
+        f"'revenue cycle management', 'clinical operations software', 'patient engagement']\n\n"
+        f"{extra_identify}"
+        f"Return JSON:\n"
+        f"{json_schema}"
+    )
+
+
+def stamp_queries_from_decomposition(
+    decomposition: Dict[str, Any],
+    rubric: Dict[str, Any],
+    max_queries: int = 10,
+) -> List[Dict[str, str]]:
+    """Stamp subcategories into proven query templates.
+
+    Takes the LLM decomposition output and the rubric, returns a list of
+    tagged queries: [{"query": "...", "intent": "list_discovery"}, ...]
+
+    Each query carries its intent tag through the entire pipeline.
+    """
+    from datetime import datetime as _dt
+    year = str(_dt.now().year)
+    year_prev = str(_dt.now().year - 1)
+
+    subcategories = decomposition.get("subcategories", [])
+    known_companies = decomposition.get("known_companies", [])
+    known_investors = decomposition.get("known_investors", [])
+
+    entity_intent = rubric.get("intent", "dealflow")
+    target_stage = rubric.get("target_stage", "")
+    sector = rubric.get("filters", {}).get("sector", "")
+
+    templates = _QUERY_TEMPLATES.get(entity_intent, {})
+    tagged_queries: List[Dict[str, str]] = []
+
+    # Phase 1: Stamp list_discovery + vertical_deep for each subcategory
+    # These are the highest-yield query types
+    for sub in subcategories[:5]:
+        vars_ = {
+            "subcategory": sub,
+            "year": year,
+            "year_prev": year_prev,
+            "target_stage": target_stage or "Series A",
+            "sector": sector or sub,
+        }
+
+        # List discovery — one per subcategory
+        list_templates = templates.get("list_discovery", _FALLBACK_TEMPLATES["list_discovery"])
+        if list_templates:
+            t = list_templates[len(tagged_queries) % len(list_templates)]
+            tagged_queries.append({
+                "query": t.format(**vars_),
+                "intent": "list_discovery",
+                "subcategory": sub,
+            })
+
+        # Vertical deep — one per subcategory (alternating templates)
+        deep_templates = templates.get("vertical_deep", _FALLBACK_TEMPLATES["vertical_deep"])
+        if deep_templates and len(tagged_queries) < max_queries:
+            t = deep_templates[len(tagged_queries) % len(deep_templates)]
+            tagged_queries.append({
+                "query": t.format(**vars_),
+                "intent": "vertical_deep",
+                "subcategory": sub,
+            })
+
+    # Phase 2: Funding signal queries (1-2, using first subcategories)
+    funding_templates = templates.get("funding_signal", _FALLBACK_TEMPLATES.get("funding_signal", []))
+    for i, sub in enumerate(subcategories[:2]):
+        if len(tagged_queries) >= max_queries:
+            break
+        if funding_templates:
+            vars_ = {
+                "subcategory": sub,
+                "year": year,
+                "year_prev": year_prev,
+                "target_stage": target_stage or "Series B",
+                "sector": sector or sub,
+            }
+            t = funding_templates[i % len(funding_templates)]
+            tagged_queries.append({
+                "query": t.format(**vars_),
+                "intent": "funding_signal",
+                "subcategory": sub,
+            })
+
+    # Phase 3: Competitor map (if we have known companies)
+    comp_templates = templates.get("competitor_map", [])
+    for company in known_companies[:2]:
+        if len(tagged_queries) >= max_queries:
+            break
+        if comp_templates:
+            tagged_queries.append({
+                "query": comp_templates[0].format(known_company=company),
+                "intent": "competitor_map",
+                "subcategory": company,
+            })
+
+    # Phase 4: Portfolio mine (if we have known investors)
+    port_templates = templates.get("portfolio_mine", [])
+    for investor in known_investors[:1]:
+        if len(tagged_queries) >= max_queries:
+            break
+        if port_templates:
+            tagged_queries.append({
+                "query": port_templates[0].format(
+                    investor=investor,
+                    sector=sector or subcategories[0] if subcategories else "technology",
+                ),
+                "intent": "portfolio_mine",
+                "subcategory": investor,
+            })
+
+    return tagged_queries[:max_queries]
+
 
 def build_query_gen_prompt(
     rubric: Dict[str, Any],
@@ -980,15 +1436,9 @@ def build_query_gen_prompt(
 ) -> str:
     """Build the prompt that tells the LLM to generate web search queries.
 
-    The rubric provides all context: intent, thesis, filters, search_context.
-    The LLM decides what queries will actually surface the right entities —
-    no templates, fully dynamic.
-
-    Args:
-        rubric: Output of generate_rubric()
-        db_result_count: How many results the DB returned (0 = nothing)
-        db_top_names: Names of top-scored DB results (for expansion/dedup)
-        round_num: 1 = first search round, 2 = adaptive follow-up
+    LEGACY INTERFACE — kept for backward compatibility.
+    The new pipeline uses build_decomposition_prompt() + stamp_queries_from_decomposition()
+    but this function is still called as a fallback if decomposition fails.
     """
     thesis = rubric.get("thesis_input", "")
     intent = rubric.get("intent", "dealflow")
@@ -996,7 +1446,6 @@ def build_query_gen_prompt(
     search_context = rubric.get("search_context", "")
     filters = rubric.get("filters", {})
 
-    # Round 1: broad discovery
     if round_num == 1:
         return (
             f"Generate 6 targeted web search queries to find {entity_type}s.\n\n"
@@ -1008,15 +1457,13 @@ def build_query_gen_prompt(
             f"{'Avoid duplicating these (already found): ' + ', '.join(db_top_names[:5]) if db_top_names else ''}\n\n"
             f"QUERY GUIDELINES:\n"
             f"- Each query should find DIFFERENT {entity_type}s (don't overlap)\n"
-            f"- Mix broad and narrow: some queries cast wide, some target specific data sources\n"
-            f"- Think about WHERE {entity_type} names appear densely on the web\n"
-            f"- Use year filters (2024, 2025) for recency where it helps\n"
-            f"- If the request mentions a specific geography/sector/stage, vary HOW you search for it\n"
-            f"- Queries should surface NAMES, not generic articles\n\n"
+            f"- Prefer queries that target LIST PAGES (aggregators, top-N lists, directories)\n"
+            f"- Include at least one funding-focused query for recent raises\n"
+            f"- Use year filters (2024, 2025, 2026) for recency\n"
+            f"- AVOID landscape/market overview queries — they return analysis, not names\n\n"
             f"Return JSON: {{\"queries\": [\"query1\", \"query2\", ..., \"query6\"]}}"
         )
 
-    # Round 2: adaptive — we know what round 1 returned, go deeper
     return (
         f"Round 1 search found {db_result_count} {entity_type}s but we need more.\n\n"
         f"USER REQUEST: {thesis}\n"
@@ -1025,10 +1472,120 @@ def build_query_gen_prompt(
         f"Generate 4 DIFFERENT search queries to find MORE {entity_type}s we missed.\n"
         f"Strategies for round 2:\n"
         f"- Search for competitors/alternatives to the best results from round 1\n"
-        f"- Try adjacent sectors or geographies the first round didn't cover\n"
-        f"- Look at investor portfolios, industry reports, or conference lists\n"
-        f"- Use more specific or more creative search angles\n\n"
+        f"- Try adjacent sectors or subcategories the first round didn't cover\n"
+        f"- Look at investor portfolios or VC portfolio pages\n"
+        f"- Target list pages and directories we haven't hit yet\n\n"
         f"Return JSON: {{\"queries\": [\"query1\", \"query2\", \"query3\", \"query4\"]}}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Two-tier extraction — bulk vs rich, routed by query intent
+# ---------------------------------------------------------------------------
+
+def build_bulk_extraction_prompt(
+    rubric: Dict[str, Any],
+    search_snippets: str,
+    existing_names: Optional[List[str]] = None,
+) -> str:
+    """Tier A: Bulk extraction for list_discovery, portfolio_mine, vertical_deep.
+
+    Optimized for maximum name yield. Extracts many names with light metadata.
+    """
+    entity_type = rubric.get("entity_type", "startup")
+    extraction_hint = rubric.get("extraction_hint", "Extract company names.")
+    thesis = rubric.get("thesis_input", "")
+
+    return (
+        f"Extract ALL {entity_type} names from these search results. Maximize name yield.\n\n"
+        f"{extraction_hint}\n\n"
+        f"CONTEXT: {thesis}\n"
+        f"{'SKIP these (already known): ' + ', '.join(existing_names[:30]) if existing_names else ''}\n\n"
+        f"SEARCH RESULTS:\n{search_snippets}\n\n"
+        f"Return JSON: {{\"companies\": [\n"
+        f"  {{\"name\": \"Company Name\", \"sector\": \"sector if mentioned\", \"source_url\": \"url if visible\"}},\n"
+        f"  ...\n"
+        f"]}}\n\n"
+        f"RULES:\n"
+        f"- Extract EVERY {entity_type} name mentioned, even if only listed once\n"
+        f"- Only real {entity_type} names, not generic terms or product names\n"
+        f"- Include sector/category if mentioned alongside the name\n"
+        f"- No duplicates\n"
+        f"- Aim for 10-50+ names from list pages"
+    )
+
+
+def build_rich_extraction_prompt(
+    rubric: Dict[str, Any],
+    search_snippets: str,
+    existing_names: Optional[List[str]] = None,
+) -> str:
+    """Tier B: Rich extraction for funding_signal, competitor_map.
+
+    Extracts fewer names but captures as much metadata as available.
+    JSON schema adapts to entity_type so we don't ask for funding data
+    on talent searches or investor fields on service provider searches.
+    """
+    entity_type = rubric.get("entity_type", "startup")
+    extraction_hint = rubric.get("extraction_hint", "Extract entity names.")
+    thesis = rubric.get("thesis_input", "")
+
+    # Entity-type-aware JSON schemas
+    if entity_type == "person":
+        schema_body = (
+            f"    \"name\": \"Full Name\",\n"
+            f"    \"title\": \"current title/role\",\n"
+            f"    \"current_company\": \"company name\",\n"
+            f"    \"description\": \"background and experience\",\n"
+            f"    \"sector\": \"sector/vertical\",\n"
+            f"    \"hq\": \"location\",\n"
+            f"    \"source_url\": \"url\""
+        )
+        extra_rules = "- Include title and current_company when mentioned\n"
+    elif entity_type == "investor":
+        schema_body = (
+            f"    \"name\": \"Investor Name\",\n"
+            f"    \"sector\": \"sector focus\",\n"
+            f"    \"aum\": 1000000000,\n"
+            f"    \"fund_size\": 500000000,\n"
+            f"    \"description\": \"investment focus and strategy\",\n"
+            f"    \"geography\": \"location/region\",\n"
+            f"    \"source_url\": \"url\""
+        )
+        extra_rules = "- AUM and fund_size as integers in dollars\n"
+    else:
+        # startup or company
+        schema_body = (
+            f"    \"name\": \"Company Name\",\n"
+            f"    \"sector\": \"sector/vertical\",\n"
+            f"    \"stage\": \"funding stage (Seed, Series A, etc.)\",\n"
+            f"    \"last_funding_amount\": 65000000,\n"
+            f"    \"investors\": [\"Investor1\", \"Investor2\"],\n"
+            f"    \"description\": \"what the company does\",\n"
+            f"    \"employee_count\": 150,\n"
+            f"    \"hq\": \"location\",\n"
+            f"    \"source_url\": \"url\""
+        )
+        extra_rules = "- Funding amounts as integers (65000000, not \"$65M\")\n"
+
+    return (
+        f"Extract {entity_type} names AND all available metadata from these search results.\n\n"
+        f"{extraction_hint}\n\n"
+        f"CONTEXT: {thesis}\n"
+        f"{'SKIP these (already known): ' + ', '.join(existing_names[:30]) if existing_names else ''}\n\n"
+        f"SEARCH RESULTS:\n{search_snippets}\n\n"
+        f"For each {entity_type}, capture as much data as the text provides:\n"
+        f"Return JSON: {{\"companies\": [\n"
+        f"  {{\n"
+        f"{schema_body}\n"
+        f"  }},\n"
+        f"  ...\n"
+        f"]}}\n\n"
+        f"RULES:\n"
+        f"- Only include fields that are ACTUALLY mentioned in the text\n"
+        f"- Use null for fields not mentioned — do NOT guess\n"
+        f"{extra_rules}"
+        f"- This data will be used directly — accuracy matters more than quantity"
     )
 
 
@@ -1037,10 +1594,10 @@ def build_name_extraction_prompt(
     search_snippets: str,
     existing_names: Optional[List[str]] = None,
 ) -> str:
-    """Build the prompt that extracts entity names from search results.
+    """LEGACY: Single-tier name extraction. Kept for backward compatibility.
 
-    Uses the rubric's entity_type and extraction_hint to tell the LLM
-    exactly what kind of names to pull out.
+    New pipeline uses build_bulk_extraction_prompt / build_rich_extraction_prompt
+    routed by query intent.
     """
     entity_type = rubric.get("entity_type", "startup")
     extraction_hint = rubric.get("extraction_hint", "Extract company names.")
@@ -1058,3 +1615,197 @@ def build_name_extraction_prompt(
         f"- No duplicates\n"
         f"- If uncertain whether something is a {entity_type} name, include it"
     )
+
+
+# ---------------------------------------------------------------------------
+# Completeness scoring — determines enrichment depth per company
+# ---------------------------------------------------------------------------
+
+# Legacy default — kept for backward compatibility with callers that
+# don't pass rubric-driven fields.  New callers should use
+# rubric["completeness_fields"] from generate_rubric / parse_llm_rubric.
+_COMPLETENESS_FIELDS = [
+    "name", "sector", "stage", "last_funding_amount",
+    "description", "investors",
+]
+
+
+def completeness_score(
+    company: Dict[str, Any],
+    fields: Optional[List[str]] = None,
+) -> float:
+    """Score how complete a record is (0.0 - 1.0).
+
+    Uses *fields* when provided (from rubric["completeness_fields"]),
+    falling back to the legacy startup-centric defaults.
+    """
+    check_fields = fields or _COMPLETENESS_FIELDS
+    if not check_fields:
+        return 0.0
+    filled = 0
+    for field in check_fields:
+        val = company.get(field)
+        if val is not None and val != "" and val != [] and val != 0:
+            filled += 1
+    return filled / len(check_fields)
+
+
+def classify_enrichment_tier(
+    company: Dict[str, Any],
+    fields: Optional[List[str]] = None,
+) -> str:
+    """Classify what enrichment a record needs based on data completeness.
+
+    *fields* should come from rubric["completeness_fields"] so that
+    talent searches don't penalise missing funding data, etc.
+
+    Returns:
+        'skip'        — completeness >= 0.6, score with what we have
+        'lightweight'  — completeness 0.3-0.6, 1 Tavily + 1 LLM fill gaps
+        'full'         — completeness < 0.3, run full _execute_company_fetch
+    """
+    score = completeness_score(company, fields=fields)
+    company["_completeness"] = round(score, 2)
+    if score >= 0.6:
+        return "skip"
+    elif score >= 0.3:
+        return "lightweight"
+    else:
+        return "full"
+
+
+# ---------------------------------------------------------------------------
+# Dedupe & merge — combine companies found across multiple search results
+# ---------------------------------------------------------------------------
+
+def _normalize_name(name: str) -> str:
+    """Normalize a company name for dedup matching."""
+    n = name.lower().strip()
+    # Strip common suffixes
+    for suffix in (", inc.", ", inc", " inc.", " inc", ", ltd", " ltd",
+                   ", llc", " llc", " corp", " corporation", " co."):
+        if n.endswith(suffix):
+            n = n[: -len(suffix)].strip()
+    return n
+
+
+def merge_discovered_companies(companies: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Deduplicate and merge company records from multiple search results.
+
+    Same company from a Tracxn list (name only) and a TechCrunch article
+    (name + funding + investors) get merged into the most-complete record.
+    """
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for c in companies:
+        key = _normalize_name(c.get("name", ""))
+        if not key:
+            continue
+        groups.setdefault(key, []).append(c)
+
+    merged = []
+    for key, records in groups.items():
+        if len(records) == 1:
+            merged.append(records[0])
+            continue
+
+        # Sort by completeness descending — richest record is base
+        records.sort(key=lambda r: completeness_score(r), reverse=True)
+        base = dict(records[0])
+
+        # Merge non-null fields from other records
+        for other in records[1:]:
+            for field, val in other.items():
+                if field.startswith("_"):
+                    continue
+                existing = base.get(field)
+                if (existing is None or existing == "" or existing == [] or existing == 0) and \
+                   val is not None and val != "" and val != [] and val != 0:
+                    base[field] = val
+
+            # Collect all source URLs
+            if other.get("source_url"):
+                existing_urls = base.get("source_urls", [])
+                if base.get("source_url") and base["source_url"] not in existing_urls:
+                    existing_urls.append(base["source_url"])
+                if other["source_url"] not in existing_urls:
+                    existing_urls.append(other["source_url"])
+                base["source_urls"] = existing_urls
+
+        base["_merge_count"] = len(records)
+        merged.append(base)
+
+    return merged
+
+
+def build_round2_adaptive_queries(
+    rubric: Dict[str, Any],
+    round1_results: List[Dict[str, Any]],
+    round1_subcategories: List[str],
+    existing_names: List[str],
+    max_queries: int = 4,
+) -> List[Dict[str, str]]:
+    """Generate Round 2 queries targeting underrepresented subcategories.
+
+    Analyzes Round 1 results to find which subcategories got poor coverage,
+    then generates targeted queries for those gaps.
+    """
+    from datetime import datetime as _dt
+    year = str(_dt.now().year)
+    year_prev = str(_dt.now().year - 1)
+
+    # Count results per subcategory from Round 1
+    sub_counts: Dict[str, int] = {s: 0 for s in round1_subcategories}
+    for company in round1_results:
+        sub = company.get("_subcategory", company.get("sector", ""))
+        for s in round1_subcategories:
+            if s.lower() in sub.lower() or sub.lower() in s.lower():
+                sub_counts[s] = sub_counts.get(s, 0) + 1
+                break
+
+    # Sort by count ascending — least-covered first
+    underserved = sorted(sub_counts.items(), key=lambda x: x[1])
+
+    entity_intent = rubric.get("intent", "dealflow")
+    templates = _QUERY_TEMPLATES.get(entity_intent, {})
+    target_stage = rubric.get("target_stage", "")
+    sector = rubric.get("filters", {}).get("sector", "")
+
+    tagged_queries: List[Dict[str, str]] = []
+
+    for sub_name, count in underserved:
+        if len(tagged_queries) >= max_queries:
+            break
+
+        vars_ = {
+            "subcategory": sub_name,
+            "year": year,
+            "year_prev": year_prev,
+            "target_stage": target_stage or "Series A",
+            "sector": sector or sub_name,
+        }
+
+        # Use list_discovery for underserved subcategories
+        list_templates = templates.get("list_discovery", _FALLBACK_TEMPLATES["list_discovery"])
+        if list_templates:
+            # Pick a different template than Round 1 used
+            t = list_templates[min(1, len(list_templates) - 1)]
+            tagged_queries.append({
+                "query": t.format(**vars_),
+                "intent": "list_discovery",
+                "subcategory": sub_name,
+            })
+
+    # If we have room, add competitor queries from top Round 1 results
+    if len(tagged_queries) < max_queries and existing_names:
+        comp_templates = templates.get("competitor_map", [])
+        if comp_templates:
+            for name in existing_names[:2]:
+                if len(tagged_queries) >= max_queries:
+                    break
+                tagged_queries.append({
+                    "query": comp_templates[0].format(known_company=name),
+                    "intent": "competitor_map",
+                    "subcategory": name,
+                })
+
+    return tagged_queries[:max_queries]
