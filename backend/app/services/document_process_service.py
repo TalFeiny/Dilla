@@ -480,9 +480,14 @@ async def _extract_document_structured_async(
     Branches by document_type: monthly_update/board_deck use signal schema; investment_memo uses memo schema; else flat.
     Returns a dict suitable for extracted_data (normalized so financial_metrics and period_date exist where applicable).
     """
-    from app.services.model_router import get_model_router, ModelCapability
+    from app.services.model_router import ModelRouter, ModelCapability
 
-    router = get_model_router()
+    # Create a fresh router instance — NOT the singleton.
+    # This function runs inside asyncio.run() in a worker thread, which creates
+    # a new event loop. The singleton's async clients (AsyncAnthropic, aiohttp)
+    # are bound to the main event loop and will deadlock here. A fresh instance
+    # initializes its clients on this thread's loop.
+    router = ModelRouter()
     doc_type = (document_type or "other").strip().lower()
 
     if doc_type == "investment_memo":

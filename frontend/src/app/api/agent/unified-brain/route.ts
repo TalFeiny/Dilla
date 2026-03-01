@@ -5,6 +5,9 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { saveToSupabase } from './save-to-supabase';
+
+// Agent orchestrator runs multi-step tool chains (source → chart → memo) — needs long timeout
+export const maxDuration = 300;
 // Generate secure UUID using crypto API
 const uuidv4 = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {

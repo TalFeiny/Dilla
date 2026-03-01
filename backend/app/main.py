@@ -102,7 +102,7 @@ if settings.ENVIRONMENT == "development" and settings.DEBUG:
 # Backend API secret — frontend must send this header to talk to the backend.
 # Without it, anyone who finds the Railway URL can call every endpoint.
 # Set BACKEND_API_SECRET in both the backend and frontend env vars.
-BACKEND_API_SECRET = os.getenv("BACKEND_API_SECRET")
+BACKEND_API_SECRET = (os.getenv("BACKEND_API_SECRET") or "").strip() or None
 
 
 class BackendGateMiddleware(BaseHTTPMiddleware):

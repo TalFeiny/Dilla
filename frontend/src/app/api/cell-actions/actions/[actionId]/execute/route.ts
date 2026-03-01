@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
+// source_companies with web discovery can take 2+ minutes
+export const maxDuration = 300;
+
 /**
  * POST /api/cell-actions/actions/[actionId]/execute
  * Proxy to backend execute. Body: ActionExecutionRequest (action_id, row_id, column_id, inputs, mode, fund_id, company_id).
@@ -42,6 +45,7 @@ export async function POST(
         method: 'POST',
         headers: getBackendHeaders(),
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(270_000), // 4.5 min — under maxDuration
       }
     );
 

@@ -241,6 +241,12 @@ class LightweightMemoService:
 
             raw_text = response.get("response", "") if isinstance(response, dict) else str(response)
 
+            logger.info(f"[MEMO] LLM returned {len(raw_text)} chars for {len(narrative_keys)} sections")
+            if len(raw_text) < 200:
+                logger.warning(f"[MEMO] LLM response suspiciously short: {raw_text[:500]!r}")
+            else:
+                logger.debug(f"[MEMO] LLM response preview: {raw_text[:300]!r}...")
+
             # Collect headings for heading-match parsing strategy
             section_headings = [
                 s["heading"] for s in sections
@@ -255,6 +261,13 @@ class LightweightMemoService:
                     result[key] = parts[i].strip()
                 else:
                     result[key] = ""
+                # Log what each section got
+                content_len = len(result[key])
+                logger.debug(f"[MEMO] Section '{key}': {content_len} chars{' (EMPTY)' if content_len == 0 else ''}")
+
+            empty_count = sum(1 for v in result.values() if not v)
+            if empty_count > 0:
+                logger.warning(f"[MEMO] {empty_count}/{len(result)} sections are EMPTY after parsing")
 
             return result
 
@@ -748,60 +761,161 @@ class LightweightMemoService:
         return sections
 
     @staticmethod
+    def _normalize_heading(text: str) -> str:
+        """Normalize a heading for fuzzy comparison."""
+        import re
+        text = re.sub(r'#{1,6}\s*', '', text)          # strip markdown #
+        text = re.sub(r'\*+', '', text)                 # strip bold markers
+        text = re.sub(r'^\d+[.)]\s*', '', text)         # strip numbering "1. ", "2) "
+        text = re.sub(r'[:\-—–|/\\]+$', '', text)      # strip trailing punctuation
+        text = re.sub(r'\s+', ' ', text).strip().lower()
+        return text
+
+    @staticmethod
+    def _heading_similarity(a: str, b: str) -> float:
+        """Token-overlap similarity between two normalized headings (0-1)."""
+        tokens_a = set(a.split())
+        tokens_b = set(b.split())
+        if not tokens_a or not tokens_b:
+            return 0.0
+        overlap = tokens_a & tokens_b
+        return len(overlap) / max(len(tokens_a), len(tokens_b))
+
+    @staticmethod
     def _parse_sections(raw_text: str, expected_count: int, section_headings: Optional[List[str]] = None) -> List[str]:
         """Parse LLM output into sections using multiple fallback strategies.
 
         Tries in order:
-        1. Heading-match alignment (match known ## headings in output) — primary
-        2. Markdown H2/H3 headings as generic splits
+        1. Fuzzy heading-match alignment (match known headings in output) — primary
+        2. Markdown H2/H3 headings mapped to expected headings by similarity
         3. Exact ---SECTION_BREAK--- delimiter (legacy fallback)
         4. Fuzzy regex for delimiter variations
         5. Triple-dash (---) splits
-        6. Proportional text split so every section gets something
+        6. Full text replicated to all sections so nothing gets lost
         """
         import re
 
         if not raw_text or expected_count <= 0:
             return [""] * expected_count
 
-        # Strategy 1 (primary): heading-match alignment — find known section headings in output
+        # Helper: find all ## / ### headings the LLM actually wrote
+        def _find_llm_headings(text: str) -> List[tuple]:
+            """Return [(start_pos, raw_heading_text), ...] for all markdown headings."""
+            results = []
+            for m in re.finditer(r'(?:^|\n)\s*(#{2,4}\s+.+?)(?:\n|$)', text):
+                results.append((m.start(), m.group(1).strip()))
+            # Also match bold-only headings on their own line: **Some Heading**
+            for m in re.finditer(r'(?:^|\n)\s*(\*\*[^*\n]{4,}\*\*)\s*(?:\n|$)', text):
+                # Skip if we already captured this position
+                pos = m.start()
+                if not any(abs(pos - p) < 3 for p, _ in results):
+                    results.append((pos, m.group(1).strip()))
+            results.sort(key=lambda x: x[0])
+            return results
+
+        normalize = LightweightMemoService._normalize_heading
+        similarity = LightweightMemoService._heading_similarity
+
+        # Strategy 1 (primary): fuzzy heading-match alignment
         if section_headings and len(section_headings) >= expected_count:
-            positions = []
-            for heading in section_headings:
-                # Match heading in markdown (## Heading or ### Heading) or bold (**Heading**)
-                pattern = re.compile(
-                    rf"(?:^|\n)\s*(?:#{2,4}\s+)?(?:\*\*)?{re.escape(heading)}(?:\*\*)?\s*\n",
-                    re.IGNORECASE,
-                )
-                m = pattern.search(raw_text)
-                if m:
-                    positions.append(m.start())
-                else:
-                    positions.append(-1)
+            llm_headings = _find_llm_headings(raw_text)
+            if llm_headings:
+                norm_expected = [normalize(h) for h in section_headings[:expected_count]]
+                positions = [-1] * expected_count
+                used_llm = set()  # avoid double-matching
 
-            # If we found at least 60% of headings, use them to split
-            found = sum(1 for p in positions if p >= 0)
-            if found >= expected_count * 0.6:
-                # Sort positions and extract text between them
-                indexed = sorted(
-                    [(pos, i) for i, pos in enumerate(positions) if pos >= 0],
-                    key=lambda x: x[0],
-                )
-                result = [""] * expected_count
-                for idx, (pos, sec_idx) in enumerate(indexed):
-                    end_pos = indexed[idx + 1][0] if idx + 1 < len(indexed) else len(raw_text)
-                    result[sec_idx] = raw_text[pos:end_pos]
-                if any(r.strip() for r in result):
-                    return result
+                # Pass 1: exact substring match (most reliable)
+                for i, norm_exp in enumerate(norm_expected):
+                    for j, (pos, raw_h) in enumerate(llm_headings):
+                        if j in used_llm:
+                            continue
+                        norm_llm = normalize(raw_h)
+                        if norm_exp == norm_llm or norm_exp in norm_llm or norm_llm in norm_exp:
+                            positions[i] = pos
+                            used_llm.add(j)
+                            break
 
-        # Strategy 2: split on whatever ## headings the LLM actually wrote.
-        # Accept fewer parts than expected — pad with "" rather than
-        # destroying text by forcing it into the wrong number of buckets.
-        heading_splits = re.split(r"(?=\n#{2,3}\s+)", raw_text)
-        # Filter out empty leading split
+                # Pass 2: token-overlap fuzzy match for remaining
+                for i, norm_exp in enumerate(norm_expected):
+                    if positions[i] >= 0:
+                        continue
+                    best_score = 0.0
+                    best_j = -1
+                    for j, (pos, raw_h) in enumerate(llm_headings):
+                        if j in used_llm:
+                            continue
+                        score = similarity(norm_exp, normalize(raw_h))
+                        if score > best_score:
+                            best_score = score
+                            best_j = j
+                    if best_score >= 0.5 and best_j >= 0:
+                        positions[i] = llm_headings[best_j][0]
+                        used_llm.add(best_j)
+
+                found = sum(1 for p in positions if p >= 0)
+                logger.debug(f"[MEMO] _parse_sections Strategy 1: matched {found}/{expected_count} headings")
+                if found >= max(expected_count * 0.4, 1):  # lower threshold — even 40% is useful
+                    indexed = sorted(
+                        [(pos, i) for i, pos in enumerate(positions) if pos >= 0],
+                        key=lambda x: x[0],
+                    )
+                    result = [""] * expected_count
+                    for idx, (pos, sec_idx) in enumerate(indexed):
+                        end_pos = indexed[idx + 1][0] if idx + 1 < len(indexed) else len(raw_text)
+                        result[sec_idx] = raw_text[pos:end_pos]
+                    if any(r.strip() for r in result):
+                        return result
+
+        # Strategy 2: split on whatever ## headings the LLM wrote, then
+        # map each chunk to the best-matching expected section by heading similarity.
+        heading_splits = re.split(r'(?=\n#{2,3}\s+)', raw_text)
         heading_splits = [s for s in heading_splits if s.strip()]
+
+        if heading_splits and section_headings and len(section_headings) >= expected_count:
+            norm_expected = [normalize(h) for h in section_headings[:expected_count]]
+            result = [""] * expected_count
+            used = set()
+
+            for chunk in heading_splits:
+                # Extract the heading from this chunk
+                hm = re.match(r'\s*#{2,3}\s+(.+?)(?:\n|$)', chunk)
+                if hm:
+                    chunk_heading = normalize(hm.group(1))
+                else:
+                    chunk_heading = normalize(chunk[:80])
+
+                best_i = -1
+                best_score = 0.0
+                for i, norm_exp in enumerate(norm_expected):
+                    if i in used:
+                        continue
+                    # Exact/substring first
+                    if norm_exp == chunk_heading or norm_exp in chunk_heading or chunk_heading in norm_exp:
+                        best_i = i
+                        best_score = 1.0
+                        break
+                    score = similarity(norm_exp, chunk_heading)
+                    if score > best_score:
+                        best_score = score
+                        best_i = i
+
+                if best_i >= 0 and best_score >= 0.4:
+                    result[best_i] = chunk.strip()
+                    used.add(best_i)
+                elif best_i >= 0:
+                    # Low confidence — assign to first unused slot
+                    for i in range(expected_count):
+                        if i not in used and not result[i]:
+                            result[i] = chunk.strip()
+                            used.add(i)
+                            break
+
+            if any(r.strip() for r in result):
+                logger.debug(f"[MEMO] _parse_sections Strategy 2: mapped {len(used)}/{len(heading_splits)} chunks")
+                return result
+
+        # Strategy 2b: heading splits without mapping (original behavior, still useful)
         if heading_splits:
-            # Pad to expected_count so callers don't index-error
             while len(heading_splits) < expected_count:
                 heading_splits.append("")
             return heading_splits[:expected_count]
@@ -816,10 +930,11 @@ class LightweightMemoService:
             if len(parts) >= expected_count:
                 return parts[:expected_count]
 
-        # Strategy 4 (last resort): return full text as first section.
-        # Never chop text proportionally — that destroys content.
-        result = [raw_text] + [""] * (expected_count - 1)
-        return result
+        # Strategy 4 (last resort): give full text to ALL sections rather than
+        # only slot 0 — this way assemble_memo can at least render something
+        # everywhere instead of empty fallbacks.
+        logger.warning(f"[MEMO] _parse_sections: all strategies failed, broadcasting full text ({len(raw_text)} chars) to all sections")
+        return [raw_text] * expected_count
 
     def _summarize_company(self, c: Dict[str, Any]) -> str:
         """Summarize a single company as a self-contained text block with derived metrics."""
