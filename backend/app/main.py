@@ -109,7 +109,7 @@ class BackendGateMiddleware(BaseHTTPMiddleware):
     """Reject requests without the correct X-Backend-Secret header in production."""
 
     # Paths that must remain open (health checks, CORS preflight)
-    OPEN_PATHS = ("/health", "/api/health", "/api/email/inbound")
+    OPEN_PATHS = ("/health", "/api/health", "/api/email/inbound", "/api/debug-gate")
 
     async def dispatch(self, request: Request, call_next):
         # Always allow in development, OPTIONS preflight, and health checks
@@ -153,6 +153,24 @@ app.include_router(deck_storage_router)
 # app.include_router(deal_sourcing_router)
 # app.include_router(grpo_router, prefix="/api")
 # app.include_router(orchestration_router)
+
+
+@app.get("/api/debug-gate")
+async def debug_gate(request: Request):
+    """Temporary debug endpoint — bypasses gate to diagnose secret mismatch. DELETE after fixing."""
+    got_raw = request.headers.get("X-Backend-Secret") or ""
+    expected_raw = BACKEND_API_SECRET or ""
+    return {
+        "got_prefix": got_raw[:12],
+        "got_len": len(got_raw),
+        "got_repr_tail": repr(got_raw[-5:]) if got_raw else "empty",
+        "expected_prefix": expected_raw[:12],
+        "expected_len": len(expected_raw),
+        "expected_repr_tail": repr(expected_raw[-5:]) if expected_raw else "empty",
+        "match": got_raw == expected_raw,
+        "is_production": _is_production,
+        "secret_set_on_backend": bool(BACKEND_API_SECRET),
+    }
 
 
 @app.get("/")
