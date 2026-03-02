@@ -4,8 +4,7 @@
  * so we never rely on server-to-self HTTP.
  */
 
-import { getSupabaseServiceRole } from '@/lib/supabase/server';
-const supabaseService = getSupabaseServiceRole();
+import { supabaseService } from '@/lib/supabase';
 import { parseCurrencyInput } from '@/lib/matrix/cell-formatters';
 
 export type ApplyCellInput = {

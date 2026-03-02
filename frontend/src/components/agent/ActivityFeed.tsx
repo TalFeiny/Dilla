@@ -21,8 +21,7 @@ import {
   BarChart3,
   FileSearch
 } from 'lucide-react';
-import { getSupabaseBrowser } from '@/lib/supabase/browser';
-const supabase = getSupabaseBrowser();
+import supabase from '@/lib/supabase';
 
 interface AgentActivity {
   id: number;

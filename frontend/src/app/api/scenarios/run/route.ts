@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseServiceRole } from '@/lib/supabase/server';
-const supabaseService = getSupabaseServiceRole();
+import { supabaseService } from '@/lib/supabase';
 import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 const BACKEND_URL = getBackendUrl();

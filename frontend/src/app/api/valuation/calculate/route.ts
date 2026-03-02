@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
-import { getSupabaseServiceRole } from '@/lib/supabase/server';
-const supabaseService = getSupabaseServiceRole();
+import { supabaseService } from '@/lib/supabase';
 
 /**
  * Thin Valuation API

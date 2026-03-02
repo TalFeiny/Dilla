@@ -64,8 +64,7 @@ import {
   Zap,
   MoreHorizontal,
 } from 'lucide-react';
-import { getSupabaseBrowser } from '@/lib/supabase/browser';
-const supabase = getSupabaseBrowser();
+import supabase from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';

@@ -1,6 +1,5 @@
 import { NextRequest } from 'next/server';
-import { getSupabaseServiceRole } from '@/lib/supabase/server';
-const supabaseService = getSupabaseServiceRole();
+import { supabaseService } from '@/lib/supabase';
 
 // STREAMING DISABLED - This endpoint is no longer functional
 export async function GET(

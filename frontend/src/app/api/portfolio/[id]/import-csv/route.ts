@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseServiceRole } from '@/lib/supabase/server';
-const supabaseService = getSupabaseServiceRole();
+import { supabaseService } from '@/lib/supabase';
 
 export const maxDuration = 120;
 
@@ -392,8 +391,7 @@ export async function POST(
         .eq('fund_id', fundId)
         .in('name', names);
 
-      const existingTyped = (existing || []) as { name: string; id: string }[];
-      const existingMap = new Map<string, string>(existingTyped.map(c => [c.name.toLowerCase(), c.id]));
+      const existingMap = new Map((existing || []).map(c => [c.name.toLowerCase(), c.id]));
 
       const toInsert: Array<Record<string, unknown>> = [];
       const toUpdate: Array<{ id: string; data: Record<string, unknown> }> = [];

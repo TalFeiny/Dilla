@@ -1,8 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { getSupabaseBrowser } from '@/lib/supabase/browser';
-const supabase = getSupabaseBrowser();
+import supabase from '@/lib/supabase';
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid, Area, AreaChart, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
 import { format, addMonths, subMonths } from 'date-fns';
 

@@ -3,8 +3,7 @@
  * Persistent conversation and context storage with Redis/Supabase fallback
  */
 
-import { getSupabaseServiceRole } from '@/lib/supabase/server';
-const supabaseService = getSupabaseServiceRole();
+import { supabaseService } from '@/lib/supabase';
 // Redis import is conditional - only used if UPSTASH_REDIS_REST_URL is set
 type Redis = any;
 

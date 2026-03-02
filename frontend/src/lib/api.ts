@@ -1,5 +1,4 @@
-import { getSupabaseBrowser } from '@/lib/supabase/browser';
-const supabase = getSupabaseBrowser();
+import supabase from './supabase';
 import { Company } from '../types/company';
 
 export const companiesApi = {
