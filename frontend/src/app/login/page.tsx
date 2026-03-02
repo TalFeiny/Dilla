@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { getSupabaseBrowser } from '@/lib/supabase/browser';
 
@@ -10,7 +9,6 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const router = useRouter();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,12 +24,13 @@ export default function Login() {
 
       if (error) throw error;
 
-      if (data.session) {
-        router.push('/dashboard');
-      }
+      // Force a hard navigation so the browser sends the freshly-set
+      // auth cookies to the middleware on the very first request.
+      // router.push() does a soft SPA nav that can race with cookie
+      // propagation, causing the middleware to bounce back to /login.
+      window.location.href = '/dashboard';
     } catch (error: any) {
       setError(error.message || 'An error occurred during login');
-    } finally {
       setLoading(false);
     }
   };
