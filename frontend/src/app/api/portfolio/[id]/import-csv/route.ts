@@ -391,7 +391,8 @@ export async function POST(
         .eq('fund_id', fundId)
         .in('name', names);
 
-      const existingMap = new Map((existing || []).map(c => [c.name.toLowerCase(), c.id]));
+      const existingTyped = (existing || []) as { name: string; id: string }[];
+      const existingMap = new Map<string, string>(existingTyped.map(c => [c.name.toLowerCase(), c.id]));
 
       const toInsert: Array<Record<string, unknown>> = [];
       const toUpdate: Array<{ id: string; data: Record<string, unknown> }> = [];

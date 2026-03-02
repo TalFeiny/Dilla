@@ -484,12 +484,12 @@ export async function GET(request: NextRequest) {
       supabaseService.from('rejected_suggestions').select('suggestion_id').eq('fund_id', fundId),
       supabaseService.from('accepted_suggestions').select('suggestion_id').eq('fund_id', fundId),
     ]);
-    const rejectedSet = rejectedResult.error
+    const rejectedSet: Set<string> = rejectedResult.error
       ? new Set<string>()
-      : new Set((rejectedResult.data ?? []).map((r: { suggestion_id: string }) => r.suggestion_id));
-    const acceptedSet = acceptedResult.error
+      : new Set<string>((rejectedResult.data ?? []).map((r: { suggestion_id: string }) => r.suggestion_id));
+    const acceptedSet: Set<string> = acceptedResult.error
       ? new Set<string>()
-      : new Set((acceptedResult.data ?? []).map((r: { suggestion_id: string }) => r.suggestion_id));
+      : new Set<string>((acceptedResult.data ?? []).map((r: { suggestion_id: string }) => r.suggestion_id));
     // Composite key sets for dedup-safe filtering.  When dedup keeps a higher-confidence
     // suggestion with a different ID, the raw acceptedSet/rejectedSet miss it.  These
     // sets track rowId::columnId::source so accepting a document suggestion does NOT
@@ -615,7 +615,8 @@ export async function GET(request: NextRequest) {
       .select('id, company_id, column_id, suggested_value, source_service, reasoning, metadata, created_at')
       .eq('fund_id', fundId);
     if (companyId) pendingQuery = pendingQuery.eq('company_id', companyId);
-    const { data: pendingRows, error: pendingError } = await pendingQuery;
+    const { data: pendingRowsRaw, error: pendingError } = await pendingQuery;
+    const pendingRows = pendingRowsRaw as { id: string; company_id: string; column_id: string; suggested_value: unknown; source_service: string; reasoning: string | null; metadata: unknown; created_at: string }[] | null;
     if (pendingError) {
       // Table may not exist yet; ignore
       console.warn('[suggestions] pending_suggestions fetch failed:', pendingError.message);
@@ -726,7 +727,7 @@ export async function GET(request: NextRequest) {
           id: row.id,
           rowId: String(row.company_id),
           columnId: row.column_id,
-          suggestedValue: val,
+          suggestedValue: val as string | number,
           currentValue,
           reasoning: row.reasoning ?? '',
           confidence: (row.metadata as Record<string, unknown>)?.confidence as number ?? 0.7,
