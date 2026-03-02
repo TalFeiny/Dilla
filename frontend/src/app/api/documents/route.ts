@@ -360,8 +360,10 @@ export async function POST(request: NextRequest) {
     // Document classification: use formData document_type if provided, otherwise infer from filename
     // Memos, updates, board decks, board transcripts use signal-first extraction (not pitch decks)
     const name = file.name.toLowerCase();
+    const isSpreadsheet = name.endsWith('.csv') || name.endsWith('.xlsx') || name.endsWith('.xls');
     const documentType = formDocumentType
-      || (name.includes('memo') ? 'investment_memo'
+      || (isSpreadsheet ? 'financial_statement'
+        : name.includes('memo') ? 'investment_memo'
         : 'company_update');
 
     // Insert into database with pending status, file metadata, and company/fund linking

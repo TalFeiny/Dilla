@@ -248,11 +248,99 @@ def _text_from_file(path: str, suffix: str) -> str:
                 logger.warning("python-docx not installed; cannot extract .docx text")
                 return ""
 
+        if ext in ("csv", "xlsx", "xls"):
+            return _text_from_spreadsheet(path, ext)
+
         logger.warning("_text_from_file: unsupported extension %s", ext)
         return ""
     except Exception as e:
         logger.exception("_text_from_file failed for %s: %s", path, e)
         return ""
+
+
+def _text_from_spreadsheet(path: str, ext: str) -> str:
+    """
+    Extract text from CSV/XLSX/XLS spreadsheets using pandas.
+    Converts each sheet (or the single CSV) into a readable text representation
+    with headers, rows, and summary stats — optimized for LLM financial extraction.
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        logger.warning("pandas not installed; cannot extract spreadsheet text")
+        return ""
+
+    sheets: dict[str, "pd.DataFrame"] = {}
+
+    try:
+        if ext == "csv":
+            df = pd.read_csv(path, dtype=str, na_filter=False)
+            sheets["Sheet1"] = df
+        else:
+            # xlsx/xls — read all sheets
+            try:
+                xls = pd.ExcelFile(path, engine="openpyxl" if ext == "xlsx" else "xlrd")
+            except ImportError as ie:
+                # fallback: try openpyxl for both
+                logger.warning("Excel engine import issue (%s), trying openpyxl", ie)
+                xls = pd.ExcelFile(path, engine="openpyxl")
+            for sheet_name in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet_name, dtype=str, na_filter=False)
+                if not df.empty:
+                    sheets[sheet_name] = df
+    except Exception as e:
+        logger.exception("Failed to read spreadsheet %s: %s", path, e)
+        return ""
+
+    if not sheets:
+        return ""
+
+    parts: list[str] = []
+    for sheet_name, df in sheets.items():
+        # Skip entirely empty sheets
+        if df.shape[0] == 0 and df.shape[1] == 0:
+            continue
+
+        # Header
+        parts.append(f"=== Sheet: {sheet_name} ({df.shape[0]} rows x {df.shape[1]} cols) ===")
+        parts.append(f"Columns: {', '.join(str(c) for c in df.columns)}")
+        parts.append("")
+
+        # Render rows as tab-separated text (cap at 500 rows to stay within token budget)
+        max_rows = 500
+        header_line = "\t".join(str(c) for c in df.columns)
+        parts.append(header_line)
+        for idx, row in df.head(max_rows).iterrows():
+            parts.append("\t".join(str(v) for v in row.values))
+
+        if df.shape[0] > max_rows:
+            parts.append(f"... ({df.shape[0] - max_rows} more rows omitted)")
+
+        # Numeric summary for columns that look numeric
+        numeric_cols = []
+        for col in df.columns:
+            try:
+                numeric_series = pd.to_numeric(df[col].str.replace(r"[,$%£€]", "", regex=True), errors="coerce")
+                non_null = numeric_series.dropna()
+                if len(non_null) >= 2:
+                    numeric_cols.append((col, non_null))
+            except Exception:
+                pass
+
+        if numeric_cols:
+            parts.append("")
+            parts.append("Numeric summary:")
+            for col_name, series in numeric_cols:
+                parts.append(
+                    f"  {col_name}: min={series.min():.2f}, max={series.max():.2f}, "
+                    f"mean={series.mean():.2f}, sum={series.sum():.2f}"
+                )
+
+        parts.append("")
+
+    text = "\n".join(parts).strip()
+    logger.info("Extracted %d chars from spreadsheet (%d sheets)", len(text), len(sheets))
+    return text
 
 
 def _get_memo_context_for_company(
@@ -445,6 +533,56 @@ def _memo_prompt(text: str, schema_desc: str) -> tuple:
     return system_prompt, user_prompt
 
 
+def _spreadsheet_prompt(text: str, document_type: str, schema_desc: str, memo_context: Optional[str] = None) -> tuple:
+    """Build system and user prompt for spreadsheet extraction (CSV/XLSX management accounts)."""
+    system_prompt = (
+        "You are a VC financial analyst. You are given raw spreadsheet data — management accounts, "
+        "P&L statements, balance sheets, or operational dashboards exported as CSV/Excel.\n"
+        "Your job is to:\n"
+        "1. IDENTIFY the structure: find revenue rows, cost rows, dates/periods in headers or columns.\n"
+        "2. EXTRACT the latest-period financial metrics into financial_metrics (ARR, revenue, burn, margins, etc.).\n"
+        "3. DETECT TRENDS: if multiple periods are present, note growth rates, acceleration/deceleration.\n"
+        "4. ESTIMATE IMPACTS: qualitative signals from the data (e.g. revenue declining, burn spiking) → impact_estimates.\n"
+        "5. For time-series data (monthly/quarterly revenue), extract the trajectory for forecasting.\n\n"
+        "Spreadsheet data is messy — handle merged cells, blank rows, summary rows, and varied date formats.\n"
+        "Look for rows labeled: Revenue, ARR, MRR, COGS, Gross Profit, OpEx, EBITDA, Net Income, "
+        "Cash, Burn Rate, Headcount, Customers, etc.\n"
+        "When you see monthly columns (Jan, Feb, Mar... or 2024-01, 2024-02...), extract the LATEST non-empty value "
+        "and compute growth rates from the series.\n\n"
+        "Return a single JSON object. Use null for truly unknown; use empty arrays for missing lists.\n"
+        "CURRENCY CONVERSION (always convert to USD before storing any numeric value):\n"
+        "- £ (GBP) → multiply by 1.27\n"
+        "- € (EUR) → multiply by 1.09\n"
+        "- ¥ (JPY) → divide by 154\n"
+        "- ₹ (INR) → divide by 84\n"
+        "- Note the original currency and amount in value_explanations."
+    )
+    user_parts = [
+        f"Document type: {document_type} (raw spreadsheet data).",
+        "",
+        "This is tabular financial data. Identify the structure first, then extract:",
+        "- financial_metrics: ARR, revenue, MRR, burn_rate, runway_months, cash_balance, gross_margin, growth_rate, customer_count",
+        "- If multiple periods exist, use the LATEST period for financial_metrics and compute growth_rate from the series",
+        "- business_updates.latest_update: one-line summary of the financial position",
+        "- operational_metrics: headcount, customer_count if present",
+        "- impact_estimates: infer from trends (e.g. declining revenue → negative ARR impact)",
+        "- value_explanations: cite the specific cells/values you used",
+        "",
+        "Schema (JSON):",
+        schema_desc,
+        "",
+        "Spreadsheet data:",
+        "---",
+        (text[:120000] if len(text) > 120000 else text),
+        "---",
+        "Return only the JSON object, no markdown or explanation.",
+    ]
+    if memo_context:
+        user_parts.insert(1, f"BASELINE ANCHOR (same company, use for scaling all estimates): {memo_context}")
+    user_prompt = "\n".join(user_parts)
+    return system_prompt, user_prompt
+
+
 def _flat_prompt(text: str, document_type: str, schema_desc: str) -> tuple:
     """Build system and user prompt for flat schema (pitch_deck / other)."""
     system_prompt = (
@@ -494,6 +632,12 @@ async def _extract_document_structured_async(
         schema_desc = json.dumps(INVESTMENT_MEMO_SCHEMA, indent=2)
         system_prompt, user_prompt = _memo_prompt(text, schema_desc)
         empty = _empty_memo_extraction()
+    elif doc_type == "financial_statement":
+        # Spreadsheet data (CSV/XLSX) — use spreadsheet-specific prompt that handles
+        # tabular management accounts, P&Ls, etc. Same signal schema, different prompt.
+        schema_desc = json.dumps(COMPANY_UPDATE_SIGNAL_SCHEMA, indent=2)
+        system_prompt, user_prompt = _spreadsheet_prompt(text, document_type, schema_desc, memo_context)
+        empty = _empty_signal_extraction()
     else:
         # ALL non-memo docs use signal-first extraction — extracts business_updates,
         # operational_metrics, impact_estimates, financial_metrics, etc.

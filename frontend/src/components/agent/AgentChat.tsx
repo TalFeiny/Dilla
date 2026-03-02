@@ -34,6 +34,8 @@ import {
   Lightbulb,
   PlayCircle,
   Trash2,
+  ListTodo,
+  BookOpen,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -406,6 +408,23 @@ export default function AgentChat({
   const uploadFileInputRef = useRef<HTMLInputElement>(null);
   const [droppedContext, setDroppedContext] = useState<{ type: string; content: string } | null>(null);
   const [dragOverInput, setDragOverInput] = useState(false);
+  const [planModeOn, setPlanModeOn] = useState(false);
+  const [memoContextOn, setMemoContextOn] = useState(false);
+  const [memoArtifacts, setMemoArtifacts] = useState<any[]>([]);
+
+  // Load memo artifacts from localStorage when toggle is turned on
+  useEffect(() => {
+    if (memoContextOn) {
+      try {
+        const stored = JSON.parse(localStorage.getItem('dilla_memo_artifacts') || '[]');
+        setMemoArtifacts(stored);
+      } catch {
+        setMemoArtifacts([]);
+      }
+    } else {
+      setMemoArtifacts([]);
+    }
+  }, [memoContextOn]);
 
   // Sync messages to active tab
   useEffect(() => {
@@ -647,6 +666,10 @@ export default function AgentChat({
           fundId,
           // Pass plan steps back so backend can execute the approved plan
           plan_steps: planStepsToSend.length > 0 ? planStepsToSend : undefined,
+          // Plan mode toggle: when on, backend generates execution plan before acting
+          plan_mode: planModeOn || undefined,
+          // Memo artifacts as optional context (user-toggled, not auto-injected)
+          memo_artifacts: memoContextOn && memoArtifacts.length > 0 ? memoArtifacts : undefined,
           // Datetime context for time-aware analysis
           datetime: {
             iso: now.toISOString(),
@@ -2133,18 +2156,57 @@ export default function AgentChat({
             ref={uploadFileInputRef}
             type="file"
             multiple
-            accept=".pdf,.docx,.doc,.xlsx,.xls"
+            accept=".pdf,.docx,.doc,.xlsx,.xls,.csv"
             className="hidden"
             onChange={handleFileSelect}
           />
+          {/* Memo context preview card — shown when memo toggle is on and artifacts exist */}
+          {memoContextOn && memoArtifacts.length > 0 && (
+            <div className="mb-1.5 mx-0.5 p-2 rounded-lg bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-xs">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-medium text-indigo-600 dark:text-indigo-400 uppercase">Memo context ({memoArtifacts.length} artifact{memoArtifacts.length !== 1 ? 's' : ''})</span>
+                <button onClick={() => setMemoContextOn(false)} className="shrink-0 h-4 w-4 text-muted-foreground hover:text-foreground">
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+              <div className="space-y-0.5 max-h-[80px] overflow-y-auto">
+                {memoArtifacts.slice(-5).map((a: any, i: number) => (
+                  <p key={i} className="text-muted-foreground truncate">
+                    {a.type || 'artifact'}: {a.data?.title || a.data?.content?.slice?.(0, 60) || JSON.stringify(a.data)?.slice(0, 60) || '...'}
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex items-end gap-1.5 rounded-xl border border-input bg-muted/30 dark:bg-muted/20 px-2 py-1.5 focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background">
+            {/* Mode toggles — left side of input */}
+            <div className="flex items-center gap-0.5 shrink-0">
+              <Button
+                variant="ghost"
+                size="icon"
+                className={`h-7 w-7 rounded-md ${planModeOn ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300' : 'text-muted-foreground'}`}
+                onClick={() => setPlanModeOn(prev => !prev)}
+                title={planModeOn ? 'Plan mode ON — agent will build execution plan first' : 'Plan mode OFF'}
+              >
+                <ListTodo className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={`h-7 w-7 rounded-md ${memoContextOn ? 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300' : 'text-muted-foreground'}`}
+                onClick={() => setMemoContextOn(prev => !prev)}
+                title={memoContextOn ? 'Memo context ON — artifacts included' : 'Include memo artifacts as context'}
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+              </Button>
+            </div>
             <div className="flex-1 relative min-w-0">
               <Textarea
                 ref={textareaRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyPress}
-                placeholder="Message... (Enter to send)"
+                placeholder={planModeOn ? 'Describe what to plan... (Enter to send)' : 'Message... (Enter to send)'}
                 className="min-h-[36px] max-h-[120px] resize-none pr-9 text-sm border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground"
                 disabled={isLoading}
               />
@@ -2161,6 +2223,12 @@ export default function AgentChat({
                 {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               </Button>
             ) : null}
+            {/* Plan mode indicator badge */}
+            {planModeOn && (
+              <Badge variant="outline" className="shrink-0 text-[10px] h-5 px-1.5 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800">
+                Plan
+              </Badge>
+            )}
             <Button
               variant="ghost"
               size="icon"

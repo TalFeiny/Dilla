@@ -3908,7 +3908,10 @@ export function UnifiedMatrix({
     const docFiles = files.filter(f =>
       f.name.endsWith('.pdf') ||
       f.name.endsWith('.docx') ||
-      f.name.endsWith('.doc')
+      f.name.endsWith('.doc') ||
+      f.name.endsWith('.csv') ||
+      f.name.endsWith('.xlsx') ||
+      f.name.endsWith('.xls')
     );
     if (docFiles.length > 0 && handleUploadDocumentToCell) {
       const currentData = matrixData ?? getDefaultMatrixData(mode, fundId);
@@ -4168,7 +4171,7 @@ export function UnifiedMatrix({
             ref={uploadFileInputRef}
             type="file"
             className="hidden"
-            accept=".pdf,.docx,.doc,.xlsx,.xls"
+            accept=".pdf,.docx,.doc,.xlsx,.xls,.csv"
             onChange={async (e) => {
               const files = e.target.files;
               if (!files?.length || !uploadDocumentTarget) {

@@ -8346,10 +8346,24 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
                     f"Adapt this chain to the specific request.\n"
                 )
 
+        # Include memo artifacts as context for plan generation when available
+        memo_context_block = ""
+        memo_arts = self.shared_data.get("memo_artifacts", [])
+        if memo_arts:
+            memo_summaries = []
+            for art in memo_arts[-5:]:  # Last 5 artifacts
+                art_data = art.get("data", {}) if isinstance(art, dict) else {}
+                title = art_data.get("title", art.get("type", "artifact"))
+                content = art_data.get("content", "")
+                if content:
+                    memo_summaries.append(f"- {title}: {str(content)[:200]}")
+            if memo_summaries:
+                memo_context_block = f"\n\nMemo context (prior research/findings):\n" + "\n".join(memo_summaries) + "\nUse this context to inform your plan.\n"
+
         plan_prompt = f"""Think step-by-step about what's needed, then produce 3-6 action steps.
 
 Task: {prompt}
-
+{memo_context_block}
 Available tools:
 {tool_descriptions}
 {intent_hint}
@@ -9955,6 +9969,11 @@ ABSOLUTE RULES:
                     if agent_ctx:
                         self.shared_data['agent_context'] = agent_ctx
                         logger.info(f"[AGENT_CONTEXT] Stored agent context: {list(agent_ctx.keys())}")
+                    # Memo artifacts from frontend toggle — user chose to include them as context
+                    memo_arts_from_frontend = context.get('memo_artifacts')
+                    if memo_arts_from_frontend and isinstance(memo_arts_from_frontend, list):
+                        self.shared_data['memo_artifacts'] = memo_arts_from_frontend
+                        logger.info(f"[MEMO_ARTIFACTS] Loaded {len(memo_arts_from_frontend)} artifacts from frontend context")
                     # Restore analysis manifest from prior request — marks which derived
                     # data was computed so the agent knows what to re-fetch vs skip
                     analysis_manifest = context.get('analysis_manifest')

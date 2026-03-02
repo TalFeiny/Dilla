@@ -115,6 +115,10 @@ export async function POST(request: NextRequest) {
           fundId: body.context?.fundId ?? body.fundId,
           // Forward approved plan steps so backend can execute them in order
           plan_steps: body.context?.plan_steps || undefined,
+          // Plan mode toggle: when on, agent builds execution plan before acting
+          plan_mode: body.context?.plan_mode || undefined,
+          // Memo artifacts as optional context (user-toggled)
+          memo_artifacts: body.context?.memo_artifacts || undefined,
           // Analysis manifest for state persistence — tells backend which derived
           // data (cap_table_history, scenarios, etc.) was computed in prior requests
           analysis_manifest: body.context?.analysis_manifest ?? body.analysis_manifest ?? undefined,

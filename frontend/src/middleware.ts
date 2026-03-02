@@ -248,18 +248,18 @@ export async function middleware(request: NextRequest) {
   }
   
   // ── Supabase Auth: refresh session on every request ──
-  const PUBLIC_ROUTES = ['/signin', '/auth/callback', '/auth/error', '/']
+  const PUBLIC_ROUTES = ['/login', '/signup', '/forgot-password', '/auth/callback', '/auth/error', '/']
   const isPublicRoute = PUBLIC_ROUTES.includes(pathname)
   const isApiRoute = pathname.startsWith('/api/')
 
   const { user, response } = await updateSession(request)
 
-  // Protect app routes — redirect unauthenticated users to /signin
+  // Protect app routes — redirect unauthenticated users to /login
   if (!user && !isPublicRoute && !isApiRoute) {
-    const signinUrl = request.nextUrl.clone()
-    signinUrl.pathname = '/signin'
-    signinUrl.searchParams.set('next', pathname)
-    return NextResponse.redirect(signinUrl)
+    const loginUrl = request.nextUrl.clone()
+    loginUrl.pathname = '/login'
+    loginUrl.searchParams.set('next', pathname)
+    return NextResponse.redirect(loginUrl)
   }
 
   // Add all security headers

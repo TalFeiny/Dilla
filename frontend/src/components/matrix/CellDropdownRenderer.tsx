@@ -838,7 +838,7 @@ export function CellDropdownRenderer(props: CellDropdownRendererProps) {
                       ref={fileInputRef}
                       type="file"
                       className="hidden"
-                      accept=".pdf,.docx,.doc,.xlsx,.xls"
+                      accept=".pdf,.docx,.doc,.xlsx,.xls,.csv"
                       onChange={async (e) => {
                         const selectedFiles = e.target.files;
                         if (!selectedFiles?.length || !data?.id || !colDef?.field) {

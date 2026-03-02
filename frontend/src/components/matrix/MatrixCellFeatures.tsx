@@ -524,7 +524,7 @@ export function DocumentsCell({
                         className="hidden"
                         onChange={handleFileInput}
                         disabled={isUploading}
-                        accept=".pdf,.docx,.xlsx,.xls"
+                        accept=".pdf,.docx,.xlsx,.xls,.csv"
                         multiple
                       />
                     </label>
