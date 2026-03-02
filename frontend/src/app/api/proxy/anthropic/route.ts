@@ -25,14 +25,7 @@ if (!ANTHROPIC_API_KEY && process.env.NODE_ENV !== 'test') {
   console.error('Please ensure .env.local.server is loaded or environment variables are set');
 }
 
-export async function POST(request: NextRequest) {
-  // Apply rate limiting (20 requests per minute for AI calls)
-  return withRateLimit(request, handleRequest, { 
-    maxRequests: 20, 
-    windowMs: 60000,
-    requireAuth: false // Allow anonymous for now, can change to true later
-  });
-}
+export const POST = withRateLimit(handleRequest, { requests: 20, window: 60 });
 
 async function handleRequest(request: NextRequest) {
   try {

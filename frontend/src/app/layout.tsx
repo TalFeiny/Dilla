@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { Suspense } from 'react';
 import './globals.css';
-import SessionProvider from '@/components/providers/SessionProvider';
+import { AuthProvider } from '@/components/providers/AuthProvider';
 import { GridProvider } from '@/contexts/GridContext';
 import { AppShell } from '@/components/layout/AppShell';
 import { Toaster } from '@/components/ui/toaster';
@@ -35,13 +35,13 @@ export default function RootLayout({ children }: RootLayoutProps): JSX.Element {
           }}
         />
         <Suspense fallback={null}>
-          <SessionProvider>
+          <AuthProvider>
             <GridProvider>
               <AppShell>
                 {children}
               </AppShell>
             </GridProvider>
-          </SessionProvider>
+          </AuthProvider>
         </Suspense>
         <Suspense fallback={null}>
           <Toaster />

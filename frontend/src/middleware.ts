@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
+import { updateSession } from '@/lib/supabase/middleware'
 
 // Single source of truth: same resolution as getBackendUrl() so proxy and API routes use same host
 const BACKEND_URL = (process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || process.env.FASTAPI_URL || 'http://localhost:8000').replace(/\/+$/, '')
@@ -79,7 +80,7 @@ const PYTHON_API_ROUTES = [
 // Routes that should be handled by Next.js (not proxied)
 // Portfolio CRUD + companies use Next.js + Supabase; FastAPI has no POST /portfolio/:id/companies
 const NEXTJS_ONLY_ROUTES = [
-  '/api/auth',   // NextAuth session, signin, etc.
+  '/api/auth',   // Supabase auth callback
   '/api/agent/spreadsheet-direct',
   '/api/agent/spreadsheet-stream',  // New streaming endpoint
   '/api/agent/cim-generator',  // CIM generator
@@ -246,26 +247,38 @@ export async function middleware(request: NextRequest) {
     }
   }
   
-  // Regular Next.js request handling
-  const response = NextResponse.next()
+  // ── Supabase Auth: refresh session on every request ──
+  const PUBLIC_ROUTES = ['/signin', '/auth/callback', '/auth/error', '/']
+  const isPublicRoute = PUBLIC_ROUTES.includes(pathname)
+  const isApiRoute = pathname.startsWith('/api/')
+
+  const { user, response } = await updateSession(request)
+
+  // Protect app routes — redirect unauthenticated users to /signin
+  if (!user && !isPublicRoute && !isApiRoute) {
+    const signinUrl = request.nextUrl.clone()
+    signinUrl.pathname = '/signin'
+    signinUrl.searchParams.set('next', pathname)
+    return NextResponse.redirect(signinUrl)
+  }
 
   // Add all security headers
   Object.entries(SECURITY_HEADERS).forEach(([key, value]) => {
     response.headers.set(key, value)
   })
-  
+
   // Add request ID for tracing
   response.headers.set('X-Request-ID', globalThis.crypto.randomUUID())
-  
+
   // Cache static assets aggressively
   if (pathname.startsWith('/_next/')) {
     response.headers.set('Cache-Control', 'public, max-age=31536000, immutable')
   }
-  
+
   // API routes - no cache
-  if (pathname.startsWith('/api/')) {
+  if (isApiRoute) {
     response.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate')
-    
+
     // CORS handling for API routes
     const origin = request.headers.get('origin')
     const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com', 'https://dilla.ai']
@@ -276,18 +289,13 @@ export async function middleware(request: NextRequest) {
       response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token, X-Request-ID')
       response.headers.set('Access-Control-Max-Age', '86400')
     }
-    
+
     // Handle preflight requests
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 200, headers: response.headers })
     }
-    
-    // Warn about legacy routes during migration (skip known Next.js routes)
-    if (!shouldProxy && !pathname.startsWith('/api/auth')) {
-      console.warn(`[Middleware] Legacy API route accessed: ${pathname}`)
-    }
   }
-  
+
   // Static pages - cache for 1 hour
   if (pathname === '/' || pathname.startsWith('/documents/')) {
     response.headers.set('Cache-Control', 'public, max-age=3600, s-maxage=3600')

@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { useSession, signOut } from 'next-auth/react';
+import { useAuth } from '@/components/providers/AuthProvider';
 import {
   LayoutDashboard,
   FileText,
@@ -25,12 +25,11 @@ import { initTheme, toggleTheme as toggleThemeLib } from '@/lib/theme';
 
 
 export function Sidebar() {
-  const { data: session } = useSession();
+  const { user, signOut } = useAuth();
   const [isDark, setIsDark] = useState(false);
   const [mounted, setMounted] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
-  const user = session?.user ?? null;
 
   useEffect(() => {
     setMounted(true);
@@ -44,8 +43,8 @@ export function Sidebar() {
   };
 
   const handleSignOut = async () => {
-    await signOut({ redirect: false });
-    router.push('/');
+    await signOut();
+    router.push('/signin');
   };
 
   // Don't show sidebar on landing, login, signup pages

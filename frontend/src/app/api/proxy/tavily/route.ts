@@ -23,14 +23,7 @@ if (!TAVILY_API_KEY && process.env.NODE_ENV !== 'test') {
   console.error('Please ensure .env.local.server is loaded or environment variables are set');
 }
 
-export async function POST(request: NextRequest) {
-  // Apply rate limiting (30 requests per minute for search)
-  return withRateLimit(request, handleRequest, { 
-    maxRequests: 30, 
-    windowMs: 60000,
-    requireAuth: false // Allow anonymous for now
-  });
-}
+export const POST = withRateLimit(handleRequest, { requests: 30, window: 60 });
 
 async function handleRequest(request: NextRequest) {
   try {

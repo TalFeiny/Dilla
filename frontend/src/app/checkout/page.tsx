@@ -1,28 +1,28 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useSession } from 'next-auth/react';
+import { useAuth } from '@/components/providers/AuthProvider';
 import { useRouter } from 'next/navigation';
 import { loadStripe } from '@stripe/stripe-js';
 
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
 export default function CheckoutPage() {
-  const { data: session, status } = useSession();
+  const { user, profile, loading: authLoading } = useAuth();
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (status === 'loading') return;
-    
-    if (!session) {
+    if (authLoading) return;
+
+    if (!user) {
       router.push('/signin');
       return;
     }
 
     handleCheckout();
-  }, [session, status]);
+  }, [user, authLoading]);
 
   const handleCheckout = async () => {
     try {
@@ -43,14 +43,14 @@ export default function CheckoutPage() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          email: session?.user?.email,
+          email: user?.email,
           plan,
           billingPeriod,
           seats,
           successUrl: `${window.location.origin}/subscription/success?session_id={CHECKOUT_SESSION_ID}`,
           cancelUrl: `${window.location.origin}/pricing`,
           metadata: {
-            userId: session?.user?.id,
+            userId: profile?.id,
             prompt,
             result,
           },

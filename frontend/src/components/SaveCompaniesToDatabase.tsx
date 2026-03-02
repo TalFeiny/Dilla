@@ -3,8 +3,8 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Save, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
-import { useSession } from 'next-auth/react';
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
+import { useAuth } from '@/components/providers/AuthProvider';
+import { getSupabaseBrowser } from '@/lib/supabase/browser';
 
 interface SaveCompaniesToDatabaseProps {
   companies: any[];
@@ -19,11 +19,11 @@ export default function SaveCompaniesToDatabase({
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [savedCount, setSavedCount] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
-  const { data: session } = useSession();
-  const supabase = createClientComponentClient();
+  const { profile } = useAuth();
+  const supabase = getSupabaseBrowser();
 
   const handleSaveCompanies = async () => {
-    if (!session?.user?.id) {
+    if (!profile?.id) {
       setErrorMessage('Please sign in to save companies');
       setSaveStatus('error');
       return;
@@ -62,9 +62,9 @@ export default function SaveCompaniesToDatabase({
             customers: company.customer_analysis?.customers || [],
             ai_category: company.ai_category || null,
             data: company, // Store full data in JSONB field
-            created_by: session.user.id, // User who saved this company
+            created_by: profile!.id, // User who saved this company
             visibility: 'private', // Only visible to this user
-            user_id: session.user.id, // Associate with user for RLS
+            user_id: profile!.id, // Associate with user for RLS
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
           };
@@ -74,7 +74,7 @@ export default function SaveCompaniesToDatabase({
             .from('companies')
             .select('id')
             .eq('name', companyRecord.name)
-            .eq('user_id', session.user.id)
+            .eq('user_id', profile!.id)
             .single();
 
           let result: any;
@@ -87,7 +87,7 @@ export default function SaveCompaniesToDatabase({
                 updated_at: new Date().toISOString()
               })
               .eq('id', existing.id)
-              .eq('user_id', session.user.id) // Ensure user owns this record
+              .eq('user_id', profile!.id) // Ensure user owns this record
               .eq('visibility', 'private'); // Can only update private companies
           } else {
             // Insert new private company for this user
@@ -96,7 +96,7 @@ export default function SaveCompaniesToDatabase({
               .insert({
                 ...companyRecord,
                 visibility: 'private', // Always private for user-saved companies
-                user_id: session.user.id // Always associated with the user
+                user_id: profile!.id // Always associated with the user
               });
           }
 
@@ -112,7 +112,7 @@ export default function SaveCompaniesToDatabase({
       await supabase
         .from('user_activities')
         .insert({
-          user_id: session.user.id,
+          user_id: profile!.id,
           activity_type: 'companies_saved',
           details: {
             saved_count: successCount,
@@ -179,7 +179,7 @@ export default function SaveCompaniesToDatabase({
         )}
       </Button>
       
-      {!session && (
+      {!profile && (
         <span className="text-sm text-gray-500">
           Sign in to save companies
         </span>

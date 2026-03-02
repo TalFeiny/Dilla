@@ -1,128 +1,28 @@
 'use client';
 
-import { signIn } from 'next-auth/react';
-import { useSearchParams, useRouter } from 'next/navigation';
-import { Suspense, useState, useEffect, useRef } from 'react';
-import { debugLog, debugError } from '@/lib/debug';
+import { useSearchParams } from 'next/navigation';
+import { Suspense, useState } from 'react';
+import { getSupabaseBrowser } from '@/lib/supabase/browser';
 
 function SignInContent() {
   const searchParams = useSearchParams();
-  const router = useRouter();
-  const callbackUrl = searchParams.get('callbackUrl') || '/';
+  const next = searchParams.get('next') || '/';
   const error = searchParams.get('error');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
-  const mountedRef = useRef(false);
-  const containerRef = useRef<HTMLDivElement>(null);
 
-  // Instrumentation: Component mount/unmount
-  useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true;
-      debugLog('SignInContent', 'Component mounted');
-      
-      // Check if React is hydrating
-      if (typeof window !== 'undefined') {
-        debugLog('SignInContent', 'Window available, checking hydration', {
-          hasReact: typeof window !== 'undefined' && !!(window as any).React,
-          hasNextAuth: typeof signIn === 'function'
-        });
-      }
-    }
-
-    return () => {
-      debugLog('SignInContent', 'Component unmounting');
-    };
-  }, []);
-
-  // Instrumentation: CSS class application check
-  useEffect(() => {
-    if (containerRef.current) {
-      const container = containerRef.current;
-      const computedStyles = window.getComputedStyle(container);
-      const hasClasses = container.className.length > 0;
-      
-      debugLog('SignInContent', 'CSS classes check', {
-        className: container.className,
-        hasClasses,
-        display: computedStyles.display,
-        backgroundColor: computedStyles.backgroundColor,
-        color: computedStyles.color,
-        fontFamily: computedStyles.fontFamily
-      });
-    }
-  }, []);
-
-  // Instrumentation: Error boundary
-  useEffect(() => {
-    const errorHandler = (event: ErrorEvent) => {
-      debugError('SignInContent', event.error || event.message);
-    };
-    
-    window.addEventListener('error', errorHandler);
-    return () => window.removeEventListener('error', errorHandler);
-  }, []);
-
-  // Set error message from URL params
-  useEffect(() => {
-    if (error) {
-      setErrorMessage(
-        error === 'CredentialsSignin' ? 'Invalid email or password. Please try again.' :
-        error === 'Default' ? 'An error occurred. Please try again.' :
-        'An error occurred during sign in. Please try again.'
-      );
-    }
-  }, [error]);
-
-  // Instrumentation: Render logging
-  try {
-    debugLog('SignInContent', 'Rendering component', {
-      hasCallbackUrl: !!callbackUrl,
-      hasError: !!error,
-      searchParams: Object.fromEntries(searchParams.entries())
+  async function handleGoogleSignIn() {
+    setLoading(true);
+    const supabase = getSupabaseBrowser();
+    await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`,
+      },
     });
-  } catch (err) {
-    debugError('SignInContent', err);
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMessage('');
-    setLoading(true);
-
-    try {
-      debugLog('SignInContent', 'Attempting sign in', { email });
-      const result = await signIn('credentials', {
-        email,
-        password,
-        callbackUrl,
-        redirect: false,
-      });
-
-      if (result?.error) {
-        setErrorMessage('Invalid email or password. Please try again.');
-        debugError('SignInContent', new Error(result.error));
-      } else if (result?.ok) {
-        debugLog('SignInContent', 'Sign in successful, redirecting');
-        router.push(callbackUrl);
-        router.refresh();
-      }
-    } catch (err) {
-      debugError('SignInContent', err);
-      setErrorMessage('An error occurred. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
-    <div 
-      ref={containerRef}
-      className="min-h-screen flex items-center justify-center bg-white dark:bg-black"
-      data-debug="signin-container"
-    >
+    <div className="min-h-screen flex items-center justify-center bg-white dark:bg-black">
       <div className="max-w-md w-full space-y-6">
         <div>
           <h2 className="mt-6 text-center font-display text-primary">
@@ -132,73 +32,48 @@ function SignInContent() {
             Get instant access to institutional-grade VC analysis
           </p>
         </div>
-        
-        {(errorMessage || error) && (
+
+        {error && (
           <div className="bg-red-50 border border-red-200 rounded-md p-4">
             <p className="text-sm text-red-600">
-              {errorMessage || 'An error occurred. Please try again.'}
+              An error occurred during sign in. Please try again.
             </p>
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-          <div>
-            <label htmlFor="email" className="block text-sm font-medium text-primary mb-1">
-              Email address
-            </label>
-            <input
-              id="email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="appearance-none relative block w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg placeholder-gray-400 dark:placeholder-gray-500 font-body text-primary bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="you@example.com"
+        <button
+          onClick={handleGoogleSignIn}
+          disabled={loading}
+          className="w-full flex items-center justify-center gap-3 py-2.5 px-4 border border-gray-200 dark:border-gray-700 rounded-lg font-body text-primary bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          <svg className="w-5 h-5" viewBox="0 0 24 24">
+            <path
+              fill="#4285F4"
+              d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"
             />
-          </div>
-          
-          <div>
-            <label htmlFor="password" className="block text-sm font-medium text-primary mb-1">
-              Password
-            </label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="appearance-none relative block w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg placeholder-gray-400 dark:placeholder-gray-500 font-body text-primary bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="Enter your password"
+            <path
+              fill="#34A853"
+              d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
             />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-lg font-body text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {loading ? 'Signing in...' : 'Sign in'}
-          </button>
-        </form>
+            <path
+              fill="#FBBC05"
+              d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+            />
+            <path
+              fill="#EA4335"
+              d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+            />
+          </svg>
+          {loading ? 'Redirecting...' : 'Continue with Google'}
+        </button>
       </div>
     </div>
   );
 }
 
 export default function SignInPage() {
-  useEffect(() => {
-    debugLog('SignInPage', 'SignInPage component mounted');
-    return () => {
-      debugLog('SignInPage', 'SignInPage component unmounting');
-    };
-  }, []);
-
   return (
-    <Suspense fallback={<div>Loading...</div>}>
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center">Loading...</div>}>
       <SignInContent />
     </Suspense>
   );

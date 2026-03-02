@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { useSession } from 'next-auth/react';
-import supabase from '@/lib/supabase';
+import { useAuth } from '@/components/providers/AuthProvider';
+import { getSupabaseBrowser } from '@/lib/supabase/browser';
 
 interface LP {
   id: string;
@@ -33,7 +33,8 @@ interface LP {
 type ViewMode = 'directory' | 'fund_management';
 
 export default function LPsPage() {
-  const { data: session, status: authStatus } = useSession();
+  const { user, loading: authLoading } = useAuth();
+  const supabase = getSupabaseBrowser();
   const [lps, setLps] = useState<LP[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -44,8 +45,8 @@ export default function LPsPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('directory');
 
   // Auth guard — LP data is sensitive investor PII
-  if (authStatus === 'loading') return <div className="p-8 text-center">Loading...</div>;
-  if (!session) return <div className="p-8 text-center">Please sign in to view LP data.</div>;
+  if (authLoading) return <div className="p-8 text-center">Loading...</div>;
+  if (!user) return <div className="p-8 text-center">Please sign in to view LP data.</div>;
 
   // Fetch LPs from database
   const fetchLPs = async () => {
