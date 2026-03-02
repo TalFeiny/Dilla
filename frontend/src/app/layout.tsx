@@ -7,7 +7,7 @@ import { AppShell } from '@/components/layout/AppShell';
 import { Toaster } from '@/components/ui/toaster';
 
 export const metadata: Metadata = {
-  title: 'Dilla AI - VC Platform',
+  title: 'Dilla AI',
   description: 'Advanced document processing and analysis platform for venture capital',
   icons: {
     icon: '/dilla-logo.svg',

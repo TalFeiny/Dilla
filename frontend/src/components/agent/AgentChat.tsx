@@ -406,25 +406,21 @@ export default function AgentChat({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const uploadFileInputRef = useRef<HTMLInputElement>(null);
-  const [droppedContext, setDroppedContext] = useState<{ type: string; content: string } | null>(null);
   const [dragOverInput, setDragOverInput] = useState(false);
   const [planModeOn, setPlanModeOn] = useState(false);
-  const [memoContextOn, setMemoContextOn] = useState(false);
-  const [memoArtifacts, setMemoArtifacts] = useState<any[]>([]);
+  const [memoContextOn, setMemoContextOn] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try { return JSON.parse(localStorage.getItem('dilla_memo_artifacts') || '[]').length > 0; } catch { return false; }
+  });
+  const [memoArtifacts, setMemoArtifacts] = useState<any[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try { return JSON.parse(localStorage.getItem('dilla_memo_artifacts') || '[]'); } catch { return []; }
+  });
 
-  // Load memo artifacts from localStorage when toggle is turned on
+  // Persist artifacts to localStorage whenever they change
   useEffect(() => {
-    if (memoContextOn) {
-      try {
-        const stored = JSON.parse(localStorage.getItem('dilla_memo_artifacts') || '[]');
-        setMemoArtifacts(stored);
-      } catch {
-        setMemoArtifacts([]);
-      }
-    } else {
-      setMemoArtifacts([]);
-    }
-  }, [memoContextOn]);
+    try { localStorage.setItem('dilla_memo_artifacts', JSON.stringify(memoArtifacts)); } catch {}
+  }, [memoArtifacts]);
 
   // Sync messages to active tab
   useEffect(() => {
@@ -557,11 +553,7 @@ export default function AgentChat({
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
-    // Prepend dropped context to the message if present
-    const contextPrefix = droppedContext
-      ? `[CONTEXT FROM MEMO]\n${droppedContext.content}\n\n[USER QUERY]\n`
-      : '';
-    const fullContent = contextPrefix + input;
+    const fullContent = input;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -572,7 +564,6 @@ export default function AgentChat({
 
     setMessages(prev => [...prev, userMessage]);
     setInput('');
-    setDroppedContext(null);
     setIsLoading(true);
     onMessageSent?.(fullContent);
 
@@ -863,13 +854,8 @@ export default function AgentChat({
 
       // Store resumable memo artifacts (plan memos) for cross-session context
       if (norm.memoArtifacts?.length) {
-        try {
-          const existing = JSON.parse(localStorage.getItem('dilla_memo_artifacts') || '[]');
-          const updated = [...existing, ...norm.memoArtifacts].slice(-20); // Keep last 20
-          localStorage.setItem('dilla_memo_artifacts', JSON.stringify(updated));
-        } catch (e) {
-          console.warn('[AgentChat] Failed to store memo artifacts:', e);
-        }
+        setMemoArtifacts(prev => [...prev, ...norm.memoArtifacts].slice(-20));
+        setMemoContextOn(true);
       }
 
       // Extract plan steps for inline rendering in message
@@ -2134,24 +2120,19 @@ export default function AgentChat({
                 const section = JSON.parse(raw);
                 const content = section.section?.content || section.content || e.dataTransfer.getData('text/plain') || '';
                 if (content) {
-                  setDroppedContext({ type: section.section?.type || 'paragraph', content });
+                  const newArtifact = {
+                    id: `drag-${Date.now()}`,
+                    type: section.section?.type || 'memo',
+                    content,
+                    source: 'drag',
+                  };
+                  setMemoArtifacts(prev => [...prev, newArtifact]);
+                  setMemoContextOn(true);
                 }
               } catch {}
             }
           }}
         >
-          {/* Dropped context card */}
-          {droppedContext && (
-            <div className="mb-1.5 mx-0.5 p-2 rounded-lg bg-muted/50 border text-xs flex items-start gap-2">
-              <div className="flex-1 min-w-0">
-                <span className="text-[10px] font-medium text-muted-foreground uppercase">Context from memo</span>
-                <p className="text-foreground line-clamp-2 mt-0.5">{droppedContext.content}</p>
-              </div>
-              <button onClick={() => setDroppedContext(null)} className="shrink-0 h-4 w-4 text-muted-foreground hover:text-foreground">
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          )}
           <input
             ref={uploadFileInputRef}
             type="file"
@@ -2161,45 +2142,75 @@ export default function AgentChat({
             onChange={handleFileSelect}
           />
           {/* Memo context preview card — shown when memo toggle is on and artifacts exist */}
-          {memoContextOn && memoArtifacts.length > 0 && (
-            <div className="mb-1.5 mx-0.5 p-2 rounded-lg bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-xs">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] font-medium text-indigo-600 dark:text-indigo-400 uppercase">Memo context ({memoArtifacts.length} artifact{memoArtifacts.length !== 1 ? 's' : ''})</span>
-                <button onClick={() => setMemoContextOn(false)} className="shrink-0 h-4 w-4 text-muted-foreground hover:text-foreground">
-                  <X className="h-3 w-3" />
+          {/* Context chips — show artifacts as removable chips above input */}
+          {memoArtifacts.length > 0 && (
+            <div className="mb-1.5 mx-0.5 flex flex-wrap gap-1 items-center">
+              {memoArtifacts.slice(-10).map((a: any, i: number) => {
+                const title = a.title || a.data?.title || a.name || a.data?.name || '';
+                const content = a.content || a.data?.content || a.summary || a.data?.summary || a.text || a.data?.text || '';
+                const chipLabel = title || (content ? content.slice(0, 40) : (a.type || 'context'));
+                const actualIndex = memoArtifacts.length > 10 ? memoArtifacts.length - 10 + i : i;
+                return (
+                  <span
+                    key={a.id || i}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 text-[11px] text-indigo-700 dark:text-indigo-300 max-w-[200px] group"
+                    title={title && content ? `${title}: ${content.slice(0, 200)}` : (content || title)}
+                  >
+                    <span className="truncate">{chipLabel}</span>
+                    <button
+                      onClick={() => {
+                        const updated = memoArtifacts.filter((_: any, j: number) => j !== actualIndex);
+                        setMemoArtifacts(updated);
+                      }}
+                      className="shrink-0 h-3 w-3 opacity-60 hover:opacity-100 hover:text-destructive transition-opacity"
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                  </span>
+                );
+              })}
+              {memoArtifacts.length > 0 && (
+                <button
+                  onClick={() => setMemoArtifacts([])}
+                  className="text-[9px] text-muted-foreground hover:text-destructive px-1"
+                  title="Clear all context"
+                >
+                  Clear all
                 </button>
-              </div>
-              <div className="space-y-0.5 max-h-[80px] overflow-y-auto">
-                {memoArtifacts.slice(-5).map((a: any, i: number) => (
-                  <p key={i} className="text-muted-foreground truncate">
-                    {a.type || 'artifact'}: {a.data?.title || a.data?.content?.slice?.(0, 60) || JSON.stringify(a.data)?.slice(0, 60) || '...'}
-                  </p>
-                ))}
-              </div>
+              )}
             </div>
           )}
+          {/* Toolbar — toggles above input */}
+          <div className="flex items-center gap-1 mb-1 mx-0.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`h-6 w-6 rounded-md ${planModeOn ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300' : 'text-muted-foreground'}`}
+              onClick={() => setPlanModeOn(prev => !prev)}
+              title={planModeOn ? 'Plan mode ON' : 'Plan mode OFF'}
+            >
+              <ListTodo className="h-3 w-3" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`h-6 w-6 rounded-md ${memoContextOn ? 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300' : 'text-muted-foreground'}`}
+              onClick={() => setMemoContextOn(prev => !prev)}
+              title={memoContextOn ? 'Context ON — artifacts sent with messages' : 'Context OFF'}
+            >
+              <BookOpen className="h-3 w-3" />
+            </Button>
+            {planModeOn && (
+              <Badge variant="outline" className="text-[9px] h-4 px-1.5 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800">
+                Plan
+              </Badge>
+            )}
+            {memoContextOn && memoArtifacts.length > 0 && (
+              <span className="text-[9px] text-indigo-500 dark:text-indigo-400">{memoArtifacts.length} context item{memoArtifacts.length !== 1 ? 's' : ''}</span>
+            )}
+          </div>
+          {/* Input box — clean, full width */}
           <div className="flex items-end gap-1.5 rounded-xl border border-input bg-muted/30 dark:bg-muted/20 px-2 py-1.5 focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background">
-            {/* Mode toggles — left side of input */}
-            <div className="flex items-center gap-0.5 shrink-0">
-              <Button
-                variant="ghost"
-                size="icon"
-                className={`h-7 w-7 rounded-md ${planModeOn ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300' : 'text-muted-foreground'}`}
-                onClick={() => setPlanModeOn(prev => !prev)}
-                title={planModeOn ? 'Plan mode ON — agent will build execution plan first' : 'Plan mode OFF'}
-              >
-                <ListTodo className="h-3.5 w-3.5" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className={`h-7 w-7 rounded-md ${memoContextOn ? 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300' : 'text-muted-foreground'}`}
-                onClick={() => setMemoContextOn(prev => !prev)}
-                title={memoContextOn ? 'Memo context ON — artifacts included' : 'Include memo artifacts as context'}
-              >
-                <BookOpen className="h-3.5 w-3.5" />
-              </Button>
-            </div>
             <div className="flex-1 relative min-w-0">
               <Textarea
                 ref={textareaRef}
@@ -2207,7 +2218,7 @@ export default function AgentChat({
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyPress}
                 placeholder={planModeOn ? 'Describe what to plan... (Enter to send)' : 'Message... (Enter to send)'}
-                className="min-h-[36px] max-h-[120px] resize-none pr-9 text-sm border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground"
+                className="min-h-[36px] max-h-[120px] resize-none text-sm border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground"
                 disabled={isLoading}
               />
             </div>
@@ -2223,12 +2234,6 @@ export default function AgentChat({
                 {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               </Button>
             ) : null}
-            {/* Plan mode indicator badge */}
-            {planModeOn && (
-              <Badge variant="outline" className="shrink-0 text-[10px] h-5 px-1.5 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800">
-                Plan
-              </Badge>
-            )}
             <Button
               variant="ghost"
               size="icon"

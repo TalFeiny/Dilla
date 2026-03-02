@@ -4512,6 +4512,7 @@ export function UnifiedMatrix({
                 } else {
                   setMemoSections(updates.sections as DocumentSection[]);
                 }
+                setMemoPanelExpanded(true);
               }}
               onAnalysisReady={handleAnalysisReady}
             />
@@ -4556,7 +4557,7 @@ export function UnifiedMatrix({
       </div>
 
       {/* Memo panel below grid — shows whenever agent has added content beyond the default heading+empty paragraph */}
-      {memoSections.length > 0 && memoSections.some(s => s.type !== 'heading1' && s.content?.trim()) && (
+      {memoSections.length > 0 && memoSections.some(s => s.type !== 'heading1' && (s.content?.trim() || s.chart || s.table || s.items?.length)) && (
         <div className="border-t bg-card/50">
           <button
             className="w-full flex items-center justify-between px-4 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
