@@ -2,12 +2,9 @@ import { NextResponse } from 'next/server';
 import { getSupabaseServer, getSupabaseServiceRole } from '@/lib/supabase/server';
 
 /**
- * Supabase redirects here after Google OAuth.
- * Exchanges the auth code for a session, then redirects to the app.
- *
- * New users get an organization derived from their email domain
- * (e.g. john@sequoia.com → org "sequoia.com"). If the org already
- * exists the user joins it; otherwise a new org is created.
+ * Supabase redirects here after any auth flow (email, invite link, OAuth, etc).
+ * Exchanges the auth code for a session, then ensures a public.users row exists
+ * so org-scoped RLS works.
  */
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
@@ -27,13 +24,13 @@ export async function GET(request: Request) {
         const { data: existingUser } = await admin
           .from('users')
           .select('id')
-          .eq('email', user.email!)
+          .eq('id', user.id)
           .single();
 
         if (!existingUser) {
           // Derive org from email domain
           const domain = user.email!.split('@')[1];
-          const orgName = domain; // e.g. "sequoia.com"
+          const orgName = domain;
 
           // Find or create the organization
           let orgId: string;
@@ -55,10 +52,10 @@ export async function GET(request: Request) {
           }
 
           await admin.from('users').insert({
+            id: user.id, // = auth.uid()
             email: user.email!,
-            google_id: user.user_metadata.sub,
-            name: user.user_metadata.full_name || user.user_metadata.name,
-            avatar_url: user.user_metadata.avatar_url,
+            name: user.user_metadata.full_name || user.user_metadata.name || null,
+            avatar_url: user.user_metadata.avatar_url || null,
             organization_id: orgId,
           });
         }

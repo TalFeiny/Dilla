@@ -2,16 +2,123 @@
 -- Dilla AI: Supabase Auth RLS Migration
 -- Run this in the Supabase SQL Editor
 -- ============================================================
--- IMPORTANT: Your public.users table uses its own uuid for `id`,
--- NOT auth.uid(). All lookups use email. The helper function
--- below matches on email extracted from the JWT.
+-- public.users.id = auth.uid() (FK to auth.users.id)
+-- This table extends auth.users with org membership, role, etc.
+-- All RLS policies use auth.uid() directly.
 -- ============================================================
 
 BEGIN;
 
 -- ============================================================
+-- 0. Clean up: drop old policies and functions so this is re-runnable
+-- ============================================================
+DROP FUNCTION IF EXISTS public.user_row_id();
+DROP POLICY IF EXISTS "users_select_own" ON public.users;
+DROP POLICY IF EXISTS "users_update_own" ON public.users;
+DROP POLICY IF EXISTS "users_insert_self" ON public.users;
+DROP POLICY IF EXISTS "orgs_select_own" ON public.organizations;
+DROP POLICY IF EXISTS "companies_select" ON public.companies;
+DROP POLICY IF EXISTS "companies_insert" ON public.companies;
+DROP POLICY IF EXISTS "companies_update" ON public.companies;
+DROP POLICY IF EXISTS "companies_delete" ON public.companies;
+DROP POLICY IF EXISTS "funds_select" ON public.funds;
+DROP POLICY IF EXISTS "funds_insert" ON public.funds;
+DROP POLICY IF EXISTS "funds_update" ON public.funds;
+DROP POLICY IF EXISTS "funds_delete" ON public.funds;
+DROP POLICY IF EXISTS "lps_select" ON public.limited_partners;
+DROP POLICY IF EXISTS "lps_insert" ON public.limited_partners;
+DROP POLICY IF EXISTS "lps_update" ON public.limited_partners;
+DROP POLICY IF EXISTS "lps_delete" ON public.limited_partners;
+DROP POLICY IF EXISTS "investments_select" ON public.investments;
+DROP POLICY IF EXISTS "investments_insert" ON public.investments;
+DROP POLICY IF EXISTS "investments_update" ON public.investments;
+DROP POLICY IF EXISTS "investments_delete" ON public.investments;
+DROP POLICY IF EXISTS "company_metrics_select" ON public.company_metrics;
+DROP POLICY IF EXISTS "company_metrics_insert" ON public.company_metrics;
+DROP POLICY IF EXISTS "company_metrics_update" ON public.company_metrics;
+DROP POLICY IF EXISTS "co_metrics_hist_select" ON public.company_metrics_history;
+DROP POLICY IF EXISTS "co_metrics_hist_insert" ON public.company_metrics_history;
+DROP POLICY IF EXISTS "company_valuations_select" ON public.company_valuations;
+DROP POLICY IF EXISTS "company_valuations_insert" ON public.company_valuations;
+DROP POLICY IF EXISTS "company_valuations_update" ON public.company_valuations;
+DROP POLICY IF EXISTS "company_updates_select" ON public.company_updates;
+DROP POLICY IF EXISTS "company_updates_insert" ON public.company_updates;
+DROP POLICY IF EXISTS "company_updates_update" ON public.company_updates;
+DROP POLICY IF EXISTS "deals_select" ON public.deals;
+DROP POLICY IF EXISTS "deals_insert" ON public.deals;
+DROP POLICY IF EXISTS "deals_update" ON public.deals;
+DROP POLICY IF EXISTS "deals_delete" ON public.deals;
+DROP POLICY IF EXISTS "deal_sources_select" ON public.deal_sources;
+DROP POLICY IF EXISTS "deal_sources_insert" ON public.deal_sources;
+DROP POLICY IF EXISTS "deal_sources_update" ON public.deal_sources;
+DROP POLICY IF EXISTS "deal_docs_select" ON public.deal_documents;
+DROP POLICY IF EXISTS "deal_docs_insert" ON public.deal_documents;
+DROP POLICY IF EXISTS "lp_commitments_select" ON public.lp_commitments;
+DROP POLICY IF EXISTS "lp_commitments_insert" ON public.lp_commitments;
+DROP POLICY IF EXISTS "lp_commitments_update" ON public.lp_commitments;
+DROP POLICY IF EXISTS "kyc_records_select" ON public.kyc_records;
+DROP POLICY IF EXISTS "kyc_records_insert" ON public.kyc_records;
+DROP POLICY IF EXISTS "kyc_records_update" ON public.kyc_records;
+DROP POLICY IF EXISTS "investor_updates_select" ON public.investor_updates;
+DROP POLICY IF EXISTS "investor_updates_insert" ON public.investor_updates;
+DROP POLICY IF EXISTS "investor_updates_update" ON public.investor_updates;
+DROP POLICY IF EXISTS "cap_table_select" ON public.cap_table_entries;
+DROP POLICY IF EXISTS "cap_table_insert" ON public.cap_table_entries;
+DROP POLICY IF EXISTS "cap_table_update" ON public.cap_table_entries;
+DROP POLICY IF EXISTS "benchmark_data_select" ON public.benchmark_data;
+DROP POLICY IF EXISTS "benchmark_data_insert" ON public.benchmark_data;
+DROP POLICY IF EXISTS "data_quality_select" ON public.data_quality_log;
+DROP POLICY IF EXISTS "data_quality_insert" ON public.data_quality_log;
+DROP POLICY IF EXISTS "fund_entities_select" ON public.fund_entities;
+DROP POLICY IF EXISTS "fund_entities_insert" ON public.fund_entities;
+DROP POLICY IF EXISTS "fund_entities_update" ON public.fund_entities;
+DROP POLICY IF EXISTS "fund_admin_accounts_select" ON public.fund_admin_accounts;
+DROP POLICY IF EXISTS "fund_admin_accounts_insert" ON public.fund_admin_accounts;
+DROP POLICY IF EXISTS "fund_pacing_select" ON public.fund_pacing_snapshots;
+DROP POLICY IF EXISTS "fund_pacing_insert" ON public.fund_pacing_snapshots;
+DROP POLICY IF EXISTS "fund_profiles_select" ON public.fund_profiles;
+DROP POLICY IF EXISTS "fund_profiles_insert" ON public.fund_profiles;
+DROP POLICY IF EXISTS "fund_profiles_update" ON public.fund_profiles;
+DROP POLICY IF EXISTS "mgmt_companies_select" ON public.management_companies;
+DROP POLICY IF EXISTS "mgmt_companies_insert" ON public.management_companies;
+DROP POLICY IF EXISTS "market_maps_select" ON public.market_maps;
+DROP POLICY IF EXISTS "market_maps_insert" ON public.market_maps;
+DROP POLICY IF EXISTS "market_updates_select" ON public.market_updates;
+DROP POLICY IF EXISTS "market_updates_insert" ON public.market_updates;
+DROP POLICY IF EXISTS "annex5_select" ON public.annex5_reports;
+DROP POLICY IF EXISTS "annex5_insert" ON public.annex5_reports;
+DROP POLICY IF EXISTS "founder_outreach_select" ON public.founder_outreach;
+DROP POLICY IF EXISTS "founder_outreach_insert" ON public.founder_outreach;
+DROP POLICY IF EXISTS "founder_outreach_update" ON public.founder_outreach;
+DROP POLICY IF EXISTS "funding_rounds_select" ON public.funding_rounds;
+DROP POLICY IF EXISTS "funding_rounds_insert" ON public.funding_rounds;
+DROP POLICY IF EXISTS "accepted_suggestions_select" ON public.accepted_suggestions;
+DROP POLICY IF EXISTS "accepted_suggestions_insert" ON public.accepted_suggestions;
+DROP POLICY IF EXISTS "batch_val_select" ON public.batch_valuation_jobs;
+DROP POLICY IF EXISTS "batch_val_insert" ON public.batch_valuation_jobs;
+DROP POLICY IF EXISTS "matrix_columns_select" ON public.matrix_columns;
+DROP POLICY IF EXISTS "matrix_columns_insert" ON public.matrix_columns;
+DROP POLICY IF EXISTS "matrix_columns_update" ON public.matrix_columns;
+DROP POLICY IF EXISTS "fpa_models_select" ON public.fpa_models;
+DROP POLICY IF EXISTS "fpa_models_insert" ON public.fpa_models;
+DROP POLICY IF EXISTS "fpa_versions_select" ON public.fpa_model_versions;
+DROP POLICY IF EXISTS "fpa_queries_select" ON public.fpa_queries;
+DROP POLICY IF EXISTS "inv_thesis_select" ON public.investment_thesis;
+DROP POLICY IF EXISTS "inv_thesis_insert" ON public.investment_thesis;
+DROP POLICY IF EXISTS "market_data_read" ON public.market_data;
+DROP POLICY IF EXISTS "data_sources_read" ON public.data_sources;
+DROP POLICY IF EXISTS "cell_action_registry_read" ON public.cell_action_registry;
+DROP POLICY IF EXISTS "cell_action_presets_read" ON public.cell_action_presets;
+DROP POLICY IF EXISTS "company_profiles_read" ON public.company_profiles;
+DROP POLICY IF EXISTS "agent_interactions_read" ON public.agent_interactions;
+DROP POLICY IF EXISTS "agent_cost_read" ON public.agent_cost_tracking;
+
+-- Drop old email indexes from previous migration
+DROP INDEX IF EXISTS idx_users_email;
+DROP INDEX IF EXISTS idx_users_email_org;
+
+-- ============================================================
 -- 1. Helper: get the current user's organization_id
---    Matches on JWT email since users.id != auth.uid()
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.user_org_id()
 RETURNS uuid
@@ -22,53 +129,31 @@ SET search_path = public
 AS $$
   SELECT organization_id
   FROM public.users
-  WHERE email = (auth.jwt() ->> 'email')
-  LIMIT 1
-$$;
-
--- Helper: get the current user's public.users.id
-CREATE OR REPLACE FUNCTION public.user_row_id()
-RETURNS uuid
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = public
-AS $$
-  SELECT id
-  FROM public.users
-  WHERE email = (auth.jwt() ->> 'email')
-  LIMIT 1
+  WHERE id = auth.uid()
 $$;
 
 GRANT EXECUTE ON FUNCTION public.user_org_id() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.user_row_id() TO authenticated;
-
--- Performance index for the email lookup (used on every single query)
-CREATE INDEX IF NOT EXISTS idx_users_email ON public.users (email);
-CREATE INDEX IF NOT EXISTS idx_users_email_org ON public.users (email, organization_id);
 
 -- ============================================================
--- 2. Users table
+-- 2. Users table (extends auth.users with org/role)
 -- ============================================================
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 
--- Users can read their own row (by email from JWT)
+-- Users can read their own row
 CREATE POLICY "users_select_own" ON public.users
   FOR SELECT TO authenticated
-  USING (email = (auth.jwt() ->> 'email'));
+  USING (id = auth.uid());
 
 -- Users can update their own row
 CREATE POLICY "users_update_own" ON public.users
   FOR UPDATE TO authenticated
-  USING (email = (auth.jwt() ->> 'email'))
-  WITH CHECK (email = (auth.jwt() ->> 'email'));
+  USING (id = auth.uid())
+  WITH CHECK (id = auth.uid());
 
--- Auth callback inserts new users on first sign-in
--- (service_role bypasses RLS, but if your callback uses
---  the user's session, this policy allows it)
+-- Allow insert on first sign-in (id must match auth.uid())
 CREATE POLICY "users_insert_self" ON public.users
   FOR INSERT TO authenticated
-  WITH CHECK (email = (auth.jwt() ->> 'email'));
+  WITH CHECK (id = auth.uid());
 
 -- ============================================================
 -- 3. Organizations
@@ -118,8 +203,7 @@ CREATE POLICY "company_metrics_select" ON public.company_metrics FOR SELECT TO a
 CREATE POLICY "company_metrics_insert" ON public.company_metrics FOR INSERT TO authenticated WITH CHECK (organization_id = user_org_id());
 CREATE POLICY "company_metrics_update" ON public.company_metrics FOR UPDATE TO authenticated USING (organization_id = user_org_id()) WITH CHECK (organization_id = user_org_id());
 
--- ── company_metrics_history (scoped via company join, has fund_id) ──
--- No organization_id column — scope through company_id
+-- ── company_metrics_history (scoped via company join) ──
 ALTER TABLE public.company_metrics_history ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "co_metrics_hist_select" ON public.company_metrics_history FOR SELECT TO authenticated
   USING (EXISTS (SELECT 1 FROM public.companies c WHERE c.id = company_id AND c.organization_id = user_org_id()));
@@ -151,8 +235,7 @@ CREATE POLICY "deal_sources_select" ON public.deal_sources FOR SELECT TO authent
 CREATE POLICY "deal_sources_insert" ON public.deal_sources FOR INSERT TO authenticated WITH CHECK (organization_id = user_org_id());
 CREATE POLICY "deal_sources_update" ON public.deal_sources FOR UPDATE TO authenticated USING (organization_id = user_org_id()) WITH CHECK (organization_id = user_org_id());
 
--- ── deal_documents (no org_id — scope through organization_id if present, else open for now) ──
--- deal_documents has organization_id
+-- ── deal_documents ──
 ALTER TABLE public.deal_documents ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "deal_docs_select" ON public.deal_documents FOR SELECT TO authenticated USING (organization_id = user_org_id());
 CREATE POLICY "deal_docs_insert" ON public.deal_documents FOR INSERT TO authenticated WITH CHECK (organization_id = user_org_id());
@@ -246,7 +329,7 @@ CREATE POLICY "funding_rounds_select" ON public.funding_rounds FOR SELECT TO aut
 CREATE POLICY "funding_rounds_insert" ON public.funding_rounds FOR INSERT TO authenticated
   WITH CHECK (EXISTS (SELECT 1 FROM public.companies c WHERE c.id = company_id AND c.organization_id = user_org_id()));
 
--- ── accepted_suggestions (no org_id — scope through fund) ──
+-- ── accepted_suggestions (scope through fund) ──
 ALTER TABLE public.accepted_suggestions ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "accepted_suggestions_select" ON public.accepted_suggestions FOR SELECT TO authenticated
   USING (EXISTS (SELECT 1 FROM public.funds f WHERE f.id = fund_id AND f.organization_id = user_org_id()));
@@ -316,24 +399,15 @@ ALTER TABLE public.company_profiles ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "company_profiles_read" ON public.company_profiles FOR SELECT TO authenticated USING (true);
 
 -- ============================================================
--- 6. Agent/ML tables — no user data, open to authenticated
---    (or disable RLS if only backend service role accesses them)
+-- 6. Agent/ML tables — backend-only via service_role
 -- ============================================================
--- These tables are only written by the backend (service_role),
--- so RLS doesn't affect writes. Open reads for dashboard display.
-
 ALTER TABLE public.agent_interactions ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "agent_interactions_read" ON public.agent_interactions FOR SELECT TO authenticated USING (true);
 
 ALTER TABLE public.agent_cost_tracking ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "agent_cost_read" ON public.agent_cost_tracking FOR SELECT TO authenticated USING (true);
 
--- Other agent tables (agent_experiences, agent_states, agent_knowledge_base,
--- agent_patterns, agent_feedback_history, agent_learning_records,
--- agent_retraining_queue, agent_vision_cache, experience_replay,
--- ephemeral_graphs) are backend-only. Service role bypasses RLS.
--- Enable RLS with no policies = deny all non-service-role access:
-
+-- Backend-only tables: RLS enabled with no policies = deny all non-service-role access
 ALTER TABLE public.agent_experiences ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.agent_states ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.agent_knowledge_base ENABLE ROW LEVEL SECURITY;
@@ -348,19 +422,17 @@ ALTER TABLE public.ephemeral_graphs ENABLE ROW LEVEL SECURITY;
 COMMIT;
 
 -- ============================================================
--- POST-MIGRATION NOTES
+-- NOTES
 -- ============================================================
--- 1. Service role key (SUPABASE_SERVICE_ROLE_KEY) bypasses ALL RLS.
---    Your backend API routes and auth callback use this — no changes needed.
+-- 1. public.users.id MUST equal auth.uid() for each user.
+--    The auth callback ensures this on first sign-in.
 --
--- 2. The anon key + user JWT enforces these policies.
---    Browser clients (getSupabaseBrowser()) will be restricted.
+-- 2. Service role key bypasses all RLS (backend API routes).
 --
--- 3. If a user has no organization_id, user_org_id() returns NULL
---    and org-scoped queries return zero rows. This is intentional —
---    you must assign an org when creating the user.
+-- 3. Supabase invite links work normally — when an invited user
+--    signs in, the callback creates their public.users row
+--    with id = auth.uid() and assigns them to an org.
 --
--- 4. To test: sign in, then run in the SQL editor:
+-- 4. To test:
 --    SELECT user_org_id();
 --    SELECT * FROM companies LIMIT 5;
---    If you get rows, RLS is working. If not, check the user's org.

@@ -25,14 +25,14 @@ export function withAuth(
         );
       }
 
-      // Look up org
+      // Look up org from public.users (id = auth.uid())
       const { data: profile } = await supabase
         .from('users')
-        .select('id, organization_id')
-        .eq('email', user.email!)
+        .select('organization_id')
+        .eq('id', user.id)
         .single();
 
-      (req as AuthenticatedRequest).userId = profile?.id || user.id;
+      (req as AuthenticatedRequest).userId = user.id;
       (req as AuthenticatedRequest).organizationId = profile?.organization_id;
 
       return await handler(req as AuthenticatedRequest);
