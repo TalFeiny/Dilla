@@ -142,29 +142,41 @@ async def query_companies(
             q = q.eq("fund_id", fund_id or filters["fund_id"])
 
         # --- Text filters (ilike) ---
+        # Guard every string filter against None/empty to prevent
+        # "unsupported format string passed to NoneType.__format__"
         if filters.get("sector"):
-            q = q.ilike("sector", f"%{filters['sector']}%")
+            sector = str(filters["sector"]).strip()
+            if sector:
+                q = q.ilike("sector", f"%{sector}%")
 
         if filters.get("stage"):
-            stage = filters["stage"]
-            # Match both 'stage' and 'funding_stage' columns via OR
-            q = q.or_(f"stage.ilike.%{stage}%,funding_stage.ilike.%{stage}%")
+            stage = str(filters["stage"]).strip()
+            if stage:
+                # Match both 'stage' and 'funding_stage' columns via OR
+                q = q.or_(f"stage.ilike.%{stage}%,funding_stage.ilike.%{stage}%")
 
         if filters.get("geography"):
-            q = q.ilike("headquarters", f"%{filters['geography']}%")
+            geo = str(filters["geography"]).strip()
+            if geo:
+                q = q.ilike("headquarters", f"%{geo}%")
 
         if filters.get("business_model"):
-            q = q.ilike("revenue_model", f"%{filters['business_model']}%")
+            bm = str(filters["business_model"]).strip()
+            if bm:
+                q = q.ilike("revenue_model", f"%{bm}%")
 
         if filters.get("keyword"):
-            kw = filters["keyword"]
-            q = q.or_(
-                f"name.ilike.%{kw}%,sector.ilike.%{kw}%,"
-                f"description.ilike.%{kw}%,ai_category.ilike.%{kw}%"
-            )
+            kw = str(filters["keyword"]).strip()
+            if kw:
+                q = q.or_(
+                    f"name.ilike.%{kw}%,sector.ilike.%{kw}%,"
+                    f"description.ilike.%{kw}%,ai_category.ilike.%{kw}%"
+                )
 
         if filters.get("round_name"):
-            q = q.ilike("funding_stage", f"%{filters['round_name']}%")
+            rn = str(filters["round_name"]).strip()
+            if rn:
+                q = q.ilike("funding_stage", f"%{rn}%")
 
         # --- Numeric range filters ---
         if filters.get("arr_min") is not None:

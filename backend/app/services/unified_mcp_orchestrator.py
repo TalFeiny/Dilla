@@ -2634,6 +2634,20 @@ class UnifiedMCPOrchestrator:
             "  3. The rubric auto-classifies intent (dealflow/acquirer/gtm_leads/lp_investor/service_provider/talent) "
             "and adapts search queries, entity extraction, and scoring accordingly.\n"
             "  4. For sourcing, prefer source_companies with discover_web=true over build_company_list.\n\n"
+            "DATA ACCURACY RULES — non-negotiable:\n"
+            "1. COUNT before you claim. If you state '72% of companies lack X', you must have counted every row. Get the exact number right.\n"
+            "2. NEVER dismiss available data. If 7 of 32 companies have sector data, analyze those 7 sectors — don't say 'most companies lack sector data' and move on.\n"
+            "3. Work with what you have, not what you wish you had. Sparse data means you analyze HARDER, not less. "
+            "A portfolio with 7 classified and 25 unclassified companies has a REAL sector distribution for those 7 — report it.\n"
+            "4. Distinguish data gaps from data absence. 'No sector reported' for a company is a gap to flag. "
+            "But if the data DOES contain sectors, stages, or financials for some companies, those are FACTS — use them.\n"
+            "5. No blanket disclaimers. NEVER write 'insufficient data to assess' when the data contains relevant fields. "
+            "State exactly what the data shows and exactly what's missing.\n"
+            "6. Every quantitative claim must be traceable to the data provided. If you say '31 of 32 companies are valued at $80M', verify it by checking the table.\n"
+            "7. When data is missing, INFER AND EXPLAIN. Use stage benchmarks, comparable companies, industry medians, and first-principles reasoning. "
+            "Say what you'd estimate and why — 'Based on Series A SaaS benchmarks, likely $3-8M ARR' is infinitely more useful than 'data not available'.\n"
+            "8. Your job is to MAXIMIZE INSIGHT from every scrap of data. An analyst who says 'not enough data' gets fired. "
+            "An analyst who says 'here's what the 7 data points tell us, here's what I'd estimate for the other 25, and here's my confidence level' gets promoted.\n\n"
             f"{task_instruction}"
         )
 
@@ -5342,7 +5356,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
             # --- Step 1: Merge rubric filters into DB query ---
             if rubric:
                 rubric_filters = rubric.get("filters", {})
-                for key in ("sector", "stage", "geography", "arr_min", "arr_max"):
+                for key in ("sector", "stage", "geography", "arr_min", "arr_max", "keyword"):
                     if rubric_filters.get(key) and not filters.get(key):
                         filters[key] = rubric_filters[key]
                 if rubric.get("target_stage") and not target_stage:
@@ -5419,8 +5433,11 @@ Answer using specific company names and numbers from the portfolio grid above.""
             _web_discovery_info = None
             if discover_web and thesis and self.tavily_api_key:
                 db_count = len(scored)
-                top_score = scored[0].get("score", 0) if scored else 0
-                needs_web = db_count < min_web_threshold or top_score < 40
+                # Only go to the web when the DB genuinely has nothing useful.
+                # Score < 40 was too aggressive — sparse data tanks scores even for
+                # relevant companies, causing unnecessary Tavily calls.
+                # New gate: web discovery only when DB results are truly thin.
+                needs_web = db_count < min_web_threshold
 
                 if needs_web:
                     try:
@@ -5553,12 +5570,26 @@ Answer using specific company names and numbers from the portfolio grid above.""
                                         prompt=bulk_prompt,
                                         system_prompt="Extract ALL entity names from search results. Return valid JSON only.",
                                         capability=ModelCapability.STRUCTURED,
-                                        max_tokens=2000, temperature=0.0,
+                                        max_tokens=4000, temperature=0.0,
                                         json_mode=True,
                                         caller_context=f"source_companies_bulk_r{round_num}",
                                     )
                                     raw_ext = ext_result.get("response", "{}") if isinstance(ext_result, dict) else str(ext_result)
-                                    parsed_ext = json.loads(raw_ext) if isinstance(raw_ext, str) else raw_ext
+                                    try:
+                                        parsed_ext = json.loads(raw_ext) if isinstance(raw_ext, str) else raw_ext
+                                    except json.JSONDecodeError:
+                                        # Attempt to repair truncated JSON (e.g. array cut off mid-object)
+                                        repaired = raw_ext.rstrip()
+                                        last_brace = repaired.rfind('}')
+                                        if last_brace > 0 and '"name"' in repaired:
+                                            repaired = repaired[:last_brace + 1] + ']}'
+                                            try:
+                                                parsed_ext = json.loads(repaired)
+                                            except json.JSONDecodeError:
+                                                parsed_ext = {"companies": []}
+                                        else:
+                                            parsed_ext = {"companies": []}
+                                        logger.warning(f"[source_companies] bulk extraction JSON repaired, got {len(parsed_ext.get('companies', []))} companies")
                                     bulk_companies = parsed_ext.get("companies", [])
                                     # Normalize: ensure each entry is a dict
                                     for entry in bulk_companies:
@@ -5588,12 +5619,25 @@ Answer using specific company names and numbers from the portfolio grid above.""
                                         prompt=rich_prompt,
                                         system_prompt="Extract entity names with metadata. Return valid JSON only.",
                                         capability=ModelCapability.STRUCTURED,
-                                        max_tokens=2000, temperature=0.0,
+                                        max_tokens=3000, temperature=0.0,
                                         json_mode=True,
                                         caller_context=f"source_companies_rich_r{round_num}",
                                     )
                                     raw_ext = ext_result.get("response", "{}") if isinstance(ext_result, dict) else str(ext_result)
-                                    parsed_ext = json.loads(raw_ext) if isinstance(raw_ext, str) else raw_ext
+                                    try:
+                                        parsed_ext = json.loads(raw_ext) if isinstance(raw_ext, str) else raw_ext
+                                    except json.JSONDecodeError:
+                                        repaired = raw_ext.rstrip()
+                                        last_brace = repaired.rfind('}')
+                                        if last_brace > 0 and '"name"' in repaired:
+                                            repaired = repaired[:last_brace + 1] + ']}'
+                                            try:
+                                                parsed_ext = json.loads(repaired)
+                                            except json.JSONDecodeError:
+                                                parsed_ext = {"companies": []}
+                                        else:
+                                            parsed_ext = {"companies": []}
+                                        logger.warning(f"[source_companies] rich extraction JSON repaired, got {len(parsed_ext.get('companies', []))} companies")
                                     rich_companies = parsed_ext.get("companies", [])
                                     for entry in rich_companies:
                                         if isinstance(entry, str):
@@ -9637,15 +9681,18 @@ Rules:
 - NO filler: never start with "Based on my analysis", "Let me break this down", "Here's what I found"
 
 ABSOLUTE RULES:
-- NEVER write "cannot be completed", "no data available", "data retrieval returned no results"
+- NEVER write "cannot be completed", "no data available", "data retrieval returned no results", "insufficient data to assess", "limited data prevents analysis"
 - If you have estimates/benchmarks, present them with confidence levels
 - If you have partial data, show what you have and flag what's estimated
 - Present ranges (low/mid/high) rather than saying "unknown"
-- Always show SOMETHING — even stage benchmarks are more useful than 'no data'"""
+- Always show SOMETHING — even stage benchmarks are more useful than 'no data'
+- If N of M companies have a field (sector, stage, ARR), ANALYZE those N in detail — distributions, patterns, outliers. Then estimate the rest.
+- When data is missing, INFER: use stage benchmarks, industry medians, comparables, first-principles. State reasoning and confidence.
+- 7 data points out of 32 is enough to identify patterns, flag concentration risk, and build hypotheses. DO THE WORK."""
 
             synthesis_response = await self.model_router.get_completion(
                 prompt=synth_prompt,
-                system_prompt="You are a portfolio CFO. Write a structured analysis with ## markdown headings for each section. Use **bold** for key numbers. Use markdown tables for comparisons. Start with the key finding. NEVER say 'I don't have data'. If estimated, say '[Est: confidence%]'.",
+                system_prompt="You are a senior analyst at a venture fund. Write a structured analysis with ## markdown headings for each section. Use **bold** for key numbers. Use markdown tables for comparisons. Start with the key finding. NEVER say 'I don't have data'. If estimated, say '[Est: confidence%]'. If 7 of 32 companies have sector data, ANALYZE those 7 — report the distribution, don't dismiss it. Partial data is real data. Infer the rest using benchmarks and say why.",
                 capability=ModelCapability.ANALYSIS,
                 max_tokens=SYNTH_MAX_TOKENS,
                 temperature=0.3,
@@ -9738,14 +9785,16 @@ Rules:
 - Write like a professional investment memo, not a chatbot response
 
 ABSOLUTE RULES:
-- NEVER write "cannot be completed", "no data available", "data retrieval returned no results"
+- NEVER write "cannot be completed", "no data available", "data retrieval returned no results", "insufficient data to assess", "limited data prevents analysis"
 - If you have estimates/benchmarks, present them with confidence levels
 - Present ranges (low/mid/high) rather than saying "unknown"
-- Always show SOMETHING — stage benchmarks > "no data"."""
+- Always show SOMETHING — stage benchmarks > "no data"
+- If N of M companies have a field, ANALYZE those N fully. Then estimate the rest using benchmarks and reasoning.
+- When data is missing, INFER AND EXPLAIN — don't back out. 7 data points is enough to find patterns. DO THE WORK."""
 
             synthesis_response = await self.model_router.get_completion(
                 prompt=synth_prompt,
-                system_prompt="You are an investment analyst. Write professional analysis as flowing prose. Only use numbers from tool results — never invent figures. If data is estimated, state confidence level. The frontend renders tables, charts, and metric cards separately — do not duplicate them in prose. Start with the most important finding. NEVER say 'I don't have data', 'cannot be completed', or 'no data available' — present estimates with confidence ranges instead.",
+                system_prompt="You are an investment analyst. Write professional analysis as flowing prose. Only use numbers from tool results — never invent figures. If data is estimated, state confidence level. The frontend renders tables, charts, and metric cards separately — do not duplicate them in prose. Start with the most important finding. NEVER say 'I don't have data', 'cannot be completed', or 'no data available' — present estimates with confidence ranges instead. Maximize insight from partial data: if some companies have sectors/stages/financials, ANALYZE those companies fully and infer the rest. An analyst who backs out when data is sparse gets fired.",
                 capability=ModelCapability.ANALYSIS,
                 max_tokens=SYNTH_MAX_TOKENS,
                 temperature=0.3,
@@ -31870,6 +31919,9 @@ Return your analysis with inline citations for ALL factual claims.
                 is_missing = (actual_value is None or actual_value == "" or actual_value == 0)
                 
                 # Establish the final value using hierarchy
+                # IMPORTANT: Only set the raw field when we have REAL extracted data.
+                # For inferred/default values, only set inferred_* and flag as estimated
+                # so downstream consumers (memos, reports) can distinguish real vs estimated.
                 if not is_missing:
                     # We have extracted data - use it for both fields
                     final_value = actual_value
@@ -31877,29 +31929,29 @@ Return your analysis with inline citations for ALL factual claims.
                     company[inferred_field] = final_value
                     logger.info(f"[INFERENCE_ENRICHMENT] Using extracted {field} = {final_value} for {company_name}")
                 elif existing_inferred is not None and existing_inferred != 0:
-                    # We have inferred data - use it
+                    # We have inferred data - only set inferred field, not raw
                     final_value = existing_inferred
-                    company[field] = final_value
                     company[inferred_field] = final_value
+                    company[f"_{field}_is_estimated"] = True
                     logger.info(f"[INFERENCE_ENRICHMENT] Using already inferred {field} = {final_value} for {company_name}")
                 else:
                     # Need to calculate a value - ALWAYS infer team_size when missing
                     stage = company.get("stage", "Seed")
                     service_fields = await self._get_service_calculated_fields(
-                        company, 
+                        company,
                         [field]  # This will call infer_from_stage_benchmarks for team_size
                     )
                     calculated_value = service_fields.get(field)
-                    
+
                     if calculated_value is not None and calculated_value != 0:
-                        company[field] = calculated_value
                         company[inferred_field] = calculated_value
+                        company[f"_{field}_is_estimated"] = True
                         logger.info(f"[INFERENCE_ENRICHMENT] Using service-calculated {field} = {calculated_value} for {company_name}")
                     else:
                         # Use stage-based default as last resort
                         default_value = self._get_stage_default(field, stage)
-                        company[field] = default_value
                         company[inferred_field] = default_value
+                        company[f"_{field}_is_estimated"] = True
                         logger.warning(f"[INFERENCE_ENRICHMENT] Using stage default {field} = {default_value} for {company_name}")
             
             # CRITICAL: Ensure inferred_valuation ALWAYS exists
@@ -31911,8 +31963,9 @@ Return your analysis with inline citations for ALL factual claims.
                     stage = company.get('stage', 'Seed')
                     default_val = self._get_stage_default('valuation', stage)
                     company['inferred_valuation'] = default_val
-                    company['valuation'] = default_val
-                    logger.warning(f"[INFERENCE_ENRICHMENT] Forced inferred_valuation = {default_val} for {company_name} at stage {stage}")
+                    company['_valuation_is_estimated'] = True
+                    # DO NOT set company['valuation'] = default_val — raw field must reflect real data only
+                    logger.warning(f"[INFERENCE_ENRICHMENT] Forced inferred_valuation = {default_val} for {company_name} at stage {stage} [ESTIMATED]")
             
             # Also ensure inferred_revenue ALWAYS exists
             if not company.get('inferred_revenue') or company.get('inferred_revenue') == 0:
@@ -31924,8 +31977,9 @@ Return your analysis with inline citations for ALL factual claims.
                     stage = company.get('stage', 'Seed')
                     default_val = self._get_stage_default('revenue', stage)
                     company['inferred_revenue'] = default_val
-                    company['revenue'] = default_val
-                    logger.warning(f"[INFERENCE_ENRICHMENT] Forced inferred_revenue = {default_val} for {company_name} at stage {stage}")
+                    company['_revenue_is_estimated'] = True
+                    # DO NOT set company['revenue'] = default_val — raw field must reflect real data only
+                    logger.warning(f"[INFERENCE_ENRICHMENT] Forced inferred_revenue = {default_val} for {company_name} at stage {stage} [ESTIMATED]")
             
             # Ensure growth metrics exist for deck projections
             if not company.get('projected_growth_rate') or not company.get('growth_rate'):

@@ -20,6 +20,7 @@ function shouldShowSidebar(pathname: string | null): boolean {
   if (!pathname) return false;
   if (AUTH_ROUTES.has(pathname) || MARKETING_ROUTES.has(pathname)) return false;
   if (pathname.startsWith('/talk-to-sales') || pathname.startsWith('/contact-sales')) return false;
+  if (pathname.startsWith('/deck-agent')) return false;
   return true;
 }
 

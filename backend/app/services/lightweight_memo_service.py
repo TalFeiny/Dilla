@@ -192,6 +192,8 @@ class LightweightMemoService:
             "2. NEVER skip a company because data is sparse. Show what you have:\n"
             "   - Real data: bold, cited ('$14.8M ARR, company-reported')\n"
             "   - Estimated data: labeled ('[Est: $5M ARR based on Series A benchmarks]')\n"
+            "   - Fields marked [ESTIMATED] in the data MUST be presented as estimates, never as facts\n"
+            "   - If ALL financial data for a company is estimated, state: 'No company-reported financials available — all figures are stage benchmarks'\n"
             "   - Unknown: '—' in tables, noted in prose as 'data pending'\n"
             "3. For portfolio analysis, lead with the BIG PICTURE before individual companies:\n"
             "   - Stage distribution, sector concentration, total capital deployed\n"
@@ -205,6 +207,20 @@ class LightweightMemoService:
             "8. For multi-company analysis: always compare and contrast — never describe companies in isolation.\n"
             "9. Calculate derived metrics where possible: revenue multiples, capital efficiency, implied burn rate.\n"
             "10. End each section with a clear takeaway or action item.\n"
+            "\nDATA ACCURACY RULES — non-negotiable:\n"
+            "1. COUNT before you claim. If you state '72% of companies lack X', you must have counted every row. Get the exact number right.\n"
+            "2. NEVER dismiss available data. If 7 of 32 companies have sector data, analyze those 7 sectors — don't say 'most companies lack sector data' and move on.\n"
+            "3. Work with what you have, not what you wish you had. Sparse data means you analyze HARDER, not less. "
+            "A portfolio with 7 classified and 25 unclassified companies has a REAL sector distribution for those 7 — report it.\n"
+            "4. Distinguish data gaps from data absence. 'No sector reported' for a company is a gap to flag. "
+            "But if the data DOES contain sectors, stages, or financials for some companies, those are FACTS — use them.\n"
+            "5. No blanket disclaimers. NEVER write 'insufficient data to assess' when the data contains relevant fields. "
+            "State exactly what the data shows and exactly what's missing.\n"
+            "6. Every quantitative claim must be traceable to the data provided. If you say '31 of 32 companies are valued at $80M', verify it by checking the table.\n"
+            "7. When data is missing, INFER AND EXPLAIN. Use stage benchmarks, comparable companies, industry medians, and first-principles reasoning. "
+            "Say what you'd estimate and why — 'Based on Series A SaaS benchmarks, likely $3-8M ARR' is infinitely more useful than 'data not available'.\n"
+            "8. Your job is to MAXIMIZE INSIGHT from every scrap of data. An analyst who says 'not enough data' gets fired. "
+            "An analyst who says 'here's what the 7 data points tell us, here's what I'd estimate for the other 25, and here's my confidence level' gets promoted.\n"
             "\nSTRUCTURE RULES:\n"
             "- Bold (**text**) key metrics and company names on first mention.\n"
             "- Numbers: $XM for millions, $XB for billions, X% for percentages, Xx for multiples.\n"
@@ -541,13 +557,20 @@ class LightweightMemoService:
             for c in companies:
                 stage = str(c.get("stage") or "series a").lower().strip()
                 bench = _STAGE_BENCHMARKS.get(stage, _STAGE_BENCHMARKS["series a"])
+                # Normalize flag names: orchestrator uses _X_is_estimated, memo uses _X_estimated
+                if c.get("_revenue_is_estimated"):
+                    c["_revenue_estimated"] = True
+                if c.get("_valuation_is_estimated"):
+                    c["_valuation_estimated"] = True
                 rev = ensure_numeric(c.get("revenue")) or ensure_numeric(c.get("inferred_revenue"))
                 if not rev:
-                    c["revenue"] = bench["revenue"]
+                    # Only set inferred field — never overwrite raw revenue with a benchmark
+                    c["inferred_revenue"] = bench["revenue"]
                     c["_revenue_estimated"] = True
-                val = ensure_numeric(c.get("valuation"))
+                val = ensure_numeric(c.get("valuation")) or ensure_numeric(c.get("inferred_valuation"))
                 if not val:
-                    c["valuation"] = bench["valuation"]
+                    # Only set inferred field — never overwrite raw valuation with a benchmark
+                    c["inferred_valuation"] = bench["valuation"]
                     c["_valuation_estimated"] = True
                 growth = c.get("revenue_growth")
                 if not growth or not isinstance(growth, (int, float)):
@@ -1044,12 +1067,12 @@ class LightweightMemoService:
         # Key financials block
         fin_parts = []
         if revenue > 0:
-            is_inferred = not c.get("revenue") and c.get("inferred_revenue")
-            label = "ARR [estimated]" if is_inferred else "ARR"
+            is_estimated = c.get("_revenue_estimated") or (not c.get("revenue") and c.get("inferred_revenue"))
+            label = "ARR [ESTIMATED — stage benchmark, not company-reported]" if is_estimated else "ARR"
             fin_parts.append(f"{label}: ${revenue / 1e6:,.1f}M")
         if valuation > 0:
-            is_inferred = not c.get("valuation") and c.get("inferred_valuation")
-            label = "Valuation [estimated]" if is_inferred else "Valuation"
+            is_estimated = c.get("_valuation_estimated") or (not c.get("valuation") and c.get("inferred_valuation"))
+            label = "Valuation [ESTIMATED — stage benchmark, not company-reported]" if is_estimated else "Valuation"
             fin_parts.append(f"{label}: ${valuation / 1e6:,.1f}M")
         if total_funding > 0:
             fin_parts.append(f"Total Funding: ${total_funding / 1e6:,.1f}M")
@@ -2380,7 +2403,7 @@ class LightweightMemoService:
             total_val += val
             total_funding += funding
 
-            if c.get("_revenue_estimated") or c.get("_valuation_estimated"):
+            if c.get("_revenue_estimated") or c.get("_valuation_estimated") or c.get("_revenue_is_estimated") or c.get("_valuation_is_estimated"):
                 est_count += 1
             else:
                 actual_count += 1

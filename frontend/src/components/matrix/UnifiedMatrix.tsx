@@ -4470,7 +4470,7 @@ export function UnifiedMatrix({
 
         {/* Agent Panel (chat) — right side */}
         {showChartViewport && useAgentPanel && (
-          <div className="w-[260px] min-w-[220px] max-w-[min(280px,100%)] flex-shrink-0 flex flex-col min-h-0 border-l bg-card/50 overflow-hidden">
+          <div className="w-[140px] sm:w-[180px] md:w-[240px] lg:w-[260px] min-w-[120px] sm:min-w-[160px] md:min-w-[220px] max-w-[min(280px,40vw)] flex-shrink-0 flex flex-col min-h-0 border-l bg-card/50 overflow-hidden">
             <AgentPanel
               matrixData={matrixData}
               fundId={fundId}
