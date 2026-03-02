@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseService } from '@/lib/supabase';
+import { getSupabaseServiceRole } from '@/lib/supabase/server';
+const supabaseService = getSupabaseServiceRole();
 
 // Cache for analysis data
 const analysisCache = new Map<string, { data: any; timestamp: number }>();

@@ -254,6 +254,10 @@ export async function middleware(request: NextRequest) {
 
   const { user, response } = await updateSession(request)
 
+  // DEBUG: log auth state on every non-static request
+  const cookieNames = request.cookies.getAll().map(c => c.name)
+  console.log(`[AUTH] ${pathname} | user=${user?.email ?? 'NULL'} | cookies=[${cookieNames.join(', ')}]`)
+
   // Protect app routes — redirect unauthenticated users to /login
   if (!user && !isPublicRoute && !isApiRoute) {
     const loginUrl = request.nextUrl.clone()

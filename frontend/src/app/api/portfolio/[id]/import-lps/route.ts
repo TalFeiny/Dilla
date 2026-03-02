@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseService } from '@/lib/supabase';
+import { getSupabaseServiceRole } from '@/lib/supabase/server';
+const supabaseService = getSupabaseServiceRole();
 
 export const maxDuration = 120;
 

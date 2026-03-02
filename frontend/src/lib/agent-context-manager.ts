@@ -1,4 +1,5 @@
-import { supabaseService } from '@/lib/supabase';
+import { getSupabaseServiceRole } from '@/lib/supabase/server';
+const supabaseService = getSupabaseServiceRole();
 
 interface ConversationContext {
   sessionId: string;

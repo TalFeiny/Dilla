@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { PWERMPlaygroundConfig, CreatePWERMAnalysisRequest } from '@/types/portfolio';
 import { spawn } from 'child_process';
 import { resolveScriptPath } from '@/lib/scripts-path';
-import { supabaseService } from '@/lib/supabase';
+import { getSupabaseServiceRole } from '@/lib/supabase/server';
+const supabaseService = getSupabaseServiceRole();
 
 export async function POST(request: NextRequest) {
   try {

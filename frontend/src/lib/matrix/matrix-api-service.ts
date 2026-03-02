@@ -8,7 +8,8 @@
  */
 
 import { MatrixData, MatrixColumn, MatrixRow, MatrixCell } from '@/components/matrix/UnifiedMatrix';
-import { supabaseService } from '@/lib/supabase';
+import { getSupabaseServiceRole } from '@/lib/supabase/server';
+const supabaseService = getSupabaseServiceRole();
 
 export type MatrixMode = 'portfolio' | 'query' | 'custom' | 'lp';
 export type DataSource = 'manual' | 'agent' | 'document' | 'api' | 'formula';

@@ -17,7 +17,8 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
 });
 
-import { supabaseService } from '@/lib/supabase';
+import { getSupabaseServiceRole } from '@/lib/supabase/server';
+const supabaseService = getSupabaseServiceRole();
 
 // Enhanced system prompt with reasoning chain and professional financial modeling standards
 const getSystemPrompt = () => `You are an expert financial analyst creating professional spreadsheet models.

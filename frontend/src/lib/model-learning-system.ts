@@ -3,7 +3,8 @@
  * Tracks agent performance and builds fine-tuning dataset
  */
 
-import { supabaseService } from '@/lib/supabase';
+import { getSupabaseServiceRole } from '@/lib/supabase/server';
+const supabaseService = getSupabaseServiceRole();
 
 export interface ModelSession {
   id: string;

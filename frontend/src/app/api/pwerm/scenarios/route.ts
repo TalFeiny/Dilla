@@ -4,7 +4,8 @@ import { promisify } from 'util';
 import { spawn } from 'child_process';
 import path from 'path';
 import { resolveScriptPath } from '@/lib/scripts-path';
-import { supabaseService } from '@/lib/supabase';
+import { getSupabaseServiceRole } from '@/lib/supabase/server';
+const supabaseService = getSupabaseServiceRole();
 
 const execAsync = promisify(exec);
 

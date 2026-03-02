@@ -24,12 +24,17 @@ export default function Login() {
 
       if (error) throw error;
 
-      // Force a hard navigation so the browser sends the freshly-set
-      // auth cookies to the middleware on the very first request.
-      // router.push() does a soft SPA nav that can race with cookie
-      // propagation, causing the middleware to bounce back to /login.
+      // DEBUG: log what signInWithPassword returned
+      console.log('[LOGIN] signIn result:', {
+        user: data.user?.email,
+        hasSession: !!data.session,
+        accessToken: data.session?.access_token?.slice(0, 20) + '...',
+      });
+      console.log('[LOGIN] cookies after signIn:', document.cookie);
+
       window.location.href = '/dashboard';
     } catch (error: any) {
+      console.error('[LOGIN] error:', error);
       setError(error.message || 'An error occurred during login');
       setLoading(false);
     }
