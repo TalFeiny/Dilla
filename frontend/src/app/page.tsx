@@ -156,8 +156,7 @@ function HeroSection() {
           </h1>
           <p className="max-w-xl text-lg leading-relaxed text-muted-foreground">
             Dilla unifies your deal flow, diligence engine, fund operations, and LP communications into a
-            single monochrome workspace that firms can trust. No free runs, just the infrastructure you need
-            to compound edge.
+            single monochrome workspace that firms can trust. Built for teams that move with conviction.
           </p>
           <div className="flex flex-wrap gap-4">
             <ActionButton />

@@ -5,6 +5,12 @@ const THEME_KEY = 'theme';
 export function setTheme(theme: Theme): void {
   if (typeof document === 'undefined') return;
   document.documentElement.setAttribute('data-theme', theme);
+  // Sync Tailwind dark: prefix
+  if (theme === 'night') {
+    document.documentElement.classList.add('dark');
+  } else {
+    document.documentElement.classList.remove('dark');
+  }
   try {
     localStorage.setItem(THEME_KEY, theme);
   } catch {}

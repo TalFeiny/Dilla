@@ -21,6 +21,7 @@ import {
   Sun,
   Presentation,
 } from 'lucide-react';
+import { initTheme, toggleTheme as toggleThemeLib } from '@/lib/theme';
 
 
 export function Sidebar() {
@@ -33,14 +34,13 @@ export function Sidebar() {
 
   useEffect(() => {
     setMounted(true);
-    const theme = document.documentElement.getAttribute('data-theme');
+    const theme = initTheme();
     setIsDark(theme === 'night');
   }, []);
 
   const toggleTheme = () => {
-    const newTheme = isDark ? 'day' : 'night';
-    document.documentElement.setAttribute('data-theme', newTheme);
-    setIsDark(!isDark);
+    const newTheme = toggleThemeLib();
+    setIsDark(newTheme === 'night');
   };
 
   const handleSignOut = async () => {
@@ -71,13 +71,13 @@ export function Sidebar() {
   return (
     <div className="fixed left-0 top-0 h-screen w-10 md:w-12 lg:w-16 z-40">
       <div className="h-full flex flex-col bg-white dark:bg-black backdrop-blur-md border-r border-gray-200 dark:border-gray-800">
-        <div className="h-12 flex items-center justify-center relative border-b border-gray-200 dark:border-gray-800">
+        <div className="h-12 flex items-center justify-center relative border-b border-border">
           <Link href="/dashboard" aria-label="Home" className="flex items-center justify-center">
             <img src="/dilla-logo.svg" alt="Dilla" className="h-8 w-auto opacity-80 hover:opacity-100 transition-opacity" />
           </Link>
           <button
             onClick={toggleTheme}
-            className="absolute top-1 right-1 w-4 h-4 rounded-full bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 transition-colors flex items-center justify-center"
+            className="absolute top-1 right-1 w-4 h-4 rounded-full bg-muted hover:bg-accent transition-colors flex items-center justify-center"
             aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
           >
             {!mounted ? (
@@ -100,9 +100,9 @@ export function Sidebar() {
                     href={item.href}
                     className={
                       `relative flex items-center justify-center h-8 mx-1 rounded transition-colors
-                       ${isActive 
-                         ? 'bg-gray-100 dark:bg-gray-800 text-primary crystal-glow' 
-                         : 'text-secondary hover:text-primary hover:bg-gray-50 dark:hover:bg-gray-900'
+                       ${isActive
+                         ? 'bg-muted text-primary crystal-glow'
+                         : 'text-secondary hover:text-primary hover:bg-muted/50'
                        }`
                     }
                     aria-label={item.label}
@@ -110,8 +110,8 @@ export function Sidebar() {
                     <Icon className="w-4 h-4" strokeWidth={1.5} />
                   </Link>
                   <div 
-                    className="absolute left-12 md:left-14 lg:left-18 ml-2 px-2 py-1 bg-gray-900 dark:bg-gray-800 text-white text-xs rounded shadow border border-gray-600
-                               opacity-0 group-hover:opacity-100 pointer-events-none transition-all duration-200 whitespace-nowrap z-50 crystal-accent"
+                    className="absolute left-12 md:left-14 lg:left-18 ml-2 px-2 py-1 bg-popover text-popover-foreground text-xs rounded shadow border border-border
+                               opacity-0 group-hover:opacity-100 pointer-events-none transition-all duration-200 whitespace-nowrap z-50"
                   >
                     {item.label}
                   </div>
@@ -121,10 +121,10 @@ export function Sidebar() {
           </ul>
         </nav>
         {user && (
-          <div className="border-t border-gray-200 dark:border-gray-800 p-2">
-            <button 
-              onClick={handleSignOut} 
-              className="w-full h-8 flex items-center justify-center text-secondary hover:text-primary hover:bg-gray-100/50 dark:hover:bg-gray-900/50 rounded-lg transition-all duration-200"
+          <div className="border-t border-border p-2">
+            <button
+              onClick={handleSignOut}
+              className="w-full h-8 flex items-center justify-center text-secondary hover:text-primary hover:bg-muted/50 rounded-lg transition-all duration-200"
               aria-label="Sign Out"
             >
               <LogOut className="w-4 h-4" strokeWidth={1.5} />

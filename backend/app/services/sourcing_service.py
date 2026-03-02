@@ -145,9 +145,26 @@ async def query_companies(
         # Guard every string filter against None/empty to prevent
         # "unsupported format string passed to NoneType.__format__"
         if filters.get("sector"):
-            sector = str(filters["sector"]).strip()
-            if sector:
-                q = q.ilike("sector", f"%{sector}%")
+            sector_raw = str(filters["sector"]).strip()
+            if sector_raw:
+                # LLM rubrics return compound sectors like "Healthcare Technology"
+                # or "B2B SaaS - Sales Enablement / Revenue Intelligence / CRM".
+                # A single ilike against the full string never matches because the
+                # DB has simpler values like "Healthcare" or "SaaS".
+                # Split into meaningful terms and OR-match across sector + ai_category.
+                _noise = {"and", "the", "for", "b2b", "b2c", "or", "in", "of", "with"}
+                terms = [
+                    t for t in sector_raw.replace("/", " ").replace("-", " ").replace(",", " ").split()
+                    if len(t) > 2 and t.lower() not in _noise
+                ]
+                if not terms:
+                    terms = [sector_raw]
+                # Build OR clause: each term matches sector OR ai_category
+                or_parts = []
+                for t in terms[:4]:
+                    or_parts.append(f"sector.ilike.%{t}%")
+                    or_parts.append(f"ai_category.ilike.%{t}%")
+                q = q.or_(",".join(or_parts))
 
         if filters.get("stage"):
             stage = str(filters["stage"]).strip()
@@ -1474,6 +1491,30 @@ def build_decomposition_prompt(rubric: Dict[str, Any]) -> str:
             f'}}'
         )
 
+    # Intent-specific examples so the LLM produces web-searchable subcategories
+    _intent_examples = {
+        "dealflow": (
+            "Examples of GOOD subcategories (specific enough to find companies):\n"
+            "  'healthcare SaaS Series A' → ['EHR systems', 'telehealth platforms', "
+            "'revenue cycle management', 'clinical decision support', 'patient engagement software']\n"
+            "  'AI infrastructure Seed' → ['vector database startups', 'LLM fine-tuning platforms', "
+            "'AI observability tools', 'model deployment infrastructure', 'synthetic data generation']\n"
+        ),
+        "acquirer": (
+            "Examples of GOOD subcategories:\n"
+            "  'PE firms acquiring healthcare IT' → ['healthcare IT roll-up platforms', "
+            "'PE-backed RCM consolidators', 'health data analytics acquirers', "
+            "'EHR platform aggregators', 'digital health PE platforms']\n"
+        ),
+        "gtm_leads": (
+            "Examples of GOOD subcategories:\n"
+            "  'B2B SaaS sales enablement' → ['revenue intelligence platforms', "
+            "'sales engagement tools', 'conversation intelligence', 'CPQ software', "
+            "'sales forecasting platforms']\n"
+        ),
+    }
+    examples = _intent_examples.get(intent, _intent_examples["dealflow"])
+
     return (
         f"Decompose this search request into 3-5 specific subcategories for web search.\n\n"
         f"REQUEST: {thesis}\n"
@@ -1482,11 +1523,12 @@ def build_decomposition_prompt(rubric: Dict[str, Any]) -> str:
         f"{f'SECTOR: {sector}' if sector else ''}\n"
         f"{f'STAGE: {stage}' if stage else ''}\n"
         f"{f'GEOGRAPHY: {geography}' if geography else ''}\n\n"
-        f"Break this into 3-5 concrete subcategories that represent DIFFERENT segments "
-        f"of what the user is looking for. Each subcategory should be a specific niche "
-        f"that would appear on different web pages.\n\n"
-        f"Example: 'healthcare SaaS' → ['EHR systems', 'telehealth platforms', "
-        f"'revenue cycle management', 'clinical operations software', 'patient engagement']\n\n"
+        f"Each subcategory must be a SPECIFIC market niche — something that has its own "
+        f"dedicated company lists, market maps, or comparison articles on the web. "
+        f"Never return the parent sector itself as a subcategory.\n\n"
+        f"{examples}\n"
+        f"BAD subcategories (too vague, just rephrasing the request):\n"
+        f"  ['healthcare companies', 'AI startups', 'technology firms']\n\n"
         f"{extra_identify}"
         f"Return JSON:\n"
         f"{json_schema}"

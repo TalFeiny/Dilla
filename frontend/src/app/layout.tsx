@@ -29,6 +29,11 @@ export default function RootLayout({ children }: RootLayoutProps): JSX.Element {
         <link href="https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,600,700,800,900&display=swap" rel="stylesheet" />
       </head>
       <body className="antialiased bg-white text-gray-900" suppressHydrationWarning>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem('theme');if(t!=='day'&&t!=='night')t='night';document.documentElement.setAttribute('data-theme',t);if(t==='night')document.documentElement.classList.add('dark');else document.documentElement.classList.remove('dark')}catch(e){document.documentElement.setAttribute('data-theme','night');document.documentElement.classList.add('dark')}})();`,
+          }}
+        />
         <Suspense fallback={null}>
           <SessionProvider>
             <GridProvider>

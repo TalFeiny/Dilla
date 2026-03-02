@@ -670,10 +670,6 @@ export default function DocsPage() {
                 <Download className="w-4 h-4 mr-1" />
                 Export
               </Button>
-              <Button variant="outline" size="sm">
-                <Save className="w-4 h-4 mr-1" />
-                Save
-              </Button>
             </div>
           </div>
         </div>

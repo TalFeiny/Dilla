@@ -182,12 +182,6 @@ export default function CompaniesPage() {
           <h1 className="font-display text-primary">Companies</h1>
           <p className="font-body text-secondary">Manage and analyze your portfolio companies</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline">
-            <Building2 className="w-4 h-4 mr-2" />
-            Add Company
-          </Button>
-        </div>
       </div>
 
       {/* Filters */}

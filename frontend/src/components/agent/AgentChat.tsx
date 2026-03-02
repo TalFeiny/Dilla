@@ -1481,7 +1481,7 @@ export default function AgentChat({
                     className={`group relative max-w-[92%] min-w-0 rounded-lg px-2 py-1 text-xs ${
                       message.role === 'user'
                         ? 'bg-gradient-to-r from-gray-600 to-gray-700 text-white'
-                        : 'bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800'
+                        : 'bg-card text-card-foreground border border-border'
                     }`}
                   >
                     {message.processing ? (
@@ -2149,7 +2149,7 @@ export default function AgentChat({
                 disabled={isLoading}
               />
             </div>
-            {onUploadDocument && matrixData?.rows?.length && fundId ? (
+            {onUploadDocument ? (
               <Button
                 variant="ghost"
                 size="icon"
