@@ -263,7 +263,7 @@ class CellActionRegistry:
         action: ActionDefinition,
         output: Any
     ) -> Dict[str, Any]:
-        """Transform numeric output"""
+        """Transform numeric output — preserves explanation/confidence for frontend trail."""
         if isinstance(output, (int, float)):
             value = float(output)
         elif isinstance(output, dict):
@@ -272,14 +272,26 @@ class CellActionRegistry:
             value = float(value) if value is not None else 0
         else:
             value = float(output) if output else 0
-        
+
+        metadata: Dict[str, Any] = {
+            'raw_output': output,
+            'output_type': 'number',
+        }
+        # Pass through explanation trail from service output so frontend can display it
+        if isinstance(output, dict):
+            if output.get('explanation'):
+                metadata['explanation'] = output['explanation']
+            if output.get('method_used'):
+                metadata['method'] = output['method_used']
+            if output.get('confidence') is not None:
+                metadata['confidence'] = output['confidence']
+            if output.get('citations'):
+                metadata['citations'] = output['citations']
+
         return {
             'value': value,
             'displayValue': f"{value:,.2f}" if value else "0",
-            'metadata': {
-                'raw_output': output,
-                'output_type': 'number'
-            }
+            'metadata': metadata,
         }
     
     def _transform_object_output(

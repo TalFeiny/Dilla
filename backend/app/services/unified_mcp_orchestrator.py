@@ -8661,7 +8661,7 @@ Rules:
 
         ROUTE_MAX_TOKENS = 500
         REFLECT_MAX_TOKENS = 300
-        SYNTH_MAX_TOKENS = 4000
+        SYNTH_MAX_TOKENS = 6000
 
         # Track correction count at loop start for mid-loop interruption detection
         _correction_count_at_start = len(self.shared_data.get("session_corrections", []))
@@ -9881,20 +9881,13 @@ ABSOLUTE RULES:
             if not self.session:
                 self.session = aiohttp.ClientSession()
             
-            # Clear all caches at the start of each request
-            # CRITICAL: Preserve companies if they were already added to shared_data
-            companies_to_preserve = self.shared_data.get('companies', [])
-            
+            # Clear ALL caches at the start of each request — no stale data
+            # Companies are re-fetched by the agent loop tools; preserving them
+            # across requests caused stale search results to leak into new queries.
             self._tavily_cache.clear()
             self._company_cache.clear()
             self.shared_data.clear()
-            
-            # Restore companies if they existed
-            if companies_to_preserve:
-                self.shared_data['companies'] = companies_to_preserve
-                logger.info(f"[REQUEST_START] Cleared caches but preserved {len(companies_to_preserve)} companies in shared_data")
-            else:
-                logger.info(f"[REQUEST_START] Cleared all caches and shared data for new request")
+            logger.info("[REQUEST_START] Cleared all caches and shared data for new request")
 
             # Start per-request budget tracking
             budget = self.model_router.start_budget(max_cost=2.0, max_tokens=500_000)
