@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import supabase from '@/lib/supabase';
+import { getSupabaseBrowser } from '@/lib/supabase/browser';
 
 export default function SignUp() {
   const [email, setEmail] = useState('');
@@ -32,6 +32,7 @@ export default function SignUp() {
     setLoading(true);
 
     try {
+      const supabase = getSupabaseBrowser();
       const { data, error } = await supabase.auth.signUp({
         email,
         password,

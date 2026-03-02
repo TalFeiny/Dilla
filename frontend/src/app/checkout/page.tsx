@@ -17,7 +17,7 @@ export default function CheckoutPage() {
     if (authLoading) return;
 
     if (!user) {
-      router.push('/signin');
+      router.push('/login');
       return;
     }
 

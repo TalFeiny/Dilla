@@ -8,7 +8,7 @@ interface AppShellProps {
   children: React.ReactNode;
 }
 
-const AUTH_ROUTES = new Set(['/login', '/signin', '/signup', '/forgot-password']);
+const AUTH_ROUTES = new Set(['/login', '/signup', '/forgot-password']);
 const MARKETING_ROUTES = new Set([
   '/',
   '/pricing',

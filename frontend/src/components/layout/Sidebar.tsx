@@ -44,7 +44,7 @@ export function Sidebar() {
 
   const handleSignOut = async () => {
     await signOut();
-    router.push('/signin');
+    router.push('/login');
   };
 
   // Don't show sidebar on landing, login, signup pages
