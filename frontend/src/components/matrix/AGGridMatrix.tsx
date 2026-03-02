@@ -223,6 +223,7 @@ export function AGGridMatrix({
   propsRef.current = {
     matrixData,
     availableActions,
+    onCellEdit,
     onSourceChange,
     onFormulaBuilder,
     onLinkDocument,
@@ -417,51 +418,9 @@ export function AGGridMatrix({
     if (!params.colDef?.field) return {};
     
     const cell = params.data?.[`_${params.colDef.field}_cell`] as MatrixCell | undefined;
-    const value = params.value;
-    const col = safeMatrixData.columns.find(c => c.id === params.colDef.field);
-    
+
     const style: React.CSSProperties = {};
-    
-    // Risk-based coloring for financial metrics
-    if (col?.type === 'currency' || col?.type === 'number') {
-      const numValue = typeof value === 'number' ? value : parseFloat(String(value).replace(/[^0-9.-]/g, ''));
-      if (!isNaN(numValue)) {
-        // ARR thresholds
-        if (params.colDef.field === 'arr' || params.colDef.field?.toLowerCase().includes('arr')) {
-          if (numValue > 10000000) {
-            style.backgroundColor = '#C8E6C9'; // Light green
-          } else if (numValue > 1000000) {
-            style.backgroundColor = '#FFF9C4'; // Light yellow
-          } else if (numValue < 100000) {
-            style.backgroundColor = '#FFCDD2'; // Light red
-          }
-        }
-        // Growth rate thresholds
-        if (params.colDef.field === 'growthRate' || params.colDef.field?.toLowerCase().includes('growth')) {
-          if (numValue > 0.5) {
-            style.backgroundColor = '#C8E6C9';
-          } else if (numValue > 0.2) {
-            style.backgroundColor = '#FFF9C4';
-          } else if (numValue < 0) {
-            style.backgroundColor = '#FFCDD2';
-          }
-        }
-        // Burn rate / runway risk
-        if (params.colDef.field === 'burnRate' || params.colDef.field?.toLowerCase().includes('burn')) {
-          if (numValue > 1000000) {
-            style.backgroundColor = '#FFCDD2';
-          }
-        }
-        if (params.colDef.field === 'runway' || params.colDef.field?.toLowerCase().includes('runway')) {
-          if (numValue < 6) {
-            style.backgroundColor = '#FFCDD2';
-          } else if (numValue < 12) {
-            style.backgroundColor = '#FFF9C4';
-          }
-        }
-      }
-    }
-    
+
     // Stale data indicator
     if (cell?.lastUpdated) {
       const daysSinceUpdate = (Date.now() - new Date(cell.lastUpdated).getTime()) / (1000 * 60 * 60 * 24);
@@ -518,7 +477,7 @@ export function AGGridMatrix({
         resizable: true,
         sortable: true,
         filter: false, // Remove filter icon from headers
-        editable: false, // All edits go through CellDropdownRenderer wrapper, not AG Grid built-in editor
+        editable: col.editable !== false, // Allow direct inline editing for editable columns
         // Ensure cell value is always from cell object so text shows (fix: "only name has values")
         valueGetter: (params) => {
           if (!params?.data) return null;
@@ -605,7 +564,7 @@ export function AGGridMatrix({
         valueParser: (params) => {
           return parseCellValue(params.newValue, col.type);
         },
-        // No cellEditor — all editing goes through CellDropdownRenderer wrapper
+        // Double-click to edit inline; parsed value saved via onCellValueChanged
       };
 
       // Add cell styling
@@ -697,8 +656,13 @@ export function AGGridMatrix({
     onSelectionChange(selectedRowIds);
   }, [gridApi, onSelectionChange]);
 
-  // No handleCellValueChanged — AG Grid built-in editing is disabled.
-  // All edits (human + agent) go through CellDropdownRenderer → onCellEdit → handleCellEdit in UnifiedMatrix.
+  // Handle inline cell edits (double-click → type → Enter)
+  const handleCellValueChanged = useCallback((params: any) => {
+    const rowId = params.data?.id;
+    const columnId = params.colDef?.field;
+    if (!rowId || !columnId || params.newValue === params.oldValue) return;
+    propsRef.current.onCellEdit?.(rowId, columnId, params.newValue);
+  }, []);
 
   // Grid ready callback
   const onGridReady = useCallback((params: any) => {
@@ -1030,6 +994,7 @@ export function AGGridMatrix({
                 }
               }}
               onGridPreDestroyed={onGridPreDestroyed}
+              onCellValueChanged={handleCellValueChanged}
               onSelectionChanged={handleSelectionChanged}
               rowSelection={onSelectionChange ? 'multiple' : undefined}
               suppressRowClickSelection={onSelectionChange ? false : true}
