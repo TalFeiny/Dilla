@@ -131,7 +131,7 @@ import { normalizeChartConfig } from '@/lib/matrix/chart-utils';
 import { buildCellEditOptionsFromSuggestion, buildApplyPayloadFromSuggestion, acceptSuggestionViaApi, rejectSuggestion, addServiceSuggestion } from '@/lib/matrix/suggestion-helpers';
 import { exportMatrixToCSV, exportMatrixToXLS, exportToPDF } from '@/lib/matrix/export-orchestrator';
 
-export type MatrixMode = 'portfolio' | 'query' | 'custom' | 'lp';
+export type MatrixMode = 'portfolio' | 'query' | 'custom' | 'lp' | 'pnl';
 
 export interface MatrixColumn {
   id: string;
@@ -200,6 +200,7 @@ export interface MatrixData {
     query?: string;
     fundId?: string;
     charts?: any[]; // Charts from unified MCP orchestrator
+    forecastStartIndex?: number; // P&L: index where forecast columns begin
   };
 }
 
@@ -328,6 +329,14 @@ export function UnifiedMatrix({
         ],
         rows: [],
         metadata: { dataSource: 'lp', lastUpdated: new Date().toISOString() },
+      };
+    } else if (mode === 'pnl') {
+      return {
+        columns: [
+          { id: 'lineItem', name: 'Line Item', type: 'text', width: 220, editable: false },
+        ],
+        rows: [],
+        metadata: { dataSource: 'pnl', lastUpdated: new Date().toISOString() },
       };
     } else {
       // query mode - minimal default
@@ -1371,15 +1380,36 @@ export function UnifiedMatrix({
     }
   }, [fundId, onDataChange]);
 
-  // Load portfolio or LP data on mount or when mode/fundId changes
+  // Load P&L data for pnl mode
+  const loadPnlData = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const { fetchPnlForMatrix } = await import('@/lib/matrix/matrix-api-service');
+      const pnlData = await fetchPnlForMatrix(fundId);
+      if (pnlData.rows.length > 0 || pnlData.columns.length > 0) {
+        setMatrixData(pnlData);
+        onDataChange?.(pnlData);
+      }
+    } catch (err) {
+      console.error('[UnifiedMatrix] Error loading P&L data:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load P&L data');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [fundId, onDataChange]);
+
+  // Load portfolio, LP, or P&L data on mount or when mode/fundId changes
   useEffect(() => {
     if (mode === 'portfolio' && fundId) {
       loadPortfolioData();
     } else if (mode === 'lp') {
       loadLPData();
+    } else if (mode === 'pnl') {
+      loadPnlData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, fundId, loadPortfolioData, loadLPData]);
+  }, [mode, fundId, loadPortfolioData, loadLPData, loadPnlData]);
 
   // Parse @CompanyName mentions from query
   const parseCompanyMentions = (queryText: string): string[] => {
@@ -4066,8 +4096,8 @@ export function UnifiedMatrix({
                 {showChartViewport ? 'Hide' : 'Show'} chat
               </DropdownMenuItem>
             )}
-            {(mode === 'portfolio' || mode === 'lp') && (
-              <DropdownMenuItem onClick={() => { mode === 'lp' ? loadLPData() : loadPortfolioData(); onRefresh?.(); }}>
+            {(mode === 'portfolio' || mode === 'lp' || mode === 'pnl') && (
+              <DropdownMenuItem onClick={() => { mode === 'lp' ? loadLPData() : mode === 'pnl' ? loadPnlData() : loadPortfolioData(); onRefresh?.(); }}>
                 <RefreshCw className="w-4 h-4 mr-2" />
                 Refresh
               </DropdownMenuItem>

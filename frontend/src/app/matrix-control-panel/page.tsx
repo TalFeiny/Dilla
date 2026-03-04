@@ -662,11 +662,12 @@ export default function MatrixControlPanel() {
     );
   }
 
-  const modeIcons = {
+  const modeIcons: Record<string, any> = {
     portfolio: Database,
     query: Sparkles,
     custom: FileText,
     lp: Users,
+    pnl: BarChart3,
   };
 
   const currentModeConfig = getModeConfig(mode);
@@ -710,8 +711,8 @@ export default function MatrixControlPanel() {
             </div>
 
             <div className="flex items-center space-x-3">
-              {/* Fund Selector (for Portfolio/LP modes) — keep only Mode + Fund */}
-              {(mode === 'portfolio' || mode === 'lp') && (
+              {/* Fund Selector (for Portfolio/LP/P&L modes) — keep only Mode + Fund */}
+              {(mode === 'portfolio' || mode === 'lp' || mode === 'pnl') && (
                 funds.length > 0 ? (
                   <Select value={fundId || ''} onValueChange={setFundId}>
                     <SelectTrigger className="w-[180px]">
@@ -736,7 +737,7 @@ export default function MatrixControlPanel() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  {(mode === 'portfolio' || mode === 'lp') && (
+                  {(mode === 'portfolio' || mode === 'lp' || mode === 'pnl') && (
                     <>
                       <DropdownMenuItem onClick={() => setShowAddFundModal(true)}>
                         <Plus className="h-4 w-4 mr-2" />
@@ -782,7 +783,7 @@ export default function MatrixControlPanel() {
               </DropdownMenu>
 
               {/* Add Fund Dialog */}
-                {(mode === 'portfolio' || mode === 'lp') && (
+                {(mode === 'portfolio' || mode === 'lp' || mode === 'pnl') && (
                   <Dialog open={showAddFundModal} onOpenChange={setShowAddFundModal}>
                     <DialogContent>
                       <DialogHeader>
@@ -1016,7 +1017,7 @@ export default function MatrixControlPanel() {
       {/* Matrix Canvas: out-of-grid wrapper, flex-1 so grid + agent panel fill viewport */}
       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4 flex-1 min-h-0 flex flex-col">
-        {(mode === 'portfolio' || mode === 'lp') && !fundId ? (
+        {(mode === 'portfolio' || mode === 'lp' || mode === 'pnl') && !fundId ? (
           <Card className="border-2 border-dashed">
             <CardContent className="flex flex-col items-center justify-center py-16 px-6 text-center">
               <FileSpreadsheet className="h-14 w-14 text-muted-foreground mb-4" />

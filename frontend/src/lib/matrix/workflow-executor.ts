@@ -185,8 +185,8 @@ function buildInputs(
     if (sectorVal) inputs.sector = sectorVal;
     const growthVal = cellValue(r, cols, /growth|revenueGrowth/i);
     if (growthVal !== undefined && Number.isFinite(growthVal)) {
-      inputs.growth_rate = growthVal;
-      inputs.revenue_growth_annual_pct = growthVal > 2 ? growthVal : growthVal * 100;
+      // Canonical: decimal fraction (0.3 = 30%). Cell values > 1 are percentages.
+      inputs.growth_rate = growthVal > 1 ? growthVal / 100 : growthVal;
     }
     const stageVal = cellStr(r, cols, /stage|round|time_since|since_round|funnel/i);
     if (stageVal) inputs.stage = stageVal;
@@ -207,7 +207,8 @@ function buildInputs(
     const nameVal = cellStr(r, cols, /company|companyName|^name$/i);
     if (nameVal) inputs.name = nameVal;
     inputs.base_revenue = cellValue(r, cols, /arr|revenue|revenue_|current_arr/i) || 1_000_000;
-    inputs.initial_growth = cellValue(r, cols, /growth|revenueGrowth/i) || 0.3;
+    const rawGrowth = cellValue(r, cols, /growth|revenueGrowth/i) || 30;
+    inputs.initial_growth = rawGrowth > 1 ? rawGrowth / 100 : rawGrowth;
     inputs.years = Math.max(1, cellValue(r, cols, /years|period/i) || 5);
     inputs.quality_score = 1.0;
   }
@@ -243,8 +244,8 @@ function buildInputs(
     if (sectorVal) inputs.sector = sectorVal;
     const growthVal = cellValue(r, cols, /growth|revenueGrowth/i);
     if (growthVal !== undefined && Number.isFinite(growthVal)) {
-      inputs.growth_rate = growthVal;
-      inputs.revenue_growth_annual_pct = growthVal > 2 ? growthVal : growthVal * 100;
+      // Canonical: decimal fraction (0.3 = 30%). Cell values > 1 are percentages.
+      inputs.growth_rate = growthVal > 1 ? growthVal / 100 : growthVal;
     }
     const valuationVal = (inputs.prev_valuation as number) ?? cellValue(r, cols, /valuation|value|currentValuation/i);
     if (valuationVal !== undefined && Number.isFinite(valuationVal)) {

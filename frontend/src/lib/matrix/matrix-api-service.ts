@@ -10,7 +10,7 @@
 import { MatrixData, MatrixColumn, MatrixRow, MatrixCell } from '@/components/matrix/UnifiedMatrix';
 import { supabaseService } from '@/lib/supabase';
 
-export type MatrixMode = 'portfolio' | 'query' | 'custom' | 'lp';
+export type MatrixMode = 'portfolio' | 'query' | 'custom' | 'lp' | 'pnl';
 export type DataSource = 'manual' | 'agent' | 'document' | 'api' | 'formula';
 
 // ============================================================================
@@ -1070,5 +1070,100 @@ export async function fetchLPsForMatrix(fundId?: string): Promise<import('@/comp
     columns,
     rows,
     metadata: { dataSource: 'lp', lastUpdated: new Date().toISOString(), fundId },
+  };
+}
+
+/**
+ * Fetch P&L (actuals + forecast) for matrix P&L mode.
+ * Returns MatrixData shaped for AGGridMatrix — lineItem column + one currency column per period.
+ *
+ * Backend response shape:
+ *   { periods: string[], forecastStartIndex?: number, rows: { id, label, values: Record<period,number|null>, source?, depth?, isHeader?, isTotal?, childIds? }[] }
+ */
+export async function fetchPnlForMatrix(
+  fundId?: string,
+  companyId?: string
+): Promise<import('@/components/matrix/UnifiedMatrix').MatrixData> {
+  const { formatCurrency } = await import('@/lib/matrix/cell-formatters');
+
+  const params = new URLSearchParams();
+  if (fundId) params.set('fund_id', fundId);
+  if (companyId) params.set('company_id', companyId);
+
+  let json: any;
+  try {
+    const res = await fetch(`/api/fpa/pnl?${params.toString()}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error ?? `Failed to load P&L (${res.status})`);
+    }
+    json = await res.json();
+  } catch (err) {
+    console.error('[fetchPnlForMatrix] Error:', err);
+    return { columns: [], rows: [], metadata: { dataSource: 'pnl', lastUpdated: new Date().toISOString() } };
+  }
+
+  const periods: string[] = json.periods ?? [];
+  const backendRows: any[] = json.rows ?? [];
+  const forecastStartIndex: number | undefined = json.forecastStartIndex ?? json.forecast_start_index;
+
+  // Helper: "2025-01" → "Jan '25"
+  const formatPeriodLabel = (p: string) => {
+    const [year, month] = p.split('-');
+    const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${names[parseInt(month, 10) - 1] ?? month} '${year?.slice(2)}`;
+  };
+
+  // Build columns: lineItem + one per period
+  const columns: import('@/components/matrix/UnifiedMatrix').MatrixColumn[] = [
+    { id: 'lineItem', name: 'Line Item', type: 'text', width: 220, editable: false },
+    ...periods.map((p, idx) => ({
+      id: p,
+      name: formatPeriodLabel(p),
+      type: 'currency' as const,
+      width: 110,
+      editable: true,
+    })),
+  ];
+
+  // Build rows in standard MatrixRow shape
+  const rows = backendRows.map((r: any) => {
+    const cells: Record<string, import('@/components/matrix/UnifiedMatrix').MatrixCell> = {
+      lineItem: { value: r.label, source: 'api' as const },
+    };
+
+    for (const p of periods) {
+      const val = r.values?.[p] ?? null;
+      cells[p] = {
+        value: val,
+        displayValue: val !== null ? formatCurrency(val) : '—',
+        source: 'api' as const,
+      };
+    }
+
+    return {
+      id: r.id,
+      companyId: r.id,
+      companyName: r.label,
+      cells,
+      // Tree metadata for hierarchical P&L rendering
+      depth: r.depth ?? 0,
+      isHeader: r.isHeader ?? false,
+      isTotal: r.isTotal ?? false,
+      isComputed: r.isComputed ?? false,
+      parentId: r.parentId ?? null,
+      childIds: r.childIds ?? [],
+    };
+  });
+
+  return {
+    columns,
+    rows,
+    metadata: {
+      dataSource: 'pnl',
+      lastUpdated: new Date().toISOString(),
+      fundId,
+      forecastStartIndex,
+    },
   };
 }

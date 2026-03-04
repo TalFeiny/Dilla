@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils';
 import { DataBarRenderer } from './custom-renderers/DataBarRenderer';
 import { EnhancedMasterDetailRenderer } from './custom-renderers/EnhancedMasterDetail';
 import { TreemapRenderer } from './custom-renderers/TreemapRenderer';
+import { PnLLineItemRenderer } from './custom-renderers/PnLLineItemRenderer';
 export interface AGGridMatrixProps {
   matrixData: MatrixData;
   /** Backend-registered cell actions; when set, dropdown/picker show these instead of static workflows. */
@@ -58,7 +59,7 @@ export interface AGGridMatrixProps {
   onStartEditingCell?: (callback: (rowId: string, columnId: string) => void) => void;
   /** When document extraction completes (from Documents cell), refresh suggestions and open viewport. */
   onSuggestChanges?: (documentId: string, extractedData?: unknown) => void;
-  mode?: 'portfolio' | 'query' | 'custom' | 'lp';
+  mode?: 'portfolio' | 'query' | 'custom' | 'lp' | 'pnl';
   /** When true (chat-first), de-emphasize Run valuation/PWERM in dropdown and show chat hint. */
   useAgentPanel?: boolean;
 }
@@ -137,9 +138,14 @@ const DEFAULT_CUSTOM_COLUMNS: MatrixColumn[] = [
   { id: 'value', name: 'Value', type: 'text' as const, editable: true },
 ];
 
+const DEFAULT_PNL_COLUMNS: MatrixColumn[] = [
+  { id: 'lineItem', name: 'Line Item', type: 'text' as const, width: 220, editable: false },
+];
+
 function getDefaultColumns(mode: string): MatrixColumn[] {
   if (mode === 'portfolio') return DEFAULT_PORTFOLIO_COLUMNS;
   if (mode === 'lp') return DEFAULT_LP_COLUMNS;
+  if (mode === 'pnl') return DEFAULT_PNL_COLUMNS;
   return DEFAULT_CUSTOM_COLUMNS;
 }
 
@@ -180,7 +186,16 @@ export function AGGridMatrix({
   const [gridApi, setGridApi] = useState<GridApi | null>(null);
   const gridApiRef = useRef<GridApi | null>(null);
   const [dragOverCell, setDragOverCell] = useState<{ rowId: string; columnId: string } | null>(null);
-  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  // P&L tree: tracks which header rows are collapsed (all expanded by default)
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
+  const toggleSection = useCallback((rowId: string) => {
+    setCollapsedSections(prev => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  }, []);
   // Use refs to track previous values and prevent unnecessary updates
   const prevRowDataRef = useRef<any[] | null>(null);
   const prevColumnDefsRef = useRef<ColDef[] | null>(null);
@@ -340,12 +355,38 @@ export function AGGridMatrix({
       return true;
     });
     
-    const transformedRows = validRows.map((row) => {
+    // P&L mode: filter out rows whose parent is collapsed
+    let rowsToRender = validRows;
+    if (mode === 'pnl' && collapsedSections.size > 0) {
+      // Collect all row IDs that are descendants of a collapsed section
+      const hiddenIds = new Set<string>();
+      const collectHidden = (parentId: string) => {
+        for (const r of validRows) {
+          const rParent = (r as any).parentId;
+          if (rParent === parentId) {
+            hiddenIds.add(r.id);
+            // Recursively hide children of children
+            if ((r as any).childIds?.length) collectHidden(r.id);
+          }
+        }
+      };
+      collapsedSections.forEach(id => collectHidden(id));
+      rowsToRender = validRows.filter(r => !hiddenIds.has(r.id));
+    }
+
+    const transformedRows = rowsToRender.map((row) => {
       const rowData: any = {
         id: row.id,
         companyId: row.companyId,
         companyName: row.companyName,
         _originalRow: row,
+        // Pass through P&L tree metadata for renderers
+        depth: (row as any).depth ?? 0,
+        isHeader: (row as any).isHeader ?? false,
+        isTotal: (row as any).isTotal ?? false,
+        isComputed: (row as any).isComputed ?? false,
+        parentId: (row as any).parentId ?? null,
+        childIds: (row as any).childIds ?? [],
       };
 
       columnsForRowData.forEach((col) => {
@@ -383,7 +424,7 @@ export function AGGridMatrix({
       return rowData;
     });
     return transformedRows;
-  }, [safeMatrixData, columnsForRowData, formulaEngine]);
+  }, [safeMatrixData, columnsForRowData, formulaEngine, mode, collapsedSections]);
 
   // Keep gridApiRef in sync so columnDefs can read it without depending on gridApi (prevents restart loop)
   useEffect(() => {
@@ -611,7 +652,62 @@ export function AGGridMatrix({
           },
         };
       }
-      
+
+      // P&L line item renderer — tree indentation, chevron toggle, header/total styling
+      if (col.id === 'lineItem' && mode === 'pnl') {
+        baseColDef.cellRenderer = PnLLineItemRenderer;
+        baseColDef.cellRendererParams = {
+          collapsedSections,
+          onToggleSection: toggleSection,
+        };
+        baseColDef.editable = false;
+        baseColDef.width = 260;
+      }
+
+      // P&L value cells — style based on row type and forecast boundary
+      if (mode === 'pnl' && col.id !== 'lineItem') {
+        const forecastStart = p.matrixData?.metadata?.forecastStartIndex;
+        const colIndex = columnsToUse.findIndex(c => c.id === col.id);
+        // Period columns start after lineItem (index 0), so colIndex 1 = first period
+        const periodIndex = colIndex - 1; // 0-based period index
+        const isForecast = forecastStart != null && periodIndex >= 0 && periodIndex >= forecastStart;
+        const isForecastBoundary = forecastStart != null && periodIndex === forecastStart;
+
+        // Forecast boundary: left border on the first forecast column header + cells
+        if (isForecastBoundary) {
+          baseColDef.headerClass = 'pnl-forecast-boundary';
+        }
+        if (isForecast) {
+          baseColDef.headerClass = (baseColDef.headerClass ? baseColDef.headerClass + ' ' : '') + 'pnl-forecast-col';
+        }
+
+        baseColDef.cellStyle = (params: any) => {
+          const style: any = {};
+          const row = params.data;
+          if (!row) return style;
+
+          if (row.isHeader) {
+            style.fontWeight = 600;
+          }
+          if (row.isTotal) {
+            style.fontWeight = 600;
+            style.borderTop = '2px solid var(--border, #d1d5db)';
+          }
+          if (row.isComputed) {
+            style.fontWeight = 500;
+            style.backgroundColor = 'var(--muted, rgba(0,0,0,0.03))';
+          }
+          if (isForecast) {
+            style.fontStyle = 'italic';
+            style.opacity = 0.75;
+          }
+          if (isForecastBoundary) {
+            style.borderLeft = '2px dashed var(--border, #9ca3af)';
+          }
+          return style;
+        };
+      }
+
       // Data bar renderer for visualization columns
       if (col.type === 'sparkline' || col.id?.toLowerCase().includes('trend')) {
         baseColDef.cellRenderer = DataBarRenderer;
@@ -637,7 +733,7 @@ export function AGGridMatrix({
     }
     
     return finalCols;
-  }, [safeMatrixData.columns, hasRowActions, mode, getCellStyle]);
+  }, [safeMatrixData.columns, hasRowActions, mode, getCellStyle, collapsedSections, toggleSection]);
 
   // Default column definition
   const defaultColDef = useMemo<ColDef>(() => ({
@@ -868,6 +964,17 @@ export function AGGridMatrix({
           display: none !important;
           visibility: hidden !important;
           pointer-events: none !important;
+        }
+        /* P&L forecast boundary — dashed left border on first forecast column header */
+        .pnl-forecast-boundary {
+          border-left: 2px dashed #9ca3af !important;
+        }
+        /* P&L forecast column headers — subtle background tint */
+        .pnl-forecast-col {
+          background-color: rgba(99, 102, 241, 0.06) !important;
+        }
+        .ag-theme-alpine-dark .pnl-forecast-col {
+          background-color: rgba(129, 140, 248, 0.08) !important;
         }
       `}</style>
       <div

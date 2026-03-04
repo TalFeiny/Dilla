@@ -135,7 +135,7 @@ interface AgentChatProps {
   onMessageSent?: (message: string) => void;
   matrixData?: MatrixData | null;
   fundId?: string;
-  mode?: 'portfolio' | 'query' | 'custom' | 'lp';
+  mode?: 'portfolio' | 'query' | 'custom' | 'lp' | 'pnl';
   onCellEdit?: (rowId: string, columnId: string, value: unknown, options?: { data_source?: string; metadata?: Record<string, unknown> }) => Promise<void>;
   onRunService?: (actionId: string, rowId: string, columnId: string) => Promise<void>;
   onToolCallLog?: (entry: Omit<{ action_id: string; row_id: string; column_id: string; status: 'running' | 'success' | 'error'; error?: string; companyName?: string }, 'id' | 'at'>) => void;
@@ -689,7 +689,12 @@ export default function AgentChat({
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
 
-      const res = await fetch('/api/agent/unified-brain', {
+      // Route to CFO agent in PnL mode, investment analyst agent otherwise
+      const agentEndpoint = mode === 'pnl'
+        ? '/api/agent/cfo-brain'
+        : '/api/agent/unified-brain';
+
+      const res = await fetch(agentEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),

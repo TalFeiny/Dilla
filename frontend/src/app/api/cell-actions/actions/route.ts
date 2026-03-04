@@ -3,11 +3,11 @@ import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 /** Minimal fallback when backend cell_actions router returns 404 so UI still shows action list; execute may fail until backend loads. */
 const FALLBACK_ACTIONS = [
-  { action_id: 'valuation_engine.auto', name: 'Valuation', category: 'workflow', service_name: 'valuation_engine', execution_type: 'workflow', required_inputs: {}, output_type: 'object', mode_availability: ['portfolio', 'query', 'custom', 'lp'], column_compatibility: [] },
-  { action_id: 'valuation_engine.pwerm', name: 'PWERM', category: 'workflow', service_name: 'valuation_engine', execution_type: 'workflow', required_inputs: {}, output_type: 'object', mode_availability: ['portfolio', 'query', 'custom', 'lp'], column_compatibility: [] },
-  { action_id: 'cap_table.calculate', name: 'Cap Table', category: 'workflow', service_name: 'cap_table', execution_type: 'workflow', required_inputs: {}, output_type: 'object', mode_availability: ['portfolio', 'query', 'custom', 'lp'], column_compatibility: [] },
-  { action_id: 'financial.irr', name: 'IRR', category: 'formula', service_name: 'financial', execution_type: 'formula', required_inputs: {}, output_type: 'number', mode_availability: ['portfolio', 'query', 'custom', 'lp'], column_compatibility: [] },
-  { action_id: 'financial.moic', name: 'MOIC', category: 'formula', service_name: 'financial', execution_type: 'formula', required_inputs: {}, output_type: 'number', mode_availability: ['portfolio', 'query', 'custom', 'lp'], column_compatibility: [] },
+  { action_id: 'valuation_engine.auto', name: 'Valuation', category: 'workflow', service_name: 'valuation_engine', execution_type: 'workflow', required_inputs: {}, output_type: 'object', mode_availability: ['portfolio', 'query', 'custom', 'lp', 'pnl'], column_compatibility: [] },
+  { action_id: 'valuation_engine.pwerm', name: 'PWERM', category: 'workflow', service_name: 'valuation_engine', execution_type: 'workflow', required_inputs: {}, output_type: 'object', mode_availability: ['portfolio', 'query', 'custom', 'lp', 'pnl'], column_compatibility: [] },
+  { action_id: 'cap_table.calculate', name: 'Cap Table', category: 'workflow', service_name: 'cap_table', execution_type: 'workflow', required_inputs: {}, output_type: 'object', mode_availability: ['portfolio', 'query', 'custom', 'lp', 'pnl'], column_compatibility: [] },
+  { action_id: 'financial.irr', name: 'IRR', category: 'formula', service_name: 'financial', execution_type: 'formula', required_inputs: {}, output_type: 'number', mode_availability: ['portfolio', 'query', 'custom', 'lp', 'pnl'], column_compatibility: [] },
+  { action_id: 'financial.moic', name: 'MOIC', category: 'formula', service_name: 'financial', execution_type: 'formula', required_inputs: {}, output_type: 'number', mode_availability: ['portfolio', 'query', 'custom', 'lp', 'pnl'], column_compatibility: [] },
 ];
 
 /**

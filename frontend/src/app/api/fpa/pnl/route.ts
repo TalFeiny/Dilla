@@ -2,24 +2,23 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 
 /**
- * POST /api/fpa/models
- * Create a new FPA model
+ * GET /api/fpa/pnl?fund_id=...&company_id=...&start=2025-01&end=2025-12
+ * Fetch P&L actuals + forecast for the grid view.
  */
-export async function POST(request: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
-    const body = await request.json();
+    const { searchParams } = request.nextUrl;
     const backendUrl = getBackendUrl();
-    
-    const res = await fetch(`${backendUrl}/api/fpa/models`, {
-      method: 'POST',
-      headers: getBackendHeaders(),
-      body: JSON.stringify(body),
-    });
+
+    const res = await fetch(
+      `${backendUrl}/api/fpa/pnl?${searchParams.toString()}`,
+      { method: 'GET', headers: getBackendHeaders() }
+    );
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Failed to create model' }));
+      const err = await res.json().catch(() => ({ detail: 'Failed to fetch P&L data' }));
       return NextResponse.json(
-        { error: err.detail ?? 'Failed to create model' },
+        { error: err.detail ?? 'Failed to fetch P&L data' },
         { status: res.status }
       );
     }
@@ -27,7 +26,7 @@ export async function POST(request: NextRequest) {
     const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {
-    console.error('FPA model creation error:', error);
+    console.error('FPA P&L fetch error:', error);
     return NextResponse.json(
       {
         error: 'Internal server error',
@@ -39,21 +38,24 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * GET /api/fpa/models
- * List FPA models — proxies to backend
+ * POST /api/fpa/pnl
+ * Update a P&L line item (manual override).
  */
-export async function GET(request: NextRequest) {
+export async function POST(request: NextRequest) {
   try {
+    const body = await request.json();
     const backendUrl = getBackendUrl();
-    const res = await fetch(`${backendUrl}/api/fpa/models`, {
-      method: 'GET',
+
+    const res = await fetch(`${backendUrl}/api/fpa/pnl`, {
+      method: 'POST',
       headers: getBackendHeaders(),
+      body: JSON.stringify(body),
     });
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Failed to list models' }));
+      const err = await res.json().catch(() => ({ detail: 'Failed to update P&L' }));
       return NextResponse.json(
-        { error: err.detail ?? 'Failed to list models' },
+        { error: err.detail ?? 'Failed to update P&L' },
         { status: res.status }
       );
     }
@@ -61,7 +63,7 @@ export async function GET(request: NextRequest) {
     const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {
-    console.error('FPA models list error:', error);
+    console.error('FPA P&L update error:', error);
     return NextResponse.json(
       {
         error: 'Internal server error',

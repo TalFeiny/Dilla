@@ -60,7 +60,7 @@ interface TableauChartProps {
         'scatter_multiples' | 'breakpoint_chart' | 'dpi_sankey' | 'cap_table_evolution' | 'radar_comparison' | 'funnel_pipeline' |
         'scenario_tree' | 'scenario_paths' | 'tornado' | 'cash_flow_waterfall' |
         'bull_bear_base' | 'bar_comparison' | 'cap_table_sankey' | 'revenue_forecast' | 'fpa_stress_test' | 'stacked_bar' | 'nav_live' | 'market_map' |
-        'sensitivity_tornado' | 'regression_line' | 'monte_carlo_histogram' | 'revenue_forecast_decay' | 'fund_scenarios' | 'multi_chart' | 'ltm_ntm_regression';
+        'sensitivity_tornado' | 'regression_line' | 'monte_carlo_histogram' | 'revenue_forecast_decay' | 'fund_scenarios' | 'multi_chart' | 'ltm_ntm_regression' | 'branched_line';
   data: any;
   title?: string;
   subtitle?: string;
@@ -610,6 +610,29 @@ export default function TableauLevelCharts({
             ...item
           }));
           return { valid: true, data: normalizedCFW };
+
+        case 'monte_carlo_fan':
+          if (!normalizedData || typeof normalizedData !== 'object') {
+            return { valid: false, data: null, error: 'Monte Carlo fan data must include trajectory_percentiles and periods' };
+          }
+          if (!normalizedData.trajectory_percentiles && !normalizedData.percentiles) {
+            return { valid: false, data: null, error: 'Missing trajectory_percentiles or percentiles' };
+          }
+          return { valid: true, data: normalizedData };
+
+        case 'branched_line':
+          if (!normalizedData || typeof normalizedData !== 'object') {
+            return { valid: false, data: null, error: 'Branched line data must be an object with x_axis and series' };
+          }
+          const blXAxis = normalizedData.x_axis || [];
+          const blSeries = normalizedData.series || [];
+          if (!Array.isArray(blXAxis) || blXAxis.length === 0) {
+            return { valid: false, data: null, error: 'Branched line must have x_axis array' };
+          }
+          if (!Array.isArray(blSeries) || blSeries.length === 0) {
+            return { valid: false, data: null, error: 'Branched line must have at least one series' };
+          }
+          return { valid: true, data: normalizedData };
 
         default:
           // For other chart types, try to normalize common structures
@@ -2579,6 +2602,236 @@ export default function TableauLevelCharts({
     );
   };
 
+  // ── Branched Line (fork-point scenario comparison) ───────────────────
+  // ── Monte Carlo Fan Chart ───────────────────────────────────────
+  const renderMonteCarloFan = () => {
+    const validation = validateChartData('monte_carlo_fan', data);
+    if (!validation.valid) {
+      return (
+        <div className="flex items-center justify-center h-full text-gray-500">
+          <div className="text-center">
+            <p>Invalid data for Monte Carlo Fan Chart</p>
+            <p className="text-sm mt-2">{validation.error}</p>
+          </div>
+        </div>
+      );
+    }
+
+    const mcData = validation.data;
+    const percentiles = mcData.trajectory_percentiles || mcData.percentiles || {};
+    const metric = mcData.metric || 'cash_balance';
+    const periods = mcData.periods || [];
+    const varThreshold = mcData.var_cash_12m;
+
+    const metricPcts = percentiles[metric] || {};
+    const p5 = metricPcts.p5 || [];
+    const p25 = metricPcts.p25 || [];
+    const p50 = metricPcts.p50 || [];
+    const p75 = metricPcts.p75 || [];
+    const p95 = metricPcts.p95 || [];
+
+    // Build recharts data: each point needs low/high for area bands
+    const chartData = (periods.length > 0 ? periods : p50.map((_: any, i: number) => `M${i + 1}`))
+      .map((period: string, i: number) => ({
+        x: period?.slice?.(0, 7) || period,
+        p5: p5[i] ?? 0,
+        p25: p25[i] ?? 0,
+        p50: p50[i] ?? 0,
+        p75: p75[i] ?? 0,
+        p95: p95[i] ?? 0,
+      }));
+
+    const fmtTick = (v: number) => {
+      if (Math.abs(v) >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+      if (Math.abs(v) >= 1_000) return `$${(v / 1_000).toFixed(0)}K`;
+      return `$${v.toFixed(0)}`;
+    };
+
+    return (
+      <ResponsiveContainer width={width} height={height}>
+        <ComposedChart data={chartData} margin={{ top: 10, right: 30, bottom: 10, left: 10 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+          <XAxis dataKey="x" fontSize={11} tick={{ fill: '#6b7280' }} />
+          <YAxis tickFormatter={fmtTick} fontSize={11} tick={{ fill: '#6b7280' }} />
+          <Tooltip
+            formatter={(val: any) => [fmtTick(val as number), '']}
+            contentStyle={{ fontSize: 12 }}
+          />
+          {/* p5-p95 band (light) */}
+          <Area
+            type="monotone"
+            dataKey="p95"
+            stroke="none"
+            fill="#6366f1"
+            fillOpacity={0.08}
+            name="p95"
+          />
+          <Area
+            type="monotone"
+            dataKey="p5"
+            stroke="none"
+            fill="#ffffff"
+            fillOpacity={1}
+            name="p5"
+          />
+          {/* p25-p75 band (dark) */}
+          <Area
+            type="monotone"
+            dataKey="p75"
+            stroke="none"
+            fill="#6366f1"
+            fillOpacity={0.2}
+            name="p75"
+          />
+          <Area
+            type="monotone"
+            dataKey="p25"
+            stroke="none"
+            fill="#ffffff"
+            fillOpacity={1}
+            name="p25"
+          />
+          {/* Median line (solid) */}
+          <Line
+            type="monotone"
+            dataKey="p50"
+            stroke="#6366f1"
+            strokeWidth={3}
+            dot={false}
+            name="Median"
+          />
+          {/* VaR threshold */}
+          {varThreshold != null && (
+            <ReferenceLine
+              y={varThreshold}
+              stroke="#ef4444"
+              strokeDasharray="6 3"
+              label={{ value: `VaR: ${fmtTick(varThreshold)}`, fill: '#ef4444', fontSize: 11 }}
+            />
+          )}
+          <Legend
+            payload={[
+              { value: 'Median (p50)', type: 'line', color: '#6366f1' },
+              { value: 'p25-p75', type: 'rect', color: 'rgba(99,102,241,0.2)' },
+              { value: 'p5-p95', type: 'rect', color: 'rgba(99,102,241,0.08)' },
+            ]}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    );
+  };
+
+  const renderBranchedLine = () => {
+    const validation = validateChartData('branched_line', data);
+    if (!validation.valid) {
+      return (
+        <div className="flex items-center justify-center h-full text-gray-500">
+          <div className="text-center">
+            <p>Invalid data for Branched Line</p>
+            <p className="text-sm mt-2">{validation.error}</p>
+          </div>
+        </div>
+      );
+    }
+
+    const { x_axis, series, annotations = [], format: fmt } = validation.data;
+
+    // Build recharts-compatible rows: [{x: "2026-01", series_0: 100, series_1: 95, ...}]
+    const chartData = x_axis.map((label: string, i: number) => {
+      const row: any = { x: label };
+      (series || []).forEach((s: any, idx: number) => {
+        row[`series_${idx}`] = s.data?.[i] ?? null;
+      });
+      return row;
+    });
+
+    // For branches, null-out values before the fork so the shared segment renders as one line
+    (series || []).forEach((s: any, idx: number) => {
+      if (s.branch_id != null) {
+        // Find this branch's fork index from annotations
+        const forkAnnotation = (annotations || []).find(
+          (a: any) => a.type === 'fork_point' && a.label?.includes(s.name)
+        );
+        const forkIdx = forkAnnotation?.x_index ?? 0;
+        // Null out everything before the fork point (keep fork point itself for connection)
+        for (let i = 0; i < forkIdx; i++) {
+          chartData[i][`series_${idx}`] = null;
+        }
+      }
+    });
+
+    const fmtTick = (v: number) => {
+      if (fmt === '$') {
+        if (Math.abs(v) >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+        if (Math.abs(v) >= 1_000) return `$${(v / 1_000).toFixed(0)}K`;
+        return `$${v.toFixed(0)}`;
+      }
+      return formatValue(v);
+    };
+
+    return (
+      <ResponsiveContainer width={width} height={height}>
+        <ComposedChart data={chartData} margin={{ top: 10, right: 80, bottom: 10, left: 10 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+          <XAxis dataKey="x" fontSize={11} tick={{ fill: '#6b7280' }} />
+          <YAxis tickFormatter={fmtTick} fontSize={11} tick={{ fill: '#6b7280' }} />
+          <Tooltip
+            formatter={(val: any, name: string) => {
+              const idx = parseInt(name.replace('series_', ''), 10);
+              const s = (series || [])[idx];
+              return [fmtTick(val as number), s?.name || name];
+            }}
+            contentStyle={{
+              backgroundColor: 'rgba(255,255,255,0.97)',
+              border: '1px solid #d1d5db',
+              borderRadius: '8px',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+              fontSize: '12px',
+            }}
+          />
+          <Legend
+            formatter={(value: string) => {
+              const idx = parseInt(value.replace('series_', ''), 10);
+              const s = (series || [])[idx];
+              return s?.name || value;
+            }}
+          />
+          {/* Fork point annotations */}
+          {(annotations || [])
+            .filter((a: any) => a.type === 'fork_point')
+            .map((a: any, i: number) => (
+              <ReferenceLine
+                key={`fork-${i}`}
+                x={a.x}
+                stroke="#9ca3af"
+                strokeDasharray="4 4"
+                label={{
+                  value: a.label || 'Fork',
+                  position: 'top',
+                  fontSize: 10,
+                  fill: '#6b7280',
+                }}
+              />
+            ))}
+          {/* One Line per series */}
+          {(series || []).map((s: any, idx: number) => (
+            <Line
+              key={`series_${idx}`}
+              type="monotone"
+              dataKey={`series_${idx}`}
+              name={`series_${idx}`}
+              stroke={s.color || '#4e79a7'}
+              strokeWidth={s.style === 'solid' ? 3 : 2}
+              strokeDasharray={s.style === 'dashed' ? '6 3' : undefined}
+              dot={false}
+              connectNulls={false}
+            />
+          ))}
+        </ComposedChart>
+      </ResponsiveContainer>
+    );
+  };
+
   // ── Scenario Paths (multi-line chart with bull/base/bear styling) ───
   const renderScenarioPaths = () => {
     const validation = validateChartData('scenario_paths', data);
@@ -2958,6 +3211,10 @@ export default function TableauLevelCharts({
           return renderLineOrBarChart();
         case 'cash_flow_waterfall':
           return renderCashFlowWaterfall();
+        case 'monte_carlo_fan':
+          return renderMonteCarloFan();
+        case 'branched_line':
+          return renderBranchedLine();
         case 'fund_scenarios':
         case 'multi_chart': {
           // Multi-chart bundle: render each sub-chart in a grid

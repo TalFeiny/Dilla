@@ -15,7 +15,7 @@ export interface ModeConfig {
   availableFields: string[];
   showQueryBar: boolean;
   showInsights: boolean;
-  primaryDataSource: 'portfolio' | 'query' | 'custom' | 'lp';
+  primaryDataSource: 'portfolio' | 'query' | 'custom' | 'lp' | 'pnl';
 }
 
 export const MODE_CONFIGS: Record<MatrixMode, ModeConfig> = {
@@ -86,6 +86,16 @@ export const MODE_CONFIGS: Record<MatrixMode, ModeConfig> = {
     showQueryBar: false,
     showInsights: false,
     primaryDataSource: 'lp',
+  },
+  pnl: {
+    mode: 'pnl',
+    label: 'P&L',
+    description: 'Income statement: actuals vs forecast by month',
+    defaultColumns: [],
+    availableFields: ['pnl_data', 'analytics'],
+    showQueryBar: false,
+    showInsights: false,
+    primaryDataSource: 'pnl',
   },
 };
 

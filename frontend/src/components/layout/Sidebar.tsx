@@ -20,6 +20,7 @@ import {
   Moon,
   Sun,
   Presentation,
+  Settings,
 } from 'lucide-react';
 import { initTheme, toggleTheme as toggleThemeLib } from '@/lib/theme';
 
@@ -65,6 +66,7 @@ export function Sidebar() {
     { label: 'Subscription', href: '/subscription', icon: CreditCard },
     { label: 'Docs', href: '/docs', icon: FileSearch },
     { label: 'Matrix', href: '/matrix-control-panel', icon: Boxes },
+    { label: 'Settings', href: '/settings/integrations', icon: Settings },
   ], []);
 
   return (
