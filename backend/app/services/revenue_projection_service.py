@@ -224,40 +224,16 @@ class RevenueProjectionService:
         projections = []
         
         for year in range(1, years + 1):
-            # Determine base decay rate based on initial growth rate
-            # Higher initial growth = more aggressive decay (lower decay_rate)
-            # Note: initial_growth should be in decimal format (0.5 = 50% growth)
-            # But we check for multiplier format for backwards compatibility
-            # FIX: Check decay category BEFORE normalization to avoid misclassification
-            # Determine growth category based on original format
-            if initial_growth > 10:
-                # Percentage format: 50 = 50%, 150 = 150%
-                growth_decimal = initial_growth / 100.0
-                if initial_growth > 100:  # Hyper-growth (>100% in percentage format)
-                    base_decay_rate = 0.7  # 30% decay per year
-                elif initial_growth > 50:  # High growth (50-100% in percentage format)
-                    base_decay_rate = 0.8  # 20% decay per year
-                else:  # Normal growth (<50% in percentage format)
-                    base_decay_rate = 0.9  # 10% decay per year
-                growth_for_decay = growth_decimal
-            elif initial_growth > 1.0:
-                # Multiplier format: 1.5 = 150% total = 50% YoY, 2.0 = 200% total = 100% YoY
-                if initial_growth > 2.0:  # Hyper-growth (>200% total = >100% YoY in multiplier format)
-                    base_decay_rate = 0.7  # 30% decay per year
-                elif initial_growth >= 1.5:  # High growth (>=150% total = >=50% YoY in multiplier format)
-                    base_decay_rate = 0.8  # 20% decay per year
-                else:  # Normal growth (100-150% total = 0-50% YoY in multiplier format)
-                    base_decay_rate = 0.9  # 10% decay per year
-                growth_for_decay = initial_growth - 1.0  # Convert to decimal for calculation
+            # growth_rate is canonical decimal (0.3 = 30%, 1.5 = 150%). Trust the format.
+            growth_for_decay = initial_growth
+
+            # Classify decay rate based on normalized decimal growth
+            if growth_for_decay > 1.0:
+                base_decay_rate = 0.7  # 30% decay — hyper-growth (>100% YoY)
+            elif growth_for_decay > 0.5:
+                base_decay_rate = 0.8  # 20% decay — high growth (50-100% YoY)
             else:
-                # Already in decimal format: 0.5 = 50%, 1.0 = 100%
-                growth_for_decay = initial_growth
-                if initial_growth > 1.0:  # Hyper-growth (>100% in decimal format)
-                    base_decay_rate = 0.7  # 30% decay per year
-                elif initial_growth > 0.5:  # High growth (50-100% in decimal format)
-                    base_decay_rate = 0.8  # 20% decay per year
-                else:  # Normal growth (<50% in decimal format)
-                    base_decay_rate = 0.9  # 10% decay per year
+                base_decay_rate = 0.9  # 10% decay — normal growth (<50% YoY)
             
             # Stage-based decay adjustments (early stage = slower decay, late stage = faster decay)
             stage_decay_multiplier = 1.0
@@ -372,8 +348,8 @@ class RevenueProjectionService:
                 # Each year's growth is a decay from the previous year's growth
                 year_growth = previous_growth * decay_rate
             
-            # Floor at 10% growth to prevent unrealistic scenarios
-            year_growth = max(year_growth, 0.1)
+            # Floor at 0% growth — mature companies can plateau
+            year_growth = max(year_growth, 0.0)
             previous_growth = year_growth  # Store for next iteration
             
             # Revenue compounds with the decaying growth rate
@@ -459,3 +435,129 @@ class RevenueProjectionService:
         if return_projections:
             return projections
         return final_revenue
+
+    @staticmethod
+    def project_revenue_monthly(
+        base_revenue_annual: float,
+        initial_growth: float,
+        months: int = 24,
+        quality_score: float = 1.0,
+        stage: Optional[str] = None,
+        sector: Optional[str] = None,
+        investor_quality: Optional[str] = None,
+        geography: Optional[str] = None,
+        monthly_overrides: Optional[Dict[str, float]] = None,
+        start_period: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Monthly revenue projections with decay, mirroring the annual model
+        but at month granularity.
+
+        Args:
+            base_revenue_annual: Starting annual revenue (divided by 12 internally)
+            initial_growth: Annual growth rate in decimal (0.5 = 50%)
+            months: Number of months to project
+            monthly_overrides: Dict of "YYYY-MM" → annual growth rate overrides
+            start_period: Starting month "YYYY-MM" (defaults to next month)
+
+        Returns:
+            List of monthly dicts: [{period, revenue, growth_rate, gross_margin}, ...]
+        """
+        from datetime import date, timedelta
+
+        if base_revenue_annual <= 0:
+            return [{"period": "unknown", "revenue": 0.0, "growth_rate": 0.0}
+                    for _ in range(months)]
+
+        # Monthly base = annual / 12
+        monthly_revenue = base_revenue_annual / 12.0
+
+        # Convert annual growth to monthly: (1 + annual)^(1/12) - 1
+        monthly_growth = (1 + initial_growth) ** (1.0 / 12.0) - 1
+
+        # Get annual projections (1 year) to extract gross margin
+        annual_proj = RevenueProjectionService.project_revenue_with_decay(
+            base_revenue=base_revenue_annual,
+            initial_growth=initial_growth,
+            years=1,
+            quality_score=quality_score,
+            stage=stage,
+            sector=sector,
+            investor_quality=investor_quality,
+            geography=geography,
+            return_projections=True,
+        )
+        base_gross_margin = 0.65
+        if isinstance(annual_proj, list) and annual_proj:
+            base_gross_margin = annual_proj[0].get("gross_margin", 0.65)
+
+        # Determine start date
+        if start_period:
+            try:
+                start_date = date.fromisoformat(f"{start_period}-01")
+            except ValueError:
+                start_date = date.today().replace(day=1)
+        else:
+            today = date.today()
+            if today.month == 12:
+                start_date = date(today.year + 1, 1, 1)
+            else:
+                start_date = date(today.year, today.month + 1, 1)
+
+        # Annual decay: get per-year growth rates for decay curve
+        years_needed = (months // 12) + 2
+        annual_decay = RevenueProjectionService.project_revenue_with_decay(
+            base_revenue=base_revenue_annual,
+            initial_growth=initial_growth,
+            years=years_needed,
+            quality_score=quality_score,
+            stage=stage,
+            sector=sector,
+            investor_quality=investor_quality,
+            geography=geography,
+            return_projections=True,
+        )
+        # Extract annual growth rates for decay curve
+        annual_rates = []
+        if isinstance(annual_decay, list):
+            annual_rates = [p.get("growth_rate", initial_growth) for p in annual_decay]
+        if not annual_rates:
+            annual_rates = [initial_growth] * years_needed
+
+        projections = []
+        current_revenue = monthly_revenue
+
+        for m in range(months):
+            current_date = date(
+                start_date.year + (start_date.month + m - 1) // 12,
+                (start_date.month + m - 1) % 12 + 1,
+                1,
+            )
+            period_str = current_date.strftime("%Y-%m")
+
+            # Determine monthly growth: use override if present, else derive from decay curve
+            year_idx = m // 12
+            annual_rate = annual_rates[min(year_idx, len(annual_rates) - 1)]
+
+            if monthly_overrides and period_str in monthly_overrides:
+                annual_rate = monthly_overrides[period_str]
+
+            mg = (1 + annual_rate) ** (1.0 / 12.0) - 1
+
+            if m > 0:
+                current_revenue = current_revenue * (1 + mg)
+
+            # Margin expansion over time (same logic as annual)
+            margin_month_factor = m / 12.0
+            gross_margin = min(0.90, base_gross_margin + 0.015 * margin_month_factor)
+
+            projections.append({
+                "period": period_str,
+                "revenue": round(current_revenue, 2),
+                "growth_rate_annual": round(annual_rate, 4),
+                "growth_rate_monthly": round(mg, 6),
+                "gross_margin": round(gross_margin, 3),
+                "gross_profit": round(current_revenue * gross_margin, 2),
+            })
+
+        return projections

@@ -3,6 +3,11 @@ Cash Flow Planning Service
 Composes existing services into a full P&L per year for a company,
 including runway calculation and funding gap analysis.
 
+Supports three granularities via build_projection():
+- monthly: default for operational planning, runway, cash burn (12-24 month horizon)
+- quarterly: board decks, investor updates, QoQ tracking
+- annual: long-range strategic planning, 3-5 year models
+
 Data sources:
 - RevenueProjectionService: forward revenue with decay + gross margins
 - IntelligentGapFiller: burn rate decomposition, stage benchmarks
@@ -10,9 +15,13 @@ Data sources:
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from datetime import date
+from typing import Any, Dict, List, Literal, Optional
 
 logger = logging.getLogger(__name__)
+
+# Type alias for granularity parameter
+Granularity = Literal["monthly", "quarterly", "annual"]
 
 
 # ---------------------------------------------------------------------------
@@ -130,9 +139,20 @@ class CashFlowPlanningService:
             )
             projections = raw if isinstance(raw, list) else []
 
-        # Resolve starting cash and burn
+        # Analytical metrics (burn_rate, gross_margin, etc.) are computed
+        # upstream — by the agent, matrix cells, or seed_forecast_from_actuals.
+        # This service is a consumer; it uses what it's given.
         total_raised = company_data.get("total_raised") or 0
-        burn_monthly = company_data.get("burn_rate") or STAGE_BURN_MONTHLY.get(stage, 400_000)
+        burn_estimated = False
+        burn_monthly = company_data.get("burn_rate")
+        if not burn_monthly:
+            burn_monthly = STAGE_BURN_MONTHLY.get(stage, 400_000)
+            burn_estimated = True
+            logger.warning(
+                "burn_rate not provided for %s — using stage default $%s/mo. "
+                "Compute upstream via seed_forecast_from_actuals or suggestions.",
+                company_data.get("company_id", "unknown"), f"{burn_monthly:,.0f}",
+            )
         cash_balance = company_data.get("cash_balance") or max(0, total_raised - burn_monthly * 6)
 
         opex_bench = OPEX_BENCHMARKS.get(stage, OPEX_BENCHMARKS["Series A"])
@@ -165,7 +185,7 @@ class CashFlowPlanningService:
             cash_balance += free_cash_flow
             runway_months = (cash_balance / (-free_cash_flow / 12)) if free_cash_flow < 0 else 999
 
-            results.append({
+            entry = {
                 "year": year,
                 "revenue": round(revenue, 2),
                 "growth_rate": round(proj_growth, 4),
@@ -183,7 +203,10 @@ class CashFlowPlanningService:
                 "cash_balance": round(cash_balance, 2),
                 "runway_months": round(max(0, runway_months), 1),
                 "funding_gap": round(max(0, -cash_balance), 2) if cash_balance < 0 else 0,
-            })
+            }
+            if burn_estimated and revenue == 0:
+                entry["_warning"] = f"OpEx derived from stage-default burn (${burn_monthly:,.0f}/mo) — no actuals available"
+            results.append(entry)
 
         return results
 
@@ -310,10 +333,441 @@ class CashFlowPlanningService:
 
         return sections
 
+    def build_monthly_cash_flow_model(
+        self,
+        company_data: Dict[str, Any],
+        months: int = 24,
+        monthly_overrides: Optional[Dict[str, float]] = None,
+        start_period: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Build a month-by-month P&L / cash flow model.
+
+        Same logic as build_cash_flow_model but at monthly granularity.
+        Uses RevenueProjectionService.project_revenue_monthly() for revenue,
+        then applies OpEx benchmarks and computes EBITDA/FCF/runway per month.
+
+        Driver-engine extensions (read from company_data):
+        - churn_rate / nrr / pricing_pct_change / new_customer_growth_rate / acv_override:
+          Customer-level revenue model layered on top of growth-rate model.
+        - cac_override: Derives S&M spend from new_customers * CAC.
+        - sales_cycle_months: Delays new-customer revenue recognition by N months.
+        - cost_per_head: Replaces hardcoded COST_PER_HEAD_MONTHLY.
+        - hiring_plan_monthly: Time-distributed headcount additions.
+        - capex_override: Absolute $ capex instead of % of revenue.
+        - debt_service_monthly / interest_rate / outstanding_debt: Debt line below EBITDA.
+        - tax_rate: net_income = ebitda * (1 - tax_rate).
+        - working_capital_days: Cash timing adjustment.
+
+        Args:
+            company_data: same shape as build_cash_flow_model, plus new driver keys
+            months: projection horizon in months
+            monthly_overrides: {"YYYY-MM": annual_growth_rate} overrides
+            start_period: "YYYY-MM" start month (defaults to next month)
+
+        Returns:
+            List of per-month dicts with full P&L breakdown.
+        """
+        from app.services.revenue_projection_service import RevenueProjectionService
+
+        base_revenue = (
+            company_data.get("revenue")
+            or company_data.get("arr")
+            or company_data.get("inferred_revenue")
+            or 0
+        )
+
+        stage = company_data.get("stage", "Series A")
+        growth_rate = company_data.get("growth_rate") or company_data.get("inferred_growth_rate") or 1.0
+
+        # Get monthly revenue projections (growth-rate model)
+        rev_projections = RevenueProjectionService.project_revenue_monthly(
+            base_revenue_annual=base_revenue,
+            initial_growth=growth_rate,
+            months=months,
+            stage=stage,
+            sector=company_data.get("sector", "saas"),
+            investor_quality=company_data.get("investor_quality"),
+            geography=company_data.get("geography"),
+            monthly_overrides=monthly_overrides,
+            start_period=start_period,
+        )
+
+        # Analytical metrics are computed upstream (see annual model comment).
+        total_raised = company_data.get("total_raised") or 0
+        burn_monthly = company_data.get("burn_rate")
+        if not burn_monthly:
+            burn_monthly = STAGE_BURN_MONTHLY.get(stage, 400_000)
+            logger.warning(
+                "burn_rate not provided for %s (monthly model) — using stage default $%s/mo.",
+                company_data.get("company_id", "unknown"), f"{burn_monthly:,.0f}",
+            )
+        cash_balance = company_data.get("cash_balance") or max(0, total_raised - burn_monthly * 6)
+
+        opex_bench = OPEX_BENCHMARKS.get(stage, OPEX_BENCHMARKS["Series A"])
+        override_margin = company_data.get("gross_margin")
+
+        # ── New driver inputs ──────────────────────────────────────────
+        churn_rate = company_data.get("churn_rate")              # monthly churn
+        nrr = company_data.get("nrr")                            # e.g. 1.10
+        pricing_pct = company_data.get("pricing_pct_change")     # e.g. 0.10
+        new_cust_growth = company_data.get("new_customer_growth_rate")
+        acv = company_data.get("acv_override")
+        cac = company_data.get("cac_override")
+        sales_cycle = company_data.get("sales_cycle_months") or 0
+        cost_per_head = company_data.get("cost_per_head") or 15_000
+        hiring_monthly = company_data.get("hiring_plan_monthly") or 0
+        capex_abs = company_data.get("capex_override")
+        debt_service = company_data.get("debt_service_monthly") or 0
+        interest_rate_annual = company_data.get("interest_rate") or 0
+        outstanding_debt = company_data.get("outstanding_debt") or 0
+        tax_rate = company_data.get("tax_rate") or 0
+        wc_days = company_data.get("working_capital_days") or 0
+
+        # Customer-level revenue model state (only active when drivers set)
+        use_customer_model = any(v is not None for v in [churn_rate, nrr, new_cust_growth, acv])
+        if use_customer_model and acv and acv > 0:
+            existing_customers = (base_revenue / 12) / (acv / 12) if acv else 0
+        else:
+            existing_customers = 0
+        new_customers_pipeline: List[float] = []  # queue for sales_cycle delay
+        cumulative_headcount_delta = 0
+        prev_wc_cash = 0.0
+
+        results: List[Dict[str, Any]] = []
+
+        for i, proj in enumerate(rev_projections):
+            revenue = proj.get("revenue", 0)
+            gross_margin = override_margin or proj.get("gross_margin", 0.65)
+
+            # ── Customer-level revenue overlay ─────────────────────────
+            if use_customer_model and acv and acv > 0:
+                monthly_acv = acv / 12
+
+                # Existing customer revenue (churn + NRR)
+                if churn_rate is not None:
+                    existing_customers *= (1 - churn_rate)
+                retention_mult = (nrr or 1.0) ** (1 / 12)  # monthly compounding
+                existing_rev = existing_customers * monthly_acv * retention_mult
+
+                # New customers this month
+                new_this_month = 0.0
+                if new_cust_growth is not None:
+                    new_this_month = existing_customers * new_cust_growth
+                    new_customers_pipeline.append(new_this_month)
+                    # Sales cycle delay: only recognize revenue after N months
+                    if len(new_customers_pipeline) > sales_cycle:
+                        recognized = new_customers_pipeline[-(sales_cycle + 1)]
+                        existing_customers += recognized
+                    else:
+                        recognized = 0
+                elif i == 0:
+                    new_customers_pipeline.append(0)
+
+                new_rev = recognized * monthly_acv if new_cust_growth is not None else 0
+
+                # Pricing uplift on all revenue
+                pricing_mult = 1 + (pricing_pct or 0)
+                customer_revenue = (existing_rev + new_rev) * pricing_mult
+
+                # Use customer model revenue if it's non-zero, else fallback
+                if customer_revenue > 0:
+                    revenue = customer_revenue
+
+            cogs = revenue * (1 - gross_margin)
+            gross_profit = revenue * gross_margin
+
+            # ── OpEx with efficiency improvement ───────────────────────
+            eff = 1 - (OPEX_EFFICIENCY_RATE * (i / 12.0))
+
+            # CAC-driven S&M: if CAC is set, derive from new_customers * CAC
+            if cac is not None and new_customers_pipeline:
+                raw_new = new_customers_pipeline[-1] if new_customers_pipeline else 0
+                sm_spend_computed = raw_new * cac
+            else:
+                sm_spend_computed = None
+
+            if revenue > 0:
+                rd_spend = revenue * opex_bench["rd_pct"] * eff
+                sm_spend = sm_spend_computed if sm_spend_computed is not None else revenue * opex_bench["sm_pct"] * eff
+                ga_spend = revenue * opex_bench["ga_pct"] * eff
+            else:
+                rd_spend = burn_monthly * opex_bench["rd_pct"]
+                sm_spend = sm_spend_computed if sm_spend_computed is not None else burn_monthly * opex_bench["sm_pct"]
+                ga_spend = burn_monthly * opex_bench["ga_pct"]
+
+            # Hiring plan: time-distributed headcount additions
+            if hiring_monthly:
+                cumulative_headcount_delta += hiring_monthly
+                rd_spend += cumulative_headcount_delta * cost_per_head * opex_bench["rd_pct"]
+
+            total_opex = rd_spend + sm_spend + ga_spend
+
+            ebitda = gross_profit - total_opex
+            ebitda_margin = ebitda / revenue if revenue > 0 else -1.0
+
+            # ── Capex (absolute override or % of revenue) ─────────────
+            if capex_abs is not None:
+                capex = capex_abs
+            else:
+                capex = revenue * opex_bench.get("capex_pct", 0.05) if revenue > 0 else burn_monthly * 0.05
+
+            # ── Debt service + interest ────────────────────────────────
+            interest_payment = outstanding_debt * (interest_rate_annual / 12)
+            total_debt_payment = debt_service + interest_payment
+            if debt_service > 0:
+                outstanding_debt = max(0, outstanding_debt - debt_service)
+
+            # ── Tax ────────────────────────────────────────────────────
+            pre_tax_income = ebitda - capex - total_debt_payment
+            tax_expense = max(0, pre_tax_income * tax_rate) if tax_rate and pre_tax_income > 0 else 0
+            net_income = pre_tax_income - tax_expense
+
+            free_cash_flow = net_income
+
+            # ── Working capital cash timing adjustment ─────────────────
+            wc_cash = (revenue / 365) * wc_days if wc_days else 0
+            wc_delta = wc_cash - prev_wc_cash
+            prev_wc_cash = wc_cash
+            free_cash_flow -= wc_delta
+
+            cash_balance += free_cash_flow
+            runway_months = (cash_balance / (-free_cash_flow)) if free_cash_flow < 0 else 999
+
+            results.append({
+                "period": proj.get("period", f"M{i+1}"),
+                "revenue": round(revenue, 2),
+                "growth_rate_annual": proj.get("growth_rate_annual", 0),
+                "cogs": round(cogs, 2),
+                "gross_profit": round(gross_profit, 2),
+                "gross_margin": round(gross_margin, 4),
+                "rd_spend": round(rd_spend, 2),
+                "sm_spend": round(sm_spend, 2),
+                "ga_spend": round(ga_spend, 2),
+                "total_opex": round(total_opex, 2),
+                "ebitda": round(ebitda, 2),
+                "ebitda_margin": round(ebitda_margin, 4),
+                "capex": round(capex, 2),
+                "debt_service": round(total_debt_payment, 2),
+                "tax_expense": round(tax_expense, 2),
+                "net_income": round(net_income, 2),
+                "free_cash_flow": round(free_cash_flow, 2),
+                "working_capital_delta": round(wc_delta, 2),
+                "cash_balance": round(cash_balance, 2),
+                "runway_months": round(max(0, runway_months), 1),
+            })
+
+        # ── Seasonality overlay ──────────────────────────────────────
+        # Apply detected seasonal patterns to adjust revenue forecasts.
+        # Only applies when: (a) we have a company_id, (b) enough actuals
+        # exist to detect a pattern, (c) seasonality_factors is not "none".
+        seasonality_setting = company_data.get("seasonality_factors", "auto")
+        if seasonality_setting != "none" and company_data.get("company_id"):
+            try:
+                from app.services.seasonality_engine import SeasonalityEngine
+                se = SeasonalityEngine()
+                pattern = se.detect_pattern(
+                    company_data["company_id"], metric="revenue",
+                )
+                if pattern and pattern.confidence > 0.6:
+                    results = se.apply_seasonal_factors(results, pattern)
+                    logger.debug(
+                        "Applied seasonal factors (strength=%.2f, confidence=%.2f)",
+                        pattern.strength, pattern.confidence,
+                    )
+            except Exception as e:
+                logger.debug("Seasonality overlay skipped: %s", e)
+
+        return results
+
+    # ------------------------------------------------------------------
+    # Unified projection engine
+    # ------------------------------------------------------------------
+
+    def build_projection(
+        self,
+        company_data: Dict[str, Any],
+        granularity: Granularity = "monthly",
+        horizon: Optional[int] = None,
+        growth_overrides: Optional[List[float]] = None,
+        monthly_overrides: Optional[Dict[str, float]] = None,
+        start_period: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Unified projection engine. Runs monthly internally, then aggregates
+        to the requested granularity.
+
+        Args:
+            company_data: company dict with revenue, stage, growth_rate, etc.
+            granularity: "monthly" | "quarterly" | "annual"
+            horizon: number of periods at the target granularity.
+                     Defaults: monthly=24, quarterly=8, annual=5
+            growth_overrides: per-year growth rate list (annual model compat)
+            monthly_overrides: {"YYYY-MM": rate} per-month overrides
+            start_period: "YYYY-MM" start (defaults to next month)
+
+        Returns:
+            List of period dicts with full P&L breakdown at requested granularity.
+        """
+        # Default horizons
+        if horizon is None:
+            horizon = {"monthly": 24, "quarterly": 8, "annual": 5}[granularity]
+
+        # Convert horizon to months
+        months_needed = {
+            "monthly": horizon,
+            "quarterly": horizon * 3,
+            "annual": horizon * 12,
+        }[granularity]
+
+        # If caller passed annual growth_overrides, convert to monthly_overrides
+        if growth_overrides and not monthly_overrides:
+            monthly_overrides = self._annual_overrides_to_monthly(
+                growth_overrides, start_period, months_needed
+            )
+
+        # Build at monthly grain — this is always the source of truth
+        monthly = self.build_monthly_cash_flow_model(
+            company_data,
+            months=months_needed,
+            monthly_overrides=monthly_overrides,
+            start_period=start_period,
+        )
+
+        if granularity == "monthly":
+            return monthly
+        elif granularity == "quarterly":
+            return self._aggregate_to_quarterly(monthly)
+        else:  # annual
+            return self._aggregate_to_annual(monthly)
+
+    # ------------------------------------------------------------------
+    # Aggregation helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _aggregate_to_quarterly(monthly: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Roll up monthly P&L to quarterly. Flow items sum, stock items take end-of-quarter."""
+        from itertools import groupby
+
+        def quarter_key(m: Dict[str, Any]) -> str:
+            period = m.get("period", "")
+            if len(period) >= 7:
+                y, mo = int(period[:4]), int(period[5:7])
+                q = (mo - 1) // 3 + 1
+                return f"{y}-Q{q}"
+            return "unknown"
+
+        _FLOW_KEYS = [
+            "revenue", "cogs", "gross_profit",
+            "rd_spend", "sm_spend", "ga_spend", "total_opex",
+            "ebitda", "capex", "free_cash_flow",
+        ]
+        _STOCK_KEYS = ["cash_balance", "runway_months"]
+
+        quarters: List[Dict[str, Any]] = []
+        for qk, group in groupby(monthly, key=quarter_key):
+            months_in_q = list(group)
+            if not months_in_q:
+                continue
+
+            row: Dict[str, Any] = {"period": qk}
+
+            # Sum flow items
+            for k in _FLOW_KEYS:
+                row[k] = round(sum(m.get(k, 0) for m in months_in_q), 2)
+
+            # Stock items: take last month of quarter
+            last = months_in_q[-1]
+            for k in _STOCK_KEYS:
+                row[k] = last.get(k, 0)
+
+            # Derived ratios
+            row["gross_margin"] = (
+                round(row["gross_profit"] / row["revenue"], 4)
+                if row["revenue"] > 0 else 0
+            )
+            row["ebitda_margin"] = (
+                round(row["ebitda"] / row["revenue"], 4)
+                if row["revenue"] > 0 else -1.0
+            )
+            # Carry the average annual growth rate for the quarter
+            rates = [m.get("growth_rate_annual", 0) for m in months_in_q]
+            row["growth_rate_annual"] = round(sum(rates) / len(rates), 4) if rates else 0
+
+            quarters.append(row)
+
+        return quarters
+
+    @staticmethod
+    def _aggregate_to_annual(monthly: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Roll up monthly P&L to annual. Flow items sum, stock items take year-end."""
+        from itertools import groupby
+
+        def year_key(m: Dict[str, Any]) -> str:
+            period = m.get("period", "")
+            return period[:4] if len(period) >= 4 else "unknown"
+
+        _FLOW_KEYS = [
+            "revenue", "cogs", "gross_profit",
+            "rd_spend", "sm_spend", "ga_spend", "total_opex",
+            "ebitda", "capex", "free_cash_flow",
+        ]
+        _STOCK_KEYS = ["cash_balance", "runway_months"]
+
+        years: List[Dict[str, Any]] = []
+        for yk, group in groupby(monthly, key=year_key):
+            months_in_y = list(group)
+            if not months_in_y:
+                continue
+
+            row: Dict[str, Any] = {"period": yk, "year": len(years) + 1}
+
+            for k in _FLOW_KEYS:
+                row[k] = round(sum(m.get(k, 0) for m in months_in_y), 2)
+
+            last = months_in_y[-1]
+            for k in _STOCK_KEYS:
+                row[k] = last.get(k, 0)
+
+            row["gross_margin"] = (
+                round(row["gross_profit"] / row["revenue"], 4)
+                if row["revenue"] > 0 else 0
+            )
+            row["ebitda_margin"] = (
+                round(row["ebitda"] / row["revenue"], 4)
+                if row["revenue"] > 0 else -1.0
+            )
+            rates = [m.get("growth_rate_annual", 0) for m in months_in_y]
+            row["growth_rate"] = round(sum(rates) / len(rates), 4) if rates else 0
+
+            years.append(row)
+
+        return years
+
+    @staticmethod
+    def _annual_overrides_to_monthly(
+        growth_overrides: List[float],
+        start_period: Optional[str],
+        months: int,
+    ) -> Dict[str, float]:
+        """Convert per-year growth rate list to monthly override dict."""
+        if not start_period:
+            today = date.today()
+            start_period = f"{today.year}-{today.month:02d}"
+
+        y, m = int(start_period[:4]), int(start_period[5:7])
+        overrides: Dict[str, float] = {}
+        for i in range(months):
+            year_idx = i // 12
+            rate = growth_overrides[min(year_idx, len(growth_overrides) - 1)]
+            period = f"{y + (m + i - 1) // 12}-{(m + i - 1) % 12 + 1:02d}"
+            overrides[period] = rate
+        return overrides
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-
 
     def build_three_scenario_model(
         self,

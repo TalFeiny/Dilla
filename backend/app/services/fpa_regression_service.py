@@ -27,9 +27,11 @@ class FPARegressionService:
     ) -> Dict[str, Any]:
         """Perform linear regression"""
         try:
-            # TODO: Implement using numpy/scipy
             slope, intercept = np.polyfit(x, y, 1)
-            r_squared = np.corrcoef(x, y)[0, 1] ** 2
+            y_pred = np.polyval([slope, intercept], x)
+            ss_res = np.sum((np.array(y) - y_pred) ** 2)
+            ss_tot = np.sum((np.array(y) - np.mean(y)) ** 2)
+            r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
             
             return {
                 "slope": float(slope),
@@ -91,15 +93,19 @@ class FPARegressionService:
         historical_data: List[Dict[str, Any]],
         periods: int
     ) -> Dict[str, Any]:
-        """Generate time series forecast using exponential smoothing"""
+        """Generate time series forecast using Holt's linear trend with optimized parameters.
+
+        Alpha (level) and beta (trend) are chosen via grid search to minimize
+        one-step-ahead MSE on the historical data, rather than hardcoded.
+        """
         try:
             if not historical_data:
                 raise ValueError("Historical data is required")
-            
+
             # Extract values and dates
             values = [d.get("value", 0) for d in historical_data]
             dates = [d.get("date") or d.get("period", i) for i, d in enumerate(historical_data)]
-            
+
             if len(values) < 2:
                 # Simple linear extrapolation
                 if len(values) == 1:
@@ -110,42 +116,91 @@ class FPARegressionService:
                     "forecast": forecast,
                     "confidence_intervals": []
                 }
-            
-            # Simple exponential smoothing
-            alpha = 0.3  # Smoothing parameter
-            smoothed = [values[0]]
-            for i in range(1, len(values)):
-                smoothed.append(alpha * values[i] + (1 - alpha) * smoothed[-1])
-            
-            # Forecast future periods
-            last_smoothed = smoothed[-1]
-            last_value = values[-1]
-            trend = (values[-1] - values[0]) / len(values) if len(values) > 1 else 0
-            
+
+            # Optimize alpha and beta via grid search on in-sample MSE
+            alpha, beta = self._optimize_holt_params(values)
+
+            # Run Holt's with optimized parameters
+            level, trend_vals = self._holt_smooth(values, alpha, beta)
+
+            last_level = level[-1]
+            last_trend = trend_vals[-1]
+
             forecast = []
             confidence_intervals = []
+            residuals = [
+                values[i] - (level[i] + trend_vals[i])
+                for i in range(len(values))
+            ]
+            std_dev = float(np.std(residuals)) if len(residuals) > 1 else abs(values[0]) * 0.1
+
             for i in range(1, periods + 1):
-                # Simple trend extrapolation
-                forecast_value = last_value + trend * i
+                forecast_value = last_level + last_trend * i
                 forecast.append(forecast_value)
-                
-                # Simple confidence interval (wider as we go further out)
-                std_dev = np.std(values) if len(values) > 1 else abs(values[0]) * 0.1
-                margin = std_dev * (1 + i * 0.1)  # Increasing uncertainty
+
+                margin = std_dev * (1 + i * 0.1)
                 confidence_intervals.append({
                     "lower": forecast_value - margin,
                     "upper": forecast_value + margin
                 })
-            
+
             return {
                 "forecast": forecast,
                 "confidence_intervals": confidence_intervals,
-                "method": "exponential_smoothing",
-                "alpha": alpha
+                "method": "holts_linear_trend",
+                "alpha": alpha,
+                "beta": beta,
+                "optimized": True,
             }
         except Exception as e:
             logger.error(f"Error in time series forecast: {e}")
             raise
+
+    @staticmethod
+    def _holt_smooth(
+        values: List[float], alpha: float, beta: float
+    ) -> tuple:
+        """Run Holt's double exponential smoothing, return (level, trend) lists."""
+        level = [values[0]]
+        trend_vals = [values[1] - values[0] if len(values) > 1 else 0.0]
+
+        for i in range(1, len(values)):
+            new_level = alpha * values[i] + (1 - alpha) * (level[-1] + trend_vals[-1])
+            new_trend = beta * (new_level - level[-1]) + (1 - beta) * trend_vals[-1]
+            level.append(new_level)
+            trend_vals.append(new_trend)
+
+        return level, trend_vals
+
+    def _optimize_holt_params(
+        self, values: List[float]
+    ) -> tuple:
+        """Grid search for (alpha, beta) that minimizes one-step-ahead MSE.
+
+        Tests 10x10 grid (0.05..0.95 for each). Falls back to (0.3, 0.1)
+        if the series is too short to optimize (< 4 points).
+        """
+        if len(values) < 4:
+            return 0.3, 0.1
+
+        grid = np.arange(0.05, 1.0, 0.1)
+        best_mse = float("inf")
+        best_alpha, best_beta = 0.3, 0.1
+
+        for a in grid:
+            for b in grid:
+                level, trend_vals = self._holt_smooth(values, float(a), float(b))
+                # One-step-ahead errors: predict values[i] from level[i-1]+trend[i-1]
+                errors = []
+                for i in range(1, len(values)):
+                    predicted = level[i - 1] + trend_vals[i - 1]
+                    errors.append((values[i] - predicted) ** 2)
+                mse = sum(errors) / len(errors)
+                if mse < best_mse:
+                    best_mse = mse
+                    best_alpha, best_beta = float(a), float(b)
+
+        return round(best_alpha, 2), round(best_beta, 2)
     
     async def monte_carlo_simulation(
         self,
@@ -280,156 +335,44 @@ class FPARegressionService:
         factors: List[Dict[str, Any]],
         target_factor_name: str
     ) -> Dict[str, Any]:
+        """DEPRECATED: Use DriverImpactService.driver_impact_ranking() instead.
+
+        This method computed fake ratios from single data points.
+        Kept as a redirect for any callers that haven't migrated.
         """
-        Analyze relationships between qualitative and quantitative factors in a world model
-        
-        Args:
-            factors: List of factor dictionaries from world model
-            target_factor_name: Factor to analyze relationships for
-            
-        Returns:
-            Analysis of which factors correlate with the target
-        """
-        try:
-            # Find target factor
-            target_factor = next((f for f in factors if f["factor_name"] == target_factor_name), None)
-            if not target_factor:
-                raise ValueError(f"Target factor {target_factor_name} not found")
-            
-            target_value = target_factor.get("current_value")
-            if not isinstance(target_value, (int, float)):
-                # Try to extract numeric value
-                if isinstance(target_value, dict) and "score" in target_value:
-                    target_value = target_value["score"]
-                else:
-                    raise ValueError(f"Target factor {target_factor_name} has non-numeric value")
-            
-            # Collect other factors with numeric values
-            other_factors = []
-            for factor in factors:
-                if factor["factor_name"] == target_factor_name:
-                    continue
-                
-                value = factor.get("current_value")
-                if isinstance(value, (int, float)):
-                    other_factors.append({
-                        "factor_name": factor["factor_name"],
-                        "factor_type": factor.get("factor_type"),
-                        "factor_category": factor.get("factor_category"),
-                        "value": value
-                    })
-                elif isinstance(value, dict) and "score" in value:
-                    other_factors.append({
-                        "factor_name": factor["factor_name"],
-                        "factor_type": factor.get("factor_type"),
-                        "factor_category": factor.get("factor_category"),
-                        "value": value["score"]
-                    })
-            
-            if len(other_factors) < 2:
-                return {
-                    "target_factor": target_factor_name,
-                    "correlations": [],
-                    "message": "Not enough factors for correlation analysis"
-                }
-            
-            # Calculate correlations
-            correlations = []
-            for factor in other_factors:
-                # For single data point, we can't calculate correlation
-                # This would need multiple companies or time series
-                # For now, calculate simple relationship strength
-                other_value = factor["value"]
-                
-                # Normalize both values to 0-1 scale for comparison
-                # This is a simplified approach - real correlation needs multiple data points
-                if target_value != 0 and other_value != 0:
-                    ratio = other_value / target_value if target_value != 0 else 0
-                    relationship_strength = 1.0 - abs(1.0 - ratio)  # Closer to 1.0 = stronger relationship
-                else:
-                    relationship_strength = 0.0
-                
-                correlations.append({
-                    "factor_name": factor["factor_name"],
-                    "factor_type": factor["factor_type"],
-                    "factor_category": factor["factor_category"],
-                    "value": other_value,
-                    "relationship_strength": relationship_strength,
-                    "target_value": target_value
-                })
-            
-            # Sort by relationship strength
-            correlations.sort(key=lambda x: x["relationship_strength"], reverse=True)
-            
-            return {
-                "target_factor": target_factor_name,
-                "target_value": target_value,
-                "correlations": correlations,
-                "strongest_relationships": correlations[:5]
-            }
-        except Exception as e:
-            logger.error(f"Error analyzing world model relationships: {e}")
-            raise
-    
+        logger.warning(
+            "analyze_world_model_relationships is deprecated. "
+            "Use DriverImpactService.driver_impact_ranking() for real sensitivity analysis."
+        )
+        return {
+            "target_factor": target_factor_name,
+            "correlations": [],
+            "message": (
+                "DEPRECATED: This method produced fake ratios, not real correlations. "
+                "Use DriverImpactService.correlate_actuals() for time-series correlation "
+                "or DriverImpactService.driver_impact_ranking() for sensitivity analysis."
+            ),
+        }
+
     async def correlation_matrix(
         self,
         factors: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
+        """DEPRECATED: Use DriverImpactService.correlate_actuals() instead.
+
+        This method computed fake ratios from single data points.
+        Kept as a redirect for any callers that haven't migrated.
         """
-        Calculate correlation matrix for all numeric factors in a world model
-        
-        Note: This requires multiple data points (companies or time series)
-        For single data point, returns relationship strengths instead
-        """
-        try:
-            # Extract numeric factors
-            numeric_factors = []
-            for factor in factors:
-                value = factor.get("current_value")
-                if isinstance(value, (int, float)):
-                    numeric_factors.append({
-                        "name": factor["factor_name"],
-                        "value": value,
-                        "type": factor.get("factor_type"),
-                        "category": factor.get("factor_category")
-                    })
-                elif isinstance(value, dict) and "score" in value:
-                    numeric_factors.append({
-                        "name": factor["factor_name"],
-                        "value": value["score"],
-                        "type": factor.get("factor_type"),
-                        "category": factor.get("factor_category")
-                    })
-            
-            if len(numeric_factors) < 2:
-                return {
-                    "matrix": {},
-                    "message": "Not enough numeric factors for correlation matrix"
-                }
-            
-            # Build correlation-like matrix (relationship strengths)
-            matrix = {}
-            for i, factor1 in enumerate(numeric_factors):
-                matrix[factor1["name"]] = {}
-                for factor2 in numeric_factors:
-                    if factor1["name"] == factor2["name"]:
-                        matrix[factor1["name"]][factor2["name"]] = 1.0
-                    else:
-                        # Calculate relationship strength
-                        val1 = factor1["value"]
-                        val2 = factor2["value"]
-                        if val1 != 0 and val2 != 0:
-                            ratio = val2 / val1 if val1 != 0 else 0
-                            strength = 1.0 - min(1.0, abs(1.0 - ratio))
-                        else:
-                            strength = 0.0
-                        matrix[factor1["name"]][factor2["name"]] = strength
-            
-            return {
-                "matrix": matrix,
-                "factors": [f["name"] for f in numeric_factors],
-                "note": "Relationship strengths calculated from single data point. For true correlations, multiple data points required."
-            }
-        except Exception as e:
-            logger.error(f"Error calculating correlation matrix: {e}")
-            raise
+        logger.warning(
+            "correlation_matrix is deprecated. "
+            "Use DriverImpactService.correlate_actuals() for real correlation."
+        )
+        return {
+            "matrix": {},
+            "factors": [],
+            "message": (
+                "DEPRECATED: This method produced fake ratios, not real correlations. "
+                "Use DriverImpactService.correlate_actuals() with two metric names "
+                "for actual Pearson/Spearman correlation on time-series data."
+            ),
+        }

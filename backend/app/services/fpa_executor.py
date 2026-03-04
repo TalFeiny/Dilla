@@ -28,6 +28,7 @@ class FPAExecutor:
         self._regression_service = None
         self._valuation_engine = None
         self._gap_filler = None
+        self._driver_impact_service = None
 
     # ------------------------------------------------------------------
     # Lazy service accessors
@@ -50,6 +51,13 @@ class FPAExecutor:
             from app.services.intelligent_gap_filler import IntelligentGapFiller
             self._gap_filler = IntelligentGapFiller()
         return self._gap_filler
+
+    def _get_driver_impact_service(self):
+        if self._driver_impact_service is None:
+            from app.services.driver_impact_service import DriverImpactService
+            self._driver_impact_service = DriverImpactService()
+        return self._driver_impact_service
+
 
     # ------------------------------------------------------------------
     # Main execute
@@ -141,6 +149,12 @@ class FPAExecutor:
             return await self._call_pwerm(method_name, kwargs, ctx)
         elif service_name == "gap_filler":
             return await self._call_gap_filler(method_name, kwargs, ctx)
+        elif service_name == "scenario_branch":
+            return await self._call_scenario_branch(method_name, kwargs, ctx)
+        elif service_name == "driver_impact":
+            return await self._call_driver_impact(method_name, kwargs, ctx)
+        elif service_name == "budget_variance":
+            return await self._call_budget_variance(method_name, kwargs, ctx)
         elif service_name == "custom":
             return await self._call_custom(method_name, kwargs, ctx)
         else:
@@ -149,6 +163,142 @@ class FPAExecutor:
     # ------------------------------------------------------------------
     # Service call implementations
     # ------------------------------------------------------------------
+
+    async def _call_scenario_branch(
+        self,
+        method: str,
+        kwargs: Dict[str, Any],
+        ctx: ExecutorContext
+    ) -> Any:
+        """
+        Create a scenario branch and compare to base case.
+        Routes through ScenarioBranchService for full fork-aware,
+        monthly-granularity projections with parent chain inheritance.
+        """
+        from app.services.scenario_branch_service import ScenarioBranchService
+
+        company_id = kwargs.get("company_id") or (ctx.company_ids[0] if ctx.company_ids else None)
+        if not company_id:
+            return {"error": "No company_id for scenario branch"}
+
+        assumptions = kwargs.get("assumptions", {})
+        branch_name = kwargs.get("branch_name", "What-if scenario")
+        fork_period = kwargs.get("fork_period")
+        granularity = kwargs.get("granularity", "monthly")
+        forecast_months = kwargs.get("forecast_months", 24)
+
+        # Persist branch to DB first so ScenarioBranchService can walk the chain
+        branch_id = await self._persist_scenario_branch(
+            company_id=company_id,
+            fund_id=ctx.fund_id,
+            name=branch_name,
+            assumptions=assumptions,
+            fork_period=fork_period,
+        )
+
+        if not branch_id:
+            return {"error": "Failed to persist scenario branch"}
+
+        sbs = ScenarioBranchService()
+
+        # Execute the branch with full fork-aware projection
+        result = sbs.execute_branch(
+            branch_id=branch_id,
+            company_id=company_id,
+            forecast_months=forecast_months,
+        )
+
+        if "error" in result:
+            return result
+
+        # Aggregate to requested granularity if not monthly
+        branch_forecast = result.get("forecast", [])
+        base_forecast = result.get("base_forecast", [])
+
+        if granularity != "monthly":
+            from app.services.cash_flow_planning_service import CashFlowPlanningService
+            if granularity == "quarterly":
+                branch_forecast = CashFlowPlanningService._aggregate_to_quarterly(branch_forecast)
+                base_forecast = CashFlowPlanningService._aggregate_to_quarterly(base_forecast)
+            elif granularity == "annual":
+                branch_forecast = CashFlowPlanningService._aggregate_to_annual(branch_forecast)
+                base_forecast = CashFlowPlanningService._aggregate_to_annual(base_forecast)
+
+        # Build comparison summary
+        b_last = branch_forecast[-1] if branch_forecast else {}
+        base_last = base_forecast[-1] if base_forecast else {}
+
+        # Build chart data using ScenarioBranchService's multi-branch chart builder
+        comparisons = [
+            {"branch_id": None, "name": "Base Case", "forecast": base_forecast, "fork_month_index": 0},
+            {"branch_id": branch_id, "name": branch_name, "forecast": branch_forecast,
+             "fork_month_index": result.get("fork_month_index", 0)},
+        ]
+        charts = sbs._build_multi_branch_charts(comparisons)
+
+        # Capital raising analysis if runway is short
+        capital_raising = sbs.analyze_capital_needs(
+            branch_id, company_id, forecast_months=forecast_months,
+        )
+
+        return {
+            "branch_id": branch_id,
+            "branch_name": branch_name,
+            "granularity": granularity,
+            "base_case": {
+                "final_revenue": base_last.get("revenue", 0),
+                "final_ebitda": base_last.get("ebitda", 0),
+                "final_cash": base_last.get("cash_balance", 0),
+                "final_runway": base_last.get("runway_months", 0),
+            },
+            "branch_case": {
+                "final_revenue": b_last.get("revenue", 0),
+                "final_ebitda": b_last.get("ebitda", 0),
+                "final_cash": b_last.get("cash_balance", 0),
+                "final_runway": b_last.get("runway_months", 0),
+            },
+            "delta": {
+                "revenue": round(b_last.get("revenue", 0) - base_last.get("revenue", 0), 2),
+                "ebitda": round(b_last.get("ebitda", 0) - base_last.get("ebitda", 0), 2),
+                "cash": round(b_last.get("cash_balance", 0) - base_last.get("cash_balance", 0), 2),
+            },
+            "charts": charts,
+            "base_forecast": base_forecast,
+            "branch_forecast": branch_forecast,
+            "assumptions": result.get("assumptions", {}),
+            "capital_raising": capital_raising,
+        }
+
+    async def _persist_scenario_branch(
+        self,
+        company_id: str,
+        fund_id: Optional[str],
+        name: str,
+        assumptions: Dict[str, Any],
+        fork_period: Optional[str] = None,
+    ) -> Optional[str]:
+        """Save scenario branch to DB. Returns branch ID."""
+        try:
+            from app.core.supabase_client import get_supabase_client
+            import json
+            sb = get_supabase_client()
+            if not sb:
+                return None
+            row = {
+                "company_id": company_id,
+                "name": name,
+                "assumptions": json.dumps(assumptions) if isinstance(assumptions, dict) else assumptions,
+            }
+            if fund_id:
+                row["fund_id"] = fund_id
+            if fork_period:
+                row["fork_period"] = fork_period
+            result = sb.table("scenario_branches").insert(row).execute()
+            if result.data:
+                return result.data[0].get("id")
+        except Exception as e:
+            logger.warning("Failed to persist scenario branch: %s", e)
+        return None
 
     async def _call_revenue_projection(
         self,
@@ -162,6 +312,18 @@ class FPAExecutor:
         # Build historical data from portfolio snapshot or kwargs
         historical_data = kwargs.get("historical_data")
         periods = kwargs.get("periods", 12)
+
+        if not historical_data:
+            # Try to seed from fpa_actuals first
+            company_id = kwargs.get("company_id") or (ctx.company_ids[0] if ctx.company_ids else None)
+            if company_id:
+                try:
+                    from app.services.actuals_ingestion import get_actuals_for_forecast
+                    actuals = get_actuals_for_forecast(company_id, "revenue", months=24)
+                    if actuals:
+                        historical_data = [{"period": a["period"], "value": a["amount"]} for a in actuals]
+                except Exception as e:
+                    logger.warning("Failed to load actuals for forecast: %s", e)
 
         if not historical_data:
             # Try to build from portfolio snapshot
@@ -277,6 +439,86 @@ class FPAExecutor:
                 return {"error": str(e), "service": "gap_filler"}
 
         return {"note": "No company data to fill gaps for"}
+
+    async def _call_driver_impact(
+        self,
+        method: str,
+        kwargs: Dict[str, Any],
+        ctx: ExecutorContext,
+    ) -> Any:
+        """Route to DriverImpactService methods."""
+        svc = self._get_driver_impact_service()
+        company_id = kwargs.get("company_id") or (ctx.company_ids[0] if ctx.company_ids else None)
+        if not company_id:
+            return {"error": "No company_id for driver impact analysis"}
+
+        if method == "correlate_actuals":
+            return await svc.correlate_actuals(
+                company_id=company_id,
+                metric_a=kwargs.get("metric_a", "revenue"),
+                metric_b=kwargs.get("metric_b", "headcount"),
+                method=kwargs.get("correlation_method", "pearson"),
+            )
+        elif method == "driver_impact_ranking":
+            return await svc.driver_impact_ranking(
+                company_id=company_id,
+                target_metric=kwargs.get("target_metric", "revenue"),
+            )
+        elif method == "explain_ripple_path":
+            return await svc.explain_ripple_path(
+                company_id=company_id,
+                driver_id=kwargs.get("driver_id", "revenue_growth"),
+            )
+        elif method == "explain_reverse_path":
+            return await svc.explain_reverse_path(
+                company_id=company_id,
+                metric=kwargs.get("metric", "cash_balance"),
+            )
+        elif method == "trace_strategic_impact":
+            return await svc.trace_strategic_impact(
+                company_id=company_id,
+                driver_id=kwargs.get("driver_id", "revenue_growth"),
+            )
+        else:
+            return {"error": f"Unknown driver_impact method: {method}"}
+
+    async def _call_budget_variance(
+        self,
+        method: str,
+        kwargs: Dict[str, Any],
+        ctx: ExecutorContext,
+    ) -> Any:
+        """Route to budget_variance_service module functions."""
+        from app.services.budget_variance_service import (
+            get_variance_report,
+            get_ytd_variance,
+            get_department_drilldown,
+        )
+        company_id = kwargs.get("company_id") or (ctx.company_ids[0] if ctx.company_ids else None)
+        if not company_id:
+            return {"error": "No company_id for budget variance"}
+
+        if method == "variance_report":
+            return get_variance_report(
+                company_id=company_id,
+                category=kwargs.get("category", "revenue"),
+                budget_id=kwargs.get("budget_id"),
+                period_start=kwargs.get("period_start"),
+                period_end=kwargs.get("period_end"),
+            )
+        elif method == "ytd_variance":
+            return get_ytd_variance(
+                company_id=company_id,
+                budget_id=kwargs.get("budget_id"),
+            )
+        elif method == "department_drilldown":
+            return get_department_drilldown(
+                company_id=company_id,
+                budget_id=kwargs.get("budget_id"),
+                department=kwargs.get("department", "all"),
+            )
+        else:
+            return {"error": f"Unknown budget_variance method: {method}"}
 
     async def _call_custom(
         self,

@@ -2988,16 +2988,16 @@ class IntelligentGapFiller:
         next_round_size = min(next_round_size, stage_caps.get(benchmark['next_stage'], 100_000_000))
         
         # Calculate next valuation based on progress
-        # Use actual revenue growth rate if available, otherwise use stage-based defaults
-        revenue_growth_rate_raw = company_data.get('revenue_growth', company_data.get('growth_rate'))
-        if revenue_growth_rate_raw:
-            revenue_growth_rate = self._ensure_numeric(revenue_growth_rate_raw, 2.0)
-            # Convert to annual if it's a decimal (e.g., 0.5 -> 1.5x annual)
-            if revenue_growth_rate < 1.0:
-                revenue_growth_rate = 1.0 + revenue_growth_rate
+        # growth_rate is canonical decimal (0.3 = 30%). Convert to multiplier for compounding.
+        growth_decimal = self._ensure_numeric(
+            company_data.get('revenue_growth', company_data.get('growth_rate')), 0
+        )
+        if growth_decimal > 0:
+            revenue_growth_rate = 1.0 + growth_decimal
         else:
+            # No growth data — use stage-based defaults (already multiplier format)
             revenue_growth_rate = 2.5 if stage_key in ['Seed', 'Series A'] else 1.8
-        
+
         projected_revenue_at_raise = current_revenue * (revenue_growth_rate ** (months_to_next / 12))
         
         # Dynamic step-up calculation based on multiple factors
@@ -3859,28 +3859,20 @@ class IntelligentGapFiller:
             "growth_efficiency": nrr,  # >1 means negative churn (expansion > churn)
         }
         
-        # Add projected_growth_rate for deck generation to use
-        # Use the backward-looking actual growth as the projection
-        # Convert from decimal (0.5 = 50%) to multiplier (1.5 = 50% growth)
+        # projected_growth_rate: canonical decimal fraction (0.5 = 50%, 1.5 = 150%)
+        # actual_growth_rate is already decimal (computed as current/last - 1), so use directly.
         if "backward_looking" in results and "actual_growth_rate" in results["backward_looking"]:
-            actual_growth = results["backward_looking"]["actual_growth_rate"]
-            # Ensure it's a multiplier format (1.5 = 50% growth, not 0.5)
-            if actual_growth < 1.0 and actual_growth > -1.0:
-                # It's in decimal format, convert to multiplier
-                results["projected_growth_rate"] = actual_growth + 1
-            else:
-                # Already in multiplier format
-                results["projected_growth_rate"] = actual_growth
+            results["projected_growth_rate"] = results["backward_looking"]["actual_growth_rate"]
         else:
-            # Fallback based on stage
+            # Fallback based on stage — decimal format
             stage_growth_defaults = {
-                "Seed": 2.5,      # 150% YoY
-                "Series A": 2.0,  # 100% YoY
-                "Series B": 1.7,  # 70% YoY
-                "Series C": 1.5,  # 50% YoY
-                "Series D": 1.3   # 30% YoY
+                "Seed": 1.5,      # 150% YoY
+                "Series A": 1.0,  # 100% YoY
+                "Series B": 0.7,  # 70% YoY
+                "Series C": 0.5,  # 50% YoY
+                "Series D": 0.3   # 30% YoY
             }
-            results["projected_growth_rate"] = stage_growth_defaults.get(stage, 1.5)
+            results["projected_growth_rate"] = stage_growth_defaults.get(stage, 0.5)
         
         return results
     

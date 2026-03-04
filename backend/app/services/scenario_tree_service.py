@@ -737,12 +737,12 @@ class ScenarioTreeService:
         """Build a 3-path tree (bull/base/bear) for a single company."""
         from app.services.revenue_projection_service import RevenueProjectionService
 
+        # growth_rate is canonical decimal (0.3 = 30%, 1.5 = 150%). Trust the format.
         base_growth = base_company_data.get("growth_rate", 0.5) or 0.5
-        if isinstance(base_growth, (int, float)):
-            if base_growth > 10: base_growth = base_growth / 100.0
-            elif base_growth > 2: base_growth = base_growth - 1.0
-        else:
+        if not isinstance(base_growth, (int, float)):
             base_growth = 0.5
+        else:
+            base_growth = float(base_growth)
 
         stage = base_company_data.get("stage", "Series A")
         sector = base_company_data.get("sector", "saas")

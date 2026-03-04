@@ -1,7 +1,13 @@
 """
 Natural Language FP&A Parser
-Parses natural language queries into structured ParsedQuery objects
-Uses keyword extraction + pattern matching (no LLM call — this runs on the hot path)
+Lightweight intent classifier for FP&A queries.
+
+The agent handles all driver selection and value mapping via the driver registry.
+This parser only classifies:
+- Query type (forecast, valuation, scenario_branch, etc.)
+- Scenario intent (create, edit, fork, compare)
+- Entity extraction (companies, metrics, numeric params)
+- Branch name references for edit/fork operations
 """
 
 import logging
@@ -20,13 +26,22 @@ class StepType(str, Enum):
     EXIT_EVENT = "exit_event"
     REVENUE_PROJECTION = "revenue_projection"
     VALUATION = "valuation"
+    SCENARIO_BRANCH = "scenario_branch"
     CUSTOM = "custom"
+
+
+class ScenarioIntent(str, Enum):
+    """Intent for scenario branch operations"""
+    CREATE = "create"    # "what if we..." — new branch
+    EDIT = "edit"        # "change the... to..." — modify existing branch
+    FORK = "fork"        # "branch from... and..." — fork existing branch
+    COMPARE = "compare"  # "compare X vs Y" — side-by-side comparison
 
 
 class ParsedStep(BaseModel):
     """A single parsed step from a natural language query"""
     type: StepType
-    payload: Dict[str, Any]  # e.g. {"event": "seed_extension", "rd_extension": True}
+    payload: Dict[str, Any]
     step_id: Optional[str] = None
     temporal_order: Optional[int] = None
 
@@ -57,13 +72,19 @@ _QUERY_TYPE_PATTERNS = {
         r"\bstress\b", r"\bworst[\s-]case\b", r"\bdownside\b",
     ],
     "sensitivity": [
-        r"\bsensitiv(e|ity)\b", r"\btornado\b", r"\bwhat[\s-]if\b",
+        r"\bsensitiv(e|ity)\b", r"\btornado\b",
     ],
     "regression": [
         r"\bregress(ion)?\b", r"\bcorrelat(e|ion)\b", r"\btrend\b",
     ],
     "scenario": [
         r"\bscenario\b", r"\bwhat happens\b", r"\bif\s+.+\s+then\b",
+    ],
+    "scenario_branch": [
+        r"\bwhat if\b", r"\bwhat would happen\b",
+        r"\bhire\b.*\b(engineer|people|team)\b", r"\bcut\b.*\b(cost|spend|budget|r&d|opex)\b",
+        r"\braise\b.*\b(round|funding|capital)\b",
+        r"\brev(enue)?\b.*\b(drop|fall|decline|increase)\b",
     ],
 }
 
@@ -85,6 +106,32 @@ _STEP_PATTERNS: Dict[str, List[str]] = {
     "funding_event": [
         r"\brais(e|ing)\b", r"\bfunding\b", r"\bround\b", r"\bseries\b",
     ],
+    "scenario_branch": [
+        r"\bwhat if\b.*\b(hire|cut|raise|drop|increase|reduce|grow|add|remove)\b",
+        r"\bwhat would happen if\b",
+    ],
+}
+
+# Scenario intent patterns
+_INTENT_PATTERNS = {
+    ScenarioIntent.EDIT: [
+        r"\bchange\b.*\bto\b", r"\bupdate\b.*\b(scenario|branch)\b",
+        r"\bmodify\b", r"\badjust\b.*\b(the|that)\b",
+        r"\bset\b.*\bto\b", r"\bmake\b.*\b(it|the)\b",
+    ],
+    ScenarioIntent.FORK: [
+        r"\bfork\b", r"\bbranch\s+from\b", r"\bclone\b",
+        r"\bstart\s+from\b.*\band\b", r"\btake\b.*\band\b.*\bchange\b",
+    ],
+    ScenarioIntent.COMPARE: [
+        r"\bcompare\b", r"\bvs\.?\b", r"\bversus\b",
+        r"\bside[\s-]by[\s-]side\b", r"\bwhich\s+is\s+better\b",
+    ],
+    # CREATE is the default — matches "what if we..." and anything else
+    ScenarioIntent.CREATE: [
+        r"\bwhat if\b", r"\bwhat would happen\b",
+        r"\bwhat happens\b", r"\bmodel\b.*\bscenario\b",
+    ],
 }
 
 # Metrics the user might mention
@@ -96,7 +143,13 @@ _METRIC_KEYWORDS = [
 
 
 class NLFPAParser:
-    """Parser for natural language FP&A queries"""
+    """
+    Lightweight intent classifier for FP&A queries.
+
+    For scenario_branch queries, classifies intent (create/edit/fork/compare)
+    and extracts branch name references. The agent reads the driver registry
+    and handles all driver selection and value mapping.
+    """
 
     def __init__(self):
         pass
@@ -106,29 +159,18 @@ class NLFPAParser:
     # ------------------------------------------------------------------
 
     def parse(self, query: str) -> ParsedQuery:
-        """
-        Parse a natural language query into a structured ParsedQuery.
-
-        Extracts query type, entities (companies, metrics), and builds
-        ordered workflow steps.
-        """
+        """Parse a natural language query into a structured ParsedQuery."""
         logger.info(f"Parsing FP&A query: {query[:100]}...")
         q = query.strip()
         q_lower = q.lower()
 
-        # 1. Determine query type
         query_type = self._classify_query_type(q_lower)
-
-        # 2. Extract entities
         companies = self._extract_companies(q)
         metrics = self._extract_metrics(q_lower)
-
-        # 3. Extract numeric parameters (periods, percentages, amounts)
         params = self._extract_params(q_lower)
+        params["_original_query"] = q_lower
 
-        # 4. Build steps
         steps = self._build_steps(q_lower, query_type, companies, metrics, params)
-
         temporal_sequence = [s.step_id for s in steps if s.step_id]
 
         return ParsedQuery(
@@ -144,8 +186,78 @@ class NLFPAParser:
             original_query=query,
         )
 
+    def classify_scenario_intent(self, query: str) -> Dict[str, Any]:
+        """
+        Classify a scenario query into intent + branch references.
+        Used by the agent to decide which API call to make:
+        - create → POST /fpa/scenarios/branch
+        - edit   → PATCH /fpa/scenarios/branch/{id}
+        - fork   → POST /fpa/scenarios/branch with parent_branch_id
+        - compare → POST /fpa/scenarios/compare
+
+        Returns:
+            {
+                "intent": "create" | "edit" | "fork" | "compare",
+                "branch_refs": ["downturn scenario", ...],
+                "raw_query": str,
+            }
+        """
+        q = query.strip().lower()
+        intent = self._detect_scenario_intent(q)
+        branch_refs = self._extract_branch_references(q)
+
+        return {
+            "intent": intent.value,
+            "branch_refs": branch_refs,
+            "raw_query": query.strip(),
+        }
+
     # ------------------------------------------------------------------
-    # Internals
+    # Intent classification
+    # ------------------------------------------------------------------
+
+    def _detect_scenario_intent(self, q: str) -> ScenarioIntent:
+        """Detect create/edit/fork/compare intent from query."""
+        # Check edit/fork/compare first (more specific), then fall back to create
+        for intent in [ScenarioIntent.EDIT, ScenarioIntent.FORK, ScenarioIntent.COMPARE]:
+            for pat in _INTENT_PATTERNS[intent]:
+                if re.search(pat, q, re.IGNORECASE):
+                    return intent
+        return ScenarioIntent.CREATE
+
+    def _extract_branch_references(self, q: str) -> List[str]:
+        """
+        Extract branch name references from query.
+        Patterns: "the X scenario", "from X", "branch X", quoted names.
+        """
+        refs = []
+
+        # Quoted names: "the downturn scenario"
+        quoted = re.findall(r'"([^"]+)"', q) + re.findall(r"'([^']+)'", q)
+        refs.extend(quoted)
+
+        # "the X scenario/branch"
+        for m in re.finditer(r"\bthe\s+(.+?)\s+(scenario|branch)\b", q):
+            name = m.group(1).strip()
+            if name and name not in refs:
+                refs.append(name)
+
+        # "from X and..."
+        for m in re.finditer(r"\bfrom\s+(.+?)\s+and\b", q):
+            name = m.group(1).strip()
+            if name and name not in refs:
+                refs.append(name)
+
+        # "branch X" (not "branch from")
+        for m in re.finditer(r"\bbranch\s+(?!from\b)([a-z][\w\s]+?)(?:\s+and|\s*$)", q):
+            name = m.group(1).strip()
+            if name and name not in refs:
+                refs.append(name)
+
+        return refs
+
+    # ------------------------------------------------------------------
+    # Query type and entity extraction
     # ------------------------------------------------------------------
 
     def _classify_query_type(self, q: str) -> str:
@@ -153,7 +265,7 @@ class NLFPAParser:
             for pat in patterns:
                 if re.search(pat, q, re.IGNORECASE):
                     return qtype
-        return "forecast"  # safe default
+        return "forecast"
 
     def _extract_companies(self, q: str) -> List[str]:
         """Extract @-mentioned company names."""
@@ -191,6 +303,10 @@ class NLFPAParser:
 
         return params
 
+    # ------------------------------------------------------------------
+    # Step building
+    # ------------------------------------------------------------------
+
     def _build_steps(
         self,
         q: str,
@@ -203,7 +319,6 @@ class NLFPAParser:
         steps: List[ParsedStep] = []
         step_idx = 0
 
-        # Match explicit step patterns first
         matched_types: set = set()
         for step_type, patterns in _STEP_PATTERNS.items():
             for pat in patterns:
@@ -219,7 +334,6 @@ class NLFPAParser:
                         ))
                     break
 
-        # If no explicit steps matched, infer from query_type
         if not steps:
             step_idx += 1
             default_type = {
@@ -229,6 +343,7 @@ class NLFPAParser:
                 "sensitivity": StepType.REVENUE_PROJECTION,
                 "regression": StepType.REVENUE_PROJECTION,
                 "scenario": StepType.CUSTOM,
+                "scenario_branch": StepType.SCENARIO_BRANCH,
             }.get(query_type, StepType.REVENUE_PROJECTION)
 
             steps.append(ParsedStep(
@@ -271,8 +386,30 @@ class NLFPAParser:
             payload["metric"] = metrics[0] if metrics else "growth"
             payload["change_pct"] = params.get("percentages", [0])[0] if params.get("percentages") else None
         elif step_type == "exit_event":
-            payload["exit_type"] = "ipo"  # could refine from query
+            payload["exit_type"] = "ipo"
         elif step_type == "funding_event":
             payload["amount"] = params.get("amounts", [0])[0] if params.get("amounts") else None
+        elif step_type == "scenario_branch":
+            payload.update(self._build_scenario_branch_payload(params))
 
         return payload
+
+    def _build_scenario_branch_payload(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Lightweight scenario branch payload — intent + raw params only.
+        The agent reads the driver registry and handles all driver mapping.
+        """
+        q = params.get("_original_query", "")
+        intent = self._detect_scenario_intent(q)
+        branch_refs = self._extract_branch_references(q)
+
+        return {
+            "intent": intent.value,
+            "branch_refs": branch_refs,
+            "branch_name": "What-if scenario",
+            "assumptions": {},  # Agent fills this via PATCH with driver payloads
+            "raw_params": {
+                k: v for k, v in params.items()
+                if k != "_original_query"
+            },
+        }

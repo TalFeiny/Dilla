@@ -614,49 +614,116 @@ class NLScenarioComposer:
         return {"companies": companies or [], "years": years}
 
     def is_macro_shock_query(self, query: str) -> bool:
-        """Check if query is about a macro/qualitative event impact."""
+        """
+        Detect if a query describes a macro/geopolitical/systemic event
+        that should be routed to analyse_macro_event rather than
+        company-specific what-if parsing.
+
+        Uses semantic heuristics — checks whether the query describes an
+        external force affecting the portfolio (vs a company-specific action).
+        """
         q = query.lower()
-        shock_words = [
-            "recession", "rate hike", "interest rate", "regulation",
-            "tariff", "pandemic", "crash", "boom", "downturn",
-            "ai winter", "credit crunch", "inflation",
-            "what if the market", "what if there",
-            "macro", "geopolitical", "black swan",
+
+        # Portfolio-impact phrasing — strongest signal regardless of event type
+        impact_phrases = [
+            "impact on my", "affect my portfolio", "affect my pnl",
+            "impact on our", "affect our", "impact on the portfolio",
+            "what does .* mean for", "how does .* affect",
+            "implications for", "exposure to",
         ]
-        return any(w in q for w in shock_words)
+        if any(re.search(p, q) for p in impact_phrases):
+            return True
+
+        # The query describes an external event (not a company action)
+        # Heuristic: does NOT mention a specific company action
+        # (e.g. "Tundex gets a contract" is company-specific, not macro)
+        company_action_signals = [
+            r"\b\w+\s+(gets?|wins?|loses?|launches?|hires?|fires?|raises?|closes?)\b",
+            r"\bgrowth (slows?|accelerates?|decelerates?)\s+(in|at|for)\s+\w+",
+        ]
+        has_company_action = any(re.search(p, q) for p in company_action_signals)
+
+        # External event signals — broad semantic categories
+        external_event_patterns = [
+            # Geopolitical
+            r"\b(war|conflict|invasion|sanctions?|embargo|blockade|coup|revolt)\b",
+            r"\b(iran|china|taiwan|russia|ukraine|north korea|israel|gaza)\b.*\b(war|conflict|attack|tension)",
+            # Economic/monetary
+            r"\b(recession|depression|rate (hike|cut|change)|interest rate|inflation|deflation|stagflation)\b",
+            r"\b(fed |ecb |central bank|monetary policy|quantitative)\b",
+            r"\b(credit crunch|bank run|liquidity crisis|sovereign debt|default)\b",
+            # Market
+            r"\b(market (crash|correction|boom|bubble|collapse|rally))\b",
+            r"\b(bear market|bull market|black swan|flash crash|melt-?up|melt-?down)\b",
+            r"\b(crypto (crash|collapse|ban)|housing (crash|bubble|crisis))\b",
+            # Policy/regulatory
+            r"\b(tariff|trade war|ban|antitrust|break.?up|regulation|deregulat|legislation)\b",
+            r"\b(ai act|section 230|gdpr|data privacy|carbon tax|green deal)\b",
+            r"\b(tax (hike|cut|reform)|subsid|nationali[sz])\b",
+            # Supply chain / resource
+            r"\b(supply chain|chip shortage|semiconductor|suez|panama canal)\b",
+            r"\b(oil (spike|shock|embargo|price)|energy crisis|commodity)\b",
+            r"\b(food (crisis|shortage)|grain|wheat|fertilizer)\b",
+            # Systemic
+            r"\b(pandemic|epidemic|outbreak|covid|lockdown)\b",
+            r"\b(ai winter|tech (bubble|crash)|dot.?com)\b",
+            r"\b(climate|natural disaster|earthquake|hurricane|flood|wildfire)\b",
+            # Generic macro
+            r"\b(macro|geopolitical|systemic|exogenous|global)\b",
+            r"\b(downturn|slowdown|contraction|tightening|easing)\b",
+        ]
+        has_external = any(re.search(p, q) for p in external_event_patterns)
+
+        # If it looks like an external event and NOT a company-specific action
+        if has_external and not has_company_action:
+            return True
+
+        # Catch "what if there is a ..." or "what if the [market/economy/world]..."
+        if re.search(r"what (if|happens).*(there is|the (market|economy|world|fed|government))", q):
+            return True
+
+        return False
 
     def parse_macro_shock_query(self, query: str) -> Dict[str, Any]:
-        """Parse a macro shock query into type + magnitude."""
-        q = query.lower()
-        shock_map = {
-            "recession": "recession", "downturn": "recession",
-            "rate hike": "rate_hike", "interest rate": "rate_hike",
-            "regulation": "regulation", "regulatory": "regulation",
-            "boom": "market_boom", "bull market": "market_boom",
-            "crash": "sector_crash", "collapse": "sector_crash",
-            "tariff": "tariff", "trade war": "tariff",
-            "pandemic": "pandemic", "covid": "pandemic",
-            "ai winter": "ai_winter",
-            "credit crunch": "credit_crunch", "liquidity": "credit_crunch",
-        }
-        shock_type = "recession"  # default
-        for keyword, stype in shock_map.items():
-            if keyword in q:
-                shock_type = stype
-                break
+        """
+        Parse a macro event query. Returns the event description directly
+        instead of mapping to hardcoded shock types — the LLM service
+        does the real reasoning.
 
-        # Magnitude
-        magnitude = 0.5  # moderate default
-        if any(w in q for w in ["severe", "major", "deep", "worst"]):
+        For backwards compatibility, also infers magnitude and passes
+        the raw event to analyse_macro_event.
+        """
+        q = query.lower()
+
+        # Strip "what if" / "what happens if" prefix to get the event
+        event = re.sub(
+            r"^(what happens if|what if|if|analyse|analyze|impact of|how does)\s+",
+            "", q, flags=re.IGNORECASE,
+        ).strip()
+        # Strip trailing "on my portfolio/pnl/companies/scenarios"
+        event = re.sub(
+            r"\s+(on my|on our|on the|for my|for our)\s+(portfolio|pnl|companies|scenarios|fund|investments?).*$",
+            "", event, flags=re.IGNORECASE,
+        ).strip()
+
+        # Magnitude from severity language
+        magnitude = 0.5
+        if any(w in q for w in ["severe", "major", "deep", "worst", "catastrophic", "extreme"]):
             magnitude = 0.8
-        elif any(w in q for w in ["mild", "minor", "slight", "small"]):
+        elif any(w in q for w in ["mild", "minor", "slight", "small", "modest"]):
             magnitude = 0.3
 
         # Start year
         yr_match = re.search(r"(?:in |at |year\s*)(\d+)", q)
         start_year = int(yr_match.group(1)) if yr_match else 1
 
-        return {"shock_type": shock_type, "magnitude": magnitude, "start_year": start_year}
+        return {
+            "event": event,
+            "magnitude": magnitude,
+            "start_year": start_year,
+            # Legacy field for backwards compatibility with _tool_macro_shock
+            "shock_type": event,
+        }
 
     def is_cash_flow_query(self, query: str) -> bool:
         """Check if query is asking for cash flow / P&L modeling."""
