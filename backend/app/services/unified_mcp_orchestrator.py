@@ -935,8 +935,16 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=60_000,
     ),
     AgentTool(
+        name="analyse_macro_event",
+        description="Analyse ANY geopolitical/macro event impact on portfolio P&L. Uses web search + LLM reasoning to extract macro factors, map to company drivers, and build branched scenarios with auditable reasoning chain. Works for wars, tariffs, rate changes, regulations, pandemics, etc.",
+        handler="_tool_analyse_macro_event",
+        input_schema={"event": "str", "forecast_months": "int?"},
+        cost_tier="expensive",
+        timeout_ms=120_000,
+    ),
+    AgentTool(
         name="apply_macro_shock",
-        description="Apply a macro event (recession, rate hike, regulation, tariff, pandemic, ai_winter) to an existing scenario tree and see impact on portfolio NAV/DPI.",
+        description="Apply a QUICK preset macro shock (recession, rate_hike, tariff, pandemic, etc.) to an existing scenario tree. For deeper analysis of specific events, use analyse_macro_event instead.",
         handler="_tool_macro_shock",
         input_schema={"shock_type": "str", "magnitude": "float?", "start_year": "int?"},
         cost_tier="cheap",
@@ -1416,6 +1424,227 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="cheap",
         timeout_ms=5_000,
     ),
+
+    # ------------------------------------------------------------------
+    # FPA tools — CFO agent primary tools, also available to portfolio agent
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="fpa_pnl",
+        description="Full P&L waterfall (actuals + forecast) for a company. Hierarchical rows, split derivation.",
+        handler="_tool_fpa_pnl",
+        input_schema={"company_id": "str", "fund_id": "str?", "start": "str?", "end": "str?", "months": "int?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="fpa_variance",
+        description="Budget vs actuals variance report with status flags and monthly trend. budget_id/start/end are optional — defaults to approved branch and YTD.",
+        handler="_tool_fpa_variance",
+        input_schema={"company_id": "str", "budget_id": "str?", "start": "str?", "end": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="fpa_forecast",
+        description="Generate forecast from actuals: seed from real data then build monthly cash flow model.",
+        handler="_tool_fpa_forecast",
+        input_schema={"company_id": "str", "months": "int?", "monthly_overrides": "dict?"},
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
+    AgentTool(
+        name="fpa_cash_flow",
+        description="Monthly cash flow model: revenue → COGS → gross profit → OpEx → EBITDA → FCF → cash → runway.",
+        handler="_tool_fpa_cash_flow",
+        input_schema={"company_id": "str", "months": "int?", "monthly_overrides": "dict?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="fpa_scenario_create",
+        description="Create a scenario branch with assumption overrides (growth, burn, headcount, opex, funding).",
+        handler="_tool_fpa_scenario_create",
+        input_schema={
+            "company_id": "str",
+            "name": "str",
+            "parent_branch_id": "str?",
+            "assumptions": "dict",
+            "probability": "float?",
+        },
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="fpa_scenario_tree",
+        description="Get the full scenario branch tree for a company with computed metrics per branch.",
+        handler="_tool_fpa_scenario_tree",
+        input_schema={"company_id": "str", "forecast_months": "int?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="fpa_scenario_compare",
+        description="Side-by-side scenario branch comparison with deltas, probability-weighted EV, and multi-branch charts.",
+        handler="_tool_fpa_scenario_compare",
+        input_schema={"company_id": "str", "branch_ids": "list[str]", "forecast_months": "int?"},
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
+    AgentTool(
+        name="fpa_regression",
+        description="FPA-focused regression: linear, exponential, time series, Monte Carlo, sensitivity on company actuals.",
+        handler="_tool_fpa_regression",
+        input_schema={"company_id": "str", "metric": "str?", "type": "str?", "periods": "int?"},
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
+    AgentTool(
+        name="fpa_budget_list",
+        description="List budgets for a company, optionally filtered by fiscal year.",
+        handler="_tool_fpa_budget_list",
+        input_schema={"company_id": "str", "fiscal_year": "int?"},
+        cost_tier="free",
+        timeout_ms=10_000,
+    ),
+    AgentTool(
+        name="fpa_budget_lines",
+        description="Get all budget line items for a specific budget.",
+        handler="_tool_fpa_budget_lines",
+        input_schema={"budget_id": "str"},
+        cost_tier="free",
+        timeout_ms=10_000,
+    ),
+    AgentTool(
+        name="fpa_actuals",
+        description="Fetch structured actuals for a company (P&L grid consumption). Optional date range.",
+        handler="_tool_fpa_actuals",
+        input_schema={"company_id": "str", "start": "str?", "end": "str?"},
+        cost_tier="free",
+        timeout_ms=10_000,
+    ),
+    AgentTool(
+        name="fpa_budget_create",
+        description="Create a new budget for a company. Returns the budget record with its ID.",
+        handler="_tool_fpa_budget_create",
+        input_schema={"company_id": "str", "name": "str", "fiscal_year": "int", "fund_id": "str?", "status": "str?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="fpa_upload_actuals",
+        description="Ingest actuals data from structured time series. Each entry: {period: 'YYYY-MM', revenue: float, cogs: float, ...}.",
+        handler="_tool_fpa_upload_actuals",
+        input_schema={"company_id": "str", "time_series": "list[dict]", "fund_id": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="fpa_upload_budget",
+        description="Upload budget line items for an existing budget. Each line: {category: str, m1-m12: float}.",
+        handler="_tool_fpa_upload_budget",
+        input_schema={"budget_id": "str", "lines": "list[dict]"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="fpa_scenario_delete",
+        description="Delete a scenario branch and all its descendants recursively.",
+        handler="_tool_fpa_scenario_delete",
+        input_schema={"branch_id": "str"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="fpa_rolling_forecast",
+        description="Rolling actuals+forecast view stitched into a continuous timeline. Supports monthly/quarterly/annual granularity.",
+        handler="_tool_fpa_rolling_forecast",
+        input_schema={"company_id": "str", "window": "int?", "granularity": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="fpa_xero_sync",
+        description="Trigger a Xero data sync for a company. Pulls P&L actuals from Xero into fpa_actuals.",
+        handler="_tool_fpa_xero_sync",
+        input_schema={"company_id": "str", "months": "int?"},
+        cost_tier="cheap",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="fpa_kpi_dashboard",
+        description="Compute KPIs for a company: adapts to business type (SaaS, services, ecommerce, manufacturing). Returns time series + trends.",
+        handler="_tool_fpa_kpi_dashboard",
+        input_schema={"company_id": "str", "as_of": "str?", "periods": "int?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    # --- Transfer Pricing tools ---
+    AgentTool(
+        name="tp_analyze_transaction",
+        description="Run TP analysis for an intercompany transaction: method selection, PLI computation, IQR, arm's-length assessment. Requires comparable search to be completed first.",
+        handler="_tool_tp_analyze_transaction",
+        input_schema={"transaction_id": "str", "force_method": "str?", "force_pli": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="tp_search_comparables",
+        description="Search for comparable companies for a TP transaction. Uses portfolio DB, yfinance, and web search. Scores on OECD 5 comparability factors.",
+        handler="_tool_tp_search_comparables",
+        input_schema={"transaction_id": "str", "sector": "str?", "tickers": "list[str]?", "include_web": "bool?"},
+        cost_tier="expensive",
+        timeout_ms=120_000,
+    ),
+    AgentTool(
+        name="tp_generate_report",
+        description="Generate an OECD-compliant TP report: benchmark, local_file, master_file, cbcr, or full_pack. Saves to tp_reports table.",
+        handler="_tool_tp_generate_report",
+        input_schema={"company_id": "str", "report_type": "str", "fiscal_year": "str?", "entity_id": "str?", "transaction_ids": "list[str]?"},
+        cost_tier="expensive",
+        timeout_ms=180_000,
+    ),
+    AgentTool(
+        name="tp_group_overview",
+        description="Get a transfer pricing overview for a portfolio company group: entities, IC transactions, benchmark status, existing analyses and reports.",
+        handler="_tool_tp_group_overview",
+        input_schema={"company_id": "str"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+
+    # ------------------------------------------------------------------
+    # Strategic Intelligence — cross-domain CFO analysis
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="strategic_analysis",
+        description=(
+            "Strategic CFO analysis — connects financial performance, capital structure, "
+            "valuation, and market conditions to give actionable recommendations. "
+            "Use when the user asks 'should we...', 'what if...', 'how should we think about...', "
+            "'what are our options', or any strategic question about fundraising, burn, growth, or hiring."
+        ),
+        handler="_tool_strategic_analysis",
+        input_schema={"company_id": "str", "query": "str?", "trigger_event": "str?", "branch_id": "str?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="fpa_monte_carlo",
+        description=(
+            "Monte Carlo simulation over the cash flow model. Samples driver distributions "
+            "(from actuals variance) across 1000 iterations. Returns percentile bands, "
+            "VaR, runway distribution, break-even probability, and driver sensitivity ranking."
+        ),
+        handler="_tool_fpa_monte_carlo",
+        input_schema={
+            "company_id": "str",
+            "iterations": "int?",
+            "months": "int?",
+            "branch_id": "str?",
+        },
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
 ]
 
 # Quick lookup by name (includes ALL tools — agent-visible + internal)
@@ -1759,6 +1988,12 @@ TOOL_WIRING: dict[str, dict] = {
         "produces": [],
     },
 
+    # ── KPI engine ─────────────────────────────────────────────────────
+    "fpa_kpi_dashboard": {
+        "requires": ["companies"],
+        "produces": ["kpi_snapshot"],
+    },
+
     # ── Batch operations ──────────────────────────────────────────────
     "batch_valuate": {
         "requires": ["companies"],
@@ -1871,7 +2106,9 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "run_scenario",             # primary action
         "run_scenario_tree",        # branching scenario trees
         "run_bull_bear_base",       # bull/bear/base scenarios
-        "apply_macro_shock",        # macro event impact analysis
+        "strategic_analysis",       # cross-domain strategic reasoning
+        "analyse_macro_event",      # dynamic LLM-reasoned macro event analysis
+        "apply_macro_shock",        # quick preset macro shock (legacy)
         "portfolio_snapshot",       # point-in-time portfolio state
         "three_scenario_cash_flow", # bull/base/bear P&L models
         "run_projection",           # revenue projections
@@ -1885,7 +2122,9 @@ INTENT_TOOLS: dict[str, list[str]] = {
     ],
     "forecast": [
         "run_fpa",                  # primary: FP&A forecast, stress test
+        "strategic_analysis",       # cross-domain strategic reasoning
         "run_bull_bear_base",       # bull/bear/base scenario modeling
+        "analyse_macro_event",      # macro event impact on forecasts
         "three_scenario_cash_flow", # 3-scenario P&L
         "run_regression",           # regression, monte carlo, sensitivity, time-series
         "run_projection",           # revenue projections with decay
@@ -1913,7 +2152,8 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "query_portfolio",          # portfolio context
     ],
     "monte_carlo": [
-        "monte_carlo_portfolio",    # primary: MC simulation
+        "fpa_monte_carlo",          # primary: MC simulation over cash flow model
+        "monte_carlo_portfolio",    # legacy: portfolio-level MC
         "run_regression",           # MC via regression tool
         "run_projection",           # revenue projections
         "generate_chart",           # histogram visualization
@@ -1975,6 +2215,38 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "generate_chart",           # market maps
     ],
 
+    # --- KPI ---
+    "kpi": [
+        "fpa_kpi_dashboard",           # primary: compute KPIs with time series
+        "fpa_pnl",                     # P&L context
+        "fpa_actuals",                 # raw actuals
+        "generate_chart",              # visualize KPI trends
+        "query_portfolio",             # company context
+    ],
+
+    # --- Transfer Pricing ---
+    "transfer_pricing": [
+        "tp_group_overview",            # start with group overview
+        "tp_search_comparables",        # find comparables
+        "tp_analyze_transaction",       # run analysis
+        "tp_generate_report",           # generate report
+        "generate_chart",               # visualize IQR / PLI
+        "query_portfolio",              # portfolio context
+        "web_search",                   # supplemental research
+    ],
+
+    # --- Strategic ---
+    "strategy": [
+        "strategic_analysis",           # primary: cross-domain CFO reasoning
+        "fpa_kpi_dashboard",            # KPI context
+        "fpa_cash_flow",                # cash flow model
+        "fpa_scenario_compare",         # scenario comparison
+        "analyse_macro_event",          # macro event impact
+        "run_valuation",                # valuation context
+        "generate_chart",               # visualize
+        "query_portfolio",              # portfolio context
+    ],
+
     # --- Specialized ---
     "fx": [
         "convert_currency",         # single conversion
@@ -1988,6 +2260,8 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "fetch_company_data",       # most common need
         "query_portfolio",          # read state
         "web_search",               # research
+        "analyse_macro_event",      # macro event impact analysis
+        "strategic_analysis",       # strategic CFO reasoning
         "suggest_action",           # help user decide
         "generate_chart",           # visualize anything
         "run_valuation",            # common analysis
@@ -2583,7 +2857,11 @@ class UnifiedMCPOrchestrator:
             return valuation_module.ValuationEngineService()
 
     def _build_system_prompt(self, task_instruction: str) -> str:
-        """Build a system prompt with dynamic fund context instead of hardcoded values."""
+        """Build a system prompt with dynamic fund context instead of hardcoded values.
+        If shared_data contains 'system_prompt_override', use that instead (CFO agent mode)."""
+        override = self.shared_data.get("system_prompt_override")
+        if override:
+            return f"{override}\n\nTask: {task_instruction}"
         fund_ctx = self.shared_data.get("fund_context", {})
         fund_size = fund_ctx.get("fund_size", fund_ctx.get("fundSize", DEFAULT_FUND_SIZE))
         strategy = fund_ctx.get("strategy", DEFAULT_FUND_STRATEGY)
@@ -3728,8 +4006,7 @@ Rules:
                     parts.append(f"val=${val/1e6:.0f}M")
                 growth = c.get("growth_rate") or c.get("revenue_growth_annual_pct")
                 if growth and isinstance(growth, (int, float)):
-                    g_pct = growth * 100 if growth < 5 else growth
-                    parts.append(f"growth={g_pct:.0f}%")
+                    parts.append(f"growth={growth * 100:.0f}%")
                 stage = c.get("stage")
                 if stage: parts.append(f"stage={stage}")
                 investors = c.get("investors") or c.get("key_investors")
@@ -4538,6 +4815,10 @@ Answer using specific company names and numbers from the portfolio grid above.""
         if isinstance(result, dict) and "error" not in result:
             self._persist_outputs(tool_name, result)
 
+        # Step 5: proactive strategic context hook
+        if isinstance(result, dict) and "error" not in result:
+            result = await self._strategic_post_hook(tool_name, tool_input, result)
+
         return result
 
     # ------------------------------------------------------------------
@@ -5061,6 +5342,89 @@ Answer using specific company names and numbers from the portfolio grid above.""
             return result
         except Exception as e:
             logger.warning(f"[TOOL] macro_shock failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_analyse_macro_event(self, inputs: dict) -> dict:
+        """
+        Dynamic macro event analysis — LLM-reasoned, evidence-backed.
+        No templates. Searches the web, extracts macro factors with causal chains,
+        maps to portfolio drivers, builds branched scenarios.
+        """
+        try:
+            from app.services.macro_event_analysis_service import (
+                MacroEventAnalysisService,
+            )
+
+            event = inputs.get("event", "").strip()
+            if not event:
+                return {"error": "No event provided. Describe the macro event to analyse."}
+
+            forecast_months = int(inputs.get("forecast_months", 12))
+
+            # Instantiate service with model router and tavily search
+            service = MacroEventAnalysisService(
+                model_router=self.model_router,
+                tavily_search_fn=self._tavily_search,
+            )
+
+            # Get portfolio companies from shared_data
+            companies = self.shared_data.get("companies") or []
+            if not companies:
+                # Try to pull from matrix context
+                matrix = self.shared_data.get("matrix_context") or {}
+                rows = matrix.get("rows") or matrix.get("gridSnapshot", {}).get("rows", [])
+                if rows:
+                    companies = [
+                        {
+                            "name": r.get("company") or r.get("company_name", "Unknown"),
+                            "sector": r.get("sector", ""),
+                            "revenue": r.get("revenue") or r.get("annual_revenue", 0),
+                            "burn_rate": r.get("burn_rate", 0),
+                            "headcount": r.get("headcount", 0),
+                            "cash_balance": r.get("cash_balance", 0),
+                            "id": r.get("id") or r.get("company_id", ""),
+                        }
+                        for r in rows if isinstance(r, dict)
+                    ]
+
+            if not companies:
+                return {
+                    "error": "No portfolio companies found. "
+                             "Load companies first (fetch_company_data or query_portfolio)."
+                }
+
+            # Check for existing scenario tree (overlay path)
+            existing_tree = self.shared_data.get("scenario_tree")
+
+            # Run the full analysis pipeline
+            fund_id = (self.shared_data.get("fund_context") or {}).get("fund_id")
+
+            analysis = await service.analyse_event(
+                event=event,
+                portfolio_companies=companies,
+                fund_id=fund_id,
+                forecast_months=forecast_months,
+                existing_tree=existing_tree,
+            )
+
+            # Serialize for response
+            result = service.to_dict(analysis)
+
+            # Store in shared_data
+            async with self.shared_data_lock:
+                self.shared_data["scenario_analysis"] = result
+                self.shared_data["macro_analysis"] = result
+                # If overlay mode produced shocked trees, store the moderate one
+                branches = result.get("scenario_branches", {}).get("branches", [])
+                for branch in branches:
+                    if branch.get("severity") == "moderate" and branch.get("tree"):
+                        self.shared_data["scenario_tree"] = branch["tree"]
+                        break
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"[TOOL] analyse_macro_event failed: {e}", exc_info=True)
             return {"error": str(e)}
 
     async def _tool_portfolio_snapshot(self, inputs: dict) -> dict:
@@ -6655,10 +7019,8 @@ Return JSON with ONLY these fields (use null if unknown):
         cash_on_hand = total_funding * 0.5 if total_funding else 0  # assume ~50% deployed
         runway_months = int(cash_on_hand / burn_monthly) if burn_monthly > 0 else 0
 
-        # Growth projection: 3-year forecast
-        growth_yoy = company_data.get("revenue_growth") or benchmarks.get("growth_yoy", 1.5)
-        if isinstance(growth_yoy, (int, float)) and growth_yoy > 10:
-            growth_yoy = growth_yoy / 100  # convert percentage to decimal
+        # Growth projection: 3-year forecast — growth_rate is canonical decimal (0.3 = 30%)
+        growth_yoy = company_data.get("revenue_growth") or benchmarks.get("growth_yoy", 0.5)
         projections = []
         proj_rev = revenue if revenue > 0 else (burn_monthly * 12 * 0.3)  # assume 30% of burn if no revenue data
         for year in range(1, 4):
@@ -6745,7 +7107,7 @@ Return JSON with ONLY these fields (use null if unknown):
 
             query = inputs.get("query", "")
             parsed = parser.parse(query)
-            handler_key = classifier.route(parsed)
+            handler_key = await classifier.route(parsed)
             workflow = builder.build(parsed, handler_key)
             ctx = ExecutorContext(
                 fund_id=self.shared_data.get("fund_context", {}).get("fundId"),
@@ -6778,6 +7140,878 @@ Return JSON with ONLY these fields (use null if unknown):
         except Exception as e:
             logger.warning(f"[TOOL] fpa failed: {e}")
             return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # FPA direct tools — CFO agent wiring to real services
+    # ------------------------------------------------------------------
+
+    async def _tool_fpa_pnl(self, inputs: dict) -> dict:
+        """Full P&L waterfall (actuals + forecast) via PnlBuilder."""
+        try:
+            from app.services.pnl_builder import PnlBuilder
+
+            company_id = inputs.get("company_id")
+            fund_id = inputs.get("fund_id") or self.shared_data.get("fund_context", {}).get("fundId")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            months = inputs.get("months", 24)
+            builder = PnlBuilder(company_id, fund_id=fund_id)
+            result = builder.build(
+                start=inputs.get("start"),
+                end=inputs.get("end"),
+                forecast_months=months,
+            )
+            result["company_id"] = company_id
+
+            async with self.shared_data_lock:
+                self.shared_data["fpa_pnl_result"] = result
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_pnl failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_variance(self, inputs: dict) -> dict:
+        """Budget vs actuals variance report."""
+        try:
+            from app.services.budget_variance_service import get_variance_report
+            from datetime import date as date_type
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            budget_id = inputs.get("budget_id")  # optional — service defaults to approved branch
+            start = inputs.get("start")
+            end = inputs.get("end")
+
+            period_start = None
+            period_end = None
+            if start:
+                period_start = date_type.fromisoformat(start + "-01") if len(start) == 7 else date_type.fromisoformat(start)
+            if end:
+                period_end = date_type.fromisoformat(end + "-01") if len(end) == 7 else date_type.fromisoformat(end)
+
+            result = get_variance_report(
+                company_id=company_id,
+                budget_id=budget_id,
+                period_start=period_start,
+                period_end=period_end,
+            )
+
+            async with self.shared_data_lock:
+                self.shared_data["fpa_variance_result"] = result
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_variance failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_forecast(self, inputs: dict) -> dict:
+        """Generate forecast from actuals: seed → monthly cash flow model."""
+        try:
+            from app.services.actuals_ingestion import seed_forecast_from_actuals
+            from app.services.cash_flow_planning_service import CashFlowPlanningService
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            months = inputs.get("months", 24)
+            monthly_overrides = inputs.get("monthly_overrides")
+
+            company_data = seed_forecast_from_actuals(company_id)
+            if not company_data or company_data.get("revenue", 0) <= 0:
+                return {"error": f"No actuals found for company {company_id} — upload actuals first"}
+
+            svc = CashFlowPlanningService()
+            forecast = svc.build_monthly_cash_flow_model(
+                company_data,
+                months=months,
+                monthly_overrides=monthly_overrides,
+            )
+
+            result = {
+                "company_id": company_id,
+                "months": months,
+                "seeded_from": {
+                    "revenue": company_data.get("revenue"),
+                    "burn_rate": company_data.get("burn_rate"),
+                    "cash_balance": company_data.get("cash_balance"),
+                    "growth_rate": company_data.get("growth_rate"),
+                },
+                "forecast": forecast,
+            }
+
+            async with self.shared_data_lock:
+                self.shared_data["fpa_forecast_result"] = result
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_forecast failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_cash_flow(self, inputs: dict) -> dict:
+        """Monthly cash flow model from company data or actuals."""
+        try:
+            from app.services.cash_flow_planning_service import CashFlowPlanningService
+            from app.services.actuals_ingestion import seed_forecast_from_actuals
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            months = inputs.get("months", 24)
+            monthly_overrides = inputs.get("monthly_overrides")
+
+            company_data = seed_forecast_from_actuals(company_id)
+            if not company_data or company_data.get("revenue", 0) <= 0:
+                # Try from shared_data grid snapshot
+                grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", [])
+                company_row = next((r for r in grid if r.get("id") == company_id or r.get("name", "").lower() == company_id.lower()), None)
+                if company_row:
+                    company_data = {
+                        "revenue": float(company_row.get("arr") or company_row.get("revenue") or 0),
+                        "burn_rate": float(company_row.get("burnRate") or company_row.get("burn_rate") or 0),
+                        "cash_balance": float(company_row.get("cashBalance") or company_row.get("cash_balance") or 0),
+                        "growth_rate": float(company_row.get("revenueGrowth") or company_row.get("growth_rate") or 0.3),
+                        "gross_margin": float(company_row.get("grossMargin") or company_row.get("gross_margin") or 0.7),
+                    }
+                else:
+                    return {"error": f"No data available for company {company_id}"}
+
+            svc = CashFlowPlanningService()
+            model = svc.build_monthly_cash_flow_model(
+                company_data,
+                months=months,
+                monthly_overrides=monthly_overrides,
+            )
+
+            result = {
+                "company_id": company_id,
+                "months": months,
+                "cash_flow_model": model,
+                "inputs": {k: v for k, v in company_data.items() if k in ("revenue", "burn_rate", "cash_balance", "growth_rate", "gross_margin")},
+            }
+
+            async with self.shared_data_lock:
+                self.shared_data["fpa_cash_flow_result"] = result
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_cash_flow failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_scenario_create(self, inputs: dict) -> dict:
+        """Create a scenario branch with assumption overrides."""
+        try:
+            from app.core.supabase_client import get_supabase_client
+
+            company_id = inputs.get("company_id")
+            name = inputs.get("name")
+            assumptions = inputs.get("assumptions", {})
+            if not company_id or not name:
+                return {"error": "company_id and name are required"}
+
+            sb = get_supabase_client()
+            if not sb:
+                return {"error": "Database unavailable"}
+
+            row = {
+                "company_id": company_id,
+                "name": name,
+                "assumptions": assumptions,
+            }
+            if inputs.get("parent_branch_id"):
+                row["parent_branch_id"] = inputs["parent_branch_id"]
+            if inputs.get("probability") is not None:
+                row["probability"] = inputs["probability"]
+
+            result = sb.table("scenario_branches").insert(row).execute()
+            branch = result.data[0] if result.data else {}
+            branch_id = branch.get("id")
+
+            # Execute the branch to produce projected numbers
+            response = {"branch": branch, "message": f"Scenario branch '{name}' created"}
+            if branch_id:
+                try:
+                    from app.services.scenario_branch_service import ScenarioBranchService
+                    svc = ScenarioBranchService()
+                    exec_result = svc.execute_branch(branch_id, company_id, inputs.get("forecast_months", 24))
+                    response["forecast"] = exec_result.get("forecast")
+                    response["base_forecast"] = exec_result.get("base_forecast")
+
+                    # Add structured narration if available
+                    try:
+                        from app.services.driver_narration import narrate_branch
+                        narration = narrate_branch(branch_id, company_id)
+                        if narration:
+                            response["narration"] = narration
+                    except Exception:
+                        pass
+                except Exception as exec_err:
+                    logger.warning(f"[TOOL] fpa_scenario_create: branch created but execution failed: {exec_err}")
+                    response["execution_warning"] = str(exec_err)
+
+            return response
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_scenario_create failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_scenario_tree(self, inputs: dict) -> dict:
+        """Get enriched scenario tree with computed metrics."""
+        try:
+            from app.services.scenario_branch_service import ScenarioBranchService
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            forecast_months = inputs.get("forecast_months", 12)
+            svc = ScenarioBranchService()
+            tree = svc.get_enriched_tree(company_id, forecast_months=forecast_months)
+
+            async with self.shared_data_lock:
+                self.shared_data["fpa_scenario_tree"] = tree
+
+            return tree
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_scenario_tree failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_scenario_compare(self, inputs: dict) -> dict:
+        """Side-by-side scenario branch comparison with deltas and EV."""
+        try:
+            from app.services.scenario_branch_service import ScenarioBranchService
+
+            company_id = inputs.get("company_id")
+            branch_ids = inputs.get("branch_ids", [])
+            if not company_id or not branch_ids:
+                return {"error": "company_id and branch_ids are required"}
+
+            forecast_months = inputs.get("forecast_months", 24)
+            svc = ScenarioBranchService()
+            result = svc.execute_comparison(
+                company_id=company_id,
+                branch_ids=branch_ids,
+                forecast_months=forecast_months,
+            )
+
+            async with self.shared_data_lock:
+                self.shared_data["fpa_scenario_compare"] = result
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_scenario_compare failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_regression(self, inputs: dict) -> dict:
+        """FPA-focused regression using company actuals."""
+        try:
+            from app.services.actuals_ingestion import get_company_actuals
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            metric = inputs.get("metric", "revenue")
+            analysis_type = (inputs.get("type") or "linear").lower()
+            periods = inputs.get("periods", 12)
+
+            # Fetch actuals for the metric
+            actuals_result = get_company_actuals(company_id)
+            rows = actuals_result.get("rows", [])
+            metric_row = next((r for r in rows if r.get("category", "").lower() == metric.lower()), None)
+
+            if not metric_row:
+                return {"error": f"No actuals found for metric '{metric}'"}
+
+            values = [v for v in metric_row.get("values", {}).values() if v is not None]
+            x = list(range(len(values)))
+
+            # Dispatch to regression service
+            if FPARegressionService:
+                svc = FPARegressionService()
+                if analysis_type == "linear":
+                    result = await svc.linear_regression(x, values)
+                elif analysis_type in ("exponential", "exp"):
+                    result = await svc.exponential_decay(values, x)
+                elif analysis_type in ("time_series", "timeseries"):
+                    historical_data = [{"value": v, "period": i} for i, v in enumerate(values)]
+                    result = await svc.time_series_forecast(historical_data, periods)
+                elif analysis_type in ("monte_carlo", "montecarlo"):
+                    base_scenario = {metric: values[-1] if values else 0}
+                    mean_val = sum(values) / len(values)
+                    std_dev = (sum((v - mean_val) ** 2 for v in values) / len(values)) ** 0.5 if len(values) > 1 else abs(values[0]) * 0.1
+                    distributions = {metric: {"type": "normal", "mean": values[-1], "std": std_dev}}
+                    result = await svc.monte_carlo_simulation(base_scenario, distributions, iterations=1000)
+                elif analysis_type == "sensitivity":
+                    base_val = values[-1] if values else 0
+                    base_inputs = {metric: base_val}
+                    variable_ranges = {metric: [base_val * 0.8, base_val * 0.9, base_val * 1.1, base_val * 1.2]}
+                    result = await svc.sensitivity_analysis(base_inputs, variable_ranges)
+                else:
+                    result = await svc.linear_regression(x, values)
+            else:
+                return {"error": "FPARegressionService not available"}
+
+            result_dict = result if isinstance(result, dict) else {"result": result}
+            result_dict["company_id"] = company_id
+            result_dict["metric"] = metric
+            result_dict["type"] = analysis_type
+
+            async with self.shared_data_lock:
+                self.shared_data["fpa_regression_result"] = result_dict
+
+            return result_dict
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_regression failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_budget_list(self, inputs: dict) -> dict:
+        """List budgets for a company."""
+        try:
+            from app.core.supabase_client import get_supabase_client
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            sb = get_supabase_client()
+            if not sb:
+                return {"error": "Database unavailable"}
+
+            query = sb.table("budgets").select("*").eq("company_id", company_id).order("fiscal_year", desc=True)
+            fiscal_year = inputs.get("fiscal_year")
+            if fiscal_year:
+                query = query.eq("fiscal_year", fiscal_year)
+
+            result = query.execute()
+            return {"budgets": result.data or [], "count": len(result.data or [])}
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_budget_list failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_budget_lines(self, inputs: dict) -> dict:
+        """Get budget line items for a budget."""
+        try:
+            from app.core.supabase_client import get_supabase_client
+
+            budget_id = inputs.get("budget_id")
+            if not budget_id:
+                return {"error": "budget_id is required"}
+
+            sb = get_supabase_client()
+            if not sb:
+                return {"error": "Database unavailable"}
+
+            result = sb.table("budget_lines").select("*").eq("budget_id", budget_id).execute()
+            return {"lines": result.data or [], "count": len(result.data or [])}
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_budget_lines failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_actuals(self, inputs: dict) -> dict:
+        """Fetch structured actuals for a company."""
+        try:
+            from app.services.actuals_ingestion import get_company_actuals
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            result = get_company_actuals(company_id, inputs.get("start"), inputs.get("end"))
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_actuals failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_budget_create(self, inputs: dict) -> dict:
+        """Create a new budget for a company."""
+        try:
+            from app.core.supabase_client import get_supabase_client
+
+            company_id = inputs.get("company_id")
+            name = inputs.get("name")
+            fiscal_year = inputs.get("fiscal_year")
+            if not company_id or not name or not fiscal_year:
+                return {"error": "company_id, name, and fiscal_year are required"}
+
+            sb = get_supabase_client()
+            if not sb:
+                return {"error": "Database unavailable"}
+
+            result = sb.table("budgets").insert({
+                "company_id": company_id,
+                "fund_id": inputs.get("fund_id"),
+                "name": name,
+                "fiscal_year": fiscal_year,
+                "status": inputs.get("status", "draft"),
+            }).execute()
+
+            if not result.data:
+                return {"error": "Failed to create budget"}
+
+            return {"budget": result.data[0], "success": True}
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_budget_create failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_upload_actuals(self, inputs: dict) -> dict:
+        """Ingest structured actuals time series into fpa_actuals."""
+        try:
+            from app.services.actuals_ingestion import ingest_time_series
+
+            company_id = inputs.get("company_id")
+            time_series = inputs.get("time_series")
+            if not company_id or not time_series:
+                return {"error": "company_id and time_series are required"}
+
+            count = ingest_time_series(
+                time_series=time_series,
+                company_id=company_id,
+                fund_id=inputs.get("fund_id"),
+                document_id=0,
+            )
+            return {"success": True, "rows_ingested": count}
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_upload_actuals failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_upload_budget(self, inputs: dict) -> dict:
+        """Upload budget line items for an existing budget."""
+        try:
+            from app.core.supabase_client import get_supabase_client
+
+            budget_id = inputs.get("budget_id")
+            lines = inputs.get("lines")
+            if not budget_id or not lines:
+                return {"error": "budget_id and lines are required"}
+
+            sb = get_supabase_client()
+            if not sb:
+                return {"error": "Database unavailable"}
+
+            budget = sb.table("budgets").select("id").eq("id", budget_id).execute()
+            if not budget.data:
+                return {"error": f"Budget {budget_id} not found"}
+
+            rows = [{"budget_id": budget_id, **line} for line in lines]
+            result = sb.table("budget_lines").upsert(
+                rows,
+                on_conflict="budget_id,category",
+            ).execute()
+
+            return {"success": True, "lines_upserted": len(result.data or [])}
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_upload_budget failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_scenario_delete(self, inputs: dict) -> dict:
+        """Delete a scenario branch and all descendants."""
+        try:
+            from app.services.scenario_branch_service import ScenarioBranchService
+
+            branch_id = inputs.get("branch_id")
+            if not branch_id:
+                return {"error": "branch_id is required"}
+
+            svc = ScenarioBranchService()
+            deleted_ids = svc.delete_branch_recursive(branch_id)
+            return {"success": True, "deleted_ids": deleted_ids, "count": len(deleted_ids)}
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_scenario_delete failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_rolling_forecast(self, inputs: dict) -> dict:
+        """Rolling actuals+forecast stitched view."""
+        try:
+            from app.services.rolling_forecast_service import RollingForecastService
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            granularity = inputs.get("granularity", "monthly")
+            if granularity not in ("monthly", "quarterly", "annual"):
+                return {"error": "granularity must be monthly, quarterly, or annual"}
+
+            svc = RollingForecastService()
+            result = svc.build_rolling_view(
+                company_id=company_id,
+                window_months=inputs.get("window", 24),
+                granularity=granularity,
+            )
+            result["company_id"] = company_id
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_rolling_forecast failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_xero_sync(self, inputs: dict) -> dict:
+        """Trigger Xero sync for a company."""
+        try:
+            from app.core.supabase_client import get_supabase_client
+            from app.services.xero_service import sync_xero_data
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            months = inputs.get("months", 24)
+
+            # Look up the Xero connection for this company
+            sb = get_supabase_client()
+            if not sb:
+                return {"error": "Database unavailable"}
+
+            conn_result = (
+                sb.table("xero_connections")
+                .select("id, user_id")
+                .eq("company_id", company_id)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if not conn_result.data:
+                return {"error": f"No Xero connection found for company {company_id}"}
+
+            conn = conn_result.data[0]
+            result = await sync_xero_data(
+                connection_id=conn["id"],
+                user_id=conn["user_id"],
+                company_id=company_id,
+                months=months,
+            )
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_xero_sync failed: {e}")
+            return {"error": str(e)}
+
+    # ── KPI engine handler ─────────────────────────────────────────
+
+    async def _tool_fpa_kpi_dashboard(self, inputs: dict) -> dict:
+        """Compute business-type-aware KPIs with time series and trends."""
+        try:
+            from app.services.kpi_engine import KPIEngine, snapshot_to_dict
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            engine = KPIEngine()
+            snapshot = engine.compute(
+                company_id=company_id,
+                as_of=inputs.get("as_of"),
+                periods=inputs.get("periods", 12),
+            )
+            result = snapshot_to_dict(snapshot)
+            self.shared_data["kpi_snapshot"] = result
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_kpi_dashboard failed: {e}")
+            return {"error": str(e)}
+
+    # ── Strategic Intelligence tool handler ────────────────────────
+
+    async def _tool_strategic_analysis(self, inputs: dict) -> dict:
+        """Strategic CFO analysis — full cross-domain reasoning."""
+        try:
+            from app.services.strategic_intelligence_service import (
+                StrategicIntelligenceService,
+            )
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            svc = StrategicIntelligenceService(model_router=self.model_router)
+            analysis = await svc.analyze(
+                company_id=company_id,
+                question=inputs.get("query"),
+                trigger_event=inputs.get("trigger_event"),
+                branch_id=inputs.get("branch_id"),
+                company_data=self.shared_data.get("company_data"),
+            )
+
+            return {
+                "situation_assessment": analysis.situation_assessment,
+                "signals": [
+                    {
+                        "type": s.signal_type,
+                        "metric": s.metric,
+                        "description": s.description,
+                        "severity": s.severity,
+                        "value": s.current_value,
+                    }
+                    for s in analysis.signals
+                ],
+                "impact_chains": analysis.impact_chains,
+                "recommendations": analysis.recommendations,
+                "wacc": {
+                    "wacc": analysis.wacc.wacc,
+                    "cost_of_equity": analysis.wacc.cost_of_equity,
+                    "adjustments": analysis.wacc.adjustments_applied,
+                    "breakdown": analysis.wacc.breakdown,
+                } if analysis.wacc else None,
+                "open_questions": analysis.open_questions,
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] strategic_analysis failed: {e}")
+            return {"error": f"Strategic analysis failed: {e}"}
+
+    # Tools that trigger proactive strategic check after execution
+    _STRATEGICALLY_RELEVANT_TOOLS = {
+        "fpa_cash_flow", "fpa_kpi_dashboard", "fpa_scenario_compare",
+        "fpa_forecast", "fpa_variance", "fpa_rolling_forecast",
+        "run_cash_flow_model", "cap_table_evolution", "round_modeling",
+        "exit_modeling", "macro_event_analysis", "fpa_pnl",
+    }
+
+    async def _strategic_post_hook(
+        self, tool_name: str, tool_input: dict, result: dict,
+    ) -> dict:
+        """Post-tool hook: check for strategic implications worth surfacing."""
+        if tool_name not in self._STRATEGICALLY_RELEVANT_TOOLS:
+            return result
+        if not isinstance(result, dict) or "error" in result:
+            return result
+
+        company_id = tool_input.get("company_id") or tool_input.get("company")
+        if not company_id:
+            return result
+
+        try:
+            from app.services.strategic_intelligence_service import (
+                StrategicIntelligenceService,
+            )
+
+            svc = StrategicIntelligenceService(
+                model_router=getattr(self, "model_router", None),
+            )
+            ctx = await svc.proactive_check(
+                company_id=company_id,
+                tool_result=result,
+                tool_name=tool_name,
+                company_data=self.shared_data.get("company_data"),
+            )
+            if ctx:
+                result["strategic_context"] = {
+                    "summary": ctx.summary,
+                    "severity": ctx.severity,
+                    "signals": [
+                        {"metric": s.metric, "description": s.description, "severity": s.severity}
+                        for s in ctx.signals
+                    ],
+                }
+        except Exception as e:
+            logger.debug(f"[STRATEGIC_HOOK] proactive check failed (non-fatal): {e}")
+
+        return result
+
+    async def _tool_fpa_monte_carlo(self, inputs: dict) -> dict:
+        """Monte Carlo simulation over the cash flow model."""
+        try:
+            from app.services.monte_carlo_engine import MonteCarloEngine, result_to_dict
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            engine = MonteCarloEngine()
+            result = engine.simulate(
+                company_id=company_id,
+                iterations=inputs.get("iterations", 1000),
+                months=inputs.get("months", 24),
+                branch_id=inputs.get("branch_id"),
+            )
+
+            if result.iterations == 0:
+                return {"error": "No actuals data. Upload financials first."}
+
+            return result_to_dict(result)
+        except Exception as e:
+            logger.error(f"[TOOL] fpa_monte_carlo failed: {e}")
+            return {"error": f"Monte Carlo simulation failed: {e}"}
+
+    # ── Transfer Pricing tool handlers ──────────────────────────────
+
+    async def _tool_tp_analyze_transaction(self, inputs: dict) -> dict:
+        """Run TP analysis for an intercompany transaction."""
+        try:
+            from app.services.transfer_pricing_engine import TransferPricingEngine
+
+            transaction_id = inputs.get("transaction_id")
+            if not transaction_id:
+                return {"error": "transaction_id is required"}
+
+            engine = TransferPricingEngine(llm_fn=self._llm_call)
+            result = await engine.analyze(
+                transaction_id=transaction_id,
+                force_method=inputs.get("force_method"),
+                force_pli=inputs.get("force_pli"),
+            )
+            return result
+        except ValueError as e:
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"[TOOL] tp_analyze_transaction failed: {e}")
+            return {"error": f"TP analysis failed: {e}"}
+
+    async def _tool_tp_search_comparables(self, inputs: dict) -> dict:
+        """Search for comparable companies for a TP transaction."""
+        try:
+            from app.services.tp_comparable_service import TPComparableService
+
+            transaction_id = inputs.get("transaction_id")
+            if not transaction_id:
+                return {"error": "transaction_id is required"}
+
+            service = TPComparableService(
+                llm_fn=self._llm_call,
+                tavily_search_fn=self._tavily_search if hasattr(self, '_tavily_search') else None,
+            )
+            result = await service.search_comparables(
+                transaction_id=transaction_id,
+                sector=inputs.get("sector"),
+                tickers=inputs.get("tickers"),
+                include_web=inputs.get("include_web", True),
+            )
+            # Trim candidate details for token efficiency
+            if result.get("candidates"):
+                result["candidates"] = result["candidates"][:15]
+            return result
+        except ValueError as e:
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"[TOOL] tp_search_comparables failed: {e}")
+            return {"error": f"Comparable search failed: {e}"}
+
+    async def _tool_tp_generate_report(self, inputs: dict) -> dict:
+        """Generate an OECD-compliant TP report."""
+        try:
+            from app.services.tp_document_service import TPDocumentService
+
+            company_id = inputs.get("company_id")
+            report_type = inputs.get("report_type", "benchmark")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            service = TPDocumentService(llm_fn=self._llm_call)
+
+            if report_type == "benchmark":
+                result = await service.generate_benchmark_report(
+                    company_id=company_id,
+                    fiscal_year=inputs.get("fiscal_year"),
+                    transaction_ids=inputs.get("transaction_ids"),
+                )
+            elif report_type == "local_file":
+                entity_id = inputs.get("entity_id")
+                if not entity_id:
+                    return {"error": "entity_id is required for local_file report"}
+                result = await service.generate_local_file(
+                    company_id=company_id,
+                    entity_id=entity_id,
+                    fiscal_year=inputs.get("fiscal_year"),
+                )
+            elif report_type == "master_file":
+                result = await service.generate_master_file(
+                    company_id=company_id,
+                    fiscal_year=inputs.get("fiscal_year"),
+                )
+            elif report_type == "cbcr":
+                result = await service.generate_cbcr(
+                    company_id=company_id,
+                    fiscal_year=inputs.get("fiscal_year"),
+                )
+            elif report_type == "full_pack":
+                result = await service.generate_full_pack(
+                    company_id=company_id,
+                    fiscal_year=inputs.get("fiscal_year"),
+                )
+            else:
+                return {"error": f"Unknown report type: {report_type}. Use: benchmark, local_file, master_file, cbcr, full_pack"}
+
+            # Strip full content from response for token efficiency — keep metadata
+            summary = {k: v for k, v in result.items() if k != "content"}
+            summary["report_stored"] = True
+            return summary
+        except ValueError as e:
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"[TOOL] tp_generate_report failed: {e}")
+            return {"error": f"Report generation failed: {e}"}
+
+    async def _tool_tp_group_overview(self, inputs: dict) -> dict:
+        """Get TP overview for a portfolio company group."""
+        try:
+            from app.core.database import supabase_service
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            client = supabase_service.get_client()
+
+            # Company
+            company = client.from_("companies").select("id, name").eq("id", company_id).single().execute().data or {}
+
+            # Entities
+            entities = client.from_("company_entities") \
+                .select("id, name, jurisdiction, entity_type, functional_role, is_tested_party, local_currency") \
+                .eq("company_id", company_id).order("name").execute().data or []
+
+            # IC transactions
+            transactions = client.from_("intercompany_transactions") \
+                .select("id, transaction_type, description, annual_value, currency, benchmark_status, from_entity_id, to_entity_id") \
+                .eq("company_id", company_id).execute().data or []
+
+            # Entity name map for display
+            name_map = {e["id"]: e.get("name", "") for e in entities}
+            for t in transactions:
+                t["from_entity"] = name_map.get(t.get("from_entity_id", ""), "")
+                t["to_entity"] = name_map.get(t.get("to_entity_id", ""), "")
+
+            # Latest analyses
+            txn_ids = [t["id"] for t in transactions]
+            analyses = []
+            if txn_ids:
+                analyses = client.from_("tp_analyses") \
+                    .select("id, transaction_id, method, profit_level_indicator, in_range, adjustment_needed, created_at") \
+                    .in_("transaction_id", txn_ids) \
+                    .order("created_at", desc=True).execute().data or []
+
+            # Existing reports
+            reports = client.from_("tp_reports") \
+                .select("id, report_type, fiscal_year, title, status, created_at") \
+                .eq("company_id", company_id) \
+                .order("created_at", desc=True).limit(20).execute().data or []
+
+            # Summary stats
+            benchmarked = sum(1 for t in transactions if t.get("benchmark_status") in ("in_range", "out_of_range"))
+            in_range = sum(1 for t in transactions if t.get("benchmark_status") == "in_range")
+            out_of_range = sum(1 for t in transactions if t.get("benchmark_status") == "out_of_range")
+
+            return {
+                "company": company,
+                "entity_count": len(entities),
+                "entities": entities,
+                "transaction_count": len(transactions),
+                "transactions": transactions,
+                "benchmark_summary": {
+                    "total": len(transactions),
+                    "benchmarked": benchmarked,
+                    "in_range": in_range,
+                    "out_of_range": out_of_range,
+                    "not_assessed": len(transactions) - benchmarked,
+                },
+                "analyses": analyses[:10],  # latest 10
+                "reports": reports,
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] tp_group_overview failed: {e}")
+            return {"error": f"Group overview failed: {e}"}
 
     async def _tool_parse_accounts(self, inputs: dict) -> dict:
         """Parse raw financial accounts into structured data."""
@@ -7470,8 +8704,16 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
         timeout_ms=60_000,
     ),
     AgentTool(
+        name="analyse_macro_event",
+        description="Analyse ANY geopolitical/macro event impact on portfolio P&L. Uses web search + LLM reasoning to extract macro factors, map to company drivers, and build branched scenarios with auditable reasoning chain. Works for wars, tariffs, rate changes, regulations, pandemics, etc.",
+        handler="_tool_analyse_macro_event",
+        input_schema={"event": "str", "forecast_months": "int?"},
+        cost_tier="expensive",
+        timeout_ms=120_000,
+    ),
+    AgentTool(
         name="apply_macro_shock",
-        description="Apply a macro event (recession, rate hike, regulation, tariff, pandemic, ai_winter) to an existing scenario tree and see impact on portfolio NAV/DPI.",
+        description="Apply a QUICK preset macro shock (recession, rate_hike, tariff, pandemic, etc.) to an existing scenario tree. For deeper analysis of specific events, use analyse_macro_event instead.",
         handler="_tool_macro_shock",
         input_schema={"shock_type": "str", "magnitude": "float?", "start_year": "int?"},
         cost_tier="cheap",
@@ -8093,6 +9335,14 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
         ], "source_companies(query) → synthesize", "Fast DB sourcing: query + score + rank from existing data."),
         ("company_list_build", ["build a list", "company list", "deal flow list", "find new companies", "startups in", "market map of", "discover companies"], "web_search(sector) → fetch_company_data(multiple) → enrich_portfolio → synthesize", "Build company list via web search."),
         ("bulk_enrichment", ["enrich all", "bulk enrich", "enrich the grid", "fill in everything", "enrich my companies", "refresh all data"], "enrich_portfolio → run_skill(multi-enrich) → synthesize", "Bulk enrich."),
+        ("transfer_pricing", [
+            "transfer pricing", "tp analysis", "tp benchmark", "arm's length", "arms length",
+            "intercompany pricing", "intercompany transaction", "oecd benchmark",
+            "local file", "master file", "cbcr", "country-by-country", "country by country",
+            "tp report", "benchmark report", "tp comparable", "comparable search tp",
+            "profit level indicator", "tnmm", "cost plus method", "resale price method",
+        ], "tp_group_overview → tp_search_comparables → tp_analyze_transaction → tp_generate_report → synthesize",
+            "Transfer pricing: overview → comparables → analysis → OECD report generation."),
     ]
 
     def _classify_query_intent(self, prompt: str) -> Optional[Dict[str, Any]]:
@@ -9982,6 +11232,11 @@ ABSOLUTE RULES:
                         _ss = _SS(self.shared_data)
                         _ss.restore_manifest(analysis_manifest)
                         logger.info(f"[MANIFEST] Restored analysis manifest: {list(analysis_manifest.keys())}")
+                    # CFO agent mode: system prompt override from cfo_brain endpoint
+                    system_prompt_override = context.get('system_prompt_override')
+                    if system_prompt_override:
+                        self.shared_data['system_prompt_override'] = system_prompt_override
+                        logger.info("[CFO_AGENT] System prompt override active — running in CFO mode")
                 logger.info(f"[CONTEXT] Stored fund context with keys: {list(context.keys())}")
                 # Log key fund parameters if available
                 if 'fund_size' in context:
@@ -17250,9 +18505,9 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
         backward_actual = growth_metrics.get("backward_looking", {}).get("actual_growth_rate")
         if backward_actual is not None:
             company.setdefault("revenue_growth", backward_actual)
-            normalized = backward_actual + 1 if -1 < backward_actual < 1 else backward_actual
+            # actual_growth_rate is already canonical decimal (0.5 = 50%), use directly
             if not company.get("growth_rate"):
-                company["growth_rate"] = normalized
+                company["growth_rate"] = backward_actual
         
         status["success"] = True
         status["projected_growth_rate"] = company.get("projected_growth_rate")
@@ -19335,42 +20590,29 @@ Return a JSON with this structure:
                     if not growth_metrics:
                         growth_metrics = self._ensure_growth_metrics(company)
                     
-                    # Get the appropriate growth rate from service
-                    yoy_growth = 0
+                    # Get growth as decimal (0.5 = 50%), convert to multiplier (1.5) for compounding
+                    growth_decimal = 0
                     if growth_metrics:
-                        yoy_growth = safe_get_value(growth_metrics.get('projected_growth_rate'), 0)
-                        if yoy_growth:
-                            logger.info(f"Using service-calculated growth rate: {(yoy_growth-1)*100:.1f}% YoY for {company_name}")
-                    
-                    if not yoy_growth:
-                        # Try to get from actual data
-                        actual_growth = self._get_field_safe(company, 'growth_rate', 0)
-                        if not actual_growth:
-                            actual_growth = self._get_field_safe(company, 'revenue_growth', 0)
-                        if actual_growth > 0:
-                            # Fix: Handle ambiguous growth rate values
-                            # If < 10, it's likely already a decimal percentage (1.5 = 150% growth)
-                            # If >= 10, it's a percentage that needs division (50 = 50% growth)
-                            if actual_growth < 10:
-                                # Already a multiplier or very low percentage
-                                # 1.5 means 50% growth, 3.0 means 200% growth
-                                yoy_growth = actual_growth
-                            else:
-                                # Traditional percentage: 50 means 50% growth
-                                yoy_growth = 1 + (actual_growth / 100)
-                            
-                            # Validate: yoy_growth must be > 1.0 for positive growth
-                            if yoy_growth <= 1.0:
-                                logger.warning(f"Growth rate {actual_growth} resulted in yoy_growth {yoy_growth}, using 1.2 (20% growth)")
-                                yoy_growth = 1.2  # 20% minimum growth
-                            
-                            logger.info(f"Using actual growth rate: {(yoy_growth-1)*100:.1f}% YoY for {company_name}")
+                        growth_decimal = safe_get_value(growth_metrics.get('projected_growth_rate'), 0)
+                        if growth_decimal:
+                            logger.info(f"Using service-calculated growth rate: {growth_decimal*100:.1f}% YoY for {company_name}")
+
+                    if not growth_decimal:
+                        # Try to get from actual data (canonical decimal format)
+                        growth_decimal = self._get_field_safe(company, 'growth_rate', 0)
+                        if not growth_decimal:
+                            growth_decimal = self._get_field_safe(company, 'revenue_growth', 0)
+                        if growth_decimal > 0:
+                            logger.info(f"Using actual growth rate: {growth_decimal*100:.1f}% YoY for {company_name}")
                         else:
                             # Last resort - request from service with minimal data
                             minimal_payload, _ = self._build_growth_inference_payload(company)
                             fallback_growth = self.gap_filler.calculate_required_growth_rates(minimal_payload)
-                            yoy_growth = safe_get_value(fallback_growth.get('projected_growth_rate'), 1.5) if fallback_growth else 1.5  # 50% if service fails
-                            logger.warning(f"Using fallback service growth rate: {(yoy_growth-1)*100:.1f}% YoY for {company_name}")
+                            growth_decimal = safe_get_value(fallback_growth.get('projected_growth_rate'), 0.5) if fallback_growth else 0.5
+                            logger.warning(f"Using fallback service growth rate: {growth_decimal*100:.1f}% YoY for {company_name}")
+
+                    # Convert decimal to multiplier for compounding math
+                    yoy_growth = 1.0 + growth_decimal
                     
                     # Dynamic target based on current ARR
                     if current_arr >= 1_000_000_000:  # Already at $1B+
@@ -19643,8 +20885,8 @@ Return a JSON with this structure:
                         "target": target_name,
                         "target_value": target_arr,
                         "milestone": milestone,
-                        "growth_rate": yoy_growth,  # Store as multiplier (e.g., 2.0 for 100% growth)
-                        "growth_rate_pct": int((yoy_growth - 1) * 100),  # Store percentage separately for display
+                        "growth_rate": growth_decimal,  # Canonical decimal (0.5 = 50%)
+                        "growth_rate_pct": int(growth_decimal * 100),  # Percentage for display
                         "stage": stage,
                         "projection": scenarios_data['base'],  # Base scenario for backward compatibility
                         "scenarios": scenarios_data,  # All three scenarios
@@ -25036,7 +26278,7 @@ Return a JSON with this structure:
                             or self._get_field_safe(company, "inferred_valuation")
                             or 0
                         )
-                        growth_rate = self._get_field_safe(company, "growth_rate") or 2.0
+                        growth_rate = self._get_field_safe(company, "growth_rate") or 1.0  # decimal: 1.0 = 100%
                         inferred_val = self._get_field_safe(company, "inferred_valuation") or 0
 
                         val_request = ValuationRequest(
@@ -25108,7 +26350,7 @@ Return a JSON with this structure:
                                     or self._get_field_safe(company, "inferred_revenue")
                                     or 0
                                 ),
-                                "growth_rate": self._get_field_safe(company, "growth_rate") or 2.0,
+                                "growth_rate": self._get_field_safe(company, "growth_rate") or 1.0,  # decimal: 1.0 = 100%
                                 "projected_growth_rate": company.get("projected_growth_rate"),
                                 "growth_metrics": company.get("growth_metrics"),
                             }
@@ -28655,7 +29897,7 @@ Return a JSON with this structure:
                 multiple = val / rev if val and rev > 0 else 0
                 points.append({
                     "name": c.get("company", "Unknown"),
-                    "x": growth * 100 if growth < 5 else growth,
+                    "x": growth * 100,  # canonical decimal → percentage for display
                     "y": multiple,
                     "arr": rev,
                     "stage": c.get("stage", "series_a"),
@@ -28685,7 +29927,7 @@ Return a JSON with this structure:
                 )
                 if rev > 0 and growth > 0:
                     name = c.get("company", "Company")
-                    growth_frac = growth if growth < 5 else growth / 100
+                    growth_frac = growth  # canonical decimal (0.3 = 30%)
                     base_pts = []
                     bull_pts = []
                     bear_pts = []
@@ -28853,7 +30095,7 @@ Return a JSON with this structure:
             )
             if rev > 0 and growth > 0:
                 name = c.get("company", "Company")
-                growth_frac = growth if growth < 5 else growth / 100
+                growth_frac = growth  # canonical decimal (0.3 = 30%)
                 # Growth decay: growth rate decreases over time (SaaS reversion)
                 growth_pts = []
                 rev_pts = []
