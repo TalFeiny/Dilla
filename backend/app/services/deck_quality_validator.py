@@ -247,10 +247,7 @@ class DeckQualityValidator:
         
         if growth_rate > 0:
             min_rate, max_rate = self.VALIDATION_BOUNDS['growth_rate']
-            # Convert percentage to decimal if needed
-            if growth_rate > 1:
-                growth_rate = growth_rate / 100
-            
+            # growth_rate is canonical decimal (0.3 = 30%). Trust the format.
             if growth_rate < min_rate or growth_rate > max_rate:
                 issues.append({
                     'growth_rate': growth_rate,

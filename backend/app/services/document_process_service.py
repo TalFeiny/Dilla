@@ -120,6 +120,7 @@ COMPANY_UPDATE_SIGNAL_SCHEMA = {
         "impact_reasoning": "object: { [metric_key]: string } — '\"verbatim quote\" → why → metric change'. e.g. '\"landed 3 enterprise logos\" → ~$200K ACV each → ARR +$600K'",
     },
     "value_explanations": "object: { [metric_key]: string } — '\"source quote\" → why → metric change'. e.g. arr: '\"hit $1.2M ARR\" → explicit figure → ARR is $1.2M'; burn_rate: '\"hired 5 senior engineers\" → ~$25K/mo each → burn +$125K/mo'",
+    "time_series": "array of objects or null — [{period: 'YYYY-MM', revenue: number|null, cogs: number|null, opex: number|null, ebitda: number|null, cash_balance: number|null, headcount: number|null, arr: number|null, mrr: number|null, burn_rate: number|null, customers: number|null}, ...]. Extract ALL periods present in spreadsheet columns.",
 }
 
 # Investment memo schema – for investment_memo
@@ -566,6 +567,13 @@ def _spreadsheet_prompt(text: str, document_type: str, schema_desc: str, memo_co
         "- business_updates.latest_update: one-line summary of the financial position",
         "- operational_metrics: headcount, customer_count if present",
         "- impact_estimates: infer from trends (e.g. declining revenue → negative ARR impact)",
+        "- time_series: When the spreadsheet has monthly or quarterly columns (Jan, Feb, Mar... "
+        "or Q1, Q2... or 2024-01, 2024-02...), extract the FULL TIME SERIES as an array: "
+        '[{"period": "2025-01", "revenue": 500000, "cogs": 150000, "opex": 200000, '
+        '"ebitda": 150000, "cash_balance": 2000000, "headcount": 45, "arr": 6000000, '
+        '"burn_rate": 180000, "customers": 120}, ...] '
+        "Preserve EVERY period present in the data. Do not summarize to a single value. "
+        "Use null for metrics not present in a given period.",
         "- value_explanations: cite the specific cells/values you used",
         "",
         "Schema (JSON):",
@@ -878,8 +886,9 @@ def _normalize_extraction(d: Dict[str, Any], document_type: Optional[str] = None
             "business_model": out.get("business_model"),
             "category": out.get("category"),
         }
+        # growth_rate is canonical decimal (0.3 = 30%). Convert to percentage for display field.
         g = _ensure_numeric(out["financial_metrics"].get("growth_rate"))
-        growth_annual = (g * 100 if g is not None and g <= 2 else g) if g is not None else None
+        growth_annual = (g * 100) if g is not None else None
         out["growth_metrics"] = {
             "current_arr": out["financial_metrics"].get("arr"),
             "revenue_growth_annual_pct": growth_annual,
@@ -1262,6 +1271,22 @@ def run_document_process(
                     )
             except Exception as e:
                 logger.warning("Failed to emit document suggestions for %s: %s", document_id, e, exc_info=True)
+
+        # Persist time-series actuals if present
+        if company_id and extracted_data and extracted_data.get("time_series"):
+            try:
+                from app.services.actuals_ingestion import ingest_time_series
+                n = ingest_time_series(
+                    time_series=extracted_data["time_series"],
+                    company_id=company_id,
+                    fund_id=fund_id,
+                    document_id=document_id,
+                )
+                if n:
+                    logger.info("Ingested %d actuals rows from document %s", n, document_id)
+            except Exception as e:
+                logger.warning("Failed to ingest actuals for %s: %s", document_id, e, exc_info=True)
+
         elif not company_id or not fund_id:
             logger.info(
                 "[DOC_PROCESS] Skipping suggestion emission for %s: company_id=%s, fund_id=%s",

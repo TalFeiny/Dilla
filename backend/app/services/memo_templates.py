@@ -772,6 +772,125 @@ PORTFOLIO_REVIEW = {
 
 
 # ---------------------------------------------------------------------------
+# TP Benchmark Report — per-transaction benchmark study
+# ---------------------------------------------------------------------------
+TP_BENCHMARK_REPORT = {
+    "id": "tp_benchmark",
+    "title_pattern": "Transfer Pricing Benchmark Report — {companies} — FY{year}",
+    "required_data": ["companies", "tp_analysis"],
+    "optional_data": ["tp_comparables", "tp_far_profiles", "tp_entity_financials"],
+    "sections": [
+        _section("exec_summary", "Executive Summary",
+                 data_keys=["tp_analysis"],
+                 prompt_hint="Summarize: group structure, IC transactions tested, overall compliance status "
+                             "(in/out of arm's-length range), key jurisdictions, adjustments recommended. "
+                             "Reference OECD Transfer Pricing Guidelines. Formal tone for tax authority review."),
+        _section("group_structure", "Group Structure and Entity Overview", type="metrics",
+                 data_keys=["companies", "tp_far_profiles"],
+                 prompt_hint="List entities with jurisdiction, entity type, functional role, tested-party status."),
+        _section("far_analysis", "Functional Analysis (Functions, Assets, and Risks)",
+                 data_keys=["tp_far_profiles"],
+                 prompt_hint="Per-entity FAR analysis: functions performed, assets employed, risks assumed. "
+                             "Characterize each entity per OECD guidelines (limited-risk distributor, IP entrepreneur, etc.)."),
+        _section("method_selection", "Selection of Most Appropriate Method",
+                 data_keys=["tp_analysis"],
+                 prompt_hint="Per transaction: why this method is the MAM per OECD Ch. II, why the tested party was chosen, "
+                             "why this PLI, and why alternatives were rejected. Reference OECD Guidelines paragraphs."),
+        _section("comparable_set", "Comparable Company Analysis", type="metrics",
+                 data_keys=["tp_comparables"],
+                 prompt_hint="Search strategy, OECD 5-factor scores, accepted set, and full rejection log with reasons."),
+        _section("iqr_results", "Interquartile Range Analysis", type="metrics",
+                 data_keys=["tp_analysis"],
+                 prompt_hint="Present IQR results: Q1, median, Q3, full range. Show tested party PLI vs the range."),
+        _section("iqr_chart", "Arm's-Length Range Visualization", type="chart",
+                 data_keys=["tp_analysis"], chart_type="bar",
+                 prompt_hint="Bar chart: IQR range with tested-party PLI marker. One bar per transaction."),
+        _section("arm_length", "Arm's-Length Assessment and Adjustment Recommendation",
+                 data_keys=["tp_analysis"],
+                 prompt_hint="Per transaction: in-range confirmation OR quantified adjustment to median with pricing recommendation. "
+                             "Reference OECD Guidelines Ch. III on comparability adjustments."),
+        _section("conclusion", "Conclusion",
+                 data_keys=["tp_analysis"],
+                 prompt_hint="Summarize: overall compliance, transactions requiring adjustment, recommended next steps."),
+    ],
+}
+
+# ---------------------------------------------------------------------------
+# TP Local File — per-entity (OECD Chapter V, Annex II)
+# ---------------------------------------------------------------------------
+TP_LOCAL_FILE = {
+    "id": "tp_local_file",
+    "title_pattern": "Local File — {companies} — FY{year}",
+    "required_data": ["companies", "tp_entity"],
+    "optional_data": ["tp_analysis", "tp_comparables", "tp_far_profiles", "tp_entity_financials"],
+    "sections": [
+        _section("local_entity", "A. Local Entity",
+                 data_keys=["tp_entity", "tp_far_profiles"],
+                 prompt_hint="Entity description, management structure, business strategy, key competitors. "
+                             "Per OECD Annex II to Chapter V. Regulatory filing tone."),
+        _section("controlled_txns", "B. Controlled Transactions", type="metrics",
+                 data_keys=["tp_analysis", "tp_entity"],
+                 prompt_hint="Each IC transaction: counterparty, type, value, method, PLI, IQR result, comparables."),
+        _section("financial_info", "C. Financial Information", type="metrics",
+                 data_keys=["tp_entity_financials"],
+                 prompt_hint="Entity P&L, key PLIs, currency, FX rates used."),
+    ],
+}
+
+# ---------------------------------------------------------------------------
+# TP Master File — group-level (OECD Chapter V, Annex I)
+# ---------------------------------------------------------------------------
+TP_MASTER_FILE = {
+    "id": "tp_master_file",
+    "title_pattern": "Master File — {companies} — FY{year}",
+    "required_data": ["companies"],
+    "optional_data": ["tp_far_profiles", "tp_analysis", "tp_entity_financials"],
+    "sections": [
+        _section("org_structure", "A. Organizational Structure",
+                 data_keys=["companies", "tp_far_profiles"],
+                 prompt_hint="Legal and operating structure: entities, jurisdictions, ownership chain. "
+                             "Per OECD Annex I, Section A."),
+        _section("business_desc", "B. Description of MNE's Business",
+                 data_keys=["companies", "tp_far_profiles"],
+                 prompt_hint="Principal activities of each entity, supply chain for top products/services, "
+                             "major service arrangements. Per OECD Annex I, Section B."),
+        _section("intangibles", "C. MNE's Intangibles",
+                 data_keys=["tp_far_profiles"],
+                 prompt_hint="Intangible assets: ownership, development, exploitation. IP-related IC transactions. "
+                             "DEMPE analysis. Per OECD Annex I, Section C."),
+        _section("financial_activities", "D. MNE's Intercompany Financial Activities", type="metrics",
+                 data_keys=["tp_analysis"],
+                 prompt_hint="IC financing arrangements, treasury, cash pooling, guarantees."),
+        _section("tax_positions", "E. MNE's Financial and Tax Positions", type="metrics",
+                 data_keys=["tp_entity_financials"],
+                 prompt_hint="Consolidated financials, APAs, rulings, MAP cases."),
+    ],
+}
+
+# ---------------------------------------------------------------------------
+# TP CbCR — Country-by-Country Report (OECD Chapter V, Annex III)
+# ---------------------------------------------------------------------------
+TP_CBCR = {
+    "id": "tp_cbcr",
+    "title_pattern": "Country-by-Country Report — {companies} — FY{year}",
+    "required_data": ["companies", "tp_entity_financials"],
+    "optional_data": [],
+    "sections": [
+        _section("table1", "Table 1: Allocation of Income, Taxes and Business Activities", type="metrics",
+                 data_keys=["tp_entity_financials"],
+                 prompt_hint="Per-jurisdiction: revenue (third-party + related-party), profit before tax, "
+                             "tax paid, tax accrued, stated capital, accumulated earnings, employees, tangible assets."),
+        _section("table2", "Table 2: List of Constituent Entities", type="metrics",
+                 data_keys=["companies"],
+                 prompt_hint="Each entity with jurisdiction, tax ID, and principal business activity."),
+        _section("table3", "Table 3: Additional Information",
+                 data_keys=[],
+                 prompt_hint="Methodological notes, data sources, currency conversion approach."),
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
 # Registry — lookup by ID
 # ---------------------------------------------------------------------------
 MEMO_TEMPLATES: Dict[str, Dict[str, Any]] = {
@@ -819,6 +938,17 @@ MEMO_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "portfolio_review": PORTFOLIO_REVIEW,
     "portfolio": PORTFOLIO_REVIEW,              # alias
     "fund_review": PORTFOLIO_REVIEW,            # alias
+    # --- Transfer Pricing templates ---
+    "tp_benchmark": TP_BENCHMARK_REPORT,
+    "tp_benchmark_report": TP_BENCHMARK_REPORT, # alias
+    "transfer_pricing": TP_BENCHMARK_REPORT,    # alias
+    "tp_local_file": TP_LOCAL_FILE,
+    "local_file": TP_LOCAL_FILE,                # alias
+    "tp_master_file": TP_MASTER_FILE,
+    "master_file": TP_MASTER_FILE,              # alias
+    "tp_cbcr": TP_CBCR,
+    "cbcr": TP_CBCR,                            # alias
+    "country_by_country": TP_CBCR,              # alias
 }
 
 # Intent keyword → template ID mapping for auto-detection
@@ -918,4 +1048,22 @@ INTENT_TO_TEMPLATE: Dict[str, str] = {
     "portfolio update": "portfolio_review",
     "how is our portfolio": "portfolio_review",
     "how is the portfolio": "portfolio_review",
+    # --- Transfer Pricing intent mappings ---
+    "transfer pricing": "tp_benchmark",
+    "tp benchmark": "tp_benchmark",
+    "tp report": "tp_benchmark",
+    "benchmark report": "tp_benchmark",
+    "arm's length": "tp_benchmark",
+    "arms length": "tp_benchmark",
+    "intercompany pricing": "tp_benchmark",
+    "local file": "tp_local_file",
+    "oecd local file": "tp_local_file",
+    "tp local file": "tp_local_file",
+    "master file": "tp_master_file",
+    "oecd master file": "tp_master_file",
+    "tp master file": "tp_master_file",
+    "cbcr": "tp_cbcr",
+    "country by country": "tp_cbcr",
+    "country-by-country": "tp_cbcr",
+    "cbc report": "tp_cbcr",
 }

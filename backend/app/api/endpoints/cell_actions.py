@@ -308,17 +308,23 @@ def _company_data_from_inputs(inputs: Dict[str, Any]) -> Dict[str, Any]:
     """Build company_data shape from frontend/matrix inputs so services can run with row data only.
     Aligned with SERVICE_ALIGNED_FIELDS for valuation (business_model, sector, category)."""
     revenue = inputs.get("revenue") or inputs.get("arr") or inputs.get("current_arr_usd")
+    # Canonical: growth_rate is decimal fraction (0.3 = 30%). No mid-pipeline guessing.
     growth = inputs.get("growth_rate")
     if growth is None and "revenue_growth_annual_pct" in inputs:
         g = inputs["revenue_growth_annual_pct"]
-        growth = (float(g) / 100.0) if isinstance(g, (int, float)) and abs(g) < 10 else g
+        # revenue_growth_annual_pct is always a percentage — always divide by 100
+        growth = float(g) / 100.0 if isinstance(g, (int, float)) else g
+    if not isinstance(growth, (int, float)):
+        growth = 0.3  # default 30%
+    else:
+        growth = float(growth)
     return {
         "name": inputs.get("name") or inputs.get("company_name") or "Unknown",
         "company_name": inputs.get("company_name") or inputs.get("name") or "Unknown",
         "current_arr_usd": revenue,
         "revenue": revenue,
-        "revenue_growth_annual_pct": (growth * 100) if isinstance(growth, (int, float)) and 0 <= growth <= 2 else inputs.get("revenue_growth_annual_pct"),
-        "growth_rate": growth if isinstance(growth, (int, float)) else (inputs.get("revenue_growth_annual_pct", 30) / 100.0 if inputs.get("revenue_growth_annual_pct") is not None else 0.3),
+        "revenue_growth_annual_pct": growth * 100,
+        "growth_rate": growth,
         "sector": inputs.get("sector") or "",
         "stage": inputs.get("stage") or "",
         "current_valuation_usd": inputs.get("current_valuation_usd") or inputs.get("last_round_valuation"),

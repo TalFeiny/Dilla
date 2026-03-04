@@ -67,11 +67,15 @@ def canonicalize_company_data(raw: Dict[str, Any]) -> Dict[str, Any]:
                 break
         if v is not None:
             out[k] = v
-    # Growth
-    g = raw.get("growth_rate") or raw.get("revenue_growth_pct")
+    # Growth — canonical format: decimal fraction (0.3 = 30%, 1.0 = 100%)
+    # Convert once at extraction boundary, trust the format downstream.
+    g = raw.get("growth_rate")
+    g_pct = raw.get("revenue_growth_pct")
     if g is not None:
-        if isinstance(g, (int, float)) and 0 < g < 10:
-            out["growth_rate"] = float(g) / 100.0
-        else:
-            out["growth_rate"] = float(g) if g is not None else None
+        g = float(g)
+        # If > 5, clearly a percentage (no real company sustains 500%+ growth as decimal)
+        out["growth_rate"] = g / 100.0 if abs(g) > 5 else g
+    elif g_pct is not None:
+        # Explicitly named as percentage — always divide by 100
+        out["growth_rate"] = float(g_pct) / 100.0
     return {**raw, **out}

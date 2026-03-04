@@ -373,14 +373,9 @@ class CompanyScoringVisualizer:
         if current_growth_rate is None:
             current_growth_rate = 1.0  # Default 100% growth
         
-        # Ensure current_growth_rate is not None and is in the right format
-        if current_growth_rate is None:
+        # growth_rate is canonical decimal (0.3 = 30%, 1.0 = 100%). Trust the format.
+        if current_growth_rate is None or current_growth_rate < 0:
             current_growth_rate = 1.0  # Default 100% growth
-        elif current_growth_rate > 10:
-            # It's a percentage like 150, convert to decimal
-            current_growth_rate = current_growth_rate / 100
-        elif current_growth_rate < 0:
-            current_growth_rate = 1.0  # Default to 100% if negative
         
         # Check for strategic investors (increases exit likelihood)
         strategic_investor_bonus = 1.0

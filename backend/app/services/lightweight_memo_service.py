@@ -1089,8 +1089,7 @@ class LightweightMemoService:
             gm_val = gross_margin * 100 if 0 < gross_margin < 1 else gross_margin
             derived.append(f"Gross Margin: {gm_val:.0f}%")
         if growth_rate and isinstance(growth_rate, (int, float)):
-            gr_val = growth_rate * 100 if 0 < abs(growth_rate) < 1 else growth_rate
-            derived.append(f"Growth: {gr_val:.0f}% YoY")
+            derived.append(f"Growth: {growth_rate * 100:.0f}% YoY")
         if derived:
             lines.append(f"  Key Metrics: {' | '.join(derived)}")
 
@@ -2457,8 +2456,7 @@ class LightweightMemoService:
         if total_deployed > 0:
             metrics.append(f"Deployed: ~${total_deployed / 1e6:,.0f}M")
         if median_growth is not None:
-            gr_pct = median_growth * 100 if 0 < abs(median_growth) < 10 else median_growth
-            metrics.append(f"Median growth: ~{gr_pct:.0f}%")
+            metrics.append(f"Median growth: ~{median_growth * 100:.0f}%")
         if metrics:
             parts.append(" | ".join(metrics) + ".")
 

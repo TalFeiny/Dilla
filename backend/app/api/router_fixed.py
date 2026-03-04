@@ -7,6 +7,7 @@ from typing import Dict, Optional
 from fastapi import APIRouter
 
 from app.api.endpoints.unified_brain import router as unified_brain_router
+from app.api.endpoints.cfo_brain import router as cfo_brain_router
 from app.api.endpoints.deck_export import router as deck_export_router
 from app.api.endpoints.cell_actions import router as cell_actions_router
 from app.api.endpoints.matrix_charts import router as matrix_charts_router
@@ -52,6 +53,7 @@ api_router = APIRouter()
 
 # Always-on routers
 api_router.include_router(unified_brain_router, tags=["unified"])
+api_router.include_router(cfo_brain_router, tags=["cfo"])
 api_router.include_router(deck_export_router, tags=["export"])
 api_router.include_router(cell_actions_router, tags=["cell-actions"])
 api_router.include_router(matrix_charts_router, tags=["matrix-charts"])
@@ -85,6 +87,7 @@ OPTIONAL_ROUTERS = {
     "app.api.endpoints.documents_process": {"prefix": "/documents", "tags": ["documents"], "key": "documents_process"},
     "app.api.endpoints.portfolio_analysis": {"prefix": "/portfolio", "tags": ["portfolio-analysis"], "key": "portfolio_analysis"},
     "app.api.endpoints.compliance": {"prefix": "/compliance", "tags": ["compliance"], "key": "compliance"},
+    "app.api.endpoints.xero_integration": {"tags": ["xero"], "key": "xero_integration"},
 }
 
 for module_path, kwargs in OPTIONAL_ROUTERS.items():

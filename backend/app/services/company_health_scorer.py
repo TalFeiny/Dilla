@@ -487,10 +487,10 @@ class CompanyHealthScorer:
             analytics.arr_source = "inferred"
 
         # --- Growth rate ---
+        # growth_rate is canonical decimal (0.3 = 30%, 1.5 = 150%). Trust the format.
         reported_growth = ensure_numeric(company.get("growth_rate"), 0)
         if reported_growth > 0:
-            # Normalise: if given as %, convert to decimal multiplier (e.g. 150 → 1.5)
-            analytics.growth_rate = reported_growth if reported_growth < 10 else reported_growth / 100
+            analytics.growth_rate = reported_growth
         else:
             analytics.growth_rate = benchmarks.get("growth_rate", 1.0)
 

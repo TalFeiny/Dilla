@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     SLACK_SIGNING_SECRET: Optional[str] = Field(None, env="SLACK_SIGNING_SECRET")
     SLACK_REDIRECT_URI: Optional[str] = Field(None, env="SLACK_REDIRECT_URI")
     BACKEND_URL: str = Field("http://localhost:8000", env="BACKEND_URL")
+
+    # Xero integration (Accounting API + OAuth2)
+    XERO_CLIENT_ID: Optional[str] = Field(None, env="XERO_CLIENT_ID")
+    XERO_CLIENT_SECRET: Optional[str] = Field(None, env="XERO_CLIENT_SECRET")
+    XERO_REDIRECT_URI: Optional[str] = Field(None, env="XERO_REDIRECT_URI")
     
     # Model configuration for extraction with fallbacks
     PRIMARY_EXTRACTION_MODEL: str = Field("claude-sonnet-4-5", env="PRIMARY_EXTRACTION_MODEL")

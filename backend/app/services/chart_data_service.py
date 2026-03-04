@@ -251,12 +251,10 @@ class ChartDataService:
                     or company.get("inferred_growth_rate"),
                     1.5,
                 )
-                if growth < 10:
-                    yoy_growth = growth
-                else:
-                    yoy_growth = 1 + (growth / 100)
-                if yoy_growth < 1.0:
-                    yoy_growth = 1.2
+                # growth_rate is canonical decimal (0.3 = 30%). Convert to multiplier.
+                yoy_growth = 1.0 + growth
+                if yoy_growth <= 1.0:
+                    yoy_growth = 1.2  # default 20% growth
 
                 target_arr = 100_000_000
                 target_name = "$100M"
@@ -279,7 +277,7 @@ class ChartDataService:
                     years_to_target = 0 if current_arr >= target_arr else 5
 
                 starting_revenue_m = current_arr / 1_000_000
-                cagr = (yoy_growth - 1) * 100 / 100.0 if years_to_target > 0 else 0.2
+                cagr = (yoy_growth - 1) if years_to_target > 0 else 0.2
                 projection = []
                 for i in range(projection_years):
                     if i == 0:
@@ -352,10 +350,7 @@ class ChartDataService:
                     company.get("growth_rate") or company.get("inferred_growth_rate"),
                     0.3,
                 )
-                if growth > 1 and growth < 10:
-                    growth = growth / 100
-                elif growth >= 10:
-                    growth = growth / 100
+                # growth_rate is canonical decimal (0.3 = 30%). Trust the format.
                 margin = ensure_numeric(company.get("gross_margin"), 0.65)
                 if margin > 1:
                     margin = margin / 100
@@ -520,7 +515,9 @@ class ChartDataService:
                     if monthly is not None and monthly != 0:
                         growth_q = monthly * 3
                     elif annual is not None and annual != 0:
-                        growth_q = (annual * 100 if 0 < annual <= 2 else annual) / 4
+                        # annual may be pct (30=30%) or decimal (0.3=30%). Normalize to pct.
+                        annual_pct = annual * 100 if abs(annual) < 5 else annual
+                        growth_q = annual_pct / 4
                     else:
                         growth_q = None
                     if growth_q is not None and growth_q != 0:
@@ -534,10 +531,9 @@ class ChartDataService:
                         0,
                     )
                     if growth is not None and growth != 0:
-                        # Normalize to percentage: if decimal (e.g. 0.5 = 50%), scale up
-                        if -1 <= growth <= 1 and growth != 0:
-                            growth = growth * 100
-                        children.append({"name": name, "value": round(abs(growth), 1)})
+                        # Normalize to percentage for display
+                        growth_pct = growth * 100 if abs(growth) < 5 else growth
+                        children.append({"name": name, "value": round(abs(growth_pct), 1)})
             if not children:
                 return None
             titles = {
@@ -588,15 +584,13 @@ class ChartDataService:
                     or c.get("revenue_growth_annual_pct"),
                     0,
                 )
-                if growth > 1 and growth < 10:
-                    growth = growth * 100
-                elif growth > 0 and growth < 1:
-                    growth = growth * 100
+                # growth_rate is canonical decimal. Convert to pct for chart axis.
+                growth_pct = growth * 100
                 multiple = val / rev if rev and rev > 0 else 0
-                if multiple > 0 and (growth != 0 or multiple > 0):
+                if multiple > 0 and (growth_pct != 0 or multiple > 0):
                     points.append({
                         "name": name,
-                        "x": round(growth, 1),
+                        "x": round(growth_pct, 1),
                         "y": round(multiple, 1),
                         "z": min(rev / 1_000_000, 100) if rev else 10,
                     })
@@ -713,12 +707,8 @@ class ChartDataService:
                     c.get("growth_rate") or c.get("inferred_growth_rate"),
                     0,
                 )
-                if growth > 1 and growth < 10:
-                    growth = growth * 10
-                elif growth >= 10:
-                    pass
-                else:
-                    growth = growth * 100
+                # canonical decimal → percentage for velocity score
+                growth = growth * 100
                 product_updates = 1 if c.get("product_updates") or c.get("productUpdates") else 0
                 velocity = growth * 0.7 + (product_updates * 20) + 10
                 scores.append({"name": name, "value": round(velocity, 1), "growth": growth})
@@ -1230,10 +1220,11 @@ class ChartDataService:
             scores[1] = 7.5
 
         # Execution: infer from growth rate
+        # growth_rate is canonical decimal (0.3 = 30%, 2.0 = 200%)
         growth = ensure_numeric(company.get("growth_rate") or company.get("inferred_growth_rate"), 0)
-        if growth > 2 or (growth > 0 and growth < 1 and growth * 100 > 100):
+        if growth > 1.0:  # > 100% growth
             scores[2] = 8.0
-        elif growth > 1 or (growth > 0 and growth < 1 and growth * 100 > 50):
+        elif growth > 0.5:  # > 50% growth
             scores[2] = 6.5
 
         # Sales: infer from revenue and customer data
@@ -1596,11 +1587,8 @@ class ChartDataService:
                         rev = ensure_numeric(
                             c.get("revenue") or c.get("arr") or c.get("inferred_revenue"), 1_000_000
                         ) / 1_000_000
+                        # growth_rate is canonical decimal (0.3 = 30%). Trust the format.
                         growth = ensure_numeric(c.get("growth_rate") or c.get("inferred_growth_rate"), 0.3)
-                        if growth > 10:
-                            growth = growth / 100
-                        elif growth > 1:
-                            growth = growth - 1
                         adj_growth = growth * multiplier
                         # Additional stress: churn increase in severe
                         if scenario == "severe" and year_idx > 1:
@@ -1752,9 +1740,8 @@ class ChartDataService:
                 )
                 if ltm <= 0:
                     continue
+                # growth_rate is canonical decimal (0.3 = 30%). Trust the format.
                 growth = ensure_numeric(c.get("growth_rate") or c.get("yoy_growth"), 0)
-                if growth > 10:
-                    growth = growth / 100.0  # normalise 250 → 2.5
                 ntm = ltm * (1 + growth) if growth else ltm * 1.20  # default 20% growth
                 points.append({"name": name, "ltm": ltm, "ntm": ntm})
 
