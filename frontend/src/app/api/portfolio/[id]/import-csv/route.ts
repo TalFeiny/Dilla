@@ -438,6 +438,124 @@ export async function POST(
       upserted += batch.length;
     }
 
+    // ── Feed financial snapshot into fpa_actuals ──────────────────────
+    // Map company-level financial fields to fpa_actuals categories
+    const FINANCIAL_TO_ACTUALS: Record<string, string> = {
+      current_arr_usd: 'arr',
+      burn_rate_monthly_usd: 'burn_rate',
+      cash_in_bank_usd: 'cash_balance',
+    };
+
+    // Detect period columns from CSV headers instead of hardcoding today.
+    // Matches: "2024-01", "Jan 2025", "Jan-25", "01/2025"
+    const MONTH_NAMES: Record<string, number> = {
+      jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+      jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+      january: 1, february: 2, march: 3, april: 4,
+      june: 6, july: 7, august: 8, september: 9,
+      october: 10, november: 11, december: 12,
+    };
+
+    const parsePeriodHeader = (header: string): string | null => {
+      const h = header.trim().toLowerCase();
+      // "2025-01" or "2025-01-01"
+      let m = h.match(/^(\d{4})-(\d{2})(?:-\d{2})?$/);
+      if (m) return `${m[1]}-${m[2]}-01`;
+      // "Jan-25", "Jan 25", "Jan-2025", "Jan 2025"
+      m = h.match(/^([a-z]+)[\s-](\d{2,4})$/);
+      if (m) {
+        const mo = MONTH_NAMES[m[1]];
+        if (mo) {
+          const yr = m[2].length === 2 ? `20${m[2]}` : m[2];
+          return `${yr}-${String(mo).padStart(2, '0')}-01`;
+        }
+      }
+      // "1/2025", "01/2025"
+      m = h.match(/^(\d{1,2})\/(\d{4})$/);
+      if (m) {
+        const mo = parseInt(m[1]);
+        if (mo >= 1 && mo <= 12) return `${m[2]}-${String(mo).padStart(2, '0')}-01`;
+      }
+      return null;
+    }
+
+    // Scan unmapped headers for date-like period columns
+    const periodColumns: Array<{ header: string; period: string }> = [];
+    for (const header of unmappedHeaders) {
+      const period = parsePeriodHeader(header);
+      if (period) periodColumns.push({ header, period });
+    }
+
+    let actualsIngested = 0;
+
+    // Build company_id lookup: we need IDs for all records
+    const { data: allCompanies } = await supabaseService
+      .from('companies')
+      .select('id, name')
+      .eq('fund_id', fundId)
+      .in('name', companyRecords.map(r => r.name as string));
+
+    const companyIdMap = new Map<string, string>(
+      ((allCompanies || []) as { name: string; id: string }[]).map(c => [c.name.toLowerCase(), c.id])
+    );
+
+    const actualsRows: Array<Record<string, unknown>> = [];
+
+    if (periodColumns.length > 0) {
+      // CSV has time-series columns — create one fpa_actuals row per company per period
+      for (const csvRow of rows) {
+        const companyName = csvRow[csvHeaders.find(h => effectiveMapping[h] === 'name') || ''];
+        if (!companyName) continue;
+        const companyId = companyIdMap.get(companyName.toLowerCase().trim());
+        if (!companyId) continue;
+
+        for (const { header, period } of periodColumns) {
+          const amount = parseNumber(csvRow[header]);
+          if (amount == null || amount === 0) continue;
+          actualsRows.push({
+            company_id: companyId,
+            fund_id: fundId,
+            period,
+            category: 'revenue',
+            amount,
+            source: 'csv_upload',
+          });
+        }
+      }
+    } else {
+      // No period columns detected — fall back to snapshot-style ingestion
+      const fallbackPeriod = new Date().toISOString().slice(0, 7) + '-01';
+      for (const record of companyRecords) {
+        const companyId = companyIdMap.get((record.name as string).toLowerCase());
+        if (!companyId) continue;
+
+        for (const [companyField, actualsCategory] of Object.entries(FINANCIAL_TO_ACTUALS)) {
+          const amount = record[companyField];
+          if (amount == null || amount === 0) continue;
+          actualsRows.push({
+            company_id: companyId,
+            fund_id: fundId,
+            period: fallbackPeriod,
+            category: actualsCategory,
+            amount: amount,
+            source: 'csv_upload',
+          });
+        }
+      }
+    }
+
+    if (actualsRows.length > 0) {
+      const { error: actualsError } = await supabaseService
+        .from('fpa_actuals')
+        .upsert(actualsRows, { onConflict: 'company_id,period,category,source' });
+
+      if (actualsError) {
+        errors.push(`fpa_actuals ingestion: ${actualsError.message}`);
+      } else {
+        actualsIngested = actualsRows.length;
+      }
+    }
+
     return NextResponse.json({
       success: true,
       summary: {
@@ -446,9 +564,11 @@ export async function POST(
         updated,
         skipped: skipped.length,
         errors: errors.length,
+        actualsIngested,
       },
       columnMapping: effectiveMapping,
-      unmappedHeaders,
+      unmappedHeaders: unmappedHeaders.filter(h => !parsePeriodHeader(h)),
+      periodsDetected: periodColumns.map(p => p.period),
       skippedRows: skipped.slice(0, 10),
       errors: errors.slice(0, 10),
     });
