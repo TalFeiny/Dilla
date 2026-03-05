@@ -44,57 +44,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
+  function profileFromUser(u: User): UserProfile {
+    return {
+      id: u.id,
+      email: u.email!,
+      name: u.user_metadata?.full_name || u.user_metadata?.name || u.email!,
+      avatar_url: u.user_metadata?.avatar_url,
+    };
+  }
+
   useEffect(() => {
     const supabase = getSupabaseBrowser();
 
-    async function fetchProfile(email: string) {
-      try {
-        const { data, error } = await supabase
-          .from('users')
-          .select('*, organizations(*)')
-          .eq('email', email)
-          .single();
-
-        if (error) {
-          console.error('fetchProfile failed:', error.message, error.code);
-        } else if (data) {
-          setProfile({
-            id: data.id,
-            email: data.email,
-            name: data.name,
-            avatar_url: data.avatar_url,
-            organization_id: data.organization_id,
-            organization: data.organizations,
-            role: data.role,
-          });
-        }
-      } catch (err) {
-        console.error('fetchProfile unexpected error:', err);
-      }
-      setLoading(false);
-    }
-
-    // Get initial session from cookies (no network call — can't hang)
     supabase.auth.getSession().then(({ data: { session } }) => {
       const u = session?.user ?? null;
       setUser(u);
-      if (u) fetchProfile(u.email!);
-      else setLoading(false);
+      if (u) setProfile(profileFromUser(u));
+      setLoading(false);
     }).catch(() => {
       setLoading(false);
     });
 
-    // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
+      (_event, session) => {
         const newUser = session?.user ?? null;
         setUser(newUser);
-        if (newUser) {
-          await fetchProfile(newUser.email!);
-        } else {
-          setProfile(null);
-          setLoading(false);
-        }
+        setProfile(newUser ? profileFromUser(newUser) : null);
+        setLoading(false);
       }
     );
 
