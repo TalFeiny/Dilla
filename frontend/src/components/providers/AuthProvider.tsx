@@ -48,31 +48,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const supabase = getSupabaseBrowser();
 
     async function fetchProfile(email: string) {
-      const { data } = await supabase
-        .from('users')
-        .select('*, organizations(*)')
-        .eq('email', email)
-        .single();
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('*, organizations(*)')
+          .eq('email', email)
+          .single();
 
-      if (data) {
-        setProfile({
-          id: data.id,
-          email: data.email,
-          name: data.name,
-          avatar_url: data.avatar_url,
-          organization_id: data.organization_id,
-          organization: data.organizations,
-          role: data.role,
-        });
+        if (error) {
+          console.error('fetchProfile failed:', error.message, error.code);
+        } else if (data) {
+          setProfile({
+            id: data.id,
+            email: data.email,
+            name: data.name,
+            avatar_url: data.avatar_url,
+            organization_id: data.organization_id,
+            organization: data.organizations,
+            role: data.role,
+          });
+        }
+      } catch (err) {
+        console.error('fetchProfile unexpected error:', err);
       }
       setLoading(false);
     }
 
-    // Get initial session
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      setUser(user);
-      if (user) fetchProfile(user.email!);
+    // Get initial session from cookies (no network call — can't hang)
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const u = session?.user ?? null;
+      setUser(u);
+      if (u) fetchProfile(u.email!);
       else setLoading(false);
+    }).catch(() => {
+      setLoading(false);
     });
 
     // Listen for auth changes
