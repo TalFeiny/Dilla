@@ -169,6 +169,10 @@ interface AgentChatProps {
     companies?: any[];
     capTables?: any[];
   }) => void;
+  /** Scenario fork tree: agent created/updated a branch */
+  onScenarioBranchCreated?: (result: any) => void;
+  /** Scenario fork tree: agent returned comparison charts */
+  onScenarioComparisonReady?: (result: any) => void;
 }
 
 const TOOL_ICONS: Record<string, React.ElementType> = {
@@ -354,6 +358,8 @@ export default function AgentChat({
   onMemoUpdates,
   memoSections,
   onAnalysisReady,
+  onScenarioBranchCreated,
+  onScenarioComparisonReady,
 }: AgentChatProps) {
   // --- Conversation Tabs ---
   interface ChatTab {
@@ -856,6 +862,14 @@ export default function AgentChat({
       // Forward memo_updates from agent response to parent
       if (norm.memoUpdates?.sections?.length && onMemoUpdates) {
         onMemoUpdates(norm.memoUpdates);
+      }
+
+      // Detect scenario branch operations from agent response
+      if (result.branch && onScenarioBranchCreated) {
+        onScenarioBranchCreated(result);
+      }
+      if (result.comparisons && result.charts && onScenarioComparisonReady) {
+        onScenarioComparisonReady(result);
       }
 
       // Forward grid_suggestions from FPA tools → suggestions accept/reject flow

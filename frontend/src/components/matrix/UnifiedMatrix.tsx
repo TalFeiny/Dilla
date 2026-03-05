@@ -134,6 +134,7 @@ import { normalizeChartConfig } from '@/lib/matrix/chart-utils';
 import { buildCellEditOptionsFromSuggestion, buildApplyPayloadFromSuggestion, acceptSuggestionViaApi, rejectSuggestion, addServiceSuggestion } from '@/lib/matrix/suggestion-helpers';
 import { exportMatrixToCSV, exportMatrixToXLS, exportToPDF } from '@/lib/matrix/export-orchestrator';
 import { buildPnlColumns } from '@/lib/matrix/pnl-columns';
+import { useScenarioForkTree } from '@/hooks/useScenarioForkTree';
 
 export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl';
 
@@ -247,6 +248,8 @@ interface UnifiedMatrixProps {
   onRunService?: (actionId: string, rowId: string, columnId: string) => Promise<void>;
   /** Phase 6: Retry a service suggestion (re-run same action). */
   onRetrySuggestion?: (suggestion: import('./DocumentSuggestions').DocumentSuggestion) => Promise<void>;
+  /** When true, skip internal data fetching (parent owns data loading via initialData). */
+  skipInternalFetch?: boolean;
 }
 
 export function UnifiedMatrix({
@@ -277,6 +280,7 @@ export function UnifiedMatrix({
   onToolCallLog,
   onRunService,
   onRetrySuggestion,
+  skipInternalFetch = false,
 }: UnifiedMatrixProps) {
   // Helper to create default matrix structure based on mode
   const getDefaultMatrixData = useCallback((mode: MatrixMode, fundId?: string): MatrixData => {
@@ -413,6 +417,8 @@ export function UnifiedMatrix({
   const [editingCell, setEditingCell] = useState<{ rowId: string; columnId: string } | null>(null);
   const [editValue, setEditValue] = useState('');
   const editInFlightRef = useRef(0);
+  // Track which mode the current matrixData belongs to, so we can reset on mode switch
+  const matrixDataModeRef = useRef<MatrixMode>(mode);
   const [query, setQuery] = useState('');
   const [showInsightsPanel, setShowInsightsPanel] = useState(mode === 'portfolio' ? false : showInsights);
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
@@ -462,6 +468,9 @@ export function UnifiedMatrix({
   const [memoPanelExpanded, setMemoPanelExpanded] = useState(false);
   /** Track companies/capTables from last analysis for pin-to-company */
   const [memoPanelContext, setMemoPanelContext] = useState<{ companies?: any[]; capTables?: any[] }>({});
+
+  /** Scenario fork tree — active when mode === 'pnl' */
+  const forkTree = useScenarioForkTree(mode === 'pnl' ? companyId : undefined);
 
   const handleAnalysisReady = useCallback((analysis: {
     sections: Array<{ title?: string; content?: string; level?: number }>;
@@ -945,9 +954,16 @@ export function UnifiedMatrix({
   // Sync initialData changes to internal state
   // Only bootstrap from initialData when we have no rows yet - avoids overwriting loadPortfolioData result
   // (which may have DB columns, NAV sparklines, etc.)
+  // Exception: when dataSource changes (e.g. P&L view switch), always apply the new data.
+  const prevDataSourceRef = useRef<string | undefined>(undefined);
   useEffect(() => {
+    const newSource = initialData?.metadata?.dataSource;
+    const sourceChanged = newSource && newSource !== prevDataSourceRef.current;
+    if (sourceChanged) prevDataSourceRef.current = newSource;
+
     if (initialData) {
       setMatrixData((prev) => {
+        if (sourceChanged) return initialData; // View switched — always apply
         const hasRows = prev?.rows?.length && prev.rows.length > 0;
         if (hasRows) return prev; // Already loaded - don't overwrite
         return initialData;
@@ -955,6 +971,10 @@ export function UnifiedMatrix({
     } else if (initialData === null && mode === 'portfolio' && fundId && loadPortfolioDataRef.current) {
       // When initialData is explicitly set to null (e.g., during refresh), reload portfolio data
       loadPortfolioDataRef.current();
+    } else if (initialData === null && mode === 'pnl') {
+      // View switched back to waterfall — clear so pnl fetch re-runs
+      prevDataSourceRef.current = undefined;
+      setMatrixData(getDefaultMatrixData(mode, fundId));
     }
   }, [initialData, mode, fundId]);
 
@@ -1010,26 +1030,34 @@ export function UnifiedMatrix({
     }
   }, [mode, matrixData, onDataChange]);
 
-  // Initialize with preset columns immediately so grid is usable right away
+  // Initialize with preset columns immediately so grid is usable right away.
+  // CRITICAL: When mode changes, always reset to that mode's defaults to prevent
+  // stale data from a previous mode contaminating the grid.
   useEffect(() => {
-    // Never overwrite when we already have loaded rows (from loadPortfolioData)
+    const modeChanged = matrixDataModeRef.current !== mode;
+    matrixDataModeRef.current = mode;
+
+    // Mode changed — force reset to new mode's defaults regardless of existing rows
+    if (modeChanged) {
+      const defaultData = getDefaultMatrixData(mode, fundId);
+      setMatrixData(defaultData);
+      onDataChange?.(defaultData);
+      return;
+    }
+
+    // Same mode — only initialize if we have no data
     if (matrixData?.rows?.length) return;
     if (mode === 'portfolio' && fundId) {
-      // Always initialize immediately with preset columns - user can add rows right away
-      // loadPortfolioData will update this later if needed
       const currentData = matrixData || getDefaultMatrixData(mode, fundId);
-      // Ensure we always have columns, even if matrixData exists but has no columns
       if (!currentData.columns || currentData.columns.length === 0) {
         const defaultData = getDefaultMatrixData(mode, fundId);
         setMatrixData(defaultData);
         onDataChange?.(defaultData);
       } else if (!matrixData) {
-        // If matrixData is null, initialize it
         setMatrixData(currentData);
         onDataChange?.(currentData);
       }
     } else if (!matrixData) {
-      // For non-portfolio modes, also initialize with defaults
       const defaultData = getDefaultMatrixData(mode, fundId);
       setMatrixData(defaultData);
       onDataChange?.(defaultData);
@@ -1443,9 +1471,20 @@ export function UnifiedMatrix({
     try {
       const { fetchPnlForMatrix } = await import('@/lib/matrix/matrix-api-service');
       const pnlData = await fetchPnlForMatrix(fundId, companyId);
-      if (pnlData.rows.length > 0 || pnlData.columns.length > 0) {
+      // Only replace matrix if backend returned real data rows (not just the lineItem column).
+      // Otherwise keep the skeleton so the user sees a proper P&L grid with month columns.
+      const hasRealData = pnlData.rows.length > 0 && pnlData.columns.length > 1;
+      if (hasRealData) {
         setMatrixData(pnlData);
         onDataChange?.(pnlData);
+      } else {
+        // Ensure we at least have the default P&L skeleton with 12-month columns
+        setMatrixData(prev => {
+          if (prev && prev.columns.length > 1) return prev; // already have good skeleton
+          const skeleton = getDefaultMatrixData('pnl', fundId);
+          onDataChange?.(skeleton);
+          return skeleton;
+        });
       }
     } catch (err) {
       console.error('[UnifiedMatrix] Error loading P&L data:', err);
@@ -1453,10 +1492,11 @@ export function UnifiedMatrix({
     } finally {
       setIsLoading(false);
     }
-  }, [fundId, companyId, onDataChange]);
+  }, [fundId, companyId, onDataChange, getDefaultMatrixData]);
 
   // Load portfolio, LP, or P&L data on mount or when mode/fundId/companyId changes
   useEffect(() => {
+    if (skipInternalFetch && mode === 'pnl') return; // Parent owns P&L data fetching
     if (mode === 'portfolio' && fundId) {
       loadPortfolioData();
     } else if (mode === 'lp') {
@@ -1465,7 +1505,7 @@ export function UnifiedMatrix({
       loadPnlData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, fundId, companyId, loadPortfolioData, loadLPData, loadPnlData]);
+  }, [mode, fundId, companyId, loadPortfolioData, loadLPData, loadPnlData, skipInternalFetch]);
 
   // Parse @CompanyName mentions from query
   const parseCompanyMentions = (queryText: string): string[] => {
@@ -4886,6 +4926,8 @@ export function UnifiedMatrix({
                 setMemoPanelExpanded(true);
               }}
               onAnalysisReady={handleAnalysisReady}
+              onScenarioBranchCreated={forkTree.addBranchFromAgentResponse}
+              onScenarioComparisonReady={forkTree.setChartsFromComparison}
             />
           </div>
         )}
@@ -4922,6 +4964,7 @@ export function UnifiedMatrix({
                   await exportMemoPdf(memoSections, 'Investment Memo', memoContainerRef.current);
                 }}
                 memoContainerRef={memoContainerRef}
+                scenarioCharts={forkTree.charts}
               />
           </div>
         )}

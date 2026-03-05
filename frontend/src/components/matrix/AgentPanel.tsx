@@ -87,6 +87,10 @@ export interface AgentPanelProps {
     companies?: any[];
     capTables?: any[];
   }) => void;
+  /** Scenario fork tree: agent created/updated a branch */
+  onScenarioBranchCreated?: (result: any) => void;
+  /** Scenario fork tree: agent returned comparison charts */
+  onScenarioComparisonReady?: (result: any) => void;
 }
 
 export function AgentPanel({
@@ -118,6 +122,8 @@ export function AgentPanel({
   toolCallEntries = [],
   planSteps = [],
   onAnalysisReady,
+  onScenarioBranchCreated,
+  onScenarioComparisonReady,
 }: AgentPanelProps) {
   return (
     <div className="flex flex-col h-full min-h-0 w-full border-l bg-background">
@@ -155,6 +161,8 @@ export function AgentPanel({
           onRetrySuggestion={onRetrySuggestion}
           toolCallEntries={toolCallEntries}
           onAnalysisReady={onAnalysisReady}
+          onScenarioBranchCreated={onScenarioBranchCreated}
+          onScenarioComparisonReady={onScenarioComparisonReady}
         />
       </div>
     </div>

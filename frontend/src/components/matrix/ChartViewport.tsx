@@ -75,6 +75,8 @@ interface ChartViewportProps {
   memoExportingPdf?: boolean;
   /** Ref to memo container for chart capture in PDF export */
   memoContainerRef?: React.RefObject<HTMLDivElement | null>;
+  /** Scenario fork tree: branched_line charts from comparison */
+  scenarioCharts?: ChartConfig[];
 }
 
 export function ChartViewport({
@@ -100,6 +102,7 @@ export function ChartViewport({
   onMemoExportPdf,
   memoExportingPdf,
   memoContainerRef,
+  scenarioCharts = [],
 }: ChartViewportProps & { initialTab?: ChartTab }) {
   const safeInitialTab: ChartTab = (initialTab as string) === 'suggestions' || !initialTab ? 'charts' : initialTab;
   const [activeTab, setActiveTab] = useState<ChartTab>(safeInitialTab);
@@ -216,8 +219,8 @@ export function ChartViewport({
   }, [matrixData]);
 
   const charts = useMemo((): ChartConfig[] => {
-    return [...portfolioCharts, ...generatedCharts, ...cellCharts];
-  }, [portfolioCharts, generatedCharts, cellCharts]);
+    return [...portfolioCharts, ...generatedCharts, ...cellCharts, ...scenarioCharts];
+  }, [portfolioCharts, generatedCharts, cellCharts, scenarioCharts]);
 
   // Single source of truth: use suggestions and insights from parent when provided
   const suggestions = suggestionsProp ?? [];
