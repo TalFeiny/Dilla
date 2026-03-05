@@ -27,7 +27,9 @@ const nextConfig = {
   transpilePackages: ['@supabase/ssr', '@supabase/supabase-js'],
 
   // Keep heavy server-only packages out of function bundles
-  serverExternalPackages: ['@react-pdf/renderer'],
+  experimental: {
+    serverComponentsExternalPackages: ['@react-pdf/renderer'],
+  },
   
   // Enable type checking in build for production safety
   typescript: {

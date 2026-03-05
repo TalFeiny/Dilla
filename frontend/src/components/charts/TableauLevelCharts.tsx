@@ -60,7 +60,7 @@ interface TableauChartProps {
         'scatter_multiples' | 'breakpoint_chart' | 'dpi_sankey' | 'cap_table_evolution' | 'radar_comparison' | 'funnel_pipeline' |
         'scenario_tree' | 'scenario_paths' | 'tornado' | 'cash_flow_waterfall' |
         'bull_bear_base' | 'bar_comparison' | 'cap_table_sankey' | 'revenue_forecast' | 'fpa_stress_test' | 'stacked_bar' | 'nav_live' | 'market_map' |
-        'sensitivity_tornado' | 'regression_line' | 'monte_carlo_histogram' | 'revenue_forecast_decay' | 'fund_scenarios' | 'multi_chart' | 'ltm_ntm_regression' | 'branched_line';
+        'sensitivity_tornado' | 'regression_line' | 'monte_carlo_histogram' | 'revenue_forecast_decay' | 'fund_scenarios' | 'multi_chart' | 'ltm_ntm_regression' | 'monte_carlo_fan' | 'branched_line';
   data: any;
   title?: string;
   subtitle?: string;
@@ -2710,11 +2710,13 @@ export default function TableauLevelCharts({
             />
           )}
           <Legend
-            payload={[
-              { value: 'Median (p50)', type: 'line', color: '#6366f1' },
-              { value: 'p25-p75', type: 'rect', color: 'rgba(99,102,241,0.2)' },
-              { value: 'p5-p95', type: 'rect', color: 'rgba(99,102,241,0.08)' },
-            ]}
+            {...{
+              payload: [
+                { value: 'Median (p50)', type: 'line' as const, color: '#6366f1' },
+                { value: 'p25-p75', type: 'rect' as const, color: 'rgba(99,102,241,0.2)' },
+                { value: 'p5-p95', type: 'rect' as const, color: 'rgba(99,102,241,0.08)' },
+              ],
+            } as any}
           />
         </ComposedChart>
       </ResponsiveContainer>

@@ -64,7 +64,7 @@ import {
   Zap,
   MoreHorizontal,
 } from 'lucide-react';
-import supabase from '@/lib/supabase';
+import { getSupabaseBrowser } from '@/lib/supabase/browser';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -147,7 +147,7 @@ export default function MatrixControlPanel() {
 
   const checkUser = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { user } } = await getSupabaseBrowser().auth.getUser();
       if (!user) {
         router.push('/login');
         return;

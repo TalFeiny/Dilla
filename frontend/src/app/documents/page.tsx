@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import Link from 'next/link';
-import supabase from '@/lib/supabase';
+import { getSupabaseBrowser } from '@/lib/supabase/browser';
 
 const DOCUMENT_TYPES = [
   { value: 'other', label: 'Other / General' },
@@ -135,9 +135,10 @@ export default function DocumentsPage() {
     if (!hydrated) return;
     const fetchOptions = async () => {
       try {
+        const sb = getSupabaseBrowser();
         const [companiesRes, fundsRes] = await Promise.all([
-          supabase.from('companies').select('id, name').order('name').limit(200),
-          supabase.from('funds').select('id, name').order('name').limit(50),
+          sb.from('companies').select('id, name').order('name').limit(200),
+          sb.from('funds').select('id, name').order('name').limit(50),
         ]);
         if (companiesRes.data) setCompanies(companiesRes.data.map((c: any) => ({ id: c.id, name: c.name })));
         if (fundsRes.data) setFunds(fundsRes.data.map((f: any) => ({ id: f.id, name: f.name })));

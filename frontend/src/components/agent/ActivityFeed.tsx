@@ -21,7 +21,7 @@ import {
   BarChart3,
   FileSearch
 } from 'lucide-react';
-import supabase from '@/lib/supabase';
+import { getSupabaseBrowser } from '@/lib/supabase/browser';
 
 interface AgentActivity {
   id: number;
@@ -41,12 +41,8 @@ export default function ActivityFeed() {
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   const fetchActivities = async () => {
-    if (!supabase) {
-      setIsLoading(false);
-      return;
-    }
-    
     try {
+      const supabase = getSupabaseBrowser();
       const { data, error } = await supabase
         .from('agent_activities')
         .select('*')

@@ -43,9 +43,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const supabase = getSupabaseBrowser();
 
   useEffect(() => {
+    const supabase = getSupabaseBrowser();
+
+    async function fetchProfile(email: string) {
+      const { data } = await supabase
+        .from('users')
+        .select('*, organizations(*)')
+        .eq('email', email)
+        .single();
+
+      if (data) {
+        setProfile({
+          id: data.id,
+          email: data.email,
+          name: data.name,
+          avatar_url: data.avatar_url,
+          organization_id: data.organization_id,
+          organization: data.organizations,
+          role: data.role,
+        });
+      }
+      setLoading(false);
+    }
+
     // Get initial session
     supabase.auth.getUser().then(({ data: { user } }) => {
       setUser(user);
@@ -68,30 +90,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     );
 
     return () => subscription.unsubscribe();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function fetchProfile(email: string) {
-    const { data } = await supabase
-      .from('users')
-      .select('*, organizations(*)')
-      .eq('email', email)
-      .single();
-
-    if (data) {
-      setProfile({
-        id: data.id,
-        email: data.email,
-        name: data.name,
-        avatar_url: data.avatar_url,
-        organization_id: data.organization_id,
-        organization: data.organizations,
-        role: data.role,
-      });
-    }
-    setLoading(false);
-  }
+  }, []);
 
   async function handleSignOut() {
+    const supabase = getSupabaseBrowser();
     await supabase.auth.signOut();
     setUser(null);
     setProfile(null);

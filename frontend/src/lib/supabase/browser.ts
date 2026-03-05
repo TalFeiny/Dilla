@@ -3,6 +3,15 @@ import { createBrowserClient } from '@supabase/ssr';
 let client: ReturnType<typeof createBrowserClient> | null = null;
 
 export function getSupabaseBrowser() {
+  if (typeof window === 'undefined') {
+    // During SSR/prerender, return a dummy that won't blow up.
+    // Real calls happen in useEffect (client-side only).
+    return createBrowserClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://localhost',
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'dummy',
+    );
+  }
+
   if (client) return client;
 
   client = createBrowserClient(
