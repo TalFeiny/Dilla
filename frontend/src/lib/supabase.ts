@@ -11,14 +11,15 @@
  * without any import changes.
  *
  * DO NOT add new client creation here.
+ * DO NOT import from ./supabase/server here — it pulls in next/headers
+ * which breaks client-side bundles.
  */
 
-import { getSupabaseServiceRole } from './supabase/server';
 import { getSupabaseBrowser } from './supabase/browser';
 
 // ── Service-role singleton (server-side only, bypasses RLS) ──
-// Lazy — created on first access so env vars are available.
-let _serviceInstance: ReturnType<typeof getSupabaseServiceRole> | null = null;
+// Uses dynamic require() to avoid pulling next/headers into client bundles.
+let _serviceInstance: any = null;
 
 function getServiceInstance() {
   if (typeof window !== 'undefined') {
@@ -27,13 +28,18 @@ function getServiceInstance() {
     );
   }
   if (!_serviceInstance) {
-    _serviceInstance = getSupabaseServiceRole();
+    const { createClient } = require('@supabase/supabase-js');
+    _serviceInstance = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    );
   }
   return _serviceInstance;
 }
 
 // Proxy so callers can do `supabaseService.from(...)` without calling a function.
-export const supabaseService = new Proxy({} as ReturnType<typeof getSupabaseServiceRole>, {
+export const supabaseService = new Proxy({} as any, {
   get(_, prop) {
     const client = getServiceInstance();
     const value = (client as any)[prop];
