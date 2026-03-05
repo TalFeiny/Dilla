@@ -22,6 +22,12 @@ export function getSupabaseBrowser() {
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: false, // callback handled server-side in /auth/callback
+        // Disable the Navigator Lock (Web Locks API). The SDK uses it to
+        // serialize auth operations across tabs, but it deadlocks when
+        // AuthProvider's getUser() + onAuthStateChange callback + page-level
+        // getUser() all contend for the same lock. Middleware handles session
+        // validation server-side, so the lock is unnecessary.
+        lock: (_name: string, _acquireTimeout: number, fn: () => Promise<any>) => fn(),
       },
       global: {
         headers: {
