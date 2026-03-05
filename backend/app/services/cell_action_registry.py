@@ -58,7 +58,7 @@ class ActionDefinition:
     required_inputs: Dict[str, Any] = field(default_factory=dict)  # Schema for inputs
     output_type: OutputType = OutputType.NUMBER
     output_transform: Optional[str] = None  # How to extract cell value from output
-    mode_availability: List[str] = field(default_factory=lambda: ['portfolio', 'query', 'custom', 'lp'])
+    mode_availability: List[str] = field(default_factory=lambda: ['portfolio', 'custom', 'lp'])
     column_compatibility: List[str] = field(default_factory=lambda: ['number', 'currency'])
     config: Dict[str, Any] = field(default_factory=dict)
     is_active: bool = True
@@ -108,7 +108,7 @@ class CellActionRegistry:
             execution_type=ExecutionType.FORMULA,
             required_inputs=required_inputs,
             output_type=output_type,
-            mode_availability=mode_availability or ['portfolio', 'query', 'custom', 'lp'],
+            mode_availability=mode_availability or ['portfolio', 'custom', 'lp'],
             column_compatibility=column_compatibility or ['number'],
             config=config or {}
         )
@@ -140,7 +140,7 @@ class CellActionRegistry:
             required_inputs=required_inputs or {},
             output_type=output_type,
             output_transform=output_transform,
-            mode_availability=mode_availability or ['portfolio', 'query', 'custom', 'lp'],
+            mode_availability=mode_availability or ['portfolio', 'custom', 'lp'],
             column_compatibility=column_compatibility or ['number', 'currency'],
             config=config or {}
         )
@@ -161,7 +161,7 @@ class CellActionRegistry:
         Get available actions filtered by mode, category, and column compatibility
         
         Args:
-            mode: Matrix mode ('portfolio', 'query', 'custom', 'lp')
+            mode: Matrix mode ('portfolio', 'custom', 'lp', 'pnl')
             category: Optional category filter ('formula', 'workflow', 'document')
             column_id: Optional column ID for compatibility check
             column_type: Optional column type for compatibility check
@@ -1678,10 +1678,10 @@ class CellActionRegistry:
             required_inputs={"sector": "string", "geography": "string"},
             output_type=OutputType.OBJECT,
             description="Analyze market timing for investment decisions",
-            mode_availability=['query', 'custom'],
+            mode_availability=['custom'],
             column_compatibility=['object', 'string']
         )
-        
+
         self.register_workflow(
             action_id="market.investment_readiness",
             name="Investment Readiness Scoring",
@@ -1689,10 +1689,10 @@ class CellActionRegistry:
             required_inputs={"companies": "array"},
             output_type=OutputType.ARRAY,
             description="Score companies for investment readiness",
-            mode_availability=['query', 'custom'],
+            mode_availability=['custom'],
             column_compatibility=['array', 'object']
         )
-        
+
         self.register_workflow(
             action_id="market.sector_landscape",
             name="Sector Landscape",
@@ -1700,7 +1700,7 @@ class CellActionRegistry:
             required_inputs={"sector": "string", "geography": "string"},
             output_type=OutputType.CHART,
             description="Generate sector landscape visualization",
-            mode_availability=['query', 'custom'],
+            mode_availability=['custom'],
             column_compatibility=['chart', 'object']
         )
         
@@ -1712,10 +1712,10 @@ class CellActionRegistry:
             required_inputs={"company_id": "string"},
             output_type=OutputType.OBJECT,
             description="Comprehensive company scoring with scenarios",
-            mode_availability=['portfolio', 'query'],
+            mode_availability=['portfolio'],
             column_compatibility=['object', 'number']
         )
-        
+
         self.register_workflow(
             action_id="scoring.portfolio_dashboard",
             name="Portfolio Dashboard",
@@ -1735,10 +1735,10 @@ class CellActionRegistry:
             required_inputs={"company_id": "string"},
             output_type=OutputType.OBJECT,
             description="Analyze AI impact on company",
-            mode_availability=['portfolio', 'query'],
+            mode_availability=['portfolio'],
             column_compatibility=['object', 'string']
         )
-        
+
         self.register_workflow(
             action_id="gap_filler.ai_valuation",
             name="AI-Adjusted Valuation",
@@ -1746,10 +1746,10 @@ class CellActionRegistry:
             required_inputs={"company_id": "string"},
             output_type=OutputType.OBJECT,
             description="Calculate AI-adjusted valuation",
-            mode_availability=['portfolio', 'query'],
+            mode_availability=['portfolio'],
             column_compatibility=['object', 'number', 'currency']
         )
-        
+
         self.register_workflow(
             action_id="gap_filler.market_opportunity",
             name="Market Opportunity Analysis",
@@ -1757,7 +1757,7 @@ class CellActionRegistry:
             required_inputs={"company_id": "string"},
             output_type=OutputType.OBJECT,
             description="Analyze market opportunity",
-            mode_availability=['portfolio', 'query'],
+            mode_availability=['portfolio'],
             column_compatibility=['object']
         )
         
@@ -1768,10 +1768,10 @@ class CellActionRegistry:
             required_inputs={"company_id": "string"},
             output_type=OutputType.OBJECT,
             description="Analyze company momentum signals",
-            mode_availability=['portfolio', 'query'],
+            mode_availability=['portfolio'],
             column_compatibility=['object', 'number']
         )
-        
+
         self.register_workflow(
             action_id="gap_filler.fund_fit",
             name="Fund Fit Scoring",
@@ -1791,10 +1791,10 @@ class CellActionRegistry:
             required_inputs={"acquirer": "string", "target": "string", "deal_rationale": "string"},
             output_type=OutputType.OBJECT,
             description="Calculate M&A synergy value",
-            mode_availability=['query', 'custom'],
+            mode_availability=['custom'],
             column_compatibility=['object', 'number', 'currency']
         )
-        
+
         # Chain Execution — run multiple actions in sequence, piping outputs forward
         self.register_workflow(
             action_id="chain.execute",
@@ -1807,8 +1807,42 @@ class CellActionRegistry:
                 "Each step receives the previous step's output as additional inputs. "
                 "Payload: {steps: [{action_id, inputs}, ...], shared_inputs?: {}}."
             ),
-            mode_availability=['portfolio', 'query', 'custom', 'lp'],
+            mode_availability=['portfolio', 'custom', 'lp'],
             column_compatibility=['object', 'array']
+        )
+
+        # LP Compliance Workflows
+        self.register_workflow(
+            action_id="lp.compliance_check",
+            name="LP Compliance Check",
+            service_name="lp_compliance_service",
+            required_inputs={"lp_id": "string", "fund_id": "string"},
+            output_type=OutputType.OBJECT,
+            description="Run compliance checks on LP commitment terms, side letters, and regulatory requirements",
+            mode_availability=['lp'],
+            column_compatibility=['object', 'string', 'boolean']
+        )
+
+        self.register_workflow(
+            action_id="lp.capital_call",
+            name="Generate Capital Call",
+            service_name="lp_compliance_service",
+            required_inputs={"lp_id": "string", "fund_id": "string", "amount": "number"},
+            output_type=OutputType.OBJECT,
+            description="Generate capital call notice for an LP with fee calculations and compliance validation",
+            mode_availability=['lp'],
+            column_compatibility=['object', 'currency', 'number']
+        )
+
+        self.register_workflow(
+            action_id="lp.distribution_waterfall",
+            name="Distribution Waterfall",
+            service_name="lp_compliance_service",
+            required_inputs={"fund_id": "string"},
+            output_type=OutputType.OBJECT,
+            description="Calculate distribution waterfall across LPs based on commitment terms and preferred returns",
+            mode_availability=['lp'],
+            column_compatibility=['object', 'currency', 'percentage', 'number']
         )
 
         # Scenario Composition Workflow
@@ -1819,7 +1853,7 @@ class CellActionRegistry:
             required_inputs={"query": "string"},
             output_type=OutputType.OBJECT,
             description="Parse 'what if' scenario query and calculate matrix cell impacts",
-            mode_availability=['portfolio', 'query', 'custom', 'lp'],
+            mode_availability=['portfolio', 'custom', 'lp'],
             column_compatibility=['number', 'currency', 'percentage', 'object']
         )
         

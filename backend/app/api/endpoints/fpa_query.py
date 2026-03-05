@@ -102,6 +102,49 @@ async def get_pnl(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class PnlCellEditRequest(BaseModel):
+    """Manual cell edit → upsert into fpa_actuals."""
+    company_id: str
+    fund_id: Optional[str] = None
+    category: str          # row id, e.g. "revenue", "cogs", "opex_rd"
+    period: str            # column id, e.g. "2025-09"
+    amount: float
+    source: str = "manual_cell_edit"
+
+
+@router.post("/pnl")
+async def upsert_pnl_cell(req: PnlCellEditRequest):
+    """Upsert a single P&L cell value into fpa_actuals (manual override)."""
+    from app.core.supabase_client import get_supabase_client
+
+    sb = get_supabase_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    # Normalize period to first-of-month date
+    period_str = req.period.strip()
+    if len(period_str) == 7:  # "2025-09"
+        period_str = f"{period_str}-01"
+
+    try:
+        sb.table("fpa_actuals").upsert(
+            {
+                "company_id": req.company_id,
+                "fund_id": req.fund_id,
+                "period": period_str,
+                "category": req.category,
+                "amount": req.amount,
+                "source": req.source,
+            },
+            on_conflict="company_id,period,category,source",
+        ).execute()
+    except Exception as e:
+        logger.error("P&L cell upsert failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"success": True, "category": req.category, "period": req.period, "amount": req.amount}
+
+
 # ---------------------------------------------------------------------------
 # Variance endpoint — compare actuals vs budget
 # ---------------------------------------------------------------------------

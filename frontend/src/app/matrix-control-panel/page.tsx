@@ -94,6 +94,8 @@ export default function MatrixControlPanel() {
   const [selectedCompany, setSelectedCompany] = useState<any>(null);
   const [isAddingCompany, setIsAddingCompany] = useState(false);
   const [availableCompanies, setAvailableCompanies] = useState<any[]>([]);
+  const [pnlCompanyId, setPnlCompanyId] = useState<string | undefined>();
+  const [pnlCompanies, setPnlCompanies] = useState<{ id: string; name: string }[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [newCompany, setNewCompany] = useState({
@@ -184,6 +186,23 @@ export default function MatrixControlPanel() {
       loadPortfolioMetrics();
     }
   }, [fundId, mode]);
+
+  // Load portfolio companies for PnL company picker
+  useEffect(() => {
+    if (mode !== 'pnl' || !fundId) { setPnlCompanies([]); return; }
+    (async () => {
+      try {
+        const res = await fetch(`/api/portfolio/${fundId}/companies`);
+        if (res.ok) {
+          const data = await res.json();
+          const list = (Array.isArray(data) ? data : data.companies || []).map((c: any) => ({ id: c.id, name: c.name || c.company_name || c.id }));
+          setPnlCompanies(list);
+          if (list.length > 0 && !pnlCompanyId) setPnlCompanyId(list[0].id);
+        }
+      } catch (e) { console.error('Failed to load companies for PnL:', e); }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pnlCompanyId intentionally excluded to avoid re-fetch loop on auto-select
+  }, [mode, fundId]);
 
   // Fetch audit log (matrix_edits) when Audit sheet opens
   useEffect(() => {
@@ -664,7 +683,6 @@ export default function MatrixControlPanel() {
 
   const modeIcons: Record<string, any> = {
     portfolio: Database,
-    query: Sparkles,
     custom: FileText,
     lp: Users,
     pnl: BarChart3,
@@ -727,6 +745,22 @@ export default function MatrixControlPanel() {
                     </SelectContent>
                   </Select>
                 ) : null
+              )}
+
+              {/* Company selector for PnL mode */}
+              {mode === 'pnl' && pnlCompanies.length > 0 && (
+                <Select value={pnlCompanyId || ''} onValueChange={setPnlCompanyId}>
+                  <SelectTrigger className="w-[180px]">
+                    <SelectValue placeholder="Select company" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {pnlCompanies.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               )}
 
               {/* Overflow menu — Create Fund, What if, Citations, Settings, Delete fund, Metrics */}
@@ -1039,6 +1073,7 @@ export default function MatrixControlPanel() {
             <UnifiedMatrix
               mode={mode}
               fundId={fundId}
+              companyId={mode === 'pnl' ? pnlCompanyId : undefined}
               initialData={matrixData || undefined}
               onDataChange={setMatrixData}
               availableActions={availableActions}

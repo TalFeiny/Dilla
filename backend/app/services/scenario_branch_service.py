@@ -925,8 +925,10 @@ class ScenarioBranchService:
         charts: List[Dict[str, Any]] = []
         for metric, title, fmt in [
             ("revenue", "Revenue", "$"),
+            ("gross_profit", "Gross Profit", "$"),
             ("ebitda", "EBITDA", "$"),
             ("cash_balance", "Cash Balance", "$"),
+            ("runway_months", "Runway", "#"),
         ]:
             series = []
             annotations = []
@@ -967,3 +969,69 @@ class ScenarioBranchService:
             })
 
         return charts
+
+
+# ------------------------------------------------------------------
+# FPA Chart Helpers
+# Reusable builders for fpa_forecast, fpa_cash_flow, etc.
+# ------------------------------------------------------------------
+
+def build_fpa_line_chart(
+    forecast: List[Dict[str, Any]],
+    metric: str,
+    title: str,
+    fmt: str = "$",
+    color: str = "#6366f1",
+) -> Dict[str, Any]:
+    """Single-series line chart from a forecast array."""
+    labels = [m.get("period", f"M{i+1}") for i, m in enumerate(forecast)]
+    values = [m.get(metric, 0) or 0 for m in forecast]
+    return {
+        "type": "line",
+        "title": title,
+        "x_axis": labels,
+        "format": fmt,
+        "series": [{"name": title, "data": values, "color": color}],
+    }
+
+
+def build_fpa_stacked_bar(
+    forecast: List[Dict[str, Any]],
+    metrics: List[tuple],  # [(key, label, color), ...]
+    title: str,
+    fmt: str = "$",
+) -> Dict[str, Any]:
+    """Stacked bar chart from a forecast array."""
+    labels = [m.get("period", f"M{i+1}") for i, m in enumerate(forecast)]
+    series = []
+    for key, label, color in metrics:
+        values = [m.get(key, 0) or 0 for m in forecast]
+        series.append({"name": label, "data": values, "color": color})
+    return {
+        "type": "stacked_bar",
+        "title": title,
+        "x_axis": labels,
+        "format": fmt,
+        "series": series,
+    }
+
+
+def build_forecast_charts(forecast: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Standard chart set for fpa_forecast / fpa_cash_flow results."""
+    if not forecast:
+        return []
+    return [
+        build_fpa_line_chart(forecast, "revenue", "Revenue", "$", "#6366f1"),
+        build_fpa_line_chart(forecast, "ebitda", "EBITDA", "$", "#10b981"),
+        build_fpa_line_chart(forecast, "cash_balance", "Cash Balance", "$", "#f59e0b"),
+        build_fpa_line_chart(forecast, "runway_months", "Runway (Months)", "#", "#ef4444"),
+        build_fpa_stacked_bar(
+            forecast,
+            [
+                ("rd_spend", "R&D", "#8b5cf6"),
+                ("sm_spend", "S&M", "#06b6d4"),
+                ("ga_spend", "G&A", "#f97316"),
+            ],
+            "OpEx Breakdown",
+        ),
+    ]

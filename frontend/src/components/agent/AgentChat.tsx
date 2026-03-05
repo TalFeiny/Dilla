@@ -135,7 +135,7 @@ interface AgentChatProps {
   onMessageSent?: (message: string) => void;
   matrixData?: MatrixData | null;
   fundId?: string;
-  mode?: 'portfolio' | 'query' | 'custom' | 'lp' | 'pnl';
+  mode?: 'portfolio' | 'custom' | 'lp' | 'pnl';
   onCellEdit?: (rowId: string, columnId: string, value: unknown, options?: { data_source?: string; metadata?: Record<string, unknown> }) => Promise<void>;
   onRunService?: (actionId: string, rowId: string, columnId: string) => Promise<void>;
   onToolCallLog?: (entry: Omit<{ action_id: string; row_id: string; column_id: string; status: 'running' | 'success' | 'error'; error?: string; companyName?: string }, 'id' | 'at'>) => void;
@@ -500,6 +500,7 @@ export default function AgentChat({
       awaitingApproval: result.awaiting_approval ?? data.awaiting_approval ?? false,
       warnings: result.warnings ?? data.warnings ?? [],
       gridCommands: data.result?.grid_commands ?? data.grid_commands ?? [],
+      gridSuggestions: result.grid_suggestions ?? data.grid_suggestions ?? [],
       memoArtifacts: result.memo_artifacts ?? data.memo_artifacts ?? null,
       memoType: result.memo_type ?? data.memo_type ?? null,
       isResumable: result.is_resumable ?? data.is_resumable ?? false,
@@ -855,6 +856,27 @@ export default function AgentChat({
       // Forward memo_updates from agent response to parent
       if (norm.memoUpdates?.sections?.length && onMemoUpdates) {
         onMemoUpdates(norm.memoUpdates);
+      }
+
+      // Forward grid_suggestions from FPA tools → suggestions accept/reject flow
+      // Deduplicate by (rowId, columnId) — keeps the last value when multiple tools
+      // (e.g. fpa_forecast + fpa_cash_flow) suggest edits for the same cell.
+      if (norm.gridSuggestions?.length && onGridCommandsFromBackend) {
+        const seen = new Map<string, any>();
+        for (const s of norm.gridSuggestions) {
+          seen.set(`${s.rowId}:${s.columnId}`, s);
+        }
+        const suggestionCmds = Array.from(seen.values()).map((s: any) => ({
+          action: 'edit' as const,
+          rowId: s.rowId,
+          columnId: s.columnId,
+          value: s.value,
+          source_service: s.source_service || 'fpa_forecast',
+          reasoning: s.reasoning,
+        }));
+        onGridCommandsFromBackend(suggestionCmds).catch((err: any) =>
+          console.error('[AgentChat] grid_suggestions error:', err)
+        );
       }
 
       // Store resumable memo artifacts (plan memos) for cross-session context

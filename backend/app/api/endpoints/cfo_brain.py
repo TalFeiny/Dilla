@@ -95,6 +95,14 @@ def _build_cfo_system_prompt(company_context: Optional[Dict] = None) -> str:
         "- tp_analyze_transaction: Run full TP analysis — method selection, PLI computation, IQR, arm's-length assessment\n"
         "- tp_generate_report: Generate OECD-compliant reports — benchmark, local_file, master_file, cbcr, full_pack\n\n"
 
+        "## TOOLS — INVESTOR & CAP TABLE\n"
+        "- cap_table_evolution: Track dilution through all funding rounds with Sankey visualization\n"
+        "- liquidation_waterfall: Model liquidation waterfall at specific exit values with investor distributions\n"
+        "- run_round_modeling: Model next funding round — dilution, waterfall, valuation step-up\n"
+        "- run_exit_modeling: Model exit scenarios (IPO, M&A) with fund ownership impact\n"
+        "- anti_dilution_modeling: Model ratchet / broad-based anti-dilution scenarios\n"
+        "- debt_conversion_modeling: Model SAFEs, convertible notes, debt conversion\n\n"
+
         "## TOOLS — SHARED\n"
         "- valuation-engine: DCF, comparables (for board deck context)\n"
         "- pwerm-calculator: Probability-weighted exit modeling\n"

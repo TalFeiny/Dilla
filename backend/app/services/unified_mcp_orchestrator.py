@@ -1462,7 +1462,7 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="fpa_scenario_create",
-        description="Create a scenario branch with assumption overrides (growth, burn, headcount, opex, funding).",
+        description="Create a scenario branch with assumption overrides (growth, burn, headcount, opex, funding). Use fork_period (YYYY-MM) to control when the branch diverges from the base case.",
         handler="_tool_fpa_scenario_create",
         input_schema={
             "company_id": "str",
@@ -1470,6 +1470,8 @@ AGENT_TOOLS: list[AgentTool] = [
             "parent_branch_id": "str?",
             "assumptions": "dict",
             "probability": "float?",
+            "fork_period": "str?",
+            "forecast_months": "int?",
         },
         cost_tier="cheap",
         timeout_ms=15_000,
@@ -7167,6 +7169,19 @@ Return JSON with ONLY these fields (use null if unknown):
             async with self.shared_data_lock:
                 self.shared_data["fpa_pnl_result"] = result
 
+            # Add memo_updates so frontend memo panel auto-renders
+            periods = result.get("periods", [])
+            fi = result.get("forecastStartIndex", len(periods))
+            actual_count = fi
+            forecast_count = len(periods) - fi
+            result["memo_updates"] = {
+                "action": "append",
+                "sections": [
+                    {"type": "heading2", "content": "P&L Waterfall"},
+                    {"type": "paragraph", "content": f"{actual_count} months of actuals, {forecast_count} months forecast. {len(result.get('rows', []))} line items loaded."},
+                ],
+            }
+
             return result
         except Exception as e:
             logger.warning(f"[TOOL] fpa_pnl failed: {e}")
@@ -7202,6 +7217,22 @@ Return JSON with ONLY these fields (use null if unknown):
 
             async with self.shared_data_lock:
                 self.shared_data["fpa_variance_result"] = result
+
+            # Memo: summarise variances
+            variances = result.get("variances", [])
+            var_lines = []
+            for v in variances[:8]:
+                cat = v.get("category", "?")
+                pct = v.get("variance_pct", 0)
+                direction = "over" if pct > 0 else "under"
+                var_lines.append(f"- **{cat}**: {abs(pct):.1f}% {direction} budget")
+            result["memo_updates"] = {
+                "action": "append",
+                "sections": [
+                    {"type": "heading2", "content": "Variance Analysis"},
+                    {"type": "paragraph", "content": "\n".join(var_lines) if var_lines else "No variances to report."},
+                ],
+            }
 
             return result
         except Exception as e:
@@ -7246,6 +7277,57 @@ Return JSON with ONLY these fields (use null if unknown):
 
             async with self.shared_data_lock:
                 self.shared_data["fpa_forecast_result"] = result
+
+            # Grid suggestions: map forecast months to proposed cell edits with explanations
+            seeded_rev = company_data.get("revenue", 0)
+            growth = company_data.get("growth_rate", 0)
+            gm = company_data.get("gross_margin")
+            _fc_row_map = {
+                "revenue": ("revenue", f"Projected from ${seeded_rev:,.0f} base at {growth:.0%} annual growth"),
+                "cogs": ("cogs", f"Cost of sales at {(1 - (gm or 0.65)):.0%} of revenue" if gm else "COGS derived from gross margin assumption"),
+                "gross_profit": ("gross_profit", f"Revenue minus COGS ({(gm or 0.65):.0%} gross margin)"),
+                "rd_spend": ("opex_rd", "R&D spend per stage-based OpEx benchmark with efficiency decay"),
+                "sm_spend": ("opex_sm", "S&M spend per stage-based OpEx benchmark with efficiency decay"),
+                "ga_spend": ("opex_ga", "G&A spend per stage-based OpEx benchmark with efficiency decay"),
+                "total_opex": ("total_opex", "Sum of R&D + S&M + G&A"),
+                "ebitda": ("ebitda", "Gross profit minus total operating expenses"),
+                "cash_balance": ("cash_balance", "Prior cash balance plus free cash flow for the period"),
+            }
+            suggestions = []
+            for month in forecast:
+                period = month.get("period")
+                if not period:
+                    continue
+                for fc_key, (row_id, reasoning) in _fc_row_map.items():
+                    val = month.get(fc_key)
+                    if val is not None:
+                        suggestions.append({"rowId": row_id, "columnId": period, "value": val, "reasoning": reasoning})
+            result["grid_suggestions"] = suggestions
+
+            # Charts: revenue, EBITDA, cash, runway, OpEx stacked bar
+            from app.services.scenario_branch_service import build_forecast_charts
+            result["chart_data"] = build_forecast_charts(forecast)
+
+            # Memo: forecast summary
+            seeded = result.get("seeded_from", {})
+            last_month = forecast[-1] if forecast else {}
+            result["memo_updates"] = {
+                "action": "append",
+                "sections": [
+                    {"type": "heading2", "content": f"{months}-Month Forecast"},
+                    {"type": "paragraph", "content": (
+                        f"Seeded from actuals — Revenue: ${seeded.get('revenue', 0):,.0f}, "
+                        f"Burn: ${seeded.get('burn_rate', 0):,.0f}/mo, "
+                        f"Cash: ${seeded.get('cash_balance', 0):,.0f}."
+                    )},
+                    {"type": "paragraph", "content": (
+                        f"End of forecast — Revenue: ${last_month.get('revenue', 0):,.0f}, "
+                        f"EBITDA: ${last_month.get('ebitda', 0):,.0f}, "
+                        f"Cash: ${last_month.get('cash_balance', 0):,.0f}, "
+                        f"Runway: {last_month.get('runway_months', 0):.1f} months."
+                    ) if last_month else "No forecast periods generated."},
+                ],
+            }
 
             return result
         except Exception as e:
@@ -7298,6 +7380,59 @@ Return JSON with ONLY these fields (use null if unknown):
             async with self.shared_data_lock:
                 self.shared_data["fpa_cash_flow_result"] = result
 
+            # Grid suggestions from cash flow model with explanations
+            inputs_cf = result.get("inputs", {})
+            cf_gm = inputs_cf.get("gross_margin")
+            cf_rev = inputs_cf.get("revenue", 0)
+            cf_growth = inputs_cf.get("growth_rate", 0)
+            _cf_map = {
+                "revenue": ("revenue", f"Projected from ${cf_rev:,.0f} base at {cf_growth:.0%} annual growth"),
+                "cogs": ("cogs", f"Cost of sales at {(1 - (cf_gm or 0.65)):.0%} of revenue"),
+                "gross_profit": ("gross_profit", f"Revenue minus COGS ({(cf_gm or 0.65):.0%} gross margin)"),
+                "rd_spend": ("opex_rd", "R&D spend per stage-based OpEx benchmark with efficiency decay"),
+                "sm_spend": ("opex_sm", "S&M spend per stage-based OpEx benchmark with efficiency decay"),
+                "ga_spend": ("opex_ga", "G&A spend per stage-based OpEx benchmark with efficiency decay"),
+                "total_opex": ("total_opex", "Sum of R&D + S&M + G&A"),
+                "ebitda": ("ebitda", "Gross profit minus total operating expenses"),
+                "cash_balance": ("cash_balance", f"Prior cash plus net income; starting cash ${inputs_cf.get('cash_balance', 0):,.0f}"),
+            }
+            grid_suggestions = []
+            for month in model:
+                period = month.get("period")
+                if not period:
+                    continue
+                for cf_key, (row_id, reasoning) in _cf_map.items():
+                    val = month.get(cf_key)
+                    if val is not None:
+                        grid_suggestions.append({
+                            "rowId": row_id, "columnId": period,
+                            "value": val, "reasoning": reasoning,
+                        })
+            result["grid_suggestions"] = grid_suggestions
+
+            # Charts: revenue, EBITDA, cash, runway, OpEx stacked bar
+            from app.services.scenario_branch_service import build_forecast_charts
+            result["chart_data"] = build_forecast_charts(model)
+
+            # Memo: cash flow summary
+            last_month = model[-1] if model else {}
+            inputs_data = result.get("inputs", {})
+            result["memo_updates"] = {
+                "action": "append",
+                "sections": [
+                    {"type": "heading2", "content": "Cash Flow Model"},
+                    {"type": "paragraph", "content": (
+                        f"Starting cash: ${inputs_data.get('cash_balance', 0):,.0f}, "
+                        f"Gross margin: {inputs_data.get('gross_margin', 0):.0%}."
+                    )},
+                    {"type": "paragraph", "content": (
+                        f"Month {months} — Cash: ${last_month.get('cash_balance', 0):,.0f}, "
+                        f"Runway: {last_month.get('runway_months', 0):.1f} months, "
+                        f"EBITDA: ${last_month.get('ebitda', 0):,.0f}."
+                    ) if last_month else "No periods modeled."},
+                ],
+            }
+
             return result
         except Exception as e:
             logger.warning(f"[TOOL] fpa_cash_flow failed: {e}")
@@ -7327,6 +7462,8 @@ Return JSON with ONLY these fields (use null if unknown):
                 row["parent_branch_id"] = inputs["parent_branch_id"]
             if inputs.get("probability") is not None:
                 row["probability"] = inputs["probability"]
+            if inputs.get("fork_period"):
+                row["fork_period"] = inputs["fork_period"]
 
             result = sb.table("scenario_branches").insert(row).execute()
             branch = result.data[0] if result.data else {}
@@ -10536,8 +10673,10 @@ When done: {{"action":"done"}}"""
                             # Stream each section to frontend in real-time
                             _streamed_memo_ids.add(ms.get("id", id(ms)))
                             yield {"type": "memo_section", "section": ms}
-                    if "chart_data" in t_result and isinstance(t_result["chart_data"], list):
-                        for cd in t_result["chart_data"]:
+                    # Accept both "chart_data" and "charts" keys from tools
+                    _cd_list = t_result.get("chart_data") or t_result.get("charts")
+                    if isinstance(_cd_list, list):
+                        for cd in _cd_list:
                             charts.append(cd)
                             yield {"type": "chart_data", "chart": cd}
                     if "grid_command" in t_result:

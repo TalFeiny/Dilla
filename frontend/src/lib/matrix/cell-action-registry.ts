@@ -5,7 +5,7 @@
  * Handles different output formats from various services.
  */
 
-export type MatrixMode = 'portfolio' | 'query' | 'custom' | 'lp' | 'pnl';
+export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl';
 export type ActionCategory = 'formula' | 'workflow' | 'document';
 export type OutputType = 'number' | 'string' | 'array' | 'time_series' | 'chart' | 'object' | 'boolean';
 export type ExecutionType = 'formula' | 'workflow' | 'document';

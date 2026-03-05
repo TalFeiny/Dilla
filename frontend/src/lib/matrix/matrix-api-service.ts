@@ -10,7 +10,7 @@
 import { MatrixData, MatrixColumn, MatrixRow, MatrixCell } from '@/components/matrix/UnifiedMatrix';
 import { supabaseService } from '@/lib/supabase';
 
-export type MatrixMode = 'portfolio' | 'query' | 'custom' | 'lp' | 'pnl';
+export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl';
 export type DataSource = 'manual' | 'agent' | 'document' | 'api' | 'formula';
 
 // ============================================================================
@@ -254,7 +254,7 @@ export async function createCompanyForMatrix(params: {
     };
   }
 
-  // Custom / query / LP mode: use general companies endpoint
+  // Custom / LP mode: use general companies endpoint
   const result = await addCompanyToMatrix({
     name,
     sector: companyFields.sector,
@@ -304,7 +304,7 @@ export async function uploadDocumentInCell(request: DocumentUploadRequest): Prom
  * - Portfolio mode (fundId provided)
  * - Saved matrix views (matrixId provided)
  * 
- * Query/custom mode columns are ephemeral and not persisted.
+ * Custom mode columns are ephemeral and not persisted.
  */
 export async function addMatrixColumn(
   request: AddColumnRequest & {
@@ -317,7 +317,7 @@ export async function addMatrixColumn(
   const columnId = (request.columnId?.trim?.()) || generatedId;
 
   // Only persist if fundId or matrixId provided (portfolio mode or saved view)
-  // Otherwise return ephemeral column (query/custom mode)
+  // Otherwise return ephemeral column (custom mode)
   if (!request.fundId && !request.matrixId) {
     return {
       id: columnId,
@@ -985,89 +985,111 @@ export function registerFieldService(mapping: FieldServiceMapping): void {
 }
 
 /**
- * Fetch LPs from limited_partners table for matrix LP mode.
- * Returns MatrixData shaped for AGGridMatrix.
+ * LP column definitions matching fund_lp_summary view.
+ * Shared across fetchLPsForMatrix and default column sets.
+ */
+export const LP_COLUMNS: import('@/components/matrix/UnifiedMatrix').MatrixColumn[] = [
+  { id: 'lpName', name: 'LP Name', type: 'text', width: 180, editable: true },
+  { id: 'lpType', name: 'Type', type: 'text', width: 100, editable: true },
+  { id: 'status', name: 'Status', type: 'text', width: 90, editable: true },
+  { id: 'commitment', name: 'Commitment', type: 'currency', width: 130, editable: true },
+  { id: 'called', name: 'Called', type: 'currency', width: 120, editable: true },
+  { id: 'distributed', name: 'Distributed', type: 'currency', width: 130, editable: true },
+  { id: 'unfunded', name: 'Unfunded', type: 'currency', width: 120, editable: false },
+  { id: 'dpi', name: 'DPI', type: 'number', width: 70, editable: false },
+  { id: 'ownership', name: 'Ownership %', type: 'percentage', width: 90, editable: true },
+  { id: 'managementFee', name: 'Mgmt Fee %', type: 'percentage', width: 80, editable: true },
+  { id: 'carry', name: 'Carry %', type: 'percentage', width: 70, editable: true },
+  { id: 'preferredReturn', name: 'Pref Return %', type: 'percentage', width: 80, editable: true },
+  { id: 'coInvest', name: 'Co-Invest', type: 'boolean', width: 80, editable: true },
+  { id: 'mfnClause', name: 'MFN', type: 'boolean', width: 70, editable: true },
+  { id: 'advisoryBoard', name: 'Advisory Board', type: 'boolean', width: 80, editable: true },
+  { id: 'currency', name: 'Currency', type: 'text', width: 70, editable: true },
+];
+
+/**
+ * Fetch LPs for matrix LP mode from fund_lp_summary view (M:M join).
+ * Falls back to limited_partners if view doesn't exist.
  */
 export async function fetchLPsForMatrix(fundId?: string): Promise<import('@/components/matrix/UnifiedMatrix').MatrixData> {
   const { formatCurrency } = await import('@/lib/matrix/cell-formatters');
 
-  // Try limited_partners first (primary), then lps as fallback
-  let data: any[] | null = null;
-  let error: any = null;
+  const emptyResult = { columns: LP_COLUMNS, rows: [], metadata: { dataSource: 'lp', lastUpdated: new Date().toISOString() } };
 
-  if (supabaseService) {
+  if (!supabaseService) return emptyResult;
+
+  let data: any[] | null = null;
+  let usedView = false;
+
+  // Primary: fund_lp_summary view (joins lp_fund_commitments <-> limited_partners)
+  if (fundId) {
+    const result = await supabaseService
+      .from('fund_lp_summary')
+      .select('*')
+      .eq('fund_id', fundId);
+
+    if (!result.error) {
+      data = result.data;
+      usedView = true;
+    } else if (!result.error.message?.includes('does not exist')) {
+      console.error('[fetchLPsForMatrix] fund_lp_summary error:', result.error);
+    }
+  }
+
+  // Fallback: limited_partners table (old 1:1 schema)
+  if (!usedView) {
     let query = supabaseService
       .from('limited_partners')
-      .select('id, name, lp_type, status, commitment_usd, called_usd, distributed_usd, vintage_year, co_invest_rights, contact_name, investment_capacity_usd, fund_id')
+      .select('id, name, lp_type, status, commitment_usd, called_usd, distributed_usd, co_invest_rights, fund_id')
       .order('name', { ascending: true });
     if (fundId) {
       query = query.or(`fund_id.eq.${fundId},fund_id.is.null`);
     }
     const result = await query;
-    data = result.data;
-    error = result.error;
-
-    // Fallback to lps table
-    if (error && error.message?.includes('does not exist')) {
-      const fallback = await supabaseService
-        .from('lps')
-        .select('id, name, type, status, net_worth_usd, industry')
-        .order('name', { ascending: true });
-      data = fallback.data;
-      error = fallback.error;
+    if (result.error) {
+      console.error('[fetchLPsForMatrix] Fallback error:', result.error);
+      return emptyResult;
     }
+    data = result.data;
   }
 
-  if (error || !data) {
-    console.error('[fetchLPsForMatrix] Error:', error);
-    return { columns: [], rows: [], metadata: { dataSource: 'lp', lastUpdated: new Date().toISOString() } };
-  }
-
-  const columns: import('@/components/matrix/UnifiedMatrix').MatrixColumn[] = [
-    { id: 'lpName', name: 'LP Name', type: 'text', width: 180, editable: true },
-    { id: 'lpType', name: 'Type', type: 'text', width: 120, editable: true },
-    { id: 'status', name: 'Status', type: 'text', width: 100, editable: true },
-    { id: 'commitment', name: 'Commitment', type: 'currency', width: 140, editable: true },
-    { id: 'called', name: 'Called', type: 'currency', width: 130, editable: true },
-    { id: 'distributed', name: 'Distributed', type: 'currency', width: 140, editable: true },
-    { id: 'unfunded', name: 'Unfunded', type: 'currency', width: 130, editable: false },
-    { id: 'dpi', name: 'DPI', type: 'number', width: 80, editable: false },
-    { id: 'coInvest', name: 'Co-Invest', type: 'boolean', width: 90, editable: true },
-    { id: 'vintageYear', name: 'Vintage', type: 'number', width: 90, editable: true },
-    { id: 'contactName', name: 'Contact', type: 'text', width: 140, editable: true },
-    { id: 'capacity', name: 'Capacity', type: 'currency', width: 130, editable: true },
-  ];
+  if (!data || data.length === 0) return emptyResult;
 
   const rows = data.map((lp: any) => {
-    const commitment = lp.commitment_usd ?? 0;
-    const called = lp.called_usd ?? 0;
-    const distributed = lp.distributed_usd ?? 0;
-    const unfunded = commitment - called;
-    const dpi = called > 0 ? distributed / called : 0;
+    const commitment = Number(lp.commitment_usd) || 0;
+    const called = Number(lp.called_usd) || 0;
+    const distributed = Number(lp.distributed_usd) || 0;
+    // View computes these; fallback: compute client-side
+    const unfunded = lp.unfunded_usd != null ? Number(lp.unfunded_usd) : commitment - called;
+    const dpi = lp.dpi != null ? Number(lp.dpi) : (called > 0 ? distributed / called : 0);
 
     return {
-      id: String(lp.id),
-      companyId: String(lp.id),
-      companyName: lp.name,
+      id: String(lp.lp_id ?? lp.id),
+      companyId: String(lp.lp_id ?? lp.id),
+      companyName: lp.lp_name ?? lp.name,
       cells: {
-        lpName: { value: lp.name, source: 'api' as const },
-        lpType: { value: lp.lp_type ?? lp.type ?? '', source: 'api' as const },
-        status: { value: lp.status ?? 'active', source: 'api' as const },
+        lpName: { value: lp.lp_name ?? lp.name, source: 'api' as const },
+        lpType: { value: lp.lp_type ?? '', source: 'api' as const },
+        status: { value: lp.commitment_status ?? lp.status ?? 'active', source: 'api' as const },
         commitment: { value: commitment, displayValue: formatCurrency(commitment), source: 'api' as const },
         called: { value: called, displayValue: formatCurrency(called), source: 'api' as const },
         distributed: { value: distributed, displayValue: formatCurrency(distributed), source: 'api' as const },
         unfunded: { value: unfunded, displayValue: formatCurrency(unfunded), source: 'api' as const },
         dpi: { value: Math.round(dpi * 100) / 100, displayValue: dpi.toFixed(2) + 'x', source: 'api' as const },
+        ownership: { value: Number(lp.ownership_pct) || 0, source: 'api' as const },
+        managementFee: { value: Number(lp.management_fee_pct) ?? 2.0, source: 'api' as const },
+        carry: { value: Number(lp.carried_interest_pct) ?? 20.0, source: 'api' as const },
+        preferredReturn: { value: Number(lp.preferred_return_pct) ?? 8.0, source: 'api' as const },
         coInvest: { value: lp.co_invest_rights ?? false, source: 'api' as const },
-        vintageYear: { value: lp.vintage_year ?? '', source: 'api' as const },
-        contactName: { value: lp.contact_name ?? '', source: 'api' as const },
-        capacity: { value: lp.investment_capacity_usd ?? 0, displayValue: formatCurrency(lp.investment_capacity_usd ?? 0), source: 'api' as const },
+        mfnClause: { value: lp.mfn_clause ?? false, source: 'api' as const },
+        advisoryBoard: { value: lp.advisory_board_seat ?? false, source: 'api' as const },
+        currency: { value: lp.commitment_currency ?? 'USD', source: 'api' as const },
       },
     };
   });
 
   return {
-    columns,
+    columns: LP_COLUMNS,
     rows,
     metadata: { dataSource: 'lp', lastUpdated: new Date().toISOString(), fundId },
   };

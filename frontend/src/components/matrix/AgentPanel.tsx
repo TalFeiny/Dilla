@@ -42,7 +42,7 @@ export type PlanStep = {
 export interface AgentPanelProps {
   matrixData: MatrixData | null;
   fundId?: string;
-  mode?: 'portfolio' | 'query' | 'custom' | 'lp' | 'pnl';
+  mode?: 'portfolio' | 'custom' | 'lp' | 'pnl';
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   /** ChartViewport / suggestions */

@@ -1,7 +1,7 @@
 /**
  * Matrix Mode Manager
  * 
- * Manages matrix modes (Portfolio, Query, Custom, LP) and mode-specific configurations
+ * Manages matrix modes (Portfolio, Custom, LP, P&L) and mode-specific configurations
  */
 
 import { MatrixMode } from './matrix-api-service';
@@ -15,7 +15,7 @@ export interface ModeConfig {
   availableFields: string[];
   showQueryBar: boolean;
   showInsights: boolean;
-  primaryDataSource: 'portfolio' | 'query' | 'custom' | 'lp' | 'pnl';
+  primaryDataSource: 'portfolio' | 'custom' | 'lp' | 'pnl';
 }
 
 export const MODE_CONFIGS: Record<MatrixMode, ModeConfig> = {
@@ -36,23 +36,6 @@ export const MODE_CONFIGS: Record<MatrixMode, ModeConfig> = {
     showQueryBar: false,
     showInsights: false,
     primaryDataSource: 'portfolio',
-  },
-  query: {
-    mode: 'query',
-    label: 'Query / Insights',
-    description: 'NL matrix queries, dynamic columns',
-    defaultColumns: ['company', 'metric1', 'metric2', 'metric3'],
-    availableFields: [
-      'company',
-      'valuation',
-      'documents',
-      'charts',
-      'analytics',
-      'citations',
-    ],
-    showQueryBar: true,
-    showInsights: true,
-    primaryDataSource: 'query',
   },
   custom: {
     mode: 'custom',
@@ -76,7 +59,7 @@ export const MODE_CONFIGS: Record<MatrixMode, ModeConfig> = {
     mode: 'lp',
     label: 'LP',
     description: 'LP directory, fund accounting, capital calls, DPI tracking',
-    defaultColumns: ['lpName', 'lpType', 'status', 'commitment', 'called', 'distributed', 'unfunded', 'dpi', 'coInvest', 'vintageYear', 'contactName', 'capacity'],
+    defaultColumns: ['lpName', 'lpType', 'status', 'commitment', 'called', 'distributed', 'unfunded', 'dpi', 'ownership', 'managementFee', 'carry', 'preferredReturn', 'coInvest', 'mfnClause', 'advisoryBoard', 'currency', 'vintageYear', 'contactName', 'capacity'],
     availableFields: [
       'lp_data',
       'fund_metrics',

@@ -52,6 +52,9 @@ import {
   ChevronDown,
   ChevronUp,
   Pin,
+  UserPlus,
+  Trash2,
+  Shield,
 } from 'lucide-react';
 import { MatrixInsights } from './MatrixInsights';
 import { ChartViewport, type ChartTab } from './ChartViewport';
@@ -130,8 +133,9 @@ import {
 import { normalizeChartConfig } from '@/lib/matrix/chart-utils';
 import { buildCellEditOptionsFromSuggestion, buildApplyPayloadFromSuggestion, acceptSuggestionViaApi, rejectSuggestion, addServiceSuggestion } from '@/lib/matrix/suggestion-helpers';
 import { exportMatrixToCSV, exportMatrixToXLS, exportToPDF } from '@/lib/matrix/export-orchestrator';
+import { buildPnlColumns } from '@/lib/matrix/pnl-columns';
 
-export type MatrixMode = 'portfolio' | 'query' | 'custom' | 'lp' | 'pnl';
+export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl';
 
 export interface MatrixColumn {
   id: string;
@@ -207,6 +211,7 @@ export interface MatrixData {
 interface UnifiedMatrixProps {
   mode?: MatrixMode;
   fundId?: string;
+  companyId?: string;
   initialData?: MatrixData;
   onDataChange?: (data: MatrixData) => void;
   showInsights?: boolean;
@@ -247,6 +252,7 @@ interface UnifiedMatrixProps {
 export function UnifiedMatrix({
   mode = 'portfolio',
   fundId,
+  companyId,
   initialData,
   onDataChange,
   showInsights = true,
@@ -315,14 +321,21 @@ export function UnifiedMatrix({
       return {
         columns: [
           { id: 'lpName', name: 'LP Name', type: 'text', width: 180, editable: true },
-          { id: 'lpType', name: 'Type', type: 'text', width: 120, editable: true },
-          { id: 'status', name: 'Status', type: 'text', width: 100, editable: true },
-          { id: 'commitment', name: 'Commitment', type: 'currency', width: 140, editable: true },
-          { id: 'called', name: 'Called', type: 'currency', width: 130, editable: true },
-          { id: 'distributed', name: 'Distributed', type: 'currency', width: 140, editable: true },
-          { id: 'unfunded', name: 'Unfunded', type: 'currency', width: 130, editable: false },
-          { id: 'dpi', name: 'DPI', type: 'number', width: 80, editable: false },
-          { id: 'coInvest', name: 'Co-Invest', type: 'boolean', width: 90, editable: true },
+          { id: 'lpType', name: 'Type', type: 'text', width: 100, editable: true },
+          { id: 'status', name: 'Status', type: 'text', width: 90, editable: true },
+          { id: 'commitment', name: 'Commitment', type: 'currency', width: 130, editable: true },
+          { id: 'called', name: 'Called', type: 'currency', width: 120, editable: true },
+          { id: 'distributed', name: 'Distributed', type: 'currency', width: 130, editable: true },
+          { id: 'unfunded', name: 'Unfunded', type: 'currency', width: 120, editable: false },
+          { id: 'dpi', name: 'DPI', type: 'number', width: 70, editable: false },
+          { id: 'ownership', name: 'Ownership %', type: 'percentage', width: 90, editable: true },
+          { id: 'managementFee', name: 'Mgmt Fee %', type: 'percentage', width: 80, editable: true },
+          { id: 'carry', name: 'Carry %', type: 'percentage', width: 70, editable: true },
+          { id: 'preferredReturn', name: 'Pref Return %', type: 'percentage', width: 80, editable: true },
+          { id: 'coInvest', name: 'Co-Invest', type: 'boolean', width: 80, editable: true },
+          { id: 'mfnClause', name: 'MFN', type: 'boolean', width: 70, editable: true },
+          { id: 'advisoryBoard', name: 'Advisory Board', type: 'boolean', width: 80, editable: true },
+          { id: 'currency', name: 'Currency', type: 'text', width: 70, editable: true },
           { id: 'vintageYear', name: 'Vintage', type: 'number', width: 90, editable: true },
           { id: 'contactName', name: 'Contact', type: 'text', width: 140, editable: true },
           { id: 'capacity', name: 'Capacity', type: 'currency', width: 130, editable: true },
@@ -331,11 +344,52 @@ export function UnifiedMatrix({
         metadata: { dataSource: 'lp', lastUpdated: new Date().toISOString() },
       };
     } else if (mode === 'pnl') {
+      const pnlCols = buildPnlColumns();
+
+      // Standard income statement skeleton matching backend PnlBuilder output shape.
+      // Row IDs MUST match backend/app/services/pnl_builder.py:_fallback_skeleton + _assemble_rows
+      // so that grid suggestions from fpa_forecast / fpa_cash_flow land on the correct cells.
+      // Backend canonical IDs: revenue, cogs, gross_profit, opex_rd, opex_sm, opex_ga,
+      //   total_opex, ebitda, cash_balance, runway, total_revenue, total_cogs.
+      // Headers use "{section}_header" convention (revenue_header, cogs_header, etc.).
+      const pnlRow = (id: string, label: string, opts: { isHeader?: boolean; isTotal?: boolean; isComputed?: boolean; depth?: number; parentId?: string } = {}): MatrixRow => ({
+        id,
+        cells: { lineItem: { value: label, source: 'api' as const } },
+        depth: opts.depth ?? 0,
+        isHeader: opts.isHeader ?? false,
+        isTotal: opts.isTotal ?? false,
+        isComputed: opts.isComputed ?? false,
+        parentId: opts.parentId ?? null,
+        childIds: [],
+      });
+      const skeletonRows: MatrixRow[] = [
+        // Revenue
+        pnlRow('revenue_header', 'Revenue', { isHeader: true }),
+        pnlRow('revenue', 'Revenue', { depth: 1 }),
+        pnlRow('total_revenue', 'Total Revenue', { isTotal: true }),
+        // COGS
+        pnlRow('cogs_header', 'Cost of Sales', { isHeader: true }),
+        pnlRow('cogs', 'COGS', { depth: 1 }),
+        pnlRow('total_cogs', 'Total COGS', { isTotal: true }),
+        // Gross Profit
+        pnlRow('gross_profit', 'Gross Profit', { isComputed: true, isTotal: true }),
+        // OpEx
+        pnlRow('opex_header', 'Operating Expenses', { isHeader: true }),
+        pnlRow('opex_rd', 'R&D', { depth: 1 }),
+        pnlRow('opex_sm', 'Sales & Marketing', { depth: 1 }),
+        pnlRow('opex_ga', 'G&A', { depth: 1 }),
+        pnlRow('total_opex', 'Total OpEx', { isTotal: true }),
+        // EBITDA
+        pnlRow('ebitda', 'EBITDA', { isComputed: true, isTotal: true }),
+        // Below the line
+        pnlRow('bottom_header', 'Cash & Runway', { isHeader: true }),
+        pnlRow('cash_balance', 'Cash Balance', { depth: 1 }),
+        pnlRow('runway', 'Runway (months)', { depth: 1 }),
+      ];
+
       return {
-        columns: [
-          { id: 'lineItem', name: 'Line Item', type: 'text', width: 220, editable: false },
-        ],
-        rows: [],
+        columns: pnlCols,
+        rows: skeletonRows,
         metadata: { dataSource: 'pnl', lastUpdated: new Date().toISOString() },
       };
     } else {
@@ -365,6 +419,8 @@ export function UnifiedMatrix({
   const [startEditingCellRef, setStartEditingCellRef] = useState<((rowId: string, columnId: string) => void) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [isPnlUploading, setIsPnlUploading] = useState(false);
+  const [isXeroImporting, setIsXeroImporting] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [isDraggingCSV, setIsDraggingCSV] = useState(false);
   const [isDraggingDocument, setIsDraggingDocument] = useState(false);
@@ -1386,7 +1442,7 @@ export function UnifiedMatrix({
     setError(null);
     try {
       const { fetchPnlForMatrix } = await import('@/lib/matrix/matrix-api-service');
-      const pnlData = await fetchPnlForMatrix(fundId);
+      const pnlData = await fetchPnlForMatrix(fundId, companyId);
       if (pnlData.rows.length > 0 || pnlData.columns.length > 0) {
         setMatrixData(pnlData);
         onDataChange?.(pnlData);
@@ -1397,9 +1453,9 @@ export function UnifiedMatrix({
     } finally {
       setIsLoading(false);
     }
-  }, [fundId, onDataChange]);
+  }, [fundId, companyId, onDataChange]);
 
-  // Load portfolio, LP, or P&L data on mount or when mode/fundId changes
+  // Load portfolio, LP, or P&L data on mount or when mode/fundId/companyId changes
   useEffect(() => {
     if (mode === 'portfolio' && fundId) {
       loadPortfolioData();
@@ -1409,7 +1465,7 @@ export function UnifiedMatrix({
       loadPnlData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, fundId, loadPortfolioData, loadLPData, loadPnlData]);
+  }, [mode, fundId, companyId, loadPortfolioData, loadLPData, loadPnlData]);
 
   // Parse @CompanyName mentions from query
   const parseCompanyMentions = (queryText: string): string[] => {
@@ -2016,6 +2072,32 @@ export function UnifiedMatrix({
           console.error('Error saving to company:', err);
           toast.error(err instanceof Error ? err.message : 'Failed to save edit');
         }
+      } else if (mode === 'pnl' && companyId && columnId !== 'lineItem') {
+        // PnL mode: persist cell edit to fpa_actuals via POST /api/fpa/pnl
+        try {
+          const amount = typeof valueToStore === 'number' ? valueToStore : parseFloat(String(valueToStore));
+          if (!isNaN(amount)) {
+            await fetch('/api/fpa/pnl', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                company_id: companyId,
+                fund_id: fundId || null,
+                // For custom rows (custom_*), use the lineItem cell value as category
+                // so fpa_actuals gets a meaningful name instead of a timestamp ID
+                category: rowId.startsWith('custom_')
+                  ? (row?.cells?.lineItem?.value as string || rowId)
+                  : rowId,
+                period: columnId,  // column id is "YYYY-MM"
+                amount,
+                source: 'manual_cell_edit',
+              }),
+            });
+          }
+        } catch (err) {
+          console.error('[PnL cell save] error:', err);
+          toast.error('Failed to save cell edit');
+        }
       } else {
         toast.info('Add to portfolio to save edits');
       }
@@ -2480,8 +2562,9 @@ export function UnifiedMatrix({
         if (suggestBeforeApply && fundId) {
           const row = findRow(cmd.rowId);
           // MUST use the DB-level companyId (UUID), not company name — accept API looks up by companies.id
-          const companyId = row?.companyId ?? row?.id;
-          if (!companyId) {
+          // In PnL mode, row IDs are category names (revenue, opex_rd, etc.) — use the prop companyId instead
+          const resolvedCompanyId = mode === 'pnl' ? companyId : (row?.companyId ?? row?.id);
+          if (!resolvedCompanyId) {
             console.warn('[grid-cmd] Cannot persist suggestion: no companyId found for rowId', cmd.rowId);
             // Fallback: apply directly to grid to avoid silent data loss
             await handleCellEdit(cmd.rowId!, cmd.columnId!, cmd.value, { data_source: serviceSource, metadata: editMetadata });
@@ -2489,7 +2572,7 @@ export function UnifiedMatrix({
           }
           const result = await addServiceSuggestion({
             fundId,
-            company_id: companyId,
+            company_id: resolvedCompanyId,
             column_id: cmd.columnId!,
             suggested_value: cmd.value,
             source_service: serviceSource,
@@ -2945,9 +3028,54 @@ export function UnifiedMatrix({
 
 
   // Handler for adding a row/company — creates real company in DB, adds empty editable row immediately
+  // PnL mode: adds a local line item row (no company creation) — persists to fpa_actuals on cell edit
   const handleAddRowSimple = useCallback(async () => {
     try {
       setIsLoading(true);
+
+      // ── PnL mode: add local row for fpa_actuals, skip company creation ──
+      if (mode === 'pnl') {
+        const currentData = matrixData || getDefaultMatrixData(mode, fundId);
+        const columns = currentData.columns;
+        const rowId = `custom_${Date.now()}`;
+
+        const newRow: MatrixRow = {
+          id: rowId,
+          depth: 1,
+          isHeader: false,
+          isTotal: false,
+          isComputed: false,
+          parentId: null,
+          childIds: [],
+          cells: columns.reduce(
+            (acc, col) => {
+              acc[col.id] = {
+                value: col.id === 'lineItem' ? 'New Line Item' : null,
+                source: 'manual' as const,
+              };
+              return acc;
+            },
+            {} as Record<string, MatrixCell>,
+          ),
+        };
+
+        setMatrixData((prev) => {
+          const data = prev || getDefaultMatrixData(mode, fundId);
+          const updated: MatrixData = {
+            ...data,
+            rows: [...(data.rows || []), newRow],
+            metadata: { ...data.metadata, lastUpdated: new Date().toISOString() },
+          };
+          onDataChange?.(updated);
+          return updated;
+        });
+
+        toast.success('Row added — edit the line item name and cell values');
+        setIsLoading(false);
+        return;
+      }
+
+      // ── Portfolio / LP / other modes: create company in DB ──
       const companyName = `New Company ${Date.now()}`;
 
       // Use shared helper to create real company
@@ -2967,7 +3095,7 @@ export function UnifiedMatrix({
       // Get current columns (real headers from DB for portfolio, or defaults)
       const currentData = matrixData || getDefaultMatrixData(mode, fundId);
       let columns = currentData.columns;
-      
+
       // For portfolio mode, try to load real headers from matrix_columns if not already loaded
       if (mode === 'portfolio' && fundId && (columns.length === 0 || columns.length === getDefaultMatrixData(mode, fundId).columns.length)) {
         try {
@@ -2990,7 +3118,7 @@ export function UnifiedMatrix({
           console.warn('Could not load saved columns:', err);
         }
       }
-      
+
       // Fallback to defaults if still no columns
       if (columns.length === 0) {
         columns = getDefaultMatrixData(mode, fundId).columns;
@@ -3041,9 +3169,79 @@ export function UnifiedMatrix({
     } finally {
       setIsLoading(false);
     }
-  }, [mode, fundId, matrixData, onDataChange, onRefresh, getDefaultMatrixData]);
+  }, [mode, fundId, companyId, matrixData, onDataChange, onRefresh, getDefaultMatrixData]);
 
-  // Removed: handleAddCompanyToFund - companies are now created inline in the grid
+  // ── LP-specific handlers ──
+  const handleAddLP = useCallback(() => {
+    const currentData = matrixData || getDefaultMatrixData(mode, fundId);
+    const columns = currentData.columns;
+    const rowId = `lp_${Date.now()}`;
+
+    const newRow: MatrixRow = {
+      id: rowId,
+      cells: columns.reduce(
+        (acc, col) => {
+          acc[col.id] = {
+            value: col.id === 'lpName' ? 'New LP' : null,
+            source: 'manual' as const,
+          };
+          return acc;
+        },
+        {} as Record<string, MatrixCell>,
+      ),
+    };
+
+    setMatrixData((prev) => {
+      const data = prev || getDefaultMatrixData(mode, fundId);
+      const updated: MatrixData = {
+        ...data,
+        rows: [...(data.rows || []), newRow],
+        metadata: { ...data.metadata, lastUpdated: new Date().toISOString() },
+      };
+      onDataChange?.(updated);
+      return updated;
+    });
+    toast.success('LP row added');
+  }, [matrixData, mode, fundId, getDefaultMatrixData, onDataChange]);
+
+  const handleDeleteSelectedLPs = useCallback(() => {
+    if (selectedRows.size === 0) {
+      toast.error('Select rows to delete');
+      return;
+    }
+    setMatrixData((prev) => {
+      if (!prev) return prev;
+      const updated: MatrixData = {
+        ...prev,
+        rows: prev.rows.filter((r) => !selectedRows.has(r.id)),
+        metadata: { ...prev.metadata, lastUpdated: new Date().toISOString() },
+      };
+      onDataChange?.(updated);
+      return updated;
+    });
+    setSelectedRows(new Set());
+    toast.success(`Deleted ${selectedRows.size} LP(s)`);
+  }, [selectedRows, onDataChange]);
+
+  const handleRunCompliance = useCallback(async () => {
+    if (!fundId) {
+      toast.error('Select a fund first');
+      return;
+    }
+    toast.info('Running compliance checks...');
+    try {
+      const res = await fetch('/api/cell-actions/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action_id: 'lp.compliance_check', inputs: { fund_id: fundId, lp_id: 'all' } }),
+      });
+      if (!res.ok) throw new Error('Compliance check failed');
+      const result = await res.json();
+      toast.success(result.message || 'Compliance checks complete');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Compliance check failed');
+    }
+  }, [fundId]);
 
   // Handler for adding a column
   const handleAddColumnSimple = useCallback(() => {
@@ -3882,6 +4080,118 @@ export function UnifiedMatrix({
     }
   }, [matrixData, mode, fundId, loadPortfolioData, onRefresh, onDataChange]);
 
+  // ── PnL mode: Upload CSV of actuals ────────────────────────────────
+  // Posts the raw CSV file to the backend which auto-detects orientation
+  // (categories-as-rows or months-as-rows) and upserts into fpa_actuals.
+  const handlePnlCsvUpload = useCallback(async (file: File | null, event?: React.ChangeEvent<HTMLInputElement>) => {
+    if (event) {
+      file = event.target.files?.[0] || null;
+    }
+    if (!file || mode !== 'pnl' || !companyId) {
+      if (!companyId) toast.error('Select a company first');
+      return;
+    }
+
+    setIsPnlUploading(true);
+    setError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('company_id', companyId);
+      if (fundId) formData.append('fund_id', fundId);
+
+      const res = await fetch('/api/fpa/upload-actuals', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || data.detail || 'Upload failed');
+      }
+
+      toast.success(
+        `Imported ${data.ingested} data points`,
+        {
+          description: `${data.periods?.length || 0} periods, ${data.categories?.length || 0} categories` +
+            (data.unmapped_labels?.length ? `. Skipped: ${data.unmapped_labels.join(', ')}` : ''),
+          duration: 5000,
+        },
+      );
+
+      // Reload grid from PnlBuilder
+      loadPnlData();
+    } catch (err) {
+      console.error('[PnL CSV upload] error:', err);
+      toast.error(err instanceof Error ? err.message : 'CSV upload failed');
+    } finally {
+      setIsPnlUploading(false);
+      if (event?.target) event.target.value = '';
+    }
+  }, [mode, companyId, fundId, loadPnlData]);
+
+  // ── PnL mode: Import actuals from Xero ─────────────────────────────
+  // Calls the backend Xero sync endpoint which pulls P&L from Xero
+  // and upserts into fpa_actuals, then reloads the grid.
+  const handleXeroImport = useCallback(async () => {
+    if (mode !== 'pnl' || !companyId) {
+      if (!companyId) toast.error('Select a company first');
+      return;
+    }
+
+    setIsXeroImporting(true);
+    setError(null);
+
+    try {
+      // Use Next.js proxy routes to avoid CORS issues with direct backend calls
+      const connRes = await fetch(`/api/integrations/xero/connections?company_id=${companyId}`);
+      const connData = await connRes.json();
+      const connections = connData.connections || [];
+
+      if (connections.length === 0) {
+        toast.error('No Xero connection found', {
+          description: 'Connect Xero in Settings → Integrations first.',
+          duration: 5000,
+        });
+        return;
+      }
+
+      // Use the first connection
+      const connectionId = connections[0].id;
+      const res = await fetch('/api/integrations/xero/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          connection_id: connectionId,
+          company_id: companyId,
+          months: 24,
+        }),
+      });
+
+      const data = await res.json();
+      if (!data.success) {
+        throw new Error(data.detail || data.error || 'Xero import failed');
+      }
+
+      toast.success(
+        `Imported ${data.rows_synced} rows from Xero`,
+        {
+          description: `${data.periods?.length || 0} periods synced`,
+          duration: 5000,
+        },
+      );
+
+      // Reload grid
+      loadPnlData();
+    } catch (err) {
+      console.error('[Xero import] error:', err);
+      toast.error(err instanceof Error ? err.message : 'Xero import failed');
+    } finally {
+      setIsXeroImporting(false);
+    }
+  }, [mode, companyId, loadPnlData]);
+
   // Capture-phase: allow file drop before AG Grid can block it (must preventDefault on dragover for drop to fire)
   const handleDragOverCapture = useCallback((e: React.DragEvent) => {
     if (e.dataTransfer.types.includes('Files')) {
@@ -4068,18 +4378,18 @@ export function UnifiedMatrix({
     <div className="flex flex-col h-full space-y-2">
       {/* Minimal toolbar: query bar only when needed, single menu for rest */}
       <div className="flex items-center gap-2 shrink-0">
-        {(mode === 'query' || mode === 'custom') && showQueryBar && (
+        {mode === 'custom' && showQueryBar && (
           <div className="flex items-center gap-2 flex-1 max-w-md">
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && handleQuery()}
-              placeholder={mode === 'custom' ? "Type @CompanyName to search..." : "Enter matrix query..."}
+              placeholder="Type @CompanyName to search..."
               className="flex-1 h-8 text-sm"
             />
             <Button onClick={handleQuery} disabled={isLoading || !query.trim()} size="sm" className="h-8">
               <Sparkles className="w-4 h-4 mr-1" />
-              {mode === 'custom' ? 'Search' : 'Query'}
+              Search
             </Button>
           </div>
         )}
@@ -4129,6 +4439,37 @@ export function UnifiedMatrix({
                 <DropdownMenuItem onClick={exportCompressedContext}>
                   <Copy className="w-4 h-4 mr-2" />
                   Export Context
+                </DropdownMenuItem>
+              </>
+            )}
+            {mode === 'lp' && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleAddLP}>
+                  <UserPlus className="w-4 h-4 mr-2" />
+                  Add LP
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleDeleteSelectedLPs} disabled={selectedRows.size === 0}>
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Delete LP{selectedRows.size > 0 ? ` (${selectedRows.size})` : ''}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleRunCompliance}>
+                  <Shield className="w-4 h-4 mr-2" />
+                  Run Compliance
+                </DropdownMenuItem>
+              </>
+            )}
+            {mode === 'pnl' && (
+              <>
+                <DropdownMenuSeparator />
+                <input type="file" accept=".csv,.xlsx,.xls" onChange={(e) => handlePnlCsvUpload(null, e)} className="hidden" id="pnl-csv-import-input" />
+                <DropdownMenuItem onClick={() => document.getElementById('pnl-csv-import-input')?.click()} disabled={isPnlUploading}>
+                  {isPnlUploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
+                  Upload CSV
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleXeroImport} disabled={isXeroImporting}>
+                  {isXeroImporting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
+                  Import from Xero
                 </DropdownMenuItem>
               </>
             )}

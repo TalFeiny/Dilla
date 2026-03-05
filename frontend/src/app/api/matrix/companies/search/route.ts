@@ -1,24 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
-
-// In-memory job storage (for MVP - use Redis in production)
-const searchJobs = new Map<string, {
-  status: 'pending' | 'processing' | 'completed' | 'failed';
-  companyNames: string[];
-  results: Record<string, any>;
-  error?: string;
-  createdAt: number;
-}>();
-
-// Clean up old jobs (older than 1 hour)
-setInterval(() => {
-  const oneHourAgo = Date.now() - 3600000;
-  for (const [jobId, job] of searchJobs.entries()) {
-    if (job.createdAt < oneHourAgo) {
-      searchJobs.delete(jobId);
-    }
-  }
-}, 60000); // Run cleanup every minute
+import { searchJobs } from './job-store';
 
 export async function POST(request: NextRequest) {
   try {
@@ -34,7 +16,7 @@ export async function POST(request: NextRequest) {
     // Generate job ID
     const jobId = `search-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-    // Initialize job
+    // Initialize job in shared store
     searchJobs.set(jobId, {
       status: 'pending',
       companyNames,
@@ -80,7 +62,7 @@ async function performBatchSearch(jobId: string, companyNames: string[]) {
     }
 
     const results = await response.json();
-    
+
     job.results = results;
     job.status = 'completed';
   } catch (error) {

@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 import { MatrixData, MatrixColumn, MatrixRow, MatrixCell } from './UnifiedMatrix';
+import { buildPnlColumns } from '@/lib/matrix/pnl-columns';
 import { formatCellValue as formatCellValueShared, formatCurrency, parseCurrencyInput } from '@/lib/matrix/cell-formatters';
 import { CellDropdownRenderer } from './CellDropdownRenderer';
 import { FormulaEngine } from '@/lib/spreadsheet-formulas';
@@ -59,7 +60,7 @@ export interface AGGridMatrixProps {
   onStartEditingCell?: (callback: (rowId: string, columnId: string) => void) => void;
   /** When document extraction completes (from Documents cell), refresh suggestions and open viewport. */
   onSuggestChanges?: (documentId: string, extractedData?: unknown) => void;
-  mode?: 'portfolio' | 'query' | 'custom' | 'lp' | 'pnl';
+  mode?: 'portfolio' | 'custom' | 'lp' | 'pnl';
   /** When true (chat-first), de-emphasize Run valuation/PWERM in dropdown and show chat hint. */
   useAgentPanel?: boolean;
 }
@@ -120,14 +121,21 @@ const DEFAULT_PORTFOLIO_COLUMNS: MatrixColumn[] = [
 
 const DEFAULT_LP_COLUMNS: MatrixColumn[] = [
   { id: 'lpName', name: 'LP Name', type: 'text' as const, width: 180, editable: true },
-  { id: 'lpType', name: 'Type', type: 'text' as const, width: 120, editable: true },
-  { id: 'status', name: 'Status', type: 'text' as const, width: 100, editable: true },
-  { id: 'commitment', name: 'Commitment', type: 'currency' as const, width: 140, editable: true },
-  { id: 'called', name: 'Called', type: 'currency' as const, width: 130, editable: true },
-  { id: 'distributed', name: 'Distributed', type: 'currency' as const, width: 140, editable: true },
-  { id: 'unfunded', name: 'Unfunded', type: 'currency' as const, width: 130, editable: false },
-  { id: 'dpi', name: 'DPI', type: 'number' as const, width: 80, editable: false },
-  { id: 'coInvest', name: 'Co-Invest', type: 'boolean' as const, width: 90, editable: true },
+  { id: 'lpType', name: 'Type', type: 'text' as const, width: 100, editable: true },
+  { id: 'status', name: 'Status', type: 'text' as const, width: 90, editable: true },
+  { id: 'commitment', name: 'Commitment', type: 'currency' as const, width: 130, editable: true },
+  { id: 'called', name: 'Called', type: 'currency' as const, width: 120, editable: true },
+  { id: 'distributed', name: 'Distributed', type: 'currency' as const, width: 130, editable: true },
+  { id: 'unfunded', name: 'Unfunded', type: 'currency' as const, width: 120, editable: false },
+  { id: 'dpi', name: 'DPI', type: 'number' as const, width: 70, editable: false },
+  { id: 'ownership', name: 'Ownership %', type: 'percentage' as const, width: 90, editable: true },
+  { id: 'managementFee', name: 'Mgmt Fee %', type: 'percentage' as const, width: 80, editable: true },
+  { id: 'carry', name: 'Carry %', type: 'percentage' as const, width: 70, editable: true },
+  { id: 'preferredReturn', name: 'Pref Return %', type: 'percentage' as const, width: 80, editable: true },
+  { id: 'coInvest', name: 'Co-Invest', type: 'boolean' as const, width: 80, editable: true },
+  { id: 'mfnClause', name: 'MFN', type: 'boolean' as const, width: 70, editable: true },
+  { id: 'advisoryBoard', name: 'Advisory Board', type: 'boolean' as const, width: 80, editable: true },
+  { id: 'currency', name: 'Currency', type: 'text' as const, width: 70, editable: true },
   { id: 'vintageYear', name: 'Vintage', type: 'number' as const, width: 90, editable: true },
   { id: 'contactName', name: 'Contact', type: 'text' as const, width: 140, editable: true },
   { id: 'capacity', name: 'Capacity', type: 'currency' as const, width: 130, editable: true },
@@ -138,9 +146,7 @@ const DEFAULT_CUSTOM_COLUMNS: MatrixColumn[] = [
   { id: 'value', name: 'Value', type: 'text' as const, editable: true },
 ];
 
-const DEFAULT_PNL_COLUMNS: MatrixColumn[] = [
-  { id: 'lineItem', name: 'Line Item', type: 'text' as const, width: 220, editable: false },
-];
+const DEFAULT_PNL_COLUMNS: MatrixColumn[] = buildPnlColumns();
 
 function getDefaultColumns(mode: string): MatrixColumn[] {
   if (mode === 'portfolio') return DEFAULT_PORTFOLIO_COLUMNS;

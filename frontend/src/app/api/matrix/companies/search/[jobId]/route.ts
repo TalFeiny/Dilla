@@ -1,15 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
-
-// Import the same job storage (in a real app, this would be in a shared module or Redis)
-// For now, we'll recreate the map structure - in production use Redis or a database
-const searchJobs = new Map<string, {
-  status: 'pending' | 'processing' | 'completed' | 'failed';
-  companyNames: string[];
-  results: Record<string, any>;
-  error?: string;
-  createdAt: number;
-}>();
+import { searchJobs } from '../job-store';
 
 export async function GET(
   request: NextRequest,
@@ -18,10 +9,18 @@ export async function GET(
   try {
     const { jobId } = params;
 
-    // In a real implementation, fetch from shared storage (Redis/DB)
-    // For MVP, we'll need to access the same Map - this is a limitation
-    // that should be fixed with proper storage
-    
+    // Check shared in-memory store first (same Map the POST route writes to)
+    const localJob = searchJobs.get(jobId);
+    if (localJob) {
+      return NextResponse.json({
+        status: localJob.status,
+        companyNames: localJob.companyNames,
+        results: localJob.results,
+        error: localJob.error,
+      });
+    }
+
+    // Fallback: try backend status endpoint
     const backendUrl = getBackendUrl();
     const response = await fetch(`${backendUrl}/api/mcp/batch-search-status/${jobId}`, {
       method: 'GET',
@@ -33,7 +32,6 @@ export async function GET(
       return NextResponse.json(status);
     }
 
-    // Fallback: return not found
     return NextResponse.json(
       { error: 'Job not found' },
       { status: 404 }
