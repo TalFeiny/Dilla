@@ -1,6 +1,6 @@
-import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
+import { getSupabaseServer } from '@/lib/supabase/server';
 
 export async function GET() {
   const cookieStore = await cookies();
@@ -10,26 +10,12 @@ export async function GET() {
   const cookieNames = allCookies.map(c => c.name);
   const supabaseCookies = allCookies.filter(c => c.name.includes('sb-') || c.name.includes('supabase'));
 
-  // Try getUser with the cookies
+  // Try getUser with the canonical server client (same encode: 'tokens-only' config)
   let userResult: any = null;
   let userError: any = null;
 
   try {
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return cookieStore.getAll();
-          },
-          setAll() {
-            // read-only for debug
-          },
-        },
-      }
-    );
-
+    const supabase = await getSupabaseServer();
     const { data, error } = await supabase.auth.getUser();
     userResult = data?.user ? { id: data.user.id, email: data.user.email } : null;
     userError = error ? { message: error.message, status: error.status } : null;

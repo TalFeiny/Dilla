@@ -18,6 +18,19 @@ export function getSupabaseBrowser() {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      auth: {
+        autoRefreshToken: true,
+        persistSession: true,
+        detectSessionInUrl: false, // callback handled server-side in /auth/callback
+      },
+      global: {
+        headers: {
+          'X-Client-Info': 'vc-platform',
+        },
+      },
+      db: {
+        schema: 'public' as const,
+      },
       cookies: {
         encode: 'tokens-only',
         getAll() {

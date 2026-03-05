@@ -16,32 +16,17 @@ export default function Login() {
     setLoading(true);
 
     try {
-      // Direct fetch to Supabase auth — bypasses SDK internal state that can hang
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-      const res = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': supabaseKey,
-        },
-        body: JSON.stringify({ email, password }),
+      const supabase = getSupabaseBrowser();
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
       });
 
-      const body = await res.json();
-
-      if (!res.ok) {
-        throw new Error(body.msg || body.error_description || 'Invalid login credentials');
+      if (error) {
+        throw error;
       }
 
-      // Set the session in the SDK so cookies get written properly
-      const supabase = getSupabaseBrowser();
-      await supabase.auth.setSession({
-        access_token: body.access_token,
-        refresh_token: body.refresh_token,
-      });
-
+      // Full page navigation so middleware picks up the new cookies
       window.location.href = '/dashboard';
     } catch (error: any) {
       setError(error.message || 'An error occurred during login');
