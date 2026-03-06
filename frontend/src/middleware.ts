@@ -5,14 +5,10 @@ import { updateSession } from '@/lib/supabase/middleware'
 // Single source of truth: same resolution as getBackendUrl() so proxy and API routes use same host
 const BACKEND_URL = (process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || process.env.FASTAPI_URL || 'http://localhost:8000').replace(/\/+$/, '')
 
-// Security headers configuration - relaxed for development
-const isDevelopment = process.env.NODE_ENV !== 'production'
-
-const SECURITY_HEADERS = isDevelopment ? {
-  // Minimal security in development for faster iteration
+// Security headers — only applied in production
+const SECURITY_HEADERS: Record<string, string> = process.env.NODE_ENV !== 'production' ? {
   'X-Frame-Options': 'SAMEORIGIN',
 } : {
-  // Production security headers
   'X-XSS-Protection': '1; mode=block',
   'X-Frame-Options': 'DENY',
   'X-Content-Type-Options': 'nosniff',
@@ -35,254 +31,151 @@ const SECURITY_HEADERS = isDevelopment ? {
   ].join('; '),
 }
 
-// Rate limiting store
-const rateLimitStore = new Map<string, { count: number; resetTime: number }>()
-
-// Clean up old rate limit entries periodically
-if (typeof setInterval !== 'undefined') {
-  setInterval(() => {
-    const now = Date.now()
-    Array.from(rateLimitStore.entries()).forEach(([key, value]) => {
-      if (value.resetTime < now) {
-        rateLimitStore.delete(key)
-      }
-    })
-  }, 60000) // Clean every minute
-}
-
 // Routes that should be proxied to FastAPI backend
-// NOTE: /api/documents and /api/documents/* are NOT here – upload/list/process live in Next.js;
-// the Next.js process route then calls the backend. Do not add /api/documents/ here.
 const PYTHON_API_ROUTES = [
-  '/api/v2/',              // New versioned API
-  '/api/orchestrator/',    // Agent orchestrator
-  '/api/agents/',          // Agent endpoints
-  '/api/agent/',           // Dynamic data matrix agent
-  '/api/pwerm/',           // PWERM analysis
-  '/api/companies/',        // Companies endpoints (excludes /portfolio - see NEXTJS_ONLY)
-  // /api/portfolio/ REMOVED - portfolio CRUD + companies use Next.js + Supabase; backend has mock stub only
-  '/api/market-research/', // Market intelligence
-  '/api/dashboard/',       // Dashboard analytics
-  '/api/compliance/',      // Compliance/KYC
-  '/api/streaming/',       // Streaming endpoints
-  '/api/python/',          // Python script execution
-  '/api/rl/',              // Reinforcement learning
-  '/api/data/',            // Data queries
-  '/api/scenarios/',       // Scenario analysis
-  '/api/advanced-analytics/', // Advanced analytics (NEW)
-  '/api/mcp/',             // MCP orchestrator
-  '/api/brain/',           // Agent brain
-  '/api/investment/',      // Investment analysis
-  '/api/analyst/',         // Analyst endpoints
-  '/api/health',           // Health check endpoint
+  '/api/v2/',
+  '/api/orchestrator/',
+  '/api/agents/',
+  '/api/agent/',
+  '/api/pwerm/',
+  '/api/companies/',
+  '/api/market-research/',
+  '/api/dashboard/',
+  '/api/compliance/',
+  '/api/streaming/',
+  '/api/python/',
+  '/api/rl/',
+  '/api/data/',
+  '/api/scenarios/',
+  '/api/advanced-analytics/',
+  '/api/mcp/',
+  '/api/brain/',
+  '/api/investment/',
+  '/api/analyst/',
+  '/api/health',
 ]
 
 // Routes that should be handled by Next.js (not proxied)
-// Portfolio CRUD + companies use Next.js + Supabase; FastAPI has no POST /portfolio/:id/companies
 const NEXTJS_ONLY_ROUTES = [
-  '/api/auth',   // Supabase auth callback
+  '/api/auth',
   '/api/agent/spreadsheet-direct',
-  '/api/agent/spreadsheet-stream',  // New streaming endpoint
-  '/api/agent/cim-generator',  // CIM generator
-  '/api/agent/company-cim',  // Company CIM
+  '/api/agent/spreadsheet-stream',
+  '/api/agent/cim-generator',
+  '/api/agent/company-cim',
   '/api/agent/dynamic-data-v2',
   '/api/agent/dynamic-data',
-  '/api/agent/test-orchestration',  // Add our test endpoint
+  '/api/agent/test-orchestration',
   '/api/agent/tools/',
-  '/api/agent/unified-brain',  // Unified brain has its own Next.js route handler
-  '/api/cell-actions',  // Cell actions: Next.js route proxies to backend (execute/route.ts)
-  '/api/portfolio',   // Portfolio + companies: Next.js + Supabase (must NOT proxy to backend)
-  '/api/matrix',      // Matrix columns, cells, suggestions: Next.js + Supabase
-  '/api/documents',   // Document upload/fetch/delete: Next.js + Supabase
-  '/api/funds',       // Fund CRUD: Next.js + Supabase
+  '/api/agent/unified-brain',
+  '/api/cell-actions',
+  '/api/portfolio',
+  '/api/matrix',
+  '/api/documents',
+  '/api/funds',
+  '/api/fpa',
 ]
 
-// Performance-optimized middleware with API gateway functionality and security
+const PUBLIC_ROUTES = ['/login', '/signup', '/forgot-password', '/auth/callback', '/auth/error', '/']
+
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname
-  
-  // Skip middleware for static assets and fast paths
+
+  // Skip middleware for static assets
   if (pathname.startsWith('/_next/') || pathname === '/favicon.ico' || pathname.includes('.')) {
     return NextResponse.next()
   }
-  const clientId = request.headers.get('x-forwarded-for') || 
-                   request.headers.get('x-real-ip') || 
-                   request.ip || 
-                   'unknown'
-  
-  // Skip security checks in development for speed
-  if (process.env.NODE_ENV === 'production') {
-    // Security: Check for suspicious patterns in URL
-    const url = pathname + request.nextUrl.search
-    const suspiciousPatterns = [
-      /(\.\.|\/\/)/,  // Directory traversal
-      /[<>\"']/,       // XSS attempts
-      /(\%00|\x00)/,   // Null bytes
-      /union.*select/i, // SQL injection
-      /javascript:/i,   // JavaScript protocol
-      /on\w+\s*=/i,    // Event handlers
-    ]
 
-    for (const pattern of suspiciousPatterns) {
-      if (pattern.test(url)) {
-        console.warn(`Array.from(urity) Suspicious request blocked: ${url} from ${clientId}`)
+  const isApiRoute = pathname.startsWith('/api/')
+
+  // ── Backend proxy (API routes only) ──
+  // Returns early so we never hit updateSession for proxied routes.
+  // This is critical: the backend fetch can take seconds, and adding a
+  // Supabase getUser() call on top would blow past Vercel's Edge timeout.
+  if (isApiRoute) {
+    // Handle CORS preflight immediately — no network calls needed
+    if (request.method === 'OPTIONS') {
+      const origin = request.headers.get('origin')
+      const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com', 'https://dilla.ai']
+      const headers: Record<string, string> = {
+        ...SECURITY_HEADERS,
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-CSRF-Token, X-Request-ID',
+        'Access-Control-Max-Age': '86400',
+      }
+      if (origin && allowedOrigins.includes(origin)) {
+        headers['Access-Control-Allow-Origin'] = origin
+        headers['Access-Control-Allow-Credentials'] = 'true'
+      }
+      return new Response(null, { status: 200, headers })
+    }
+
+    // Check if this should be proxied to FastAPI
+    const isNextJSOnly = NEXTJS_ONLY_ROUTES.some(route => pathname.startsWith(route))
+    const shouldProxy = !isNextJSOnly && PYTHON_API_ROUTES.some(route => pathname.startsWith(route))
+
+    if (shouldProxy) {
+      const backendUrl = `${BACKEND_URL}${pathname}${request.nextUrl.search}`
+
+      try {
+        const headers = new Headers(request.headers)
+        headers.set('host', new URL(BACKEND_URL).host)
+        headers.delete('connection')
+
+        const backendSecret = process.env.BACKEND_API_SECRET
+        if (backendSecret) {
+          headers.set('X-Backend-Secret', backendSecret)
+        }
+
+        let body: string | null = null
+        if (request.method !== 'GET' && request.method !== 'HEAD') {
+          body = await request.text()
+        }
+
+        const proxyRes = await fetch(backendUrl, {
+          method: request.method,
+          headers,
+          body,
+        })
+
+        const responseHeaders = new Headers(proxyRes.headers)
+        Object.entries(SECURITY_HEADERS).forEach(([key, value]) => {
+          responseHeaders.set(key, value)
+        })
+
+        // CORS
+        const origin = request.headers.get('origin')
+        const proxyAllowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com']
+        if (origin && proxyAllowedOrigins.includes(origin)) {
+          responseHeaders.set('Access-Control-Allow-Origin', origin)
+          responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+          responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token')
+          responseHeaders.set('Access-Control-Allow-Credentials', 'true')
+        }
+
+        responseHeaders.set('X-Request-ID', globalThis.crypto.randomUUID())
+
+        return new Response(proxyRes.body, {
+          status: proxyRes.status,
+          statusText: proxyRes.statusText,
+          headers: responseHeaders,
+        })
+      } catch {
         return NextResponse.json(
-          { error: 'Invalid request' },
-          { status: 400, headers: SECURITY_HEADERS }
+          { error: 'Backend unreachable', path: pathname },
+          { status: 502, headers: SECURITY_HEADERS }
         )
       }
     }
-  }
 
-  // Rate limiting for API routes
-  if (pathname.startsWith('/api/')) {
-    const now = Date.now()
-    const windowMs = 60000 // 1 minute
-    const maxRequests = 100 // 100 requests per minute per IP
-    
-    const rateLimitKey = `${clientId}_${Math.floor(now / windowMs)}`
-    const current = rateLimitStore.get(rateLimitKey) || { count: 0, resetTime: now + windowMs }
-    
-    if (current.count >= maxRequests) {
-      return NextResponse.json(
-        { error: 'Too many requests. Please try again later.' },
-        { 
-          status: 429,
-          headers: {
-            'Retry-After': String(Math.ceil((current.resetTime - now) / 1000)),
-            ...SECURITY_HEADERS,
-          }
-        }
-      )
-    }
-    
-    current.count++
-    rateLimitStore.set(rateLimitKey, current)
-
-    // Validate request size (skip for document upload – route allows 100MB)
-    const contentLength = request.headers.get('content-length')
-    const maxSize = 10 * 1024 * 1024 // 10MB
-    const isDocumentUpload = pathname === '/api/documents' && request.method === 'POST'
-
-    if (!isDocumentUpload && contentLength && parseInt(contentLength, 10) > maxSize) {
-      return NextResponse.json(
-        { error: 'Request entity too large' },
-        { status: 413, headers: SECURITY_HEADERS }
-      )
-    }
-  }
-  
-  // Check if this is a Next.js-only route (should NOT be proxied)
-  const isNextJSOnly = NEXTJS_ONLY_ROUTES.some(route => pathname.startsWith(route))
-  
-  // Check if this request should be proxied to FastAPI
-  const shouldProxy = !isNextJSOnly && PYTHON_API_ROUTES.some(route => pathname.startsWith(route))
-  
-  if (shouldProxy) {
-    // Proxy to FastAPI backend via fetch (not rewrite — rewrite is unreliable
-    // on Vercel when Next.js API route handlers exist at the same paths)
-    const backendUrl = `${BACKEND_URL}${pathname}${request.nextUrl.search}`
-
-    try {
-      // Forward request headers but replace host with backend host
-      const headers = new Headers(request.headers)
-      headers.set('host', new URL(BACKEND_URL).host)
-      headers.delete('connection')
-      // Add backend API secret so the backend knows this came from our frontend
-      const backendSecret = process.env.BACKEND_API_SECRET
-      if (backendSecret) {
-        headers.set('X-Backend-Secret', backendSecret)
-      } else {
-        console.error(`[Middleware] BACKEND_API_SECRET is not set — backend will reject with 403`)
-      }
-
-      // Read body for non-GET/HEAD requests
-      let body: string | null = null
-      if (request.method !== 'GET' && request.method !== 'HEAD') {
-        body = await request.text()
-      }
-
-      const proxyRes = await fetch(backendUrl, {
-        method: request.method,
-        headers,
-        body,
-      })
-
-      // Build response from backend
-      const responseHeaders = new Headers(proxyRes.headers)
-
-      // Add security headers
-      Object.entries(SECURITY_HEADERS).forEach(([key, value]) => {
-        responseHeaders.set(key, value)
-      })
-
-      // Add CORS headers — only for whitelisted origins (not any origin)
-      const origin = request.headers.get('origin')
-      const proxyAllowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com']
-      if (origin && proxyAllowedOrigins.includes(origin)) {
-        responseHeaders.set('Access-Control-Allow-Origin', origin)
-        responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-        responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token')
-        responseHeaders.set('Access-Control-Allow-Credentials', 'true')
-      }
-
-      responseHeaders.set('X-Request-ID', globalThis.crypto.randomUUID())
-
-      if (proxyRes.status === 403) {
-        const body = await proxyRes.clone().text()
-        console.error(`[Middleware] Backend returned 403 for ${pathname} — secret prefix: ${(backendSecret || '').slice(0, 8)}... body: ${body}`)
-      }
-
-      return new Response(proxyRes.body, {
-        status: proxyRes.status,
-        statusText: proxyRes.statusText,
-        headers: responseHeaders,
-      })
-    } catch (error) {
-      // Backend unreachable — return JSON error, not HTML
-      return NextResponse.json(
-        { error: 'Backend unreachable', path: pathname },
-        { status: 502, headers: SECURITY_HEADERS }
-      )
-    }
-  }
-  
-  // ── Supabase Auth: refresh session on every request ──
-  const PUBLIC_ROUTES = ['/login', '/signup', '/forgot-password', '/auth/callback', '/auth/error', '/']
-  const isPublicRoute = PUBLIC_ROUTES.includes(pathname)
-  const isApiRoute = pathname.startsWith('/api/')
-
-  const { user, response } = await updateSession(request)
-
-  // Protect app routes — redirect unauthenticated users to /login
-  if (!user && !isPublicRoute && !isApiRoute) {
-    const loginUrl = request.nextUrl.clone()
-    loginUrl.pathname = '/login'
-    loginUrl.searchParams.set('next', pathname)
-    return NextResponse.redirect(loginUrl)
-  }
-
-  // Add all security headers
-  Object.entries(SECURITY_HEADERS).forEach(([key, value]) => {
-    response.headers.set(key, value)
-  })
-
-  // Add request ID for tracing
-  response.headers.set('X-Request-ID', globalThis.crypto.randomUUID())
-
-  // Cache static assets aggressively
-  if (pathname.startsWith('/_next/')) {
-    response.headers.set('Cache-Control', 'public, max-age=31536000, immutable')
-  }
-
-  // API routes - no cache
-  if (isApiRoute) {
+    // Next.js API route — pass through with CORS + no-cache headers, no auth check needed
+    const response = NextResponse.next()
     response.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate')
+    Object.entries(SECURITY_HEADERS).forEach(([key, value]) => {
+      response.headers.set(key, value)
+    })
 
-    // CORS handling for API routes
     const origin = request.headers.get('origin')
     const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://dilla-ai.com', 'https://www.dilla-ai.com', 'https://dilla.ai']
-
     if (origin && allowedOrigins.includes(origin)) {
       response.headers.set('Access-Control-Allow-Origin', origin)
       response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
@@ -290,11 +183,30 @@ export async function middleware(request: NextRequest) {
       response.headers.set('Access-Control-Max-Age', '86400')
     }
 
-    // Handle preflight requests
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 200, headers: response.headers })
-    }
+    return response
   }
+
+  // ── Page routes: Supabase Auth session refresh ──
+  // Only page routes call updateSession (one network call to Supabase).
+  // API routes are handled above and never reach here.
+  const isPublicRoute = PUBLIC_ROUTES.includes(pathname)
+
+  const { user, response } = await updateSession(request)
+
+  // Protect app routes — redirect unauthenticated users to /login
+  if (!user && !isPublicRoute) {
+    const loginUrl = request.nextUrl.clone()
+    loginUrl.pathname = '/login'
+    loginUrl.searchParams.set('next', pathname)
+    return NextResponse.redirect(loginUrl)
+  }
+
+  // Add security headers
+  Object.entries(SECURITY_HEADERS).forEach(([key, value]) => {
+    response.headers.set(key, value)
+  })
+
+  response.headers.set('X-Request-ID', globalThis.crypto.randomUUID())
 
   // Static pages - cache for 1 hour
   if (pathname === '/' || pathname.startsWith('/documents/')) {
@@ -306,12 +218,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     */
     '/((?!_next/static|_next/image|favicon.ico).*)',
   ],
-} 
+}

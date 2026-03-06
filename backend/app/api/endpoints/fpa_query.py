@@ -13,12 +13,35 @@ import csv
 import re
 from datetime import date, timedelta
 
-from app.services.nl_fpa_parser import NLFPAParser
-from app.services.fpa_query_classifier import FPAQueryClassifier
-from app.services.fpa_workflow_builder import FPAWorkflowBuilder
-from app.services.fpa_executor import FPAExecutor, ExecutorContext
-from app.services.fpa_model_editor import FPAModelEditor
-from app.services.fpa_regression_service import FPARegressionService
+# Heavy NL/FPA services — lazy-loaded so the module always imports
+# even if these optional dependencies are missing. The core PnL/upload
+# endpoints don't need them.
+_nl_parser = None
+_classifier = None
+_workflow_builder = None
+_executor = None
+_model_editor = None
+_regression_service = None
+
+
+def _get_nl_services():
+    """Lazy-init NL FPA services on first use."""
+    global _nl_parser, _classifier, _workflow_builder, _executor, _model_editor, _regression_service
+    if _nl_parser is None:
+        from app.services.nl_fpa_parser import NLFPAParser
+        from app.services.fpa_query_classifier import FPAQueryClassifier
+        from app.services.fpa_workflow_builder import FPAWorkflowBuilder
+        from app.services.fpa_executor import FPAExecutor
+        from app.services.fpa_model_editor import FPAModelEditor
+        from app.services.fpa_regression_service import FPARegressionService
+        _nl_parser = NLFPAParser()
+        _classifier = FPAQueryClassifier()
+        _workflow_builder = FPAWorkflowBuilder()
+        _executor = FPAExecutor()
+        _model_editor = FPAModelEditor()
+        _regression_service = FPARegressionService()
+    return _nl_parser, _classifier, _workflow_builder, _executor, _model_editor, _regression_service
+
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +85,7 @@ class FPAForecastRequest(BaseModel):
     assumptions: Optional[Dict[str, Any]] = None
 
 
-# Initialize services
-nl_parser = NLFPAParser()
-classifier = FPAQueryClassifier()
-workflow_builder = FPAWorkflowBuilder()
-executor = FPAExecutor()
-model_editor = FPAModelEditor()
-regression_service = FPARegressionService()
+# Services are lazy-loaded via _get_nl_services() — see top of file
 
 
 # ---------------------------------------------------------------------------
@@ -895,9 +912,10 @@ async def process_fpa_query(request: FPAQueryRequest):
     start_time = time.time()
     
     try:
+        nl_parser, classifier, workflow_builder, executor, model_editor, regression_service = _get_nl_services()
         # Parse query
         parsed_query = nl_parser.parse(request.query)
-        
+
         # Classify query
         handler = await classifier.route(parsed_query)
         
@@ -905,6 +923,7 @@ async def process_fpa_query(request: FPAQueryRequest):
         workflow = workflow_builder.build(parsed_query, handler)
         
         # Execute workflow
+        from app.services.fpa_executor import ExecutorContext
         ctx = ExecutorContext(
             fund_id=request.fund_id,
             company_ids=request.company_ids,
@@ -949,6 +968,7 @@ async def process_fpa_query(request: FPAQueryRequest):
 async def create_fpa_model(request: FPAModelRequest):
     """Create a new FPA model"""
     try:
+        *_, model_editor, _ = _get_nl_services()
         model = await model_editor.create_model(
             name=request.name,
             model_type=request.model_type,
@@ -968,6 +988,7 @@ async def create_fpa_model(request: FPAModelRequest):
 async def get_fpa_model(model_id: str):
     """Get an FPA model by ID"""
     try:
+        *_, model_editor, _ = _get_nl_services()
         model = await model_editor.get_model(model_id)
         if not model:
             raise HTTPException(status_code=404, detail="Model not found")
@@ -987,6 +1008,7 @@ async def update_model_formula(
 ):
     """Update a formula for a specific step"""
     try:
+        *_, model_editor, _ = _get_nl_services()
         result = await model_editor.update_formula(model_id, step_id, formula)
         return result
     except Exception as e:
@@ -1001,6 +1023,7 @@ async def update_model_assumptions(
 ):
     """Update assumptions for a model"""
     try:
+        *_, model_editor, _ = _get_nl_services()
         result = await model_editor.update_assumptions(model_id, assumptions)
         return result
     except Exception as e:
@@ -1012,6 +1035,7 @@ async def update_model_assumptions(
 async def execute_model(model_id: str):
     """Re-run a model with current formulas/assumptions"""
     try:
+        *_, model_editor, _ = _get_nl_services()
         model = await model_editor.get_model(model_id)
         if not model:
             raise HTTPException(status_code=404, detail="Model not found")
@@ -1030,6 +1054,7 @@ async def execute_model(model_id: str):
 async def run_regression(request: FPARegressionRequest):
     """Run regression analysis"""
     try:
+        *_, regression_service = _get_nl_services()
         if request.regression_type == "linear":
             x = request.data.get("x", [])
             y = request.data.get("y", [])
