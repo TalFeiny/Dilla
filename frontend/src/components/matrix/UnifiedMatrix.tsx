@@ -4418,21 +4418,7 @@ export function UnifiedMatrix({
     <div className="flex flex-col h-full space-y-2">
       {/* Minimal toolbar: query bar only when needed, single menu for rest */}
       <div className="flex items-center gap-2 shrink-0">
-        {mode === 'custom' && showQueryBar && (
-          <div className="flex items-center gap-2 flex-1 max-w-md">
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleQuery()}
-              placeholder="Type @CompanyName to search..."
-              className="flex-1 h-8 text-sm"
-            />
-            <Button onClick={handleQuery} disabled={isLoading || !query.trim()} size="sm" className="h-8">
-              <Sparkles className="w-4 h-4 mr-1" />
-              Search
-            </Button>
-          </div>
-        )}
+        {/* Query bar removed — use main chat to search companies */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="sm" className="h-8 px-2">

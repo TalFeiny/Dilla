@@ -99,7 +99,7 @@ interface Message {
   /** Deck format: slides for inline preview */
   deckSlides?: Array<{ id?: string; title?: string; content?: any; order?: number }>;
   /** Docs format: sections for memo rendering */
-  docsSections?: Array<{ title?: string; content?: string; level?: number }>;
+  docsSections?: Array<{ type?: string; title?: string; content?: string; level?: number; table?: { headers?: string[]; rows?: any[][]; caption?: string }; chart?: { type: string; title?: string; data: any }; items?: string[] }>;
   /** Enriched charts from format handler (positioned within docs) */
   docsCharts?: Array<{ type: string; title?: string; data: any }>;
   /** Chart positions for interleaving with sections */
@@ -950,7 +950,7 @@ export default function AgentChat({
         : undefined;
 
       // Use FormatHandlerFactory to enrich docs responses
-      let docsSections: Array<{ title?: string; content?: string; level?: number }> | undefined;
+      let docsSections: Array<{ type?: string; title?: string; content?: string; level?: number; table?: any; chart?: any; items?: string[] }> | undefined;
       let docsCharts: Array<{ type: string; title?: string; data: any }> | undefined;
       let docsChartPositions: Array<{ afterParagraph: number; inline: boolean }> | undefined;
 
@@ -2304,7 +2304,7 @@ export default function AgentChat({
             <SheetHeader className="shrink-0 px-6 py-4 border-b bg-gray-50 dark:bg-gray-900/50">
               <div className="flex items-center justify-between">
                 <SheetTitle className="text-base">
-                  {documentViewerMessage?.docsSections?.[0]?.title || 'Document'}
+                  {documentViewerMessage?.docsSections?.[0]?.content || documentViewerMessage?.docsSections?.[0]?.title || 'Document'}
                 </SheetTitle>
                 <div className="flex gap-2">
                   <Button
@@ -2324,41 +2324,73 @@ export default function AgentChat({
             {/* A4 page body */}
             <div className="flex-1 overflow-y-auto bg-gray-100 dark:bg-gray-950 py-8 px-4">
               <div className="mx-auto bg-white dark:bg-gray-900 shadow-lg rounded-sm max-w-[680px] min-h-[900px] px-12 py-16">
-                {documentViewerMessage?.docsSections?.map((section, sIdx) => {
-                  const level = section.level ?? 1;
-                  const HeadingTag = level === 1 ? 'h1' : level === 2 ? 'h2' : 'h3';
-                  const headingClass = level === 1
-                    ? 'text-2xl font-bold mb-4 mt-8 first:mt-0 text-gray-900 dark:text-gray-100 border-b pb-2'
-                    : level === 2
-                      ? 'text-xl font-semibold mb-3 mt-6 text-gray-800 dark:text-gray-200'
-                      : 'text-lg font-medium mb-2 mt-4 text-gray-700 dark:text-gray-300';
+                {documentViewerMessage?.docsSections?.map((section: any, sIdx: number) => {
+                  const sectionType = section.type || 'paragraph';
 
-                  // Check if a chart should appear after this section
-                  const chartPositions = documentViewerMessage.docsChartPositions || [];
-                  const docsCharts = documentViewerMessage.docsCharts || documentViewerMessage.charts || [];
-                  const chartsAfterSection = chartPositions
-                    .map((pos, cIdx) => ({ ...pos, chartIdx: cIdx }))
-                    .filter((pos) => pos.afterParagraph === sIdx + 1 && pos.chartIdx < docsCharts.length);
-
+                  // Render by structured section type
                   return (
                     <React.Fragment key={sIdx}>
-                      {section.title && (
-                        <HeadingTag className={headingClass}>
-                          {section.title}
-                        </HeadingTag>
+                      {/* Headings */}
+                      {sectionType === 'heading1' && (
+                        <h1 className="text-2xl font-bold mb-4 mt-8 first:mt-0 text-gray-900 dark:text-gray-100 border-b pb-2">
+                          {section.content || section.title}
+                        </h1>
                       )}
-                      {section.content && (
+                      {sectionType === 'heading2' && (
+                        <h2 className="text-xl font-semibold mb-3 mt-6 text-gray-800 dark:text-gray-200">
+                          {section.content || section.title}
+                        </h2>
+                      )}
+                      {sectionType === 'heading3' && (
+                        <h3 className="text-lg font-medium mb-2 mt-4 text-gray-700 dark:text-gray-300">
+                          {section.content || section.title}
+                        </h3>
+                      )}
+
+                      {/* Paragraph — render markdown */}
+                      {sectionType === 'paragraph' && section.content && (
                         <div className="prose prose-sm dark:prose-invert max-w-none mb-4 text-gray-700 dark:text-gray-300 leading-relaxed">
                           <ReactMarkdown>{section.content}</ReactMarkdown>
                         </div>
                       )}
-                      {/* Inline charts positioned after this section */}
-                      {chartsAfterSection.map(({ chartIdx }) => {
-                        const chart = docsCharts[chartIdx];
-                        if (!chart) return null;
-                        const hasData = chart.data && (Array.isArray(chart.data) ? chart.data.length > 0 : Object.keys(chart.data).length > 0);
+
+                      {/* Table — structured headers + rows */}
+                      {sectionType === 'table' && section.table && (
+                        <div className="my-4 overflow-x-auto">
+                          <table className="w-full text-sm border-collapse">
+                            {section.table.caption && (
+                              <caption className="text-xs text-muted-foreground mb-2 text-left font-medium">{section.table.caption}</caption>
+                            )}
+                            <thead>
+                              <tr className="border-b-2 border-gray-200 dark:border-gray-600">
+                                {section.table.headers?.map((h: string, hi: number) => (
+                                  <th key={hi} className="text-left py-2 pr-4 font-semibold text-gray-600 dark:text-gray-400 text-xs uppercase tracking-wider">
+                                    {h}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {section.table.rows?.map((row: any[], ri: number) => (
+                                <tr key={ri} className={`border-b border-gray-100 dark:border-gray-700 ${ri % 2 === 1 ? 'bg-gray-50 dark:bg-gray-800/30' : ''}`}>
+                                  {row.map((cell: any, ci: number) => (
+                                    <td key={ci} className="py-1.5 pr-4 text-gray-700 dark:text-gray-300">
+                                      {typeof cell === 'string' ? <ReactMarkdown>{cell}</ReactMarkdown> : String(cell ?? '—')}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
+                      {/* Chart — render via TableauLevelCharts */}
+                      {sectionType === 'chart' && section.chart && (() => {
+                        const chart = section.chart;
+                        const hasData = chart.data && (Array.isArray(chart.data) ? chart.data.length > 0 : typeof chart.data === 'object' && Object.keys(chart.data).length > 0);
                         return hasData ? (
-                          <div key={`chart-${chartIdx}`} className="my-6 border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-800/30">
+                          <div className="my-6 border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-800/30">
                             <TableauLevelCharts
                               type={chart.type as any}
                               data={chart.data}
@@ -2369,11 +2401,52 @@ export default function AgentChat({
                             />
                           </div>
                         ) : (
-                          <div key={`chart-${chartIdx}`} className="my-4 flex items-center justify-center h-20 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-sm text-muted-foreground">
+                          <div className="my-4 flex items-center justify-center h-20 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-sm text-muted-foreground">
                             {chart.title ? `${chart.title} — data unavailable` : 'Chart data unavailable'}
                           </div>
                         );
-                      })}
+                      })()}
+
+                      {/* List — bullet or numbered */}
+                      {sectionType === 'list' && section.items && (
+                        <ul className="list-disc list-inside mb-4 space-y-1 text-gray-700 dark:text-gray-300 text-sm">
+                          {section.items.map((item: string, li: number) => (
+                            <li key={li}>
+                              <ReactMarkdown components={{ p: ({ children }) => <span>{children}</span> }}>{item}</ReactMarkdown>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+
+                      {/* Quote */}
+                      {sectionType === 'quote' && section.content && (
+                        <blockquote className="border-l-4 border-gray-300 dark:border-gray-600 pl-4 py-2 mb-4 text-gray-600 dark:text-gray-400 italic text-sm">
+                          <ReactMarkdown>{section.content}</ReactMarkdown>
+                        </blockquote>
+                      )}
+
+                      {/* Code block */}
+                      {sectionType === 'code' && section.content && (
+                        <pre className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4 mb-4 overflow-x-auto text-xs font-mono text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700">
+                          {section.content}
+                        </pre>
+                      )}
+
+                      {/* Fallback: legacy format (section.title + section.content without type) */}
+                      {!sectionType.startsWith('heading') && sectionType !== 'paragraph' && sectionType !== 'table' && sectionType !== 'chart' && sectionType !== 'list' && sectionType !== 'quote' && sectionType !== 'code' && (
+                        <>
+                          {section.title && (
+                            <h2 className="text-xl font-semibold mb-3 mt-6 text-gray-800 dark:text-gray-200">
+                              {section.title}
+                            </h2>
+                          )}
+                          {section.content && (
+                            <div className="prose prose-sm dark:prose-invert max-w-none mb-4 text-gray-700 dark:text-gray-300 leading-relaxed">
+                              <ReactMarkdown>{section.content}</ReactMarkdown>
+                            </div>
+                          )}
+                        </>
+                      )}
                     </React.Fragment>
                   );
                 })}

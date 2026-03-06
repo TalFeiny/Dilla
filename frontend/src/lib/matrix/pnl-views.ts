@@ -529,14 +529,21 @@ export async function fetchPnlView(params: PnlViewFetchParams): Promise<MatrixDa
       throw new Error(`Unknown P&L view: ${view}`);
   }
 
-  const res = await fetch(url, fetchOpts);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(err.detail || err.error || `HTTP ${res.status}`);
+  let data: any;
+  try {
+    const res = await fetch(url, fetchOpts);
+    if (!res.ok) {
+      console.warn(`FPA ${view} returned ${res.status} — rendering empty grid`);
+      data = {};
+    } else {
+      data = await res.json();
+    }
+  } catch (err) {
+    console.warn(`FPA ${view} fetch failed — rendering empty grid`, err);
+    data = {};
   }
-  const data = await res.json();
 
-  // Transform based on view
+  // Transform based on view — transformers handle empty/missing data gracefully
   let result: { columns: MatrixColumn[]; rows: MatrixRow[]; meta: any };
 
   switch (view) {

@@ -1118,7 +1118,7 @@ export default function MatrixControlPanel() {
                     key={v}
                     onClick={() => setPnlView(v)}
                     className={cn(
-                      'px-3 py-1.5 text-sm font-medium rounded-md transition-colors',
+                      'px-2 py-0.5 text-xs font-medium rounded transition-colors',
                       pnlView === v
                         ? 'bg-background text-foreground shadow-sm'
                         : 'text-muted-foreground hover:text-foreground'

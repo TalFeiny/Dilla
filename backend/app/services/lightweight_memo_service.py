@@ -187,49 +187,34 @@ class LightweightMemoService:
             "Write with authority and precision — this memo drives multi-million dollar decisions. "
             f"{fund_size_str}"
             f"{company_str}"
-            "\n\nFORMAT RULES — match format to data density:\n"
-            f"{'1. PORTFOLIO MODE (' + str(num_companies) + ' companies): Lead with a summary TABLE showing ALL companies (Company | Stage | Sector | ARR | Valuation | Data Quality). Follow with prose commentary on patterns, themes, and outliers. Use tables for any section covering 4+ companies.' if is_portfolio else '1. DEEP-DIVE MODE: Use 3-5 dense paragraphs per section (150-400 words). Weave numbers into flowing prose with context and significance.'}\n"
-            "2. NEVER skip a company because data is sparse. Show what you have:\n"
-            "   - Real data: bold, cited ('$14.8M ARR, company-reported')\n"
-            "   - Estimated data: labeled ('[Est: $5M ARR based on Series A benchmarks]')\n"
-            "   - Fields marked [ESTIMATED] in the data MUST be presented as estimates, never as facts\n"
-            "   - If ALL financial data for a company is estimated, state: 'No company-reported financials available — all figures are stage benchmarks'\n"
-            "   - Unknown: '—' in tables, noted in prose as 'data pending'\n"
-            "3. For portfolio analysis, lead with the BIG PICTURE before individual companies:\n"
-            "   - Stage distribution, sector concentration, total capital deployed\n"
-            "   - Themes and clusters (e.g., '6 of 22 are AI infrastructure')\n"
-            "   - Outliers, top performers, and gaps\n"
-            "4. Every section MUST have substance. If per-company data is sparse, analyze portfolio-level patterns instead.\n"
-            "   A 'Financial Overview' with only 2 data-rich companies should STILL cover all — show a table, note what's known, flag what's missing.\n"
-            "5. Use markdown tables for ALL structured comparisons of 3+ items.\n"
-            "6. Cite key figures with source: 'per Pitchbook Q3 2024', 'company-reported', '[Est: stage benchmark]'.\n"
-            "7. Lead each section with the MOST IMPORTANT finding. No filler, no preamble ('In this section...'), no hedging.\n"
-            "8. For multi-company analysis: always compare and contrast — never describe companies in isolation.\n"
-            "9. Calculate derived metrics where possible: revenue multiples, capital efficiency, implied burn rate.\n"
-            "10. End each section with a clear takeaway or action item.\n"
-            "\nDATA ACCURACY RULES — non-negotiable:\n"
-            "1. COUNT before you claim. If you state '72% of companies lack X', you must have counted every row. Get the exact number right.\n"
-            "2. NEVER dismiss available data. If 7 of 32 companies have sector data, analyze those 7 sectors — don't say 'most companies lack sector data' and move on.\n"
-            "3. Work with what you have, not what you wish you had. Sparse data means you analyze HARDER, not less. "
-            "A portfolio with 7 classified and 25 unclassified companies has a REAL sector distribution for those 7 — report it.\n"
-            "4. Distinguish data gaps from data absence. 'No sector reported' for a company is a gap to flag. "
-            "But if the data DOES contain sectors, stages, or financials for some companies, those are FACTS — use them.\n"
-            "5. No blanket disclaimers. NEVER write 'insufficient data to assess' when the data contains relevant fields. "
-            "State exactly what the data shows and exactly what's missing.\n"
-            "6. Every quantitative claim must be traceable to the data provided. If you say '31 of 32 companies are valued at $80M', verify it by checking the table.\n"
-            "7. When data is missing, INFER AND EXPLAIN. Use stage benchmarks, comparable companies, industry medians, and first-principles reasoning. "
-            "Say what you'd estimate and why — 'Based on Series A SaaS benchmarks, likely $3-8M ARR' is infinitely more useful than 'data not available'.\n"
-            "8. Your job is to MAXIMIZE INSIGHT from every scrap of data. An analyst who says 'not enough data' gets fired. "
-            "An analyst who says 'here's what the 7 data points tell us, here's what I'd estimate for the other 25, and here's my confidence level' gets promoted.\n"
-            "\nSTRUCTURE RULES:\n"
-            "- Bold (**text**) key metrics and company names on first mention.\n"
-            "- Numbers: $XM for millions, $XB for billions, X% for percentages, Xx for multiples.\n"
-            "- Separate each section with its exact ## heading as shown below. "
-            "The headings are used to split your output — they MUST match exactly.\n"
-            "- Within sections, use ### sub-headings, markdown tables, and bullet lists freely — "
-            "they will be rendered as proper structured elements.\n"
+            "\n\nYOU ARE WRITING A PROFESSIONAL MEMO, NOT A MARKDOWN DOCUMENT.\n"
+            "Write the way Goldman Sachs, McKinsey, or a top VC fund writes investment memos: "
+            "clean prose, structured tables, clear section flow. Think printed PDF, not a README.\n"
+            "\nFORMATTING — CRITICAL:\n"
+            "- DO NOT use ** or * for bold/italic. Ever. No exceptions.\n"
+            "- DO NOT use ### sub-headings inside sections. Each section already has its heading.\n"
+            "- Write plain prose. Emphasize through word choice and sentence structure.\n"
+            "- Numbers inline naturally: $14.8M ARR, 2.3x revenue multiple, 47% gross margin.\n"
+            "- Cite sources in parentheses: '$14.8M ARR (company-reported)' or '$5M ARR (est. Series A benchmark)'.\n"
+            "- Use bullet points (- item) only for short lists of 3-5 actionable items like key risks or next steps.\n"
+            "- Use markdown tables (| col | col |) when comparing structured data across companies or scenarios. "
+            "Tables are great — just keep them clean with no bold/italic markup inside cells.\n"
+            "\nCONTENT:\n"
+            f"{'- PORTFOLIO (' + str(num_companies) + ' companies): Lead with the big picture — stage distribution, sector themes, total deployed. Compare and contrast, never describe companies in isolation. Group by theme or performance tier.' if is_portfolio else '- DEEP DIVE: 2-4 dense paragraphs per section (150-400 words). Weave numbers into flowing prose with context.'}\n"
+            "- Lead each section with the single most important finding. No preamble, no filler.\n"
+            "- End each section with a clear takeaway or recommended action.\n"
+            "- Never skip a company for sparse data. State what is known, estimate what is not, flag confidence.\n"
+            "- Fields marked [ESTIMATED] must be presented as estimates, never as facts.\n"
+            "- Calculate derived metrics: revenue multiples, capital efficiency, implied burn.\n"
+            "- Every claim must trace to the data. Count before you claim.\n"
+            "- Work with what you have. Sparse data means analyze harder, not less.\n"
+            "- When data is missing, infer using stage benchmarks and say why.\n"
+            "- For recommendations: state conviction (High/Medium/Low) and check size.\n"
+            "\nSECTION STRUCTURE:\n"
+            "- Separate each section with its exact ## heading as shown below.\n"
+            "- The headings split your output — they MUST match exactly.\n"
             "- Do NOT use ---SECTION_BREAK--- delimiters.\n"
-            "- For recommendations: state conviction level (High/Medium/Low) and check size."
+            "- Within each section: prose paragraphs, tables where data warrants, bullet lists for actions only."
         )
 
         user_prompt = (
@@ -529,19 +514,17 @@ class LightweightMemoService:
         prompt: str,
         memo_type: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Freeform memo generation: give the LLM the data and prompt,
-        let it write whatever structure makes sense, parse the markdown.
+        """Generate memo using the 3-shot template pipeline.
 
-        No templates, no section-slot matching, no fallbacks.
+        Shot 1 (no LLM): detect_memo_type → pick template → audit_data
+        Shot 2 (1 LLM call): generate_narratives — LLM writes NARRATIVE ONLY
+        Shot 3 (no LLM): assemble_memo — inject charts/tables from Python services
+
         Returns docs-format dict ready for frontend rendering.
         """
-        import re
-        from app.services.model_router import ModelCapability
-
-        # Gather all available data (reuse existing summarizer)
-        # Use a dummy template just to pull all data keys from shared_data
+        # Shot 1: Detect type → pick template → audit data
         template_id = self.detect_memo_type(prompt, memo_type)
-        available_data, _, _ = self.audit_data(template_id)
+        available_data, missing_req, missing_opt = self.audit_data(template_id)
 
         # Estimation fallback: ensure every company has revenue, valuation, growth
         companies = available_data.get("companies", [])
@@ -557,19 +540,16 @@ class LightweightMemoService:
             for c in companies:
                 stage = str(c.get("stage") or "series a").lower().strip()
                 bench = _STAGE_BENCHMARKS.get(stage, _STAGE_BENCHMARKS["series a"])
-                # Normalize flag names: orchestrator uses _X_is_estimated, memo uses _X_estimated
                 if c.get("_revenue_is_estimated"):
                     c["_revenue_estimated"] = True
                 if c.get("_valuation_is_estimated"):
                     c["_valuation_estimated"] = True
                 rev = ensure_numeric(c.get("revenue")) or ensure_numeric(c.get("inferred_revenue"))
                 if not rev:
-                    # Only set inferred field — never overwrite raw revenue with a benchmark
                     c["inferred_revenue"] = bench["revenue"]
                     c["_revenue_estimated"] = True
                 val = ensure_numeric(c.get("valuation")) or ensure_numeric(c.get("inferred_valuation"))
                 if not val:
-                    # Only set inferred field — never overwrite raw valuation with a benchmark
                     c["inferred_valuation"] = bench["valuation"]
                     c["_valuation_estimated"] = True
                 growth = c.get("revenue_growth")
@@ -577,133 +557,47 @@ class LightweightMemoService:
                     c["revenue_growth"] = bench["growth"]
                     c["_growth_estimated"] = True
 
-        data_summary = self._summarize_data(available_data)
+        logger.info(f"[MEMO] Template pipeline: type={template_id}, companies={len(companies)}, missing_req={missing_req}")
 
-        # Build context strings
-        fund_ctx = available_data.get("fund_context", {})
-        fund_str = ""
-        if fund_ctx:
-            fs = fund_ctx.get("fund_size", 0)
-            rem = fund_ctx.get("remaining_capital", 0)
-            fn = fund_ctx.get("fund_name", "")
-            if fs and isinstance(fs, (int, float)) and fs > 0:
-                fund_str = f"Fund: {fn + ' — ' if fn else ''}${fs / 1e6:,.0f}M total, ${rem / 1e6:,.0f}M remaining. "
-
-        num_companies = len(companies)
-        company_names = [c.get("company", c.get("name", "Unknown")) for c in companies[:8]]
-        company_str = f"Companies: {', '.join(company_names)}" + (f" (+{num_companies - 8} more)" if num_companies > 8 else "")
-
-        system_prompt = (
-            "You are a senior investment analyst at a top-tier venture capital fund. "
-            f"{fund_str}{company_str}\n\n"
-            "Write a complete investment memo as markdown. Structure it however makes sense for the data.\n"
-            "RULES:\n"
-            "1. Use ## headings to separate major sections. Choose sections that fit the data — "
-            "do NOT create sections you can't fill.\n"
-            "2. Use markdown tables for structured comparisons (3+ items).\n"
-            "3. Bold key metrics and company names. Cite sources: 'company-reported', '[Est: benchmark]'.\n"
-            "4. For sparse data, state what's known and flag gaps — never fill sections with generic filler.\n"
-            "5. Lead each section with the most important finding. No preamble.\n"
-            "6. Numbers: $XM for millions, $XB for billions, X% for percentages, Xx for multiples.\n"
-            f"7. {'Use tables showing ALL companies for portfolio-level analysis. Lead with big picture before individual companies.' if num_companies > 3 else 'Use detailed prose with numbers woven in.'}\n"
-            "8. End with actionable recommendations with conviction level (High/Medium/Low).\n"
-            "9. ONLY write sections where you have data to support them."
-        )
-
-        user_prompt = f"User request: {prompt}\n\n## Available Data\n{data_summary}"
-
+        # Shot 2 + chart pre-build in parallel
+        # LLM writes narrative only; charts built from Python service data (no LLM)
         _t0 = datetime.now()
         try:
-            response = await asyncio.wait_for(
-                self.model_router.get_completion(
-                    prompt=user_prompt,
-                    system_prompt=system_prompt,
-                    capability=ModelCapability.ANALYSIS,
-                    max_tokens=12000,
-                    temperature=0.25,
-                    caller_context="lightweight_memo_freeform",
-                ),
-                timeout=120,
+            narratives_task = asyncio.create_task(
+                self.generate_narratives(template_id, prompt, available_data)
             )
-            raw_text = response.get("response", "") if isinstance(response, dict) else str(response)
+            prebuilt_charts = self._prebuild_charts(template_id, available_data)
+            narratives = await asyncio.wait_for(narratives_task, timeout=120)
         except asyncio.TimeoutError:
-            logger.error("[MEMO] Freeform generation timed out after 120s")
-            raw_text = ""
+            logger.error("[MEMO] Narrative generation timed out after 120s")
+            narratives = {}
+            prebuilt_charts = {}
         except Exception as e:
-            logger.error(f"[MEMO] Freeform generation failed: {e}", exc_info=True)
-            raw_text = ""
+            logger.error(f"[MEMO] Narrative generation failed: {e}", exc_info=True)
+            narratives = {}
+            prebuilt_charts = self._prebuild_charts(template_id, available_data)
 
         _elapsed = (datetime.now() - _t0).total_seconds()
-        logger.info(f"[MEMO] Freeform generation took {_elapsed:.1f}s, {len(raw_text)} chars")
+        logger.info(f"[MEMO] Template pipeline took {_elapsed:.1f}s — narratives={len(narratives)}, charts={len(prebuilt_charts)}")
 
-        if not raw_text.strip():
-            return {
-                "format": "docs",
-                "title": "Memo Generation Failed",
-                "date": datetime.now().strftime("%B %d, %Y"),
-                "sections": [{"type": "paragraph", "content": "LLM returned no content. Try again or simplify the request."}],
-                "memo_type": template_id,
-                "metadata": {"section_count": 1, "generated_at": datetime.now().isoformat()},
-            }
+        # Shot 3: Assemble — inject charts/tables from Python services (no LLM)
+        result = self.assemble_memo(template_id, prompt, narratives, available_data, prebuilt_charts)
 
-        # Parse: split on ## headings, then parse each chunk's markdown
-        memo_sections: List[Dict[str, Any]] = []
+        # Attach citations from shared_data so frontend can render Sources section
+        citations = self.shared_data.get("citations", [])
+        if citations:
+            result["citations"] = citations
 
-        # Extract title from first # heading or first ## heading
-        title_match = re.match(r'^#\s+(.+?)(?:\n|$)', raw_text.strip())
-        if title_match:
-            title = title_match.group(1).strip()
-            raw_text = raw_text[title_match.end():]
-        else:
-            title = prompt[:80]
+        # Attach company data for document viewer sidebar
+        if companies:
+            result["companies"] = companies
 
-        memo_sections.append({"type": "heading1", "content": title})
-        memo_sections.append({"type": "paragraph", "content": f"Prepared {datetime.now().strftime('%B %d, %Y')}"})
+        # Attach cap table if available
+        cap_table = self.shared_data.get("cap_table_history", {})
+        if cap_table:
+            result["cap_table_history"] = cap_table
 
-        # Split on ## headings — each chunk becomes a section
-        chunks = re.split(r'(?=^##\s+)', raw_text, flags=re.MULTILINE)
-
-        for chunk in chunks:
-            chunk = chunk.strip()
-            if not chunk:
-                continue
-
-            # Extract ## heading if present
-            heading_match = re.match(r'^##\s+(.+?)(?:\n|$)', chunk)
-            if heading_match:
-                heading = heading_match.group(1).strip()
-                body = chunk[heading_match.end():]
-                memo_sections.append({"type": "heading2", "content": heading})
-            else:
-                body = chunk
-
-            if body.strip():
-                parsed = self._parse_markdown_to_sections(body)
-                if parsed:
-                    memo_sections.extend(parsed)
-                else:
-                    memo_sections.append({"type": "paragraph", "content": body.strip()})
-
-        return {
-            "format": "docs",
-            "title": title,
-            "date": datetime.now().strftime("%B %d, %Y"),
-            "sections": memo_sections,
-            "memo_type": template_id,
-            "is_resumable": False,
-            "metadata": {
-                "word_count": sum(
-                    len(str(s.get("content", "") or s.get("items", [])).split())
-                    for s in memo_sections
-                ),
-                "section_count": len(memo_sections),
-                "generated_at": datetime.now().isoformat(),
-                "company_count": num_companies,
-                "has_charts": any(s.get("type") == "chart" for s in memo_sections),
-                "has_tables": any(s.get("type") == "table" for s in memo_sections),
-                "memo_type": template_id,
-            },
-        }
+        return result
 
     # ------------------------------------------------------------------
     # Helpers
@@ -2561,10 +2455,10 @@ class LightweightMemoService:
         # Company metrics — use table for multi-company, list for single
         if "companies" in data_keys and companies:
             if len(companies) >= 2:
-                # Multi-company comparison table
-                header = "| Metric |"
-                separator = "| --- |"
-                rows = {
+                # Multi-company comparison table — emit as structured table
+                company_names = [c.get("company", "Unknown") for c in companies[:6]]
+                table_headers = ["Metric"] + company_names
+                metric_defs = {
                     "Stage": [],
                     "Valuation": [],
                     "Revenue (ARR)": [],
@@ -2576,9 +2470,6 @@ class LightweightMemoService:
                     "Capital Efficiency": [],
                 }
                 for c in companies[:6]:
-                    name = c.get("company", "Unknown")
-                    header += f" **{name}** |"
-                    separator += " --- |"
                     val = ensure_numeric(c.get("valuation"))
                     rev = ensure_numeric(c.get("revenue")) or ensure_numeric(c.get("inferred_revenue"))
                     funding = ensure_numeric(c.get("total_funding"))
@@ -2587,28 +2478,27 @@ class LightweightMemoService:
                     rev_mult = val / rev if val and rev and rev > 0 else 0
                     cap_eff = rev / funding if rev and funding and funding > 0 else 0
 
-                    rows["Stage"].append(c.get("stage", "—"))
-                    rows["Valuation"].append(f"${val / 1e6:,.0f}M" if val else "—")
-                    rows["Revenue (ARR)"].append(f"${rev / 1e6:,.1f}M" if rev else "—")
-                    rows["Rev Multiple"].append(f"{rev_mult:.1f}x" if rev_mult else "—")
-                    rows["Total Funding"].append(f"${funding / 1e6:,.0f}M" if funding else "—")
-                    rows["Growth"].append(f"{growth * 100:.0f}%" if growth and isinstance(growth, (int, float)) else "—")
-                    rows["Team Size"].append(str(c.get("team_size", "—")))
-                    rows["Gross Margin"].append(f"{gm * 100:.0f}%" if gm and isinstance(gm, (int, float)) else "—")
-                    rows["Capital Efficiency"].append(f"{cap_eff:.2f}x" if cap_eff else "—")
+                    metric_defs["Stage"].append(c.get("stage", "—"))
+                    metric_defs["Valuation"].append(f"${val / 1e6:,.0f}M" if val else "—")
+                    metric_defs["Revenue (ARR)"].append(f"${rev / 1e6:,.1f}M" if rev else "—")
+                    metric_defs["Rev Multiple"].append(f"{rev_mult:.1f}x" if rev_mult else "—")
+                    metric_defs["Total Funding"].append(f"${funding / 1e6:,.0f}M" if funding else "—")
+                    metric_defs["Growth"].append(f"{growth * 100:.0f}%" if growth and isinstance(growth, (int, float)) else "—")
+                    metric_defs["Team Size"].append(str(c.get("team_size", "—")))
+                    metric_defs["Gross Margin"].append(f"{gm * 100:.0f}%" if gm and isinstance(gm, (int, float)) else "—")
+                    metric_defs["Capital Efficiency"].append(f"{cap_eff:.2f}x" if cap_eff else "—")
 
-                table_lines = [header, separator]
-                for metric, vals in rows.items():
-                    # Skip rows where all values are "—"
+                table_rows = []
+                for metric, vals in metric_defs.items():
                     if all(v == "—" for v in vals):
                         continue
-                    row = f"| {metric} |"
-                    for v in vals:
-                        row += f" {v} |"
-                    table_lines.append(row)
+                    table_rows.append([metric] + vals)
 
-                if len(table_lines) > 3:  # header + separator + at least 1 data row
-                    sections.append({"type": "paragraph", "content": "\n".join(table_lines)})
+                if table_rows:
+                    sections.append({
+                        "type": "table",
+                        "table": {"headers": table_headers, "rows": table_rows},
+                    })
             else:
                 # Single company — detailed list
                 for c in companies:

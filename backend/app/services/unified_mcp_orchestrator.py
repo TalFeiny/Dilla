@@ -8283,6 +8283,15 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             # Also return memo sections as side effects for the streaming pipeline
             if result.get("sections"):
                 result["memo_sections"] = result["sections"]
+            # Forward supplementary data for document viewer (citations, companies, cap table)
+            if not result.get("citations"):
+                result["citations"] = self.shared_data.get("citations", [])
+            if not result.get("companies"):
+                result["companies"] = self.shared_data.get("companies", [])
+            if not result.get("cap_table_history"):
+                cap_table = self.shared_data.get("cap_table_history", {})
+                if cap_table:
+                    result["cap_table_history"] = cap_table
             return result
         except Exception as e:
             logger.warning(f"[TOOL] generate_memo failed: {e}")
