@@ -348,7 +348,7 @@ export function UnifiedMatrix({
         metadata: { dataSource: 'lp', lastUpdated: new Date().toISOString() },
       };
     } else if (mode === 'pnl') {
-      const pnlCols = buildPnlColumns();
+      const pnlCols = buildPnlColumns({ granularity: 'monthly', trailing: 6, forward: 6 });
 
       // Standard income statement skeleton matching backend PnlBuilder output shape.
       // Row IDs MUST match backend/app/services/pnl_builder.py:_fallback_skeleton + _assemble_rows

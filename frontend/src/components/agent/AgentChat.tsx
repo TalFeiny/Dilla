@@ -1512,7 +1512,11 @@ export default function AgentChat({
               <div className="flex flex-col items-center justify-center h-full space-y-2 min-w-0 px-1">
                 <div className="text-center space-y-1 w-full min-w-0">
                   <p className="text-muted-foreground text-xs break-words overflow-hidden">
-                    Ask a question, run a valuation, or type <kbd className="px-1 py-0.5 rounded bg-muted text-[10px] font-mono">@company</kbd> to analyze
+                    {mode === 'pnl' ? (
+                      <>Forecast revenue, adjust expenses, run scenarios, or ask about margins and runway</>
+                    ) : (
+                      <>Ask a question, run a valuation, or type <kbd className="px-1 py-0.5 rounded bg-muted text-[10px] font-mono">@company</kbd> to analyze</>
+                    )}
                   </p>
                 </div>
               </div>
@@ -2258,7 +2262,7 @@ export default function AgentChat({
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyPress}
-                placeholder={planModeOn ? 'Describe what to plan... (Enter to send)' : 'Message... (Enter to send)'}
+                placeholder={planModeOn ? 'Describe what to plan... (Enter to send)' : mode === 'pnl' ? 'Adjust forecast, ask about P&L... (Enter to send)' : 'Message... (Enter to send)'}
                 className="min-h-[36px] max-h-[120px] resize-none text-sm border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground"
                 disabled={isLoading}
               />

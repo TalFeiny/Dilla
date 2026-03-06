@@ -4,7 +4,7 @@
 
 1. **Query mode is superfluous** — does the same thing as Custom/Sourcing mode but with less functionality. Both show a query bar, both call unified-brain. Custom mode additionally handles `@CompanyName`. No reason for two modes.
 
-2. **@ queries don't land in the grid** — The batch search pipeline (`handleBatchCompanySearch`) POSTs to `/api/matrix/companies/search`, which starts a Tavily web search job, then polls `/api/matrix/companies/search/[jobId]` for results. The POST route and the GET route use **separate in-memory Maps** (`searchJobs`) — the shared `job-store.ts` exists but neither route imports it. So polling always falls through to the backend status endpoint, which may or may not have the job. Results rarely land in the grid.
+2. **@ queries don't land in the grid** — The batch search pipeline (`handleBatchCompanySearch`) POSTs to `/api/matrix/companies/search`, which starts a Tavily web search job, then polls `/api/matrix/companies/search/[jobId]` for results. The POST route and the GET route use **separate in-memory Maps** (`searchJobs`) — the shared `job-store.ts` exists but neither route imports it. So polling always falls through to the backend status endpoint, which may or may not have the job. Results rarely land in the grid.ld 
 
 3. **LP mode reads the wrong table** — `fetchLPsForMatrix` queries `limited_partners` directly with `fund_id.eq.{fundId}`. But the real data model is `lp_fund_commitments` (many-to-many join table, created in `20250211_lp_fund_commitments_join.sql`). The `fund_lp_summary` view already joins through this table and exposes richer columns (ownership_pct, fee terms, side letters). The grid never sees any of it.
 

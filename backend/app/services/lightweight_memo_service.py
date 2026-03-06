@@ -1126,6 +1126,60 @@ class LightweightMemoService:
                     lines.append(f"  {vfield}: {vval:.2f}x" if "multiple" in vfield else f"  {vfield}: {vval}")
                 else:
                     lines.append(f"  {vfield}: {vval}")
+        # Investment scoring rubric — moat / momentum / market / team / fund_fit
+        inv_scoring = c.get("_investment_scoring")
+        comp_scores = c.get("investment_component_scores") or (inv_scoring or {}).get("component_scores")
+        total_inv_score = ensure_numeric(c.get("investment_total_score"))
+        inv_rec = c.get("investment_recommendation", "")
+        inv_action = c.get("investment_action", "")
+
+        if comp_scores and isinstance(comp_scores, dict):
+            lines.append(f"  **Investment Score: {total_inv_score:.0f}/100 — {inv_rec}**")
+            score_parts = [f"{dim.title()}: {val:.0f}" for dim, val in comp_scores.items() if isinstance(val, (int, float))]
+            if score_parts:
+                lines.append(f"    Dimensions: {' | '.join(score_parts)}")
+            if inv_action:
+                lines.append(f"    Action: {inv_action}")
+            inv_methodology = c.get("investment_methodology", "")
+            if inv_methodology:
+                lines.append(f"    Methodology: {inv_methodology}")
+            inv_reasoning = c.get("investment_reasoning", "")
+            if inv_reasoning:
+                lines.append(f"    Thesis: {inv_reasoning}")
+
+        # Fund fit details (from @ flow deep dive)
+        fund_fit = ensure_numeric(c.get("fund_fit_score"))
+        if fund_fit and fund_fit > 0 and not comp_scores:
+            # Only show standalone fund_fit if we don't have the full rubric above
+            fit_parts = [f"Fund Fit: {fund_fit:.0f}/100"]
+            if c.get("fund_fit_recommendation"):
+                fit_parts.append(c["fund_fit_recommendation"])
+            lines.append(f"  {' | '.join(fit_parts)}")
+
+        # Check size / ownership targets
+        check_parts = []
+        if c.get("optimal_check_size") and ensure_numeric(c.get("optimal_check_size")) > 0:
+            check_parts.append(f"Check: ${ensure_numeric(c['optimal_check_size']) / 1e6:,.1f}M")
+        if c.get("target_ownership_pct") and isinstance(c["target_ownership_pct"], (int, float)):
+            check_parts.append(f"Target Ownership: {c['target_ownership_pct'] * 100:.1f}%")
+        if c.get("expected_irr") and isinstance(c["expected_irr"], (int, float)) and c["expected_irr"] > 0:
+            check_parts.append(f"Expected IRR: {c['expected_irr'] * 100:.0f}%")
+        if check_parts:
+            lines.append(f"  Deal Terms: {' | '.join(check_parts)}")
+
+        # Sourcing-flow scoring (thesis_match from source_companies)
+        thesis_score = ensure_numeric(c.get("thesis_match_score"))
+        if thesis_score and thesis_score > 0:
+            lines.append(f"  Thesis Match Score: {thesis_score:.0f}/100")
+        score_breakdown = c.get("score_breakdown")
+        if isinstance(score_breakdown, dict) and score_breakdown:
+            top_dims = sorted(score_breakdown.items(), key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0, reverse=True)[:5]
+            bd_parts = [f"{k}: {v}" for k, v in top_dims if isinstance(v, (int, float))]
+            if bd_parts:
+                lines.append(f"  Sourcing Breakdown: {' | '.join(bd_parts)}")
+        if c.get("semantic_reason"):
+            lines.append(f"  Thesis Rationale: {c['semantic_reason']}")
+
         # PWERM / exit scenario summaries
         scenarios = c.get("exit_scenarios") or c.get("pwerm_scenarios") or []
         if isinstance(scenarios, list) and scenarios:
@@ -1339,6 +1393,32 @@ class LightweightMemoService:
                         fv = fo.get(fk)
                         if fv is not None:
                             fund_parts.append(f"    {fk}: {fv}")
+
+        # Sourcing results from the source_companies flow (includes full scoring)
+        sourcing_results = data.get("sourcing_results", {})
+        if sourcing_results:
+            sr_companies = sourcing_results.get("companies", [])
+            sr_thesis = sourcing_results.get("thesis", "")
+            if sr_companies:
+                fund_parts.append(f"\n**Sourcing Results** ({len(sr_companies)} scored companies{', thesis: ' + sr_thesis if sr_thesis else ''}):")
+                fund_parts.append("| Rank | Company | Sector | Stage | ARR | Score | Top Dimensions |")
+                fund_parts.append("|------|---------|--------|-------|-----|-------|----------------|")
+                for comp in sr_companies[:15]:
+                    arr = comp.get("arr") or 0
+                    arr_str = f"${arr / 1e6:.1f}M" if arr > 0 else "—"
+                    breakdown = comp.get("score_breakdown", {})
+                    top_dims = ""
+                    if isinstance(breakdown, dict):
+                        sorted_dims = sorted(breakdown.items(), key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0, reverse=True)[:3]
+                        top_dims = ", ".join(f"{k}:{v}" for k, v in sorted_dims if isinstance(v, (int, float)))
+                    sem = comp.get("semantic_reason", "")
+                    rank = comp.get("rank", "—")
+                    fund_parts.append(
+                        f"| {rank} | {comp.get('name', '?')} | {comp.get('sector', '?')} | "
+                        f"{comp.get('stage', '?')} | {arr_str} | {comp.get('score', 0):.0f} | {top_dims} |"
+                    )
+                    if sem:
+                        fund_parts.append(f"|  |  |  |  |  |  | _{sem}_ |")
 
         sourcing_ctx = data.get("sourcing_context", {})
         if sourcing_ctx:

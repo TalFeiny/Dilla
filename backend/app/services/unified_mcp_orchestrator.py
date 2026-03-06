@@ -6304,10 +6304,25 @@ Answer using specific company names and numbers from the portfolio grid above.""
                             "burnRate": c.get("burn_rate"),
                             "runwayMonths": c.get("runway_months"),
                             "latestRoundDate": c.get("latest_round_date", ""),
+                            "latestRound": c.get("latest_round", ""),
+                            "score": c.get("score"),
+                            "scoreBreakdown": c.get("score_breakdown"),
+                            "semanticReason": c.get("semantic_reason", ""),
+                            "fundFitScore": c.get("fund_fit_score"),
                         },
                     }
                     for c in scored
                 ]
+
+            # Store scored results in shared_data so downstream tools
+            # (generate_memo for IC / custom sourcing) can access scoring.
+            self.shared_data["sourcing_results"] = {
+                "companies": scored,
+                "count": len(scored),
+                "thesis": thesis,
+                "rubric": rubric,
+                "query_parsed": filters,
+            }
 
             # Attach enrichment, web discovery, and persistence metadata
             if _enrichment_info:
@@ -14569,40 +14584,208 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
             return {"error": str(e)}
     
     async def _execute_market_research(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Return placeholder market research data now that TAM is disabled."""
+        """Run TAM/market sizing via Tavily search + LLM extraction with citations.
+
+        Flow:
+        1. Use LLM to define a precise market category from company description
+        2. Generate targeted search queries for that category
+        3. Search via Tavily for analyst reports (Gartner, IDC, Forrester, etc.)
+        4. Extract TAM estimates with citations via LLM
+        5. Calculate SAM/SOM from company characteristics
+        """
         try:
             companies = self.shared_data.get("companies", [])
             if not companies:
-                logger.info("[MARKET_RESEARCH] No companies available; TAM disabled placeholder returned.")
-                return {
-                    "market_research": {},
-                    "status": "tam_disabled"
-                }
-            
+                logger.info("[MARKET_RESEARCH] No companies available")
+                return {"market_research": {}, "status": "no_companies"}
+
+            if not self.tavily_api_key:
+                logger.warning("[MARKET_RESEARCH] No Tavily API key — falling back to context-based TAM")
+                return await self._market_research_fallback(companies)
+
             market_data: Dict[str, Any] = {}
+
             for company in companies:
                 if not isinstance(company, dict):
                     continue
                 name = company.get("company") or company.get("display_name") or "Unknown"
-                market_data[name] = {
-                    "sector": company.get("sector", "Technology"),
-                    "market_category": company.get("sector", "Technology"),
-                    "market_subcategory": "",
-                    "market_maturity": "unknown",
-                    "tam": 0,
-                    "sam": 0,
-                    "som": 0,
-                    "growth_rate": 0,
-                    "notes": "TAM processing disabled"
-                }
-            
-            return {
-                "market_research": market_data,
-                "status": "tam_disabled"
-            }
+
+                # Skip if we already have quality TAM data with citations
+                existing_tam = company.get("tam_analysis") or {}
+                if existing_tam.get("tam_estimates") and len(existing_tam.get("tam_estimates", [])) > 0:
+                    market_data[name] = existing_tam
+                    logger.info(f"[MARKET_RESEARCH] {name}: reusing existing TAM data")
+                    continue
+
+                try:
+                    tam_result = await self._research_tam_for_company(company)
+                    if tam_result:
+                        market_data[name] = tam_result
+                        company["tam_analysis"] = tam_result
+                        # Also set the headline TAM value on the company for downstream use
+                        agg = tam_result.get("tam_aggregated", {})
+                        if agg.get("median", 0) > 0:
+                            company["tam"] = agg["median"]
+                        logger.info(
+                            "[MARKET_RESEARCH] %s: TAM=$%s (%d estimates, %d citations)",
+                            name,
+                            f"{agg.get('median', 0):,.0f}" if agg.get("median") else "N/A",
+                            len(tam_result.get("tam_estimates", [])),
+                            len(tam_result.get("incumbents", [])),
+                        )
+                    else:
+                        # Context-based fallback for this company
+                        market_data[name] = self._context_based_tam(company)
+                except Exception as comp_err:
+                    logger.warning(f"[MARKET_RESEARCH] {name} failed: {comp_err}")
+                    market_data[name] = self._context_based_tam(company)
+
+            self.shared_data["market_research"] = market_data
+            return {"market_research": market_data, "status": "completed"}
+
         except Exception as e:
             logger.error(f"Market research error: {e}")
-            return {"error": str(e), "status": "tam_disabled"}
+            return {"error": str(e), "status": "error"}
+
+    async def _research_tam_for_company(self, company: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Run the full TAM research pipeline for a single company.
+
+        Step 1: Use LLM to define the precise market category from the company's
+                description — this is the hard part and the key to good queries.
+        Step 2: Build search queries targeting that category + analyst firms.
+        Step 3: Search via Tavily.
+        Step 4: Extract structured TAM data with citations via gap_filler.
+        """
+        name = company.get("company") or company.get("display_name") or "Unknown"
+        description = (
+            company.get("description", "")
+            or company.get("one_liner", "")
+            or company.get("business_model", "")
+        )
+        sector = company.get("sector", "") or company.get("vertical", "") or company.get("category", "")
+
+        # ── Step 1: LLM-defined market category ──────────────────────────
+        market_category = sector  # default
+        if self.model_router and description:
+            try:
+                from app.services.model_router import ModelCapability
+                cat_resp = await self.model_router.get_completion(
+                    prompt=(
+                        f"Company: {name}\n"
+                        f"Description: {description}\n"
+                        f"Sector: {sector}\n\n"
+                        "Define the SPECIFIC addressable market category for this company "
+                        "in 2-5 words that an analyst at Gartner or IDC would use as a "
+                        "report title. Examples: 'spend management software', "
+                        "'healthcare AI diagnostics', 'developer security tools', "
+                        "'vertical SaaS for construction'.\n\n"
+                        "Reply with ONLY the category name, nothing else."
+                    ),
+                    system_prompt="You are a market research analyst. Reply with only the market category.",
+                    capability=ModelCapability.EXTRACTION,
+                    max_tokens=30,
+                    caller_context="tam_category_definition",
+                )
+                raw_cat = (cat_resp.get("response", "") if isinstance(cat_resp, dict) else str(cat_resp)).strip().strip('"\'.')
+                if raw_cat and len(raw_cat) < 80:
+                    market_category = raw_cat
+                    logger.info(f"[MARKET_RESEARCH] {name}: LLM-defined category = '{market_category}'")
+            except Exception as cat_err:
+                logger.warning(f"[MARKET_RESEARCH] {name}: category definition failed: {cat_err}")
+
+        # ── Step 2: Build targeted search queries ────────────────────────
+        queries = [
+            f"{market_category} market size TAM 2024 2025 gartner idc forrester",
+            f"{market_category} total addressable market billion",
+        ]
+        # Add a description-derived query if we have keywords
+        if self.gap_filler:
+            extra = self.gap_filler._generate_tam_search_queries({
+                "sector": market_category,
+                "vertical": sector,
+                "business_model": company.get("business_model", ""),
+                "company_name": name,
+            })
+            queries.extend(extra)
+        # De-dup, cap at 3
+        seen = set()
+        unique_queries = []
+        for q in queries:
+            q_lower = q.strip().lower()
+            if q_lower and q_lower not in seen:
+                seen.add(q_lower)
+                unique_queries.append(q.strip())
+        queries = unique_queries[:3]
+
+        # ── Step 3: Tavily search ────────────────────────────────────────
+        combined_content = ""
+        for query in queries:
+            try:
+                result = await self._tavily_search(query)
+                for r in result.get("results", []):
+                    title = r.get("title", "")
+                    url = r.get("url", "")
+                    content = r.get("content", "")
+                    combined_content += f"\n[{title}]\nURL: {url}\n{content}\n---\n"
+            except Exception as search_err:
+                logger.warning(f"[MARKET_RESEARCH] Search failed for '{query[:50]}': {search_err}")
+
+        if not combined_content.strip():
+            logger.info(f"[MARKET_RESEARCH] {name}: no search results for TAM queries")
+            return None
+
+        # ── Step 4: Extract TAM with citations ───────────────────────────
+        if self.gap_filler:
+            company_for_extract = {
+                "company_name": name,
+                "sector": sector,
+                "vertical": market_category,
+                "business_model": company.get("business_model", ""),
+                "description": description,
+                "competitors": company.get("competitors", []),
+            }
+            tam_data = await self.gap_filler.extract_tam_from_search(combined_content, company_for_extract)
+            if tam_data:
+                # Enrich with SAM/SOM
+                tam_data["market_category"] = market_category
+                tam_data["search_queries_used"] = queries
+                agg = tam_data.get("tam_aggregated", {})
+                median_tam = agg.get("median", 0)
+                if median_tam > 0:
+                    # SAM/SOM from gap filler heuristics
+                    sam_pct = self.gap_filler._calculate_sam_percentage(company) if hasattr(self.gap_filler, '_calculate_sam_percentage') else 0.2
+                    som_pct = self.gap_filler._calculate_som_percentage(company) if hasattr(self.gap_filler, '_calculate_som_percentage') else 0.05
+                    tam_data["sam"] = median_tam * sam_pct
+                    tam_data["som"] = median_tam * sam_pct * som_pct
+                return tam_data
+
+        return None
+
+    def _context_based_tam(self, company: Dict[str, Any]) -> Dict[str, Any]:
+        """Fallback: estimate TAM from company context without search."""
+        name = company.get("company") or "Unknown"
+        sector = company.get("sector", "Technology")
+        tam_val = 0
+        if self.gap_filler:
+            tam_val = self.gap_filler._calculate_tam_from_company_context(company)
+        return {
+            "tam_market_definition": sector,
+            "market_category": sector,
+            "tam_estimates": [],
+            "tam_aggregated": {"mean": tam_val, "median": tam_val, "min": tam_val, "max": tam_val},
+            "incumbents": [],
+            "notes": "Context-based estimate — no analyst citations available",
+        }
+
+    async def _market_research_fallback(self, companies: list) -> Dict[str, Any]:
+        """Fallback when Tavily is unavailable."""
+        market_data = {}
+        for company in companies:
+            if not isinstance(company, dict):
+                continue
+            name = company.get("company") or company.get("display_name") or "Unknown"
+            market_data[name] = self._context_based_tam(company)
+        return {"market_research": market_data, "status": "fallback_no_tavily"}
     
     async def _execute_competitive_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Execute competitive analysis"""
@@ -26337,6 +26520,24 @@ Return a JSON with this structure:
                     except Exception as enrich_err:
                         logger.warning(f"[MEMO] Tavily enrichment failed (non-fatal): {enrich_err}")
 
+            # ── Investment scoring rubric: moat / momentum / market / team / fund_fit ──
+            # Run on each company so IC and custom sourcing memos have the full
+            # scoring breakdown (same rubric used by deck generation).
+            for c in companies:
+                if c.get("_investment_scoring"):
+                    continue  # already scored
+                try:
+                    scoring = self._generate_transparent_scoring(c)
+                    c["_investment_scoring"] = scoring
+                    c["investment_total_score"] = scoring.get("total_score", 0)
+                    c["investment_recommendation"] = scoring.get("recommendation", "")
+                    c["investment_action"] = scoring.get("action", "")
+                    c["investment_component_scores"] = scoring.get("component_scores", {})
+                    c["investment_methodology"] = scoring.get("methodology", "")
+                    c["investment_reasoning"] = scoring.get("reasoning", "")
+                except Exception as score_err:
+                    logger.warning(f"[MEMO] Investment scoring failed for {c.get('company', '?')}: {score_err}")
+
             # ── Sourcing context: comparable companies + scoring ──────────
             if not self.shared_data.get("sourcing_context"):
                 try:
@@ -26394,6 +26595,53 @@ Return a JSON with this structure:
                         logger.info(f"[MEMO] Sourcing context: {len(unique)} comparables across {len(sectors)} sectors")
                 except Exception as src_err:
                     logger.warning(f"[MEMO] Sourcing enrichment failed (non-fatal): {src_err}")
+
+            # ── TAM / Market Sizing (conditionally auto-triggered) ────────
+            # Only fires when ALL of:
+            #   1. No TAM data already exists
+            #   2. Tavily API key available
+            #   3. Memo type warrants it (IC memo, market dynamics, diligence,
+            #      comparison, competitive landscape) OR companies are early-stage
+            #   4. <= 4 companies (avoid blowing time budget on large portfolios)
+            _memo_type = self.shared_data.get("_memo_type", "")
+            _tam_memo_types = {"ic_memo", "investment", "market_dynamics", "market",
+                               "diligence_memo", "diligence", "comparison",
+                               "competitive_landscape", "competitive", "comparable_analysis"}
+            _needs_tam_by_type = _memo_type in _tam_memo_types
+            _has_early_stage = any(
+                (c.get("stage", "") or "").lower() in (
+                    "pre-seed", "pre_seed", "seed", "series a", "series_a",
+                    "series b", "series_b",
+                )
+                for c in companies
+            )
+            _any_missing_tam = any(
+                not (c.get("tam") or c.get("tam_analysis"))
+                for c in companies
+            )
+            _should_run_tam = (
+                not self.shared_data.get("market_research")
+                and self.tavily_api_key
+                and _any_missing_tam
+                and len(companies) <= 4
+                and (_needs_tam_by_type or _has_early_stage)
+            )
+
+            if _should_run_tam:
+                try:
+                    reason = f"memo_type={_memo_type}" if _needs_tam_by_type else "early-stage companies"
+                    logger.info(f"[MEMO] Auto-triggering TAM research ({reason}) for {len(companies)} companies")
+                    tam_result = await self._execute_market_research({})
+                    if tam_result.get("status") == "completed":
+                        logger.info("[MEMO] TAM research completed: %d companies enriched",
+                                    len(tam_result.get("market_research", {})))
+                except Exception as tam_err:
+                    logger.warning(f"[MEMO] TAM auto-trigger failed (non-fatal): {tam_err}")
+            else:
+                logger.debug(
+                    "[MEMO] TAM auto-trigger skipped: memo_type=%s, early_stage=%s, missing_tam=%s, count=%d",
+                    _memo_type, _has_early_stage, _any_missing_tam, len(companies),
+                )
 
             fund_context = self.shared_data.get("fund_context") or {}
             cap_table_history: Dict[str, Any] = dict(self.shared_data.get("cap_table_history") or {})
@@ -26999,6 +27247,10 @@ Return a JSON with this structure:
         try:
             prompt = inputs.get("prompt", "") or self.shared_data.get("original_prompt", "")
             memo_type = inputs.get("memo_type")
+            # Stash memo_type so _populate_memo_service_data can make
+            # conditional decisions (e.g. auto-trigger TAM for IC memos).
+            if memo_type:
+                self.shared_data["_memo_type"] = memo_type
 
             # Step 0: Load portfolio companies from DB if not already fetched via @
             try:

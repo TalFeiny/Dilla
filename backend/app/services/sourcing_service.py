@@ -685,6 +685,19 @@ async def upsert_sourced_companies(
         # Map score → thesis_match_score for DB persistence
         _score_val = _safe_float(c.get("score")) or _safe_float(c.get("composite_score"))
 
+        # Build recommendation_reason JSONB from scoring data
+        _rec_reason = None
+        _breakdown = c.get("score_breakdown")
+        _sem_reason = c.get("semantic_reason")
+        if _breakdown or _sem_reason:
+            _rec_reason = {}
+            if _breakdown:
+                _rec_reason["score_breakdown"] = _breakdown
+            if _sem_reason:
+                _rec_reason["semantic_reason"] = _sem_reason
+            if c.get("rank"):
+                _rec_reason["rank"] = c["rank"]
+
         row = {
             "name": name,
             "sector": c.get("sector") or None,
@@ -700,6 +713,12 @@ async def upsert_sourced_companies(
             "funding_stage": c.get("latest_round") or None,
             "tam": _safe_float(c.get("tam")) or None,
             "thesis_match_score": _score_val if _score_val > 0 else None,
+            # Fields that exist in the table but were previously unmapped
+            "burn_rate_monthly_usd": _safe_float(c.get("burn_rate")) or None,
+            "runway_months": _safe_float(c.get("runway_months")) or None,
+            "founded_year": _safe_int(c.get("founded")) or None,
+            "last_funding_date": c.get("latest_round_date") or None,
+            "recommendation_reason": _rec_reason,
         }
         if fund_id:
             row["fund_id"] = fund_id

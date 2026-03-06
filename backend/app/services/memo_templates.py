@@ -41,10 +41,18 @@ IC_MEMO = {
     "id": "ic_memo",
     "title_pattern": "Investment Committee Memo — {companies}",
     "required_data": ["companies"],
-    "optional_data": ["fund_context", "fund_metrics", "portfolio_health", "cap_table_history", "scenario_analysis", "revenue_projections"],
+    "optional_data": ["fund_context", "fund_metrics", "portfolio_health", "cap_table_history", "scenario_analysis", "revenue_projections", "sourcing_results"],
     "sections": [
         _section("thesis", "Investment Thesis",
-                 prompt_hint="Why invest? 3-4 sentences on the opportunity, market timing, and team."),
+                 prompt_hint="Why invest? 3-4 sentences on the opportunity, market timing, and founding team quality."),
+        _section("team", "Team & Founders", data_keys=["companies"],
+                 prompt_hint=(
+                     "Founder bios: name, role, prior companies, exits, domain expertise. "
+                     "Founder-market fit: why THIS team for THIS problem. "
+                     "Key hires and team size. Hiring plan for next 12 months. "
+                     "Technical depth assessment. Advisory board if notable. "
+                     "Red flags: first-time founders, single founder, key-person risk."
+                 )),
         _section("market", "Market Analysis", data_keys=["companies"],
                  prompt_hint="TAM/SAM/SOM with citations. Competitive landscape. Growth drivers."),
         _section("financials", "Financial Overview", type="metrics",

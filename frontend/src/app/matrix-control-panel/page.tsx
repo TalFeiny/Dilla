@@ -8,7 +8,7 @@
  * single canvas with sophisticated shadcn components.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { UnifiedMatrix, MatrixData } from '@/components/matrix/UnifiedMatrix';
 import { MatrixMode } from '@/lib/matrix/matrix-api-service';
@@ -75,6 +75,7 @@ import { toast } from 'sonner';
 import CitationDisplay, { type Citation, deduplicateCitations } from '@/components/CitationDisplay';
 import { ScenarioInput } from '@/components/matrix/ScenarioInput';
 import type { ToolCallEntry } from '@/components/matrix/AgentPanel';
+import { type PnlView, type Granularity, PNL_VIEW_CONFIGS, fetchPnlView } from '@/lib/matrix/pnl-views';
 
 const MAX_TOOL_CALL_ENTRIES = 100;
 
@@ -96,6 +97,11 @@ export default function MatrixControlPanel() {
   const [availableCompanies, setAvailableCompanies] = useState<any[]>([]);
   const [pnlCompanyId, setPnlCompanyId] = useState<string | undefined>();
   const [pnlCompanies, setPnlCompanies] = useState<{ id: string; name: string }[]>([]);
+  const [pnlView, setPnlView] = useState<PnlView>('waterfall');
+  const [granularity, setGranularity] = useState<Granularity>('monthly');
+  const [trailing, setTrailing] = useState(6);
+  const [forward, setForward] = useState(6);
+  const [pnlViewLoading, setPnlViewLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [newCompany, setNewCompany] = useState({
@@ -203,6 +209,64 @@ export default function MatrixControlPanel() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pnlCompanyId intentionally excluded to avoid re-fetch loop on auto-select
   }, [mode, fundId]);
+
+  // Fetch P&L view data when view, granularity, or company changes.
+  // Handles ALL views including waterfall — the parent owns P&L data fetching
+  // so that view switches are seamless.
+  const pnlViewFetchCount = useRef(0);
+  useEffect(() => {
+    if (mode !== 'pnl' || !pnlCompanyId) return;
+    const fetchId = ++pnlViewFetchCount.current;
+    setPnlViewLoading(true);
+    // Compute start/end from trailing/forward + granularity
+    const now = new Date();
+    let start: string | undefined;
+    let end: string | undefined;
+    if (granularity === 'annual') {
+      start = `${now.getFullYear() - trailing}`;
+      end = `${now.getFullYear() + forward - 1}`;
+    } else if (granularity === 'quarterly') {
+      const curQ = Math.ceil((now.getMonth() + 1) / 3);
+      const startDate = new Date(now.getFullYear(), (curQ - 1) * 3 - trailing * 3, 1);
+      const endDate = new Date(now.getFullYear(), (curQ - 1) * 3 + forward * 3 - 1, 1);
+      start = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}`;
+      end = `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, '0')}`;
+    } else {
+      const startDate = new Date(now.getFullYear(), now.getMonth() - trailing, 1);
+      const endDate = new Date(now.getFullYear(), now.getMonth() + forward - 1, 1);
+      start = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}`;
+      end = `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, '0')}`;
+    }
+    fetchPnlView({
+      view: pnlView,
+      companyId: pnlCompanyId,
+      fundId,
+      granularity,
+      start,
+      end,
+    })
+      .then((data) => {
+        if (fetchId === pnlViewFetchCount.current) {
+          setMatrixData(data);
+          setPnlViewLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (fetchId === pnlViewFetchCount.current) {
+          console.error(`P&L ${pnlView} view error:`, err);
+          toast.error(`Failed to load ${PNL_VIEW_CONFIGS[pnlView].label} view: ${err.message}`);
+          setPnlViewLoading(false);
+        }
+      });
+  }, [mode, pnlView, granularity, trailing, forward, pnlCompanyId, fundId]);
+
+  // Reset to waterfall when leaving P&L mode
+  useEffect(() => {
+    if (mode !== 'pnl') {
+      setPnlView('waterfall');
+      setGranularity('monthly');
+    }
+  }, [mode]);
 
   // Fetch audit log (matrix_edits) when Audit sheet opens
   useEffect(() => {
@@ -763,6 +827,11 @@ export default function MatrixControlPanel() {
                 </Select>
               )}
 
+              {/* Loading indicator for view switch */}
+              {pnlViewLoading && (
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              )}
+
               {/* Overflow menu — Create Fund, What if, Citations, Settings, Delete fund, Metrics */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -1039,12 +1108,85 @@ export default function MatrixControlPanel() {
               </div>
             </div>
 
-          {/* Mode Description */}
-          <div className="pb-3">
-            <p className="text-sm text-muted-foreground">
-              {modeConfig.description}
-            </p>
-          </div>
+          {/* P&L View tabs + period controls — own row so they're always visible */}
+          {mode === 'pnl' && (
+            <div className="flex items-center gap-3 pb-3 pt-1 flex-wrap">
+              {/* View tabs */}
+              <div className="flex items-center rounded-lg border bg-muted p-0.5">
+                {(Object.keys(PNL_VIEW_CONFIGS) as PnlView[]).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setPnlView(v)}
+                    className={cn(
+                      'px-3 py-1.5 text-sm font-medium rounded-md transition-colors',
+                      pnlView === v
+                        ? 'bg-background text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    {PNL_VIEW_CONFIGS[v].label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="h-5 w-px bg-border" />
+
+              {/* Granularity */}
+              <Select value={granularity} onValueChange={(v) => setGranularity(v as Granularity)}>
+                <SelectTrigger className="w-[120px] h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="monthly">Monthly</SelectItem>
+                  <SelectItem value="quarterly">Quarterly</SelectItem>
+                  <SelectItem value="annual">Annual</SelectItem>
+                </SelectContent>
+              </Select>
+
+              {/* Trailing periods */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-muted-foreground">Trailing</span>
+                <Select value={String(trailing)} onValueChange={(v) => setTrailing(Number(v))}>
+                  <SelectTrigger className="w-[60px] h-8">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[0, 1, 2, 3, 4, 6, 8, 12].map((n) => (
+                      <SelectItem key={n} value={String(n)}>{n}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Forward periods */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-muted-foreground">Forward</span>
+                <Select value={String(forward)} onValueChange={(v) => setForward(Number(v))}>
+                  <SelectTrigger className="w-[60px] h-8">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[0, 1, 2, 3, 4, 6, 8, 12].map((n) => (
+                      <SelectItem key={n} value={String(n)}>{n}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <p className="text-xs text-muted-foreground ml-auto">
+                {PNL_VIEW_CONFIGS[pnlView].description}
+              </p>
+            </div>
+          )}
+
+          {/* Mode Description (non-P&L modes) */}
+          {mode !== 'pnl' && (
+            <div className="pb-3">
+              <p className="text-sm text-muted-foreground">
+                {modeConfig.description}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1074,8 +1216,9 @@ export default function MatrixControlPanel() {
               mode={mode}
               fundId={fundId}
               companyId={mode === 'pnl' ? pnlCompanyId : undefined}
-              initialData={matrixData || undefined}
+              initialData={matrixData ?? undefined}
               onDataChange={setMatrixData}
+              skipInternalFetch={mode === 'pnl'}
               availableActions={availableActions}
               showInsights={modeConfig.showInsights}
               showExport={true}
