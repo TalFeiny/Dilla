@@ -197,6 +197,33 @@ def _ocr_pdf(path: str) -> str:
 _MIN_TEXT_THRESHOLD = 50
 
 
+def _extract_pdf_tables(path: str) -> str:
+    """Extract tables from a PDF using pdfplumber. Returns pipe-delimited text or empty string."""
+    try:
+        import pdfplumber
+    except ImportError:
+        logger.debug("pdfplumber not installed; skipping PDF table extraction")
+        return ""
+    try:
+        table_parts: list[str] = []
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                for table in page.extract_tables():
+                    if not table:
+                        continue
+                    rows = []
+                    for row in table:
+                        cells = [str(cell).strip() if cell else "" for cell in row]
+                        if any(cells):
+                            rows.append(" | ".join(cells))
+                    if rows:
+                        table_parts.append("\n".join(rows))
+        return "\n\n".join(table_parts)
+    except Exception as e:
+        logger.debug("pdfplumber table extraction failed: %s", e)
+        return ""
+
+
 def _text_from_file(path: str, suffix: str) -> str:
     """
     Extract plain text from a file. Supports PDF (pypdf with OCR fallback) and DOCX (python-docx).
@@ -224,7 +251,12 @@ def _text_from_file(path: str, suffix: str) -> str:
                     logger.debug("pypdf page extract: %s", e)
             text = "\n\n".join(text_parts).strip()
 
-            # If pypdf got enough text, use it
+            # Extract tables with pdfplumber for structured data
+            table_text = _extract_pdf_tables(path)
+            if table_text:
+                text = text + "\n\n=== TABLES ===\n" + table_text
+
+            # If we got enough text, use it
             if len(text) >= _MIN_TEXT_THRESHOLD:
                 return text
 
@@ -244,7 +276,22 @@ def _text_from_file(path: str, suffix: str) -> str:
             try:
                 from docx import Document as DocxDocument
                 doc = DocxDocument(path)
-                return "\n\n".join(p.text for p in doc.paragraphs if p.text).strip()
+                paragraphs = "\n\n".join(p.text for p in doc.paragraphs if p.text).strip()
+
+                # Extract tables — financial data often lives here
+                table_parts: list[str] = []
+                for i, table in enumerate(doc.tables):
+                    rows = []
+                    for row in table.rows:
+                        cells = [cell.text.strip() for cell in row.cells]
+                        if any(cells):
+                            rows.append(" | ".join(cells))
+                    if rows:
+                        table_parts.append("\n".join(rows))
+
+                if table_parts:
+                    return paragraphs + "\n\n=== TABLES ===\n" + "\n\n".join(table_parts)
+                return paragraphs
             except ImportError:
                 logger.warning("python-docx not installed; cannot extract .docx text")
                 return ""

@@ -76,6 +76,7 @@ import CitationDisplay, { type Citation, deduplicateCitations } from '@/componen
 import { ScenarioInput } from '@/components/matrix/ScenarioInput';
 import type { ToolCallEntry } from '@/components/matrix/AgentPanel';
 import { type PnlView, type Granularity, PNL_VIEW_CONFIGS, fetchPnlView } from '@/lib/matrix/pnl-views';
+import { buildPnlColumns } from '@/lib/matrix/pnl-columns';
 
 const MAX_TOOL_CALL_ENTRIES = 100;
 
@@ -246,15 +247,35 @@ export default function MatrixControlPanel() {
       end,
     })
       .then((data) => {
-        if (fetchId === pnlViewFetchCount.current) {
+        if (fetchId !== pnlViewFetchCount.current) return;
+        // If API returned empty data (only lineItem column, no rows),
+        // build skeleton with proper period columns so the grid is usable.
+        const hasRealData = data.rows.length > 0 && data.columns.length > 1;
+        if (!hasRealData) {
+          const skeletonCols = buildPnlColumns({ granularity, trailing, forward });
+          setMatrixData((prev) => prev && prev.columns.length > 1 ? prev : {
+            columns: skeletonCols,
+            rows: [],
+            metadata: { dataSource: `fpa-${pnlView}`, lastUpdated: new Date().toISOString() },
+          });
+        } else {
           setMatrixData(data);
-          setPnlViewLoading(false);
         }
+        setPnlViewLoading(false);
       })
       .catch((err) => {
         if (fetchId === pnlViewFetchCount.current) {
           console.error(`P&L ${pnlView} view error:`, err);
           toast.error(`Failed to load ${PNL_VIEW_CONFIGS[pnlView].label} view: ${err.message}`);
+          // Keep existing skeleton instead of wiping to null
+          setMatrixData((prev) => {
+            if (prev && prev.columns.length > 1) return prev;
+            return {
+              columns: buildPnlColumns({ granularity, trailing, forward }),
+              rows: [],
+              metadata: { dataSource: `fpa-${pnlView}`, lastUpdated: new Date().toISOString() },
+            };
+          });
           setPnlViewLoading(false);
         }
       });
