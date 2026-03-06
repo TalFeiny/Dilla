@@ -382,7 +382,10 @@ class ModelRouter:
                 try:
                     anthropic_module = importlib.import_module("anthropic")
                     AsyncAnthropic = getattr(anthropic_module, "AsyncAnthropic")
-                    self.anthropic_client = AsyncAnthropic(api_key=self.anthropic_key)
+                    self.anthropic_client = AsyncAnthropic(
+                        api_key=self.anthropic_key,
+                        timeout=60.0,  # 60s per-request timeout (SDK default is 600s)
+                    )
                     logger.info("[_init_clients] ✅ Anthropic client initialized successfully")
                 except ImportError as exc:
                     logger.warning(f"[_init_clients] ⚠️  Anthropic SDK not available: {exc}")
@@ -597,13 +600,17 @@ class ModelRouter:
                         await self._apply_rate_limit(model_name)
                         
                         # Route to appropriate provider with json_mode for structured output
-                        response_text, usage = await self._call_model(
-                            model_config,
-                            prompt,
-                            system_prompt,
-                            max_tokens,
-                            temperature,
-                            json_mode
+                        # Per-model timeout so a hung provider triggers fallback
+                        response_text, usage = await asyncio.wait_for(
+                            self._call_model(
+                                model_config,
+                                prompt,
+                                system_prompt,
+                                max_tokens,
+                                temperature,
+                                json_mode
+                            ),
+                            timeout=90,
                         )
 
                         # Use real token counts from provider; fall back to estimate
@@ -646,20 +653,25 @@ class ModelRouter:
 
                         return result
                     
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[MODEL_ROUTER] ⏱️  {model_name} timed out after 90s, trying next model")
+                        last_error = TimeoutError(f"{model_name} timed out")
+                        break  # Skip to next model immediately — no retry on timeout
+
                     except Exception as e:
                         last_error = e
                         error_type = type(e).__name__
-                        
+
                         # COMPREHENSIVE ERROR LOGGING: Log ALL failures with full exception details and stack traces
                         logger.error(f"[MODEL_ROUTER] ❌ FAILURE with {model_name} (retry {retry + 1}/{max_retries}){context_info}")
                         logger.error(f"[MODEL_ROUTER] 🔴 Error type: {error_type}")
                         logger.error(f"[MODEL_ROUTER] 🔴 Error message: {str(e)}")
                         logger.error(f"[MODEL_ROUTER] 🔴 Error details: {repr(e)}")
-                        
+
                         # Log full stack trace for debugging
                         import traceback
                         logger.error(f"[MODEL_ROUTER] 🔴 Stack trace:\n{traceback.format_exc()}")
-                        
+
                         # Handle specific error types
                         if "429" in str(e) or "rate_limit" in str(e).lower():
                             logger.warning(f"{model_name} rate limited, retry {retry + 1}/{max_retries}")

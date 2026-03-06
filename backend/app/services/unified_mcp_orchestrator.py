@@ -3694,6 +3694,20 @@ JUST THE JSON:"""
                 confidence=0.95,
             )
 
+        # --- Fast path 4: single @mention → company_research (not sourcing) ---
+        _sourcing_signals = {"find", "source", "list", "rank", "score", "build",
+                             "discover", "pipeline", "show me", "top companies"}
+        if has_at and len(company_names) == 1 and not any(w in lower for w in _sourcing_signals):
+            logger.info("[CLASSIFY] Fast-path: single @mention '%s' → company_research", company_names[0])
+            return QueryClassification(
+                complexity="complex",
+                intent="company_research",
+                suggested_chain=["fetch_company_data", "run_valuation", "generate_chart"],
+                needs_portfolio=False,
+                needs_external=True,
+                confidence=0.95,
+            )
+
         # --- Store feedback/corrections (but still let LLM classify) ---
         feedback_signals = [
             "no,", "not that", "wrong", "instead",
@@ -26489,6 +26503,27 @@ Return a JSON with this structure:
                 logger.debug("[MEMO] _populate_memo_service_data: no companies, skipping")
                 return
 
+            # ── Scope to target companies only ─────────────────────────────
+            # When sourcing or working with a specific company, don't run
+            # heavy computations (PWERM, cap tables, revenue) on the entire
+            # portfolio — only on the companies the memo is actually about.
+            _sourcing = self.shared_data.get("sourcing_results")
+            _mentioned = self.shared_data.get("companies_mentioned") or []
+            _target_names: set = set()
+            if _sourcing and _sourcing.get("companies"):
+                _target_names = {(c.get("company") or c.get("name") or "").lower()
+                                 for c in _sourcing["companies"]}
+            if _mentioned:
+                _target_names |= {n.lower() for n in _mentioned if isinstance(n, str)}
+            if _target_names:
+                scoped = [c for c in companies if (c.get("company") or "").lower() in _target_names]
+                if scoped:
+                    logger.info(
+                        "[MEMO] _populate_memo_service_data: scoped to %d/%d target companies",
+                        len(scoped), len(companies),
+                    )
+                    companies = scoped
+
             # ── Selective Tavily enrichment for companies missing critical data ──
             if self.tavily_api_key:
                 gaps = [c for c in companies
@@ -27267,34 +27302,43 @@ Return a JSON with this structure:
             except asyncio.TimeoutError:
                 logger.warning("[MEMO] _load_companies_for_memo timed out")
 
-            # Step 0b: Enrich sparse DB companies with stage benchmarks (Tier 1, no network)
+            # Determine if this is a scoped memo (sourcing / single company)
+            # vs a portfolio-wide memo that genuinely needs all companies.
+            _sourcing = self.shared_data.get("sourcing_results")
+            _mentioned = self.shared_data.get("companies_mentioned") or []
+            _is_scoped = bool(_sourcing) or bool(_mentioned)
             _all_companies = self.shared_data.get("companies", [])
-            _db_sourced = [c for c in _all_companies if c.get("_source") == "portfolio_db"]
-            if _db_sourced:
+
+            if _is_scoped:
+                logger.info("[MEMO] Scoped memo — skipping portfolio-wide enrichment/analysis")
+            else:
+                # Step 0b: Enrich sparse DB companies with stage benchmarks (Tier 1, no network)
+                _db_sourced = [c for c in _all_companies if c.get("_source") == "portfolio_db"]
+                if _db_sourced:
+                    try:
+                        await asyncio.wait_for(
+                            self._enrich_companies(_db_sourced, depth="benchmark"),
+                            timeout=10.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("[MEMO] _enrich_companies timed out")
+
+                # Step 0c: Fund-level aggregation (NAV, cohorts, scenarios) for portfolio memos
+                if len(_all_companies) > 1:
+                    try:
+                        await asyncio.wait_for(self._run_portfolio_analysis(), timeout=10.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("[MEMO] _run_portfolio_analysis timed out")
+
+                # Pre-flight: derive any missing secondary keys from companies
+                # Use timeout to prevent hydration from blocking memo generation
                 try:
                     await asyncio.wait_for(
-                        self._enrich_companies(_db_sourced, depth="benchmark"),
+                        self._hydrate_shared_data_from_companies(),
                         timeout=10.0,
                     )
                 except asyncio.TimeoutError:
-                    logger.warning("[MEMO] _enrich_companies timed out")
-
-            # Step 0c: Fund-level aggregation (NAV, cohorts, scenarios) for portfolio memos
-            if len(self.shared_data.get("companies", [])) > 1:
-                try:
-                    await asyncio.wait_for(self._run_portfolio_analysis(), timeout=10.0)
-                except asyncio.TimeoutError:
-                    logger.warning("[MEMO] _run_portfolio_analysis timed out")
-
-            # Pre-flight: derive any missing secondary keys from companies
-            # Use timeout to prevent hydration from blocking memo generation
-            try:
-                await asyncio.wait_for(
-                    self._hydrate_shared_data_from_companies(),
-                    timeout=10.0,
-                )
-            except asyncio.TimeoutError:
-                logger.warning("[MEMO] Hydration timed out after 10s — proceeding with available data")
+                    logger.warning("[MEMO] Hydration timed out after 10s — proceeding with available data")
 
             # Fix 1: Run the same upstream services that deck uses so LightweightMemoService
             # has scenario_analysis, cap_table_history, and revenue_projections in shared_data.
