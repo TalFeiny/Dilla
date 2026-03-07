@@ -102,20 +102,27 @@ def ingest_time_series(
                 "period": period.isoformat(),
                 "category": category,
                 "subcategory": "",
+                "hierarchy_path": category,
                 "amount": amount,
                 "source": source,
             })
 
-        # Subcategory metrics: e.g. entry has "engineering_salaries": 50000
+        # Subcategory metrics: e.g. entry has "subcategory": "engineering_salaries", "amount": 50000
+        # Known taxonomy takes priority; unknown subcategories accepted when caller provides parent_category
         subcategory = entry.get("subcategory")
-        if subcategory and subcategory in SUBCATEGORY_TO_PARENT:
-            parent_cat = SUBCATEGORY_TO_PARENT[subcategory]
+        if subcategory:
+            parent_cat = SUBCATEGORY_TO_PARENT.get(subcategory) or entry.get("parent_category") or entry.get("category")
+            if not parent_cat:
+                continue  # no parent resolvable — skip
             amount_val = entry.get("amount")
             if amount_val is not None:
                 try:
                     amount = float(amount_val)
                 except (ValueError, TypeError):
                     continue
+
+                # Build hierarchy_path
+                hierarchy_path = entry.get("hierarchy_path") or f"{parent_cat}/{subcategory}"
 
                 # Store subcategory row
                 rows.append({
@@ -125,6 +132,7 @@ def ingest_time_series(
                     "period": period.isoformat(),
                     "category": parent_cat,
                     "subcategory": subcategory,
+                    "hierarchy_path": hierarchy_path,
                     "amount": amount,
                     "source": source,
                 })
@@ -144,6 +152,7 @@ def ingest_time_series(
             "period": period_str,
             "category": parent_cat,
             "subcategory": "",
+            "hierarchy_path": parent_cat,
             "amount": total,
             "source": source,
         })
@@ -151,10 +160,10 @@ def ingest_time_series(
     if not rows:
         return 0
 
-    # Upsert: unique index is (company_id, period, category, subcategory, source)
+    # Upsert: unique index is (company_id, period, category, subcategory, hierarchy_path, source)
     sb.table("fpa_actuals").upsert(
         rows,
-        on_conflict="company_id,period,category,subcategory,source",
+        on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
     ).execute()
 
     return len(rows)
@@ -277,6 +286,56 @@ def seed_forecast_from_actuals(company_id: str) -> Dict[str, Any]:
     if last_headcount is not None:
         result["headcount"] = last_headcount
 
+    # --- Enhanced: trailing growth analysis ---
+    if len(revenue_actuals) >= 4:
+        trailing_growth_3m = _trailing_growth_window(revenue_actuals, window=3)
+        trailing_growth_6m = _trailing_growth_window(revenue_actuals, window=6) if len(revenue_actuals) >= 7 else growth_rate
+        result["_trailing_growth_3m"] = trailing_growth_3m
+        result["_trailing_growth_6m"] = trailing_growth_6m
+        result["_growth_trend"] = "accelerating" if trailing_growth_3m > trailing_growth_6m else "decelerating"
+
+    # --- Enhanced: OpEx breakdown from subcategories ---
+    rd_actuals = get_actuals_for_forecast(company_id, "opex_rd")
+    sm_actuals = get_actuals_for_forecast(company_id, "opex_sm")
+    ga_actuals = get_actuals_for_forecast(company_id, "opex_ga")
+    if rd_actuals:
+        result["_rd_spend"] = rd_actuals[-1]["amount"]
+    if sm_actuals:
+        result["_sm_spend"] = sm_actuals[-1]["amount"]
+    if ga_actuals:
+        result["_ga_spend"] = ga_actuals[-1]["amount"]
+
+    # --- Enhanced: detect driver data from actuals ---
+    customer_actuals = get_actuals_for_forecast(company_id, "customers")
+    arr_actuals = get_actuals_for_forecast(company_id, "arr")
+
+    if customer_actuals and len(customer_actuals) >= 2:
+        last_customers = customer_actuals[-1]["amount"]
+        prev_customers = customer_actuals[-2]["amount"]
+        result["_detected_customer_count"] = last_customers
+        if prev_customers and prev_customers > 0 and last_customers < prev_customers:
+            # Monthly churn approximation from customer decline
+            monthly_churn = (prev_customers - last_customers) / prev_customers
+            result["_detected_churn_rate"] = monthly_churn
+
+    if arr_actuals and customer_actuals:
+        last_arr = arr_actuals[-1]["amount"]
+        last_customers_val = customer_actuals[-1]["amount"] if customer_actuals else 0
+        if last_customers_val and last_customers_val > 0:
+            result["_detected_acv"] = last_arr / last_customers_val
+
+    # --- Data quality score ---
+    result["_data_quality"] = {
+        "revenue_months": len(revenue_actuals),
+        "has_opex_breakdown": bool(rd_actuals or sm_actuals or ga_actuals),
+        "has_customer_data": bool(customer_actuals),
+        "has_arr_data": bool(arr_actuals),
+        "has_cash_data": bool(cash_actuals),
+        "has_headcount": bool(headcount_actuals),
+        "growth_trend": result.get("_growth_trend", "unknown"),
+        "recommended_method": _recommend_method(result),
+    }
+
     return result
 
 
@@ -296,6 +355,35 @@ def _trailing_growth(actuals: List[Dict[str, Any]]) -> float:
         mom = max(-0.5, min(0.5, mom))
         return (1 + mom) ** 12 - 1
     return 0.0
+
+
+def _trailing_growth_window(actuals: List[Dict[str, Any]], window: int = 3) -> float:
+    """Compute trailing growth rate over a window of months, annualized.
+
+    Uses CAGR over the window instead of just last 2 points.
+    """
+    if len(actuals) < window + 1:
+        return 0.0
+    start_val = actuals[-(window + 1)]["amount"]
+    end_val = actuals[-1]["amount"]
+    if start_val and start_val > 0 and end_val and end_val > 0:
+        monthly_growth = (end_val / start_val) ** (1 / window) - 1
+        monthly_growth = max(-0.5, min(0.5, monthly_growth))
+        return (1 + monthly_growth) ** 12 - 1
+    return 0.0
+
+
+def _recommend_method(seed_data: Dict[str, Any]) -> str:
+    """Recommend forecast method based on data availability."""
+    if seed_data.get("_detected_acv") and seed_data.get("_detected_customer_count"):
+        return "driver_based"
+    quality = seed_data.get("_data_quality", {})
+    rev_months = quality.get("revenue_months", 0)
+    if rev_months >= 12:
+        return "seasonal"  # enough data for seasonal detection
+    if rev_months >= 6:
+        return "regression"
+    return "growth_rate"
 
 
 def get_subcategory_breakdown(

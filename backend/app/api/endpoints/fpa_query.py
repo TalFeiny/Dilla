@@ -126,6 +126,8 @@ class PnlCellEditRequest(BaseModel):
     category: str          # row id, e.g. "revenue", "cogs", "opex_rd"
     period: str            # column id, e.g. "2025-09"
     amount: float
+    subcategory: str = ""
+    hierarchy_path: str = ""
     source: str = "manual_cell_edit"
 
 
@@ -143,6 +145,11 @@ async def upsert_pnl_cell(req: PnlCellEditRequest):
     if len(period_str) == 7:  # "2025-09"
         period_str = f"{period_str}-01"
 
+    # Build hierarchy_path if not provided
+    hierarchy_path = req.hierarchy_path or (
+        f"{req.category}/{req.subcategory}" if req.subcategory else req.category
+    )
+
     try:
         sb.table("fpa_actuals").upsert(
             {
@@ -150,10 +157,12 @@ async def upsert_pnl_cell(req: PnlCellEditRequest):
                 "fund_id": req.fund_id,
                 "period": period_str,
                 "category": req.category,
+                "subcategory": req.subcategory,
+                "hierarchy_path": hierarchy_path,
                 "amount": req.amount,
                 "source": req.source,
             },
-            on_conflict="company_id,period,category,source",
+            on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
         ).execute()
     except Exception as e:
         logger.error("P&L cell upsert failed: %s", e, exc_info=True)
@@ -499,6 +508,146 @@ def _clean_label(raw: str) -> tuple:
     return cleaned, depth, original
 
 
+# ---------------------------------------------------------------------------
+# ERP hierarchy detection helpers
+# ---------------------------------------------------------------------------
+
+_ACCOUNT_COL_NAMES = {"account", "account_number", "account_no", "acct", "acct_no", "account_id"}
+_PARENT_COL_NAMES = {"parent_account", "parent_id", "parent_account_id", "parent_acct"}
+_LEVEL_COL_NAMES = {"level", "depth", "indent_level", "hierarchy_level"}
+_LABEL_COL_NAMES = {"name", "label", "description", "account_name", "line_item"}
+
+
+def _detect_hierarchy_columns(headers: List[str]) -> Dict[str, Any]:
+    """Scan CSV headers to detect ERP hierarchy strategy.
+
+    Precedence: parent_id > level_column > account_number > indent (default).
+    """
+    lower_headers = [h.lower().strip() for h in headers]
+    result: Dict[str, Any] = {"strategy": "indent"}
+
+    account_col = None
+    parent_col = None
+    level_col = None
+    label_col = 0  # default to first column
+
+    for i, h in enumerate(lower_headers):
+        if h in _ACCOUNT_COL_NAMES:
+            account_col = i
+        elif h in _PARENT_COL_NAMES:
+            parent_col = i
+        elif h in _LEVEL_COL_NAMES:
+            level_col = i
+        elif h in _LABEL_COL_NAMES:
+            label_col = i
+
+    if parent_col is not None and account_col is not None:
+        result = {"strategy": "parent_id", "account_col": account_col,
+                  "parent_col": parent_col, "label_col": label_col}
+    elif level_col is not None:
+        result = {"strategy": "level_column", "level_col": level_col,
+                  "label_col": label_col}
+    elif account_col is not None:
+        result = {"strategy": "account_number", "account_col": account_col,
+                  "label_col": label_col}
+
+    return result
+
+
+def _build_account_number_tree(
+    data_rows: List[List[str]], account_col: int, label_col: int
+) -> Dict[int, int]:
+    """Derive depth per row from account number hierarchy (e.g. 4000→4100→4110).
+
+    Returns {row_index: depth}.
+    """
+    account_numbers: List[Optional[str]] = []
+    for row in data_rows:
+        val = row[account_col].strip() if account_col < len(row) else ""
+        account_numbers.append(val if val else None)
+
+    # Build set of known account numbers
+    known = {a for a in account_numbers if a}
+
+    row_depth: Dict[int, int] = {}
+    for idx, acct in enumerate(account_numbers):
+        if not acct:
+            row_depth[idx] = 0
+            continue
+        # Walk up by trimming trailing characters until we find a parent
+        depth = 0
+        candidate = acct
+        while len(candidate) > 1:
+            candidate = candidate[:-1]
+            # Trim trailing zeros for cleaner matching (4100 → 41 → 4)
+            trimmed = candidate.rstrip("0") or candidate
+            if trimmed in known or candidate in known:
+                depth += 1
+                # Keep walking up from trimmed
+                candidate = trimmed if trimmed in known else candidate
+            # Also check padded variants
+        row_depth[idx] = depth
+
+    return row_depth
+
+
+def _build_parent_id_tree(
+    data_rows: List[List[str]], account_col: int, parent_col: int
+) -> Dict[int, int]:
+    """Derive depth per row from explicit parent-ID column.
+
+    Returns {row_index: depth}.
+    """
+    # Map account_id → row_index
+    id_to_idx: Dict[str, int] = {}
+    parent_map: Dict[str, str] = {}  # account_id → parent_id
+
+    for idx, row in enumerate(data_rows):
+        acct = row[account_col].strip() if account_col < len(row) else ""
+        par = row[parent_col].strip() if parent_col < len(row) else ""
+        if acct:
+            id_to_idx[acct] = idx
+            if par:
+                parent_map[acct] = par
+
+    row_depth: Dict[int, int] = {}
+    for idx, row in enumerate(data_rows):
+        acct = row[account_col].strip() if account_col < len(row) else ""
+        if not acct:
+            row_depth[idx] = 0
+            continue
+        # Walk parent chain to compute depth (max 10, cycle-safe)
+        depth = 0
+        current = acct
+        visited: set = set()
+        while current in parent_map and depth < 10:
+            if current in visited:
+                break  # cycle
+            visited.add(current)
+            current = parent_map[current]
+            depth += 1
+        row_depth[idx] = depth
+
+    return row_depth
+
+
+def _build_level_column_map(
+    data_rows: List[List[str]], level_col: int
+) -> Dict[int, int]:
+    """Read depth directly from a level/depth column.
+
+    Returns {row_index: depth}.
+    """
+    row_depth: Dict[int, int] = {}
+    for idx, row in enumerate(data_rows):
+        val = row[level_col].strip() if level_col < len(row) else "0"
+        try:
+            row_depth[idx] = int(val)
+        except ValueError:
+            row_depth[idx] = 0
+    return row_depth
+
+
 def _is_separator_row(row: list) -> bool:
     """Skip rows that are formatting separators (---, ===, blank)."""
     return all(re.match(r"^[\s\-=_]*$", cell) for cell in row)
@@ -756,6 +905,7 @@ async def upload_actuals_csv(
                         "period": f"{period}-01",
                         "category": category,
                         "subcategory": "",
+                        "hierarchy_path": category,
                         "amount": amount / divisor,
                         "source": "csv_upload",
                     })
@@ -766,13 +916,33 @@ async def upload_actuals_csv(
     else:
         # Standard orientation: 3-pass pipeline
 
+        # --- Detect ERP hierarchy strategy ---
+        hierarchy_info = _detect_hierarchy_columns(headers)
+        row_depth_map: Dict[int, int] = {}
+
+        if hierarchy_info["strategy"] == "account_number":
+            row_depth_map = _build_account_number_tree(
+                data_rows, hierarchy_info["account_col"], hierarchy_info.get("label_col", 0)
+            )
+        elif hierarchy_info["strategy"] == "parent_id":
+            row_depth_map = _build_parent_id_tree(
+                data_rows, hierarchy_info["account_col"], hierarchy_info["parent_col"]
+            )
+        elif hierarchy_info["strategy"] == "level_column":
+            row_depth_map = _build_level_column_map(
+                data_rows, hierarchy_info["level_col"]
+            )
+
+        if hierarchy_info["strategy"] != "indent":
+            warnings.append(f"Detected ERP hierarchy format: {hierarchy_info['strategy']}")
+
         # =============================================
         # PASS 1: Scan all rows — build category + hierarchy map
         # =============================================
         row_info = []  # [{label, cleaned, depth, original, category, match_type, subcategory, is_separator, is_section_header, has_amounts}]
         current_section_parent = None  # track the current depth=0 section header category
 
-        for row in data_rows:
+        for idx_row, row in enumerate(data_rows):
             if not row:
                 row_info.append({"skip": "empty"})
                 skipped_empty += 1
@@ -783,13 +953,19 @@ async def upload_actuals_csv(
                 skipped_separators += 1
                 continue
 
-            raw_label = row[0] if row else ""
+            # Determine label column and depth based on hierarchy strategy
+            label_col_idx = hierarchy_info.get("label_col", 0) if hierarchy_info["strategy"] != "indent" else 0
+            raw_label = row[label_col_idx] if label_col_idx < len(row) else (row[0] if row else "")
             if not raw_label.strip():
                 row_info.append({"skip": "empty"})
                 skipped_empty += 1
                 continue
 
-            cleaned, depth, original = _clean_label(raw_label)
+            if hierarchy_info["strategy"] != "indent":
+                depth = row_depth_map.get(idx_row, 0)
+                cleaned, _, original = _clean_label(raw_label)  # ignore indent depth
+            else:
+                cleaned, depth, original = _clean_label(raw_label)
 
             # Check if any data cells have amounts
             has_amounts = any(
@@ -895,6 +1071,30 @@ async def upload_actuals_csv(
             row_info.append(info)
 
         # =============================================
+        # PASS 1.5: Build hierarchy_path for each row using path stack
+        # =============================================
+        path_stack: List[tuple] = []  # [(depth, label_segment)]
+        for ri in row_info:
+            if ri.get("skip"):
+                ri["hierarchy_path"] = ""
+                continue
+            if ri.get("is_section_header"):
+                # Section headers reset the path stack
+                path_stack = []
+                ri["hierarchy_path"] = ""
+                continue
+
+            depth = ri.get("depth", 0)
+            segment = ri.get("subcategory") or ri.get("category") or ""
+
+            # Pop stack entries at same or deeper depth
+            while path_stack and path_stack[-1][0] >= depth:
+                path_stack.pop()
+
+            path_stack.append((depth, segment))
+            ri["hierarchy_path"] = "/".join(p[1] for p in path_stack if p[1])
+
+        # =============================================
         # PASS 2: Determine which computed rows to skip
         # =============================================
         present_categories = {
@@ -941,6 +1141,7 @@ async def upload_actuals_csv(
 
             category = ri["category"]
             subcategory = ri.get("subcategory")
+            hierarchy_path = ri.get("hierarchy_path", "")
 
             for col_idx, period_tuples in period_cols.items():
                 if col_idx >= len(row):
@@ -958,6 +1159,7 @@ async def upload_actuals_csv(
                         "period": f"{period}-01",
                         "category": category,
                         "subcategory": subcategory or "",
+                        "hierarchy_path": hierarchy_path or (f"{category}/{subcategory}" if subcategory else category),
                         "amount": amount / divisor,
                         "source": "csv_upload",
                     })
@@ -974,10 +1176,10 @@ async def upload_actuals_csv(
         )
 
     # Upsert into fpa_actuals
-    # Unique index: (company_id, period, category, subcategory, source)
+    # Unique index: (company_id, period, category, subcategory, hierarchy_path, source)
     sb.table("fpa_actuals").upsert(
         actuals_rows,
-        on_conflict="company_id,period,category,subcategory,source",
+        on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
     ).execute()
 
     periods = sorted(set(r["period"][:7] for r in actuals_rows))

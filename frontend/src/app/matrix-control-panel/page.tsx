@@ -252,12 +252,13 @@ export default function MatrixControlPanel() {
         // build skeleton with proper period columns so the grid is usable.
         const hasRealData = data.rows.length > 0 && data.columns.length > 1;
         if (!hasRealData) {
+          // Always rebuild columns with current granularity/trailing/forward
           const skeletonCols = buildPnlColumns({ granularity, trailing, forward });
-          setMatrixData((prev) => prev && prev.columns.length > 1 ? prev : {
+          setMatrixData((prev) => ({
             columns: skeletonCols,
-            rows: [],
+            rows: prev?.rows ?? [],
             metadata: { dataSource: `fpa-${pnlView}`, lastUpdated: new Date().toISOString() },
-          });
+          }));
         } else {
           setMatrixData(data);
         }
@@ -267,15 +268,13 @@ export default function MatrixControlPanel() {
         if (fetchId === pnlViewFetchCount.current) {
           console.error(`P&L ${pnlView} view error:`, err);
           toast.error(`Failed to load ${PNL_VIEW_CONFIGS[pnlView].label} view: ${err.message}`);
-          // Keep existing skeleton instead of wiping to null
-          setMatrixData((prev) => {
-            if (prev && prev.columns.length > 1) return prev;
-            return {
-              columns: buildPnlColumns({ granularity, trailing, forward }),
-              rows: [],
-              metadata: { dataSource: `fpa-${pnlView}`, lastUpdated: new Date().toISOString() },
-            };
-          });
+          // Always rebuild columns so granularity/trailing/forward changes are visible even on error
+          const skeletonCols = buildPnlColumns({ granularity, trailing, forward });
+          setMatrixData((prev) => ({
+            columns: skeletonCols,
+            rows: prev?.rows ?? [],
+            metadata: { dataSource: `fpa-${pnlView}`, lastUpdated: new Date().toISOString() },
+          }));
           setPnlViewLoading(false);
         }
       });

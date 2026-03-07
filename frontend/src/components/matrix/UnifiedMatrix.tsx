@@ -955,15 +955,22 @@ export function UnifiedMatrix({
   // Only bootstrap from initialData when we have no rows yet - avoids overwriting loadPortfolioData result
   // (which may have DB columns, NAV sparklines, etc.)
   // Exception: when dataSource changes (e.g. P&L view switch), always apply the new data.
+  // Exception 2: when columns change (e.g. granularity/trailing/forward), always apply.
   const prevDataSourceRef = useRef<string | undefined>(undefined);
+  const prevColumnIdsRef = useRef<string>('');
   useEffect(() => {
     const newSource = initialData?.metadata?.dataSource;
     const sourceChanged = newSource && newSource !== prevDataSourceRef.current;
     if (sourceChanged) prevDataSourceRef.current = newSource;
 
+    // Detect column structure changes (granularity/trailing/forward switches)
+    const newColumnIds = initialData?.columns?.map((c) => c.id).join(',') ?? '';
+    const columnsChanged = newColumnIds && newColumnIds !== prevColumnIdsRef.current;
+    if (columnsChanged) prevColumnIdsRef.current = newColumnIds;
+
     if (initialData) {
       setMatrixData((prev) => {
-        if (sourceChanged) return initialData; // View switched — always apply
+        if (sourceChanged || columnsChanged) return initialData; // View or columns changed — always apply
         const hasRows = prev?.rows?.length && prev.rows.length > 0;
         if (hasRows) return prev; // Already loaded - don't overwrite
         return initialData;
@@ -974,6 +981,7 @@ export function UnifiedMatrix({
     } else if (initialData === null && mode === 'pnl') {
       // View switched back to waterfall — clear so pnl fetch re-runs
       prevDataSourceRef.current = undefined;
+      prevColumnIdsRef.current = '';
       setMatrixData(getDefaultMatrixData(mode, fundId));
     }
   }, [initialData, mode, fundId]);
@@ -4576,7 +4584,7 @@ export function UnifiedMatrix({
             {mode === 'pnl' && (
               <>
                 <DropdownMenuSeparator />
-                <input type="file" accept=".csv,.xlsx,.xls" onChange={(e) => handlePnlCsvUpload(null, e)} className="hidden" id="pnl-csv-import-input" />
+                <input type="file" accept=".csv" onChange={(e) => handlePnlCsvUpload(null, e)} className="hidden" id="pnl-csv-import-input" />
                 <DropdownMenuItem onClick={() => document.getElementById('pnl-csv-import-input')?.click()} disabled={isPnlUploading}>
                   {isPnlUploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
                   Upload CSV

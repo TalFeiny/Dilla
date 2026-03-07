@@ -1430,9 +1430,9 @@ AGENT_TOOLS: list[AgentTool] = [
     # ------------------------------------------------------------------
     AgentTool(
         name="fpa_pnl",
-        description="Full P&L waterfall (actuals + forecast) for a company. Hierarchical rows, split derivation.",
+        description="Full P&L waterfall (actuals + forecast) for a company. Hierarchical rows, split derivation. Views: waterfall (default), actuals_vs_budget, actuals_vs_forecast.",
         handler="_tool_fpa_pnl",
-        input_schema={"company_id": "str", "fund_id": "str?", "start": "str?", "end": "str?", "months": "int?"},
+        input_schema={"company_id": "str", "fund_id": "str?", "start": "str?", "end": "str?", "months": "int?", "view": "str?", "budget_id": "str?", "forecast_id": "str?"},
         cost_tier="cheap",
         timeout_ms=30_000,
     ),
@@ -1446,9 +1446,9 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="fpa_forecast",
-        description="Generate forecast from actuals: seed from real data then build monthly cash flow model.",
+        description="Generate forecast from actuals. Methods: growth_rate (default), regression, driver_based, seasonal, budget_pct. Auto-selects best method if not specified. Auto-saves to DB.",
         handler="_tool_fpa_forecast",
-        input_schema={"company_id": "str", "months": "int?", "monthly_overrides": "dict?"},
+        input_schema={"company_id": "str", "months": "int?", "method": "str?", "monthly_overrides": "dict?", "drivers": "dict?", "activate": "bool?", "name": "str?"},
         cost_tier="cheap",
         timeout_ms=45_000,
     ),
@@ -1533,8 +1533,16 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=15_000,
     ),
     AgentTool(
+        name="fpa_cell_edit",
+        description="Edit a single P&L cell. Upserts one row into fpa_actuals with source 'agent_edit'.",
+        handler="_tool_fpa_cell_edit",
+        input_schema={"company_id": "str", "category": "str", "period": "str", "amount": "float", "subcategory": "str?", "fund_id": "str?"},
+        cost_tier="cheap",
+        timeout_ms=10_000,
+    ),
+    AgentTool(
         name="fpa_upload_actuals",
-        description="Ingest actuals data from structured time series. Each entry: {period: 'YYYY-MM', revenue: float, cogs: float, ...}.",
+        description="Ingest actuals data from structured time series. Each entry: {period: 'YYYY-MM', revenue: float, cogs: float, ...}. For subcategories: {period: 'YYYY-MM', subcategory: str, parent_category: str, amount: float}.",
         handler="_tool_fpa_upload_actuals",
         input_schema={"company_id": "str", "time_series": "list[dict]", "fund_id": "str?"},
         cost_tier="cheap",
@@ -1580,6 +1588,80 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="cheap",
         timeout_ms=30_000,
     ),
+    # --- Forecast Persistence & Explainability tools ---
+    AgentTool(
+        name="fpa_save_forecast",
+        description="Save the last forecast result to DB with provenance. Optionally activate it as the active forecast.",
+        handler="_tool_fpa_save_forecast",
+        input_schema={"company_id": "str", "name": "str?", "activate": "bool?", "method": "str?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="fpa_list_forecasts",
+        description="List all saved forecasts for a company with metadata (method, status, dates).",
+        handler="_tool_fpa_list_forecasts",
+        input_schema={"company_id": "str"},
+        cost_tier="free",
+        timeout_ms=10_000,
+    ),
+    AgentTool(
+        name="fpa_load_forecast",
+        description="Load a specific saved forecast by ID — returns all lines + metadata.",
+        handler="_tool_fpa_load_forecast",
+        input_schema={"forecast_id": "str"},
+        cost_tier="free",
+        timeout_ms=10_000,
+    ),
+    AgentTool(
+        name="fpa_activate_forecast",
+        description="Set a saved forecast as the active one. Deactivates any other active forecast for the company.",
+        handler="_tool_fpa_activate_forecast",
+        input_schema={"forecast_id": "str"},
+        cost_tier="cheap",
+        timeout_ms=10_000,
+    ),
+    AgentTool(
+        name="fpa_compare_forecasts",
+        description="Side-by-side comparison of two forecasts with deltas per period per category.",
+        handler="_tool_fpa_compare_forecasts",
+        input_schema={"forecast_id_a": "str", "forecast_id_b": "str"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="fpa_apply_forecast",
+        description="Write forecast lines into fpa_actuals grid with source='forecast_applied'. Makes forecast visible in P&L grid.",
+        handler="_tool_fpa_apply_forecast",
+        input_schema={"forecast_id": "str"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="fpa_explain_forecast",
+        description="Explain how a forecast was generated — methodology, inputs, per-cell derivations, driver contributions.",
+        handler="_tool_fpa_explain_forecast",
+        input_schema={"forecast_id": "str?", "company_id": "str?", "category": "str?", "period": "str?"},
+        cost_tier="cheap",
+        timeout_ms=10_000,
+    ),
+    AgentTool(
+        name="fpa_scenario_promote",
+        description="Promote a scenario branch to the active forecast. Saves the branch's forecast and activates it.",
+        handler="_tool_fpa_scenario_promote",
+        input_schema={"branch_id": "str", "company_id": "str", "name": "str?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="fpa_resolve_drivers",
+        description="Show all drivers with base (from actuals), override (from branch or user), and effective values. Shows what levers the agent can pull.",
+        handler="_tool_fpa_resolve_drivers",
+        input_schema={"company_id": "str", "branch_id": "str?", "drivers": "dict?"},
+        cost_tier="cheap",
+        timeout_ms=10_000,
+    ),
+
     # --- Transfer Pricing tools ---
     AgentTool(
         name="tp_analyze_transaction",
@@ -7192,6 +7274,9 @@ Return JSON with ONLY these fields (use null if unknown):
                 start=inputs.get("start"),
                 end=inputs.get("end"),
                 forecast_months=months,
+                view=inputs.get("view", "waterfall"),
+                budget_id=inputs.get("budget_id"),
+                forecast_id=inputs.get("forecast_id"),
             )
             result["company_id"] = company_id
 
@@ -7269,10 +7354,12 @@ Return JSON with ONLY these fields (use null if unknown):
             return {"error": str(e)}
 
     async def _tool_fpa_forecast(self, inputs: dict) -> dict:
-        """Generate forecast from actuals: seed → monthly cash flow model."""
+        """Generate forecast from actuals: seed → route method → build → auto-save."""
         try:
             from app.services.actuals_ingestion import seed_forecast_from_actuals
-            from app.services.cash_flow_planning_service import CashFlowPlanningService
+            from app.services.forecast_method_router import ForecastMethodRouter
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+            from app.services.forecast_explainer import ForecastExplainer
 
             company_id = inputs.get("company_id")
             if not company_id:
@@ -7280,21 +7367,46 @@ Return JSON with ONLY these fields (use null if unknown):
 
             months = inputs.get("months", 24)
             monthly_overrides = inputs.get("monthly_overrides")
+            requested_method = inputs.get("method")
+            drivers = inputs.get("drivers", {})
+            activate = inputs.get("activate", False)
+            forecast_name = inputs.get("name")
 
             company_data = seed_forecast_from_actuals(company_id)
             if not company_data or company_data.get("revenue", 0) <= 0:
                 return {"error": f"No actuals found for company {company_id} — upload actuals first"}
 
-            svc = CashFlowPlanningService()
-            forecast = svc.build_monthly_cash_flow_model(
-                company_data,
+            # Merge driver overrides into company_data for CashFlowPlanningService
+            if drivers:
+                for key, value in drivers.items():
+                    company_data[key] = value
+
+            # Route to best method
+            router = ForecastMethodRouter()
+            if requested_method:
+                method = requested_method
+                method_reasoning = f"User requested '{method}'"
+            else:
+                method, method_reasoning = router.auto_select_method(company_id, company_data)
+
+            # Build forecast via router
+            forecast, provenance = router.build_forecast(
+                company_id=company_id,
+                method=method,
+                seed_data=company_data,
                 months=months,
-                monthly_overrides=monthly_overrides,
+                assumptions=monthly_overrides,
             )
+
+            # Generate explanation
+            explainer = ForecastExplainer()
+            explanation = explainer.explain_forecast(method, company_data, forecast)
 
             result = {
                 "company_id": company_id,
                 "months": months,
+                "method": method,
+                "method_reasoning": method_reasoning,
                 "seeded_from": {
                     "revenue": company_data.get("revenue"),
                     "burn_rate": company_data.get("burn_rate"),
@@ -7302,7 +7414,29 @@ Return JSON with ONLY these fields (use null if unknown):
                     "growth_rate": company_data.get("growth_rate"),
                 },
                 "forecast": forecast,
+                "explanation": explanation,
             }
+
+            # Auto-save to DB
+            try:
+                fps = ForecastPersistenceService()
+                saved = fps.save_forecast(
+                    company_id=company_id,
+                    forecast=forecast,
+                    method=method,
+                    seed_snapshot=company_data,
+                    assumptions=monthly_overrides or {},
+                    name=forecast_name,
+                    activate=activate,
+                    explanation=explanation,
+                    created_by="agent",
+                )
+                result["forecast_id"] = saved.get("id")
+                result["persisted"] = True
+            except Exception as save_err:
+                logger.warning(f"[TOOL] fpa_forecast auto-save failed: {save_err}")
+                result["persisted"] = False
+                result["save_error"] = str(save_err)
 
             async with self.shared_data_lock:
                 self.shared_data["fpa_forecast_result"] = result
@@ -7312,7 +7446,7 @@ Return JSON with ONLY these fields (use null if unknown):
             growth = company_data.get("growth_rate", 0)
             gm = company_data.get("gross_margin")
             _fc_row_map = {
-                "revenue": ("revenue", f"Projected from ${seeded_rev:,.0f} base at {growth:.0%} annual growth"),
+                "revenue": ("revenue", f"Projected from ${seeded_rev:,.0f} base at {growth:.0%} annual growth ({method})"),
                 "cogs": ("cogs", f"Cost of sales at {(1 - (gm or 0.65)):.0%} of revenue" if gm else "COGS derived from gross margin assumption"),
                 "gross_profit": ("gross_profit", f"Revenue minus COGS ({(gm or 0.65):.0%} gross margin)"),
                 "rd_spend": ("opex_rd", "R&D spend per stage-based OpEx benchmark with efficiency decay"),
@@ -7343,11 +7477,12 @@ Return JSON with ONLY these fields (use null if unknown):
             result["memo_updates"] = {
                 "action": "append",
                 "sections": [
-                    {"type": "heading2", "content": f"{months}-Month Forecast"},
+                    {"type": "heading2", "content": f"{months}-Month Forecast ({method.replace('_', ' ').title()})"},
                     {"type": "paragraph", "content": (
                         f"Seeded from actuals — Revenue: ${seeded.get('revenue', 0):,.0f}, "
                         f"Burn: ${seeded.get('burn_rate', 0):,.0f}/mo, "
-                        f"Cash: ${seeded.get('cash_balance', 0):,.0f}."
+                        f"Cash: ${seeded.get('cash_balance', 0):,.0f}. "
+                        f"Method: {method_reasoning}."
                     )},
                     {"type": "paragraph", "content": (
                         f"End of forecast — Revenue: ${last_month.get('revenue', 0):,.0f}, "
@@ -7361,6 +7496,254 @@ Return JSON with ONLY these fields (use null if unknown):
             return result
         except Exception as e:
             logger.warning(f"[TOOL] fpa_forecast failed: {e}")
+            return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Forecast persistence tool handlers
+    # ------------------------------------------------------------------
+
+    async def _tool_fpa_save_forecast(self, inputs: dict) -> dict:
+        """Save the last forecast result from shared_data to DB."""
+        try:
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            # Get last forecast from shared_data
+            fpa_result = self.shared_data.get("fpa_forecast_result")
+            if not fpa_result or not fpa_result.get("forecast"):
+                return {"error": "No forecast in memory — run fpa_forecast first"}
+
+            fps = ForecastPersistenceService()
+            saved = fps.save_forecast(
+                company_id=company_id,
+                forecast=fpa_result["forecast"],
+                method=inputs.get("method") or fpa_result.get("method", "growth_rate"),
+                seed_snapshot=fpa_result.get("seeded_from", {}),
+                name=inputs.get("name"),
+                activate=inputs.get("activate", False),
+                explanation=fpa_result.get("explanation"),
+                created_by="agent",
+            )
+            return saved
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_save_forecast failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_list_forecasts(self, inputs: dict) -> dict:
+        """List all saved forecasts for a company."""
+        try:
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            fps = ForecastPersistenceService()
+            forecasts = fps.list_forecasts(company_id)
+            return {"company_id": company_id, "forecasts": forecasts, "count": len(forecasts)}
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_list_forecasts failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_load_forecast(self, inputs: dict) -> dict:
+        """Load a specific saved forecast by ID."""
+        try:
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+
+            forecast_id = inputs.get("forecast_id")
+            if not forecast_id:
+                return {"error": "forecast_id is required"}
+
+            fps = ForecastPersistenceService()
+            forecast = fps.load_forecast(forecast_id)
+            if not forecast:
+                return {"error": f"Forecast {forecast_id} not found"}
+            return forecast
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_load_forecast failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_activate_forecast(self, inputs: dict) -> dict:
+        """Set a saved forecast as the active one."""
+        try:
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+
+            forecast_id = inputs.get("forecast_id")
+            if not forecast_id:
+                return {"error": "forecast_id is required"}
+
+            fps = ForecastPersistenceService()
+            return fps.activate_forecast(forecast_id)
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_activate_forecast failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_compare_forecasts(self, inputs: dict) -> dict:
+        """Compare two forecasts side by side."""
+        try:
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+
+            forecast_id_a = inputs.get("forecast_id_a")
+            forecast_id_b = inputs.get("forecast_id_b")
+            if not forecast_id_a or not forecast_id_b:
+                return {"error": "Both forecast_id_a and forecast_id_b are required"}
+
+            fps = ForecastPersistenceService()
+            return fps.compare_forecasts(forecast_id_a, forecast_id_b)
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_compare_forecasts failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_apply_forecast(self, inputs: dict) -> dict:
+        """Write forecast lines into fpa_actuals grid."""
+        try:
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+
+            forecast_id = inputs.get("forecast_id")
+            if not forecast_id:
+                return {"error": "forecast_id is required"}
+
+            fps = ForecastPersistenceService()
+            count = fps.write_forecast_to_actuals(forecast_id)
+            return {"success": True, "forecast_id": forecast_id, "rows_written": count}
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_apply_forecast failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_explain_forecast(self, inputs: dict) -> dict:
+        """Explain how a forecast was generated."""
+        try:
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+            from app.services.forecast_explainer import ForecastExplainer
+
+            forecast_id = inputs.get("forecast_id")
+            company_id = inputs.get("company_id")
+            category = inputs.get("category")
+            period = inputs.get("period")
+
+            explainer = ForecastExplainer()
+
+            # If forecast_id given, load it and explain
+            if forecast_id:
+                fps = ForecastPersistenceService()
+                forecast = fps.load_forecast(forecast_id)
+                if not forecast:
+                    return {"error": f"Forecast {forecast_id} not found"}
+
+                result = {
+                    "forecast_id": forecast_id,
+                    "name": forecast.get("name"),
+                    "method": forecast.get("method"),
+                    "explanation": forecast.get("explanation"),
+                    "seed_snapshot": forecast.get("seed_snapshot", {}),
+                }
+
+                # Per-cell explanation if requested
+                if category and period:
+                    matching = [
+                        l for l in forecast.get("lines", [])
+                        if l["category"] == category and l["period"].startswith(period)
+                    ]
+                    if matching:
+                        line = matching[0]
+                        result["cell_derivation"] = explainer.explain_cell(
+                            category, period, line["amount"],
+                            forecast.get("method", "growth_rate"),
+                            forecast.get("seed_snapshot", {}),
+                        )
+
+                # Driver explanations
+                result["drivers"] = explainer.explain_drivers(
+                    forecast.get("seed_snapshot", {}),
+                    forecast.get("assumptions", {}),
+                )
+                return result
+
+            # Fall back to last in-memory forecast
+            fpa_result = self.shared_data.get("fpa_forecast_result")
+            if fpa_result:
+                seed = fpa_result.get("seeded_from", {})
+                return {
+                    "method": fpa_result.get("method", "growth_rate"),
+                    "explanation": fpa_result.get("explanation"),
+                    "drivers": explainer.explain_drivers(seed),
+                }
+
+            return {"error": "No forecast_id provided and no forecast in memory"}
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_explain_forecast failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_scenario_promote(self, inputs: dict) -> dict:
+        """Promote scenario branch to active forecast."""
+        try:
+            import json
+            from app.services.scenario_branch_service import ScenarioBranchService
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+
+            branch_id = inputs.get("branch_id")
+            company_id = inputs.get("company_id")
+            if not branch_id or not company_id:
+                return {"error": "branch_id and company_id are required"}
+
+            svc = ScenarioBranchService()
+            result = svc.execute_branch(branch_id, company_id, forecast_months=24)
+            if isinstance(result, dict) and "error" in result:
+                return result
+
+            fps = ForecastPersistenceService()
+            saved = fps.save_forecast(
+                company_id=company_id,
+                forecast=result.get("forecast", []),
+                method="scenario_promoted",
+                seed_snapshot={
+                    "source_branch_id": branch_id,
+                    "branch_name": result.get("name"),
+                    "assumptions": result.get("assumptions", {}),
+                    "chain": result.get("chain", []),
+                },
+                name=inputs.get("name") or f"Scenario: {result.get('name', 'promoted')}",
+                activate=True,
+                explanation=f"Promoted from scenario branch '{result.get('name')}'. "
+                            f"Assumptions: {json.dumps(result.get('assumptions', {}), default=str)[:500]}",
+                created_by="scenario_promote",
+            )
+
+            return {"success": True, "forecast_id": saved.get("id"), "branch_id": branch_id}
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_scenario_promote failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_resolve_drivers(self, inputs: dict) -> dict:
+        """Show all drivers with base/override/effective values."""
+        try:
+            from app.services.actuals_ingestion import seed_forecast_from_actuals
+            from app.services.forecast_explainer import ForecastExplainer
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            branch_id = inputs.get("branch_id")
+            user_drivers = inputs.get("drivers", {})
+
+            # If branch_id, use ScenarioBranchService.resolve_drivers
+            if branch_id:
+                from app.services.scenario_branch_service import ScenarioBranchService
+                svc = ScenarioBranchService()
+                resolved = svc.resolve_drivers(branch_id, company_id)
+                return {"company_id": company_id, "branch_id": branch_id, "drivers": resolved}
+
+            # Otherwise, show drivers from actuals + user overrides
+            seed_data = seed_forecast_from_actuals(company_id)
+            explainer = ForecastExplainer()
+            drivers = explainer.explain_drivers(seed_data, user_drivers)
+            return {"company_id": company_id, "drivers": drivers}
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_resolve_drivers failed: {e}")
             return {"error": str(e)}
 
     async def _tool_fpa_cash_flow(self, inputs: dict) -> dict:
@@ -7722,6 +8105,48 @@ Return JSON with ONLY these fields (use null if unknown):
             return {"budget": result.data[0], "success": True}
         except Exception as e:
             logger.warning(f"[TOOL] fpa_budget_create failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_fpa_cell_edit(self, inputs: dict) -> dict:
+        """Edit a single P&L cell — upserts into fpa_actuals."""
+        try:
+            from app.core.supabase_client import get_supabase_client
+
+            company_id = inputs.get("company_id")
+            category = inputs.get("category")
+            period = inputs.get("period", "").strip()
+            amount = inputs.get("amount")
+            if not company_id or not category or not period or amount is None:
+                return {"error": "company_id, category, period, and amount are required"}
+
+            # Normalize period
+            if len(period) == 7:
+                period = f"{period}-01"
+
+            subcategory = inputs.get("subcategory", "")
+            hierarchy_path = f"{category}/{subcategory}" if subcategory else category
+
+            sb = get_supabase_client()
+            if not sb:
+                return {"error": "Database unavailable"}
+
+            sb.table("fpa_actuals").upsert(
+                {
+                    "company_id": company_id,
+                    "fund_id": inputs.get("fund_id"),
+                    "period": period,
+                    "category": category,
+                    "subcategory": subcategory,
+                    "hierarchy_path": hierarchy_path,
+                    "amount": float(amount),
+                    "source": "agent_edit",
+                },
+                on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+            ).execute()
+
+            return {"success": True, "category": category, "period": period, "amount": amount}
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_cell_edit failed: {e}")
             return {"error": str(e)}
 
     async def _tool_fpa_upload_actuals(self, inputs: dict) -> dict:

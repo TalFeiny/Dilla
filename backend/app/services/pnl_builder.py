@@ -83,15 +83,24 @@ class PnlBuilder:
         start: Optional[str] = None,
         end: Optional[str] = None,
         forecast_months: int = 12,
+        view: str = "waterfall",
+        budget_id: Optional[str] = None,
+        forecast_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Full P&L build: actuals → derive ratios → forecast → assemble rows.
+
+        Views:
+            waterfall            — default: actuals + inline forecast
+            actuals_vs_budget    — actuals alongside budget data
+            actuals_vs_forecast  — actuals alongside a saved forecast
 
         Returns:
             {
                 "periods": ["2025-01", "2025-02", ...],
                 "forecastStartIndex": int,
                 "rows": [{"id", "label", "depth", "section", "values", ...}, ...],
+                "view": str,
             }
         """
         # 1. Pull actuals
@@ -102,23 +111,50 @@ class PnlBuilder:
         # 2. Derive ratios from last actual period
         ratios = self._derive_ratios(actuals, actual_periods)
 
-        # 3. Build forecast
-        forecast, forecast_periods = self._build_forecast(
-            actuals, actual_periods, ratios, forecast_months
-        )
+        # 3. Build forecast — prefer saved forecast, then compute inline
+        if forecast_id:
+            forecast, forecast_periods = self._pull_saved_forecast(forecast_id, actual_periods)
+        elif view == "actuals_vs_forecast":
+            # Try active forecast first
+            forecast, forecast_periods = self._pull_active_forecast(actual_periods)
+            if not forecast:
+                forecast, forecast_periods = self._build_forecast(
+                    actuals, actual_periods, ratios, forecast_months
+                )
+        else:
+            forecast, forecast_periods = self._build_forecast(
+                actuals, actual_periods, ratios, forecast_months
+            )
 
-        # 4. Discover line items from actuals (dynamic waterfall)
+        # 4. Pull budget if requested
+        budget_data = None
+        if view == "actuals_vs_budget" or budget_id:
+            budget_data = self._pull_budget(budget_id)
+
+        # 5. Discover line items from actuals (dynamic waterfall)
         line_items = self._discover_line_items(actuals)
 
-        # 5. Assemble rows
+        # 6. Assemble rows
         all_periods = actual_periods + forecast_periods
         rows = self._assemble_rows(line_items, actuals, forecast, all_periods)
 
-        return {
+        # 7. Add budget comparison rows if available
+        if budget_data:
+            rows = self._add_budget_comparison(rows, budget_data, actual_periods)
+
+        # 8. Add computed metrics rows if unit economics data available
+        rows = self._add_computed_metrics(rows, actuals, all_periods)
+
+        result = {
             "periods": all_periods,
             "forecastStartIndex": len(actual_periods),
             "rows": rows,
+            "view": view,
         }
+        if forecast_id:
+            result["forecast_id"] = forecast_id
+
+        return result
 
     # ------------------------------------------------------------------
     # Step 1: Pull actuals from fpa_actuals
@@ -162,8 +198,16 @@ class PnlBuilder:
             period = row["period"][:7]
             cat = row["category"]
             sub = row.get("subcategory")
+            hp = row.get("hierarchy_path", "")
             amount = float(row["amount"])
-            key = f"{cat}:{sub}" if sub else cat
+
+            # Use hierarchy_path as key when it encodes >2 levels
+            if hp and hp.count("/") > 1:
+                key = hp
+            elif sub:
+                key = f"{cat}:{sub}"
+            else:
+                key = cat
 
             periods_set.add(period)
             actuals.setdefault(key, {})[period] = amount
@@ -412,8 +456,35 @@ class PnlBuilder:
             if ":" in key:
                 cats_with_subs.add(key.split(":", 1)[0])
 
+        # Also detect hierarchy_path-based keys (contain "/" with >2 segments)
+        path_keys: set = set()
+        for key in actuals.keys():
+            if "/" in key and key.count("/") > 1:
+                path_keys.add(key)
+
         # Collect all keys from actuals
         for key in sorted(actuals.keys()):
+            # Handle deep hierarchy_path keys (e.g. "opex_rd/engineering/senior_engineers")
+            if key in path_keys:
+                parts = key.split("/")
+                depth = len(parts) - 1  # 3-part path = depth 2
+                parent_path = "/".join(parts[:-1])
+                leaf = parts[-1]
+                root_cat = parts[0]
+                section = CATEGORY_SECTION.get(root_cat, "other")
+                seen_sections.add(section)
+                seen_categories.add(root_cat)
+                items.append({
+                    "id": key,
+                    "label": leaf.replace("_", " ").title(),
+                    "category": root_cat,
+                    "subcategory": leaf,
+                    "section": section,
+                    "depth": depth,
+                    "parentId": parent_path,
+                })
+                continue
+
             cat, sub = (key.split(":", 1) + [None])[:2]
             section = CATEGORY_SECTION.get(cat, "other")
             seen_sections.add(section)
@@ -611,6 +682,232 @@ class PnlBuilder:
             "isComputed": True,
             "values": values,
         }
+
+    # ------------------------------------------------------------------
+    # Saved forecast loading
+    # ------------------------------------------------------------------
+
+    def _pull_saved_forecast(
+        self, forecast_id: str, actual_periods: List[str]
+    ) -> Tuple[Dict[str, Dict[str, float]], List[str]]:
+        """Load a persisted forecast and reshape to same format as _build_forecast."""
+        try:
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+            fps = ForecastPersistenceService()
+            loaded = fps.load_forecast(forecast_id)
+            if not loaded or not loaded.get("lines"):
+                return {}, []
+            return self._reshape_forecast_lines(loaded["lines"], actual_periods)
+        except Exception as e:
+            logger.warning(f"Failed to load saved forecast {forecast_id}: {e}")
+            return {}, []
+
+    def _pull_active_forecast(
+        self, actual_periods: List[str]
+    ) -> Tuple[Dict[str, Dict[str, float]], List[str]]:
+        """Load the active forecast for this company."""
+        try:
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+            fps = ForecastPersistenceService()
+            active = fps.get_active_forecast(self.company_id)
+            if not active:
+                return {}, []
+            loaded = fps.load_forecast(active["id"])
+            if not loaded or not loaded.get("lines"):
+                return {}, []
+            return self._reshape_forecast_lines(loaded["lines"], actual_periods)
+        except Exception as e:
+            logger.warning(f"Failed to load active forecast: {e}")
+            return {}, []
+
+    def _reshape_forecast_lines(
+        self, lines: List[Dict], actual_periods: List[str]
+    ) -> Tuple[Dict[str, Dict[str, float]], List[str]]:
+        """Reshape fpa_forecast_lines into the format expected by _assemble_rows."""
+        forecast: Dict[str, Dict[str, float]] = {}
+        periods_set: set = set()
+        actual_set = set(actual_periods)
+
+        for line in lines:
+            period = line["period"][:7]  # Normalize to YYYY-MM
+            if period in actual_set:
+                continue  # Don't overlap with actuals
+            category = line["category"]
+            amount = float(line["amount"])
+            periods_set.add(period)
+            forecast.setdefault(period, {})[category] = amount
+
+        forecast_periods = sorted(periods_set)
+        return forecast, forecast_periods
+
+    # ------------------------------------------------------------------
+    # Budget loading
+    # ------------------------------------------------------------------
+
+    def _pull_budget(self, budget_id: Optional[str] = None) -> Optional[Dict[str, Dict[str, float]]]:
+        """Pull budget lines and reshape to {category: {period: amount}}.
+
+        If no budget_id, finds the latest approved budget for the company.
+        """
+        from app.core.supabase_client import get_supabase_client
+
+        sb = get_supabase_client()
+        if not sb:
+            return None
+
+        try:
+            if not budget_id:
+                budget_result = (
+                    sb.table("budgets")
+                    .select("id, fiscal_year")
+                    .eq("company_id", self.company_id)
+                    .eq("status", "approved")
+                    .order("fiscal_year", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+                if not budget_result.data:
+                    return None
+                budget_id = budget_result.data[0]["id"]
+
+            lines = (
+                sb.table("budget_lines")
+                .select("*")
+                .eq("budget_id", budget_id)
+                .execute()
+            )
+            if not lines.data:
+                return None
+
+            # Get fiscal year for period generation
+            budget_meta = (
+                sb.table("budgets")
+                .select("fiscal_year")
+                .eq("id", budget_id)
+                .limit(1)
+                .execute()
+            )
+            fiscal_year = budget_meta.data[0]["fiscal_year"] if budget_meta.data else 2026
+
+            # Reshape: budget_lines have m1-m12 columns
+            budget_data: Dict[str, Dict[str, float]] = {}
+            for line in lines.data:
+                category = line.get("category", "")
+                if not category:
+                    continue
+                for m in range(1, 13):
+                    val = line.get(f"m{m}")
+                    if val is not None:
+                        period = f"{fiscal_year}-{m:02d}"
+                        budget_data.setdefault(category, {})[period] = float(val)
+
+            return budget_data
+        except Exception as e:
+            logger.warning(f"Failed to load budget: {e}")
+            return None
+
+    def _add_budget_comparison(
+        self,
+        rows: List[Dict[str, Any]],
+        budget_data: Dict[str, Dict[str, float]],
+        actual_periods: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Add budget and variance rows alongside existing data rows."""
+        new_rows = []
+        for row in rows:
+            new_rows.append(row)
+            row_id = row.get("id", "")
+            if row.get("isHeader") or row_id not in budget_data:
+                continue
+
+            # Budget row
+            budget_values = {}
+            for p in actual_periods:
+                budget_values[p] = budget_data.get(row_id, {}).get(p)
+            new_rows.append({
+                "id": f"{row_id}_budget",
+                "label": f"{row.get('label', '')} (Budget)",
+                "depth": row.get("depth", 0) + 1,
+                "section": row.get("section", ""),
+                "isBudget": True,
+                "values": budget_values,
+            })
+
+            # Variance row
+            variance_values = {}
+            for p in actual_periods:
+                actual = row.get("values", {}).get(p)
+                budget = budget_values.get(p)
+                if actual is not None and budget is not None and budget != 0:
+                    variance_values[p] = {
+                        "delta": actual - budget,
+                        "pct": (actual - budget) / abs(budget),
+                    }
+            if variance_values:
+                new_rows.append({
+                    "id": f"{row_id}_variance",
+                    "label": f"{row.get('label', '')} (Variance)",
+                    "depth": row.get("depth", 0) + 1,
+                    "section": row.get("section", ""),
+                    "isVariance": True,
+                    "values": variance_values,
+                })
+
+        return new_rows
+
+    # ------------------------------------------------------------------
+    # Computed metrics rows
+    # ------------------------------------------------------------------
+
+    def _add_computed_metrics(
+        self,
+        rows: List[Dict[str, Any]],
+        actuals: Dict[str, Dict[str, float]],
+        all_periods: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Add unit economics rows if customer/ACV data exists."""
+        try:
+            from app.services.computed_metrics import ComputedMetrics, COMPUTED_LABELS
+            from app.services.actuals_ingestion import seed_forecast_from_actuals
+
+            seed = seed_forecast_from_actuals(self.company_id)
+            if not seed.get("_detected_acv") and not seed.get("_detected_customer_count"):
+                return rows  # No unit economics data
+
+            metrics = ComputedMetrics.compute_all(seed)
+            if not metrics or all(k.startswith("_") for k in metrics):
+                return rows
+
+            # Add section header
+            rows.append({
+                "id": "unit_economics_header",
+                "label": "Unit Economics",
+                "depth": 0,
+                "isHeader": True,
+                "section": "unit_economics",
+                "values": {},
+            })
+
+            # Add metric rows
+            for metric_id, value in metrics.items():
+                if metric_id.startswith("_"):
+                    continue
+                label = COMPUTED_LABELS.get(metric_id, metric_id.replace("_", " ").title())
+                derivation = metrics.get("_derivations", {}).get(metric_id)
+                rows.append({
+                    "id": f"computed_{metric_id}",
+                    "label": label,
+                    "section": "unit_economics",
+                    "depth": 1,
+                    "isComputed": True,
+                    "values": {p: value for p in all_periods},
+                    "derivation": derivation,
+                })
+
+            return rows
+        except Exception as e:
+            logger.debug(f"Computed metrics skipped: {e}")
+            return rows
 
     @staticmethod
     def _compute_gross_profit(

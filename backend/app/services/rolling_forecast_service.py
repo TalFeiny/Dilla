@@ -70,19 +70,25 @@ class RollingForecastService:
 
         forecast_months_needed = max(0, window_months - num_actuals)
 
-        # --- 3. Build forecast ---
+        # --- 3. Build forecast — prefer active saved forecast ---
         forecast_monthly: List[Dict[str, Any]] = []
         if forecast_months_needed > 0:
-            company_data = seed_forecast_from_actuals(company_id)
-            if company_data.get("revenue", 0) > 0:
-                svc = CashFlowPlanningService()
-                forecast_monthly = svc.build_monthly_cash_flow_model(
-                    company_data,
-                    months=forecast_months_needed,
-                    start_period=forecast_start,
-                )
-                for row in forecast_monthly:
-                    row["source"] = "forecast"
+            # Try loading active saved forecast first
+            saved_forecast = self._load_active_forecast(company_id, forecast_start, forecast_months_needed)
+            if saved_forecast:
+                forecast_monthly = saved_forecast
+            else:
+                # Fall back to computing forecast on the fly
+                company_data = seed_forecast_from_actuals(company_id)
+                if company_data.get("revenue", 0) > 0:
+                    svc = CashFlowPlanningService()
+                    forecast_monthly = svc.build_monthly_cash_flow_model(
+                        company_data,
+                        months=forecast_months_needed,
+                        start_period=forecast_start,
+                    )
+            for row in forecast_monthly:
+                row["source"] = "forecast"
 
         # Tag actuals
         for row in actuals_monthly:
@@ -120,6 +126,68 @@ class RollingForecastService:
     # ------------------------------------------------------------------
     # Load actuals into P&L-shaped monthly rows
     # ------------------------------------------------------------------
+
+    def _load_active_forecast(
+        self, company_id: str, start_period: str, months_needed: int
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Load active saved forecast lines and reshape to P&L row format."""
+        try:
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+
+            fps = ForecastPersistenceService()
+            active = fps.get_active_forecast(company_id)
+            if not active:
+                return None
+
+            loaded = fps.load_forecast(active["id"])
+            if not loaded or not loaded.get("lines"):
+                return None
+
+            # Group lines by period
+            by_period: Dict[str, Dict[str, float]] = {}
+            for line in loaded["lines"]:
+                period = line["period"][:7]
+                if period < start_period:
+                    continue
+                by_period.setdefault(period, {})[line["category"]] = float(line["amount"])
+
+            # Convert to P&L row format matching CashFlowPlanningService output
+            result = []
+            for period in sorted(by_period.keys())[:months_needed]:
+                vals = by_period[period]
+                row = {"period": period}
+                # Map category names to expected keys
+                category_to_key = {
+                    "revenue": "revenue",
+                    "cogs": "cogs",
+                    "gross_profit": "gross_profit",
+                    "opex_rd": "rd_spend",
+                    "opex_sm": "sm_spend",
+                    "opex_ga": "ga_spend",
+                    "opex_total": "total_opex",
+                    "ebitda": "ebitda",
+                    "net_income": "net_income",
+                    "free_cash_flow": "free_cash_flow",
+                    "cash_balance": "cash_balance",
+                    "headcount": "headcount",
+                    "runway_months": "runway_months",
+                }
+                for cat, key in category_to_key.items():
+                    if cat in vals:
+                        row[key] = vals[cat]
+
+                # Compute derived fields if missing
+                if "gross_profit" not in row and "revenue" in row and "cogs" in row:
+                    row["gross_profit"] = row["revenue"] - row["cogs"]
+                if "gross_margin" not in row and "revenue" in row and row["revenue"] > 0:
+                    row["gross_margin"] = (row.get("gross_profit", 0)) / row["revenue"]
+
+                result.append(row)
+
+            return result if result else None
+        except Exception as e:
+            logger.debug(f"Failed to load active forecast for rolling view: {e}")
+            return None
 
     def _load_actuals_monthly(self, company_id: str) -> List[Dict[str, Any]]:
         """
