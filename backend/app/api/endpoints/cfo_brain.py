@@ -4,7 +4,7 @@ Same architecture as unified_brain.py but with CFO system prompt and FPA-focused
 Separate agent for FP&A, budgeting, cash flow, variance analysis, and scenario planning.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from typing import Dict, Optional
 from pydantic import BaseModel, Field
@@ -14,6 +14,7 @@ from app.services.unified_mcp_orchestrator import (
     get_unified_orchestrator,
     OutputFormat
 )
+from app.services.model_router import set_provider_affinity
 from app.utils.json_serializer import safe_json_dumps, clean_for_json
 
 logger = logging.getLogger(__name__)
@@ -151,12 +152,24 @@ class CFORequest(BaseModel):
     options: Optional[Dict] = Field(default_factory=dict)
 
 
+def _extract_user_id(raw_request: Request, context: Optional[Dict] = None) -> str:
+    """Best-effort user ID for provider affinity."""
+    import uuid as _uuid
+    if context and context.get("user_id"):
+        return context["user_id"]
+    auth = raw_request.headers.get("authorization", "")
+    if auth.startswith("Bearer ") and len(auth) > 40:
+        return auth[7:39]
+    return str(_uuid.uuid4())
+
+
 @router.post("/cfo-brain")
-async def process_cfo_request(request: CFORequest):
+async def process_cfo_request(request: CFORequest, raw_request: Request):
     """
     CFO agent endpoint — same as unified-brain but with CFO system prompt.
     Handles FP&A, budgeting, cash flow, variance, and scenario planning.
     """
+    set_provider_affinity(_extract_user_id(raw_request, request.context))
     logger.info(f"[CFO-BRAIN] Received request: {request.prompt[:100]}")
     try:
         # Validate output format
@@ -255,10 +268,11 @@ async def process_cfo_request(request: CFORequest):
 
 
 @router.post("/cfo-brain-stream")
-async def process_cfo_stream(request: CFORequest):
+async def process_cfo_stream(request: CFORequest, raw_request: Request):
     """Streaming CFO endpoint — yields NDJSON progress events."""
     import json as _json
 
+    set_provider_affinity(_extract_user_id(raw_request, request.context))
     logger.info(f"[CFO-BRAIN-STREAM] Streaming request: {request.prompt[:80]}")
 
     orchestrator = get_unified_orchestrator()

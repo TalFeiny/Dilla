@@ -4123,6 +4123,7 @@ export function UnifiedMatrix({
   // ── PnL mode: Upload CSV of actuals ────────────────────────────────
   // Posts the raw CSV file to the backend which auto-detects orientation
   // (categories-as-rows or months-as-rows) and upserts into fpa_actuals.
+  // State is surfaced via cellActionStatus (in-cell spinner) + onToolCallLog (chat activity).
   const handlePnlCsvUpload = useCallback(async (file: File | null, event?: React.ChangeEvent<HTMLInputElement>) => {
     if (event) {
       file = event.target.files?.[0] || null;
@@ -4132,14 +4133,38 @@ export function UnifiedMatrix({
       return;
     }
 
+    const statusKey = 'pnl_root_csv_upload';
+    const companyRow = matrixData?.rows?.find((r) => r.companyId === companyId || r.id === companyId);
+    const displayCompany = companyRow?.companyName || companyId;
+
     setIsPnlUploading(true);
     setError(null);
+
+    // Stage 1: Uploading
+    setCellActionStatus((prev) => ({ ...prev, [statusKey]: { state: 'loading', message: `Uploading ${file!.name}...` } }));
+    onToolCallLog?.({
+      action_id: 'pnl.upload_csv',
+      row_id: 'pnl_root',
+      column_id: 'csv_upload',
+      status: 'running',
+      companyName: displayCompany,
+    });
 
     try {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('company_id', companyId);
       if (fundId) formData.append('fund_id', fundId);
+
+      // Stage 2: Cleaning & matching (shown while backend processes)
+      setCellActionStatus((prev) => ({ ...prev, [statusKey]: { state: 'loading', message: 'Cleaning & matching rows...' } }));
+      onToolCallLog?.({
+        action_id: 'pnl.clean_match',
+        row_id: 'pnl_root',
+        column_id: 'csv_upload',
+        status: 'running',
+        companyName: displayCompany,
+      });
 
       const res = await fetch('/api/fpa/upload-actuals', {
         method: 'POST',
@@ -4151,25 +4176,88 @@ export function UnifiedMatrix({
         throw new Error(data.error || data.detail || 'Upload failed');
       }
 
-      toast.success(
-        `Imported ${data.ingested} data points`,
-        {
-          description: `${data.periods?.length || 0} periods, ${data.categories?.length || 0} categories` +
-            (data.unmapped_labels?.length ? `. Skipped: ${data.unmapped_labels.join(', ')}` : ''),
-          duration: 5000,
-        },
-      );
+      // Stage 3: Upserting complete — show results
+      const periodCount = data.periods?.length || 0;
+      const categoryCount = data.categories?.length || 0;
+      const ingested = data.ingested || 0;
+      const unmapped = data.unmapped_labels || [];
+      const skipped = data.skipped_rows || {};
+      const warnings = data.warnings || [];
+      const subcatsCreated = data.subcategories_created || [];
+
+      // Build summary for cell status (persists until next upload)
+      const periodRange = data.periods?.length ? `${data.periods[0]} – ${data.periods[data.periods.length - 1]}` : '';
+      const summaryParts: string[] = [`${ingested} rows → ${periodCount} periods`];
+      if (periodRange) summaryParts.push(periodRange);
+      if (subcatsCreated.length) summaryParts.push(`${subcatsCreated.length} subcategories`);
+      if (unmapped.length) summaryParts.push(`${unmapped.length} unmapped`);
+      setCellActionStatus((prev) => ({ ...prev, [statusKey]: { state: 'success', message: summaryParts.join(' · ') } }));
+
+      // Log cleaning/matching success with match details
+      const matchParts: string[] = [`Matched ${categoryCount} categor${categoryCount !== 1 ? 'ies' : 'y'}, detected ${periodCount} period${periodCount !== 1 ? 's' : ''}.`];
+      if (subcatsCreated.length) matchParts.push(`Created subcategories: ${subcatsCreated.join(', ')}.`);
+      if (unmapped.length) matchParts.push(`Unmapped: ${unmapped.join(', ')}.`);
+      if (skipped.computed?.length) matchParts.push(`Skipped computed: ${skipped.computed.join(', ')}.`);
+      if (skipped.separators) matchParts.push(`${skipped.separators} separator row${skipped.separators !== 1 ? 's' : ''} skipped.`);
+
+      onToolCallLog?.({
+        action_id: 'pnl.clean_match',
+        row_id: 'pnl_root',
+        column_id: 'csv_upload',
+        status: 'success',
+        companyName: displayCompany,
+        explanation: matchParts.join(' '),
+      });
+
+      // Log overall upload success to chat activity
+      const explanationParts: string[] = [
+        `Imported ${ingested} data points across ${periodCount} period${periodCount !== 1 ? 's' : ''} and ${categoryCount} categor${categoryCount !== 1 ? 'ies' : 'y'}.`,
+      ];
+      if (warnings.length) explanationParts.push(...warnings);
+
+      onToolCallLog?.({
+        action_id: 'pnl.upload_csv',
+        row_id: 'pnl_root',
+        column_id: 'csv_upload',
+        status: 'success',
+        companyName: displayCompany,
+        explanation: explanationParts.join(' '),
+      });
+
+      // Period upsert info persists in cell status until next upload starts
+      // (Stage 1 of the next upload resets it to 'loading')
 
       // Reload grid from PnlBuilder
       loadPnlData();
     } catch (err) {
       console.error('[PnL CSV upload] error:', err);
-      toast.error(err instanceof Error ? err.message : 'CSV upload failed');
+      const errMsg = err instanceof Error ? err.message : 'CSV upload failed';
+
+      setCellActionStatus((prev) => ({ ...prev, [statusKey]: { state: 'error', message: errMsg } }));
+      onToolCallLog?.({
+        action_id: 'pnl.clean_match',
+        row_id: 'pnl_root',
+        column_id: 'csv_upload',
+        status: 'error',
+        error: errMsg,
+        companyName: displayCompany,
+      });
+      onToolCallLog?.({
+        action_id: 'pnl.upload_csv',
+        row_id: 'pnl_root',
+        column_id: 'csv_upload',
+        status: 'error',
+        error: errMsg,
+        companyName: displayCompany,
+      });
+
+      // Auto-clear error after 6s
+      setTimeout(() => setCellActionStatus((p) => { const next = { ...p }; delete next[statusKey]; return next; }), 6000);
     } finally {
       setIsPnlUploading(false);
       if (event?.target) event.target.value = '';
     }
-  }, [mode, companyId, fundId, loadPnlData]);
+  }, [mode, companyId, fundId, matrixData?.rows, loadPnlData, onToolCallLog]);
 
   // ── PnL mode: Import actuals from Xero ─────────────────────────────
   // Calls the backend Xero sync endpoint which pulls P&L from Xero

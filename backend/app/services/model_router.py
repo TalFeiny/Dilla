@@ -16,12 +16,34 @@ import importlib
 import json
 import hashlib
 from collections import deque
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 # Import settings
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# ── Per-request provider affinity ────────────────────────────────────
+# Async-safe contextvar: each concurrent request gets its own rotation
+# offset so different users hit different providers first.
+_provider_affinity: ContextVar[int] = ContextVar("_provider_affinity", default=0)
+
+
+def set_provider_affinity(user_id: str) -> int:
+    """Set provider rotation offset for the current async context.
+
+    Call once at the API entry point (e.g. unified_brain) before any
+    get_completion calls.  The offset is derived from a stable hash of
+    the user_id so the same user always gets the same rotation —
+    distributing concurrent users across providers.
+
+    Returns the computed offset (useful for logging).
+    """
+    offset = int(hashlib.md5(user_id.encode()).hexdigest(), 16)
+    _provider_affinity.set(offset)
+    logger.info(f"[AFFINITY] User {user_id[:8]}… → rotation offset {offset % 5}")
+    return offset
 
 
 class ModelProvider(Enum):
@@ -1082,13 +1104,24 @@ class ModelRouter:
         # Sort by priority (lower is better)
         capable_models.sort(key=lambda x: self.model_configs[x]["priority"])
         
-        # If no preference specified, ensure default order: Sonnet 4.6 -> GPT-5.2 -> GPT-5-Mini -> Haiku -> others
+        # If no preference specified, rotate default order by user affinity
+        # so concurrent users hit different providers first.
         if not preferred:
             default_order = ["claude-sonnet-4-6", "gpt-5.2", "gpt-5-mini", "claude-haiku-4-5", "gemini-2.5-flash"]
             preferred_available = [m for m in default_order if m in capable_models]
             other_models = [m for m in capable_models if m not in default_order]
-            result = preferred_available + other_models
-            logger.debug(f"[_get_model_order] No preference specified, using default order: {result}")
+            base = preferred_available + other_models
+
+            # Apply per-user rotation: rotate the list so different users
+            # start with different providers.  Offset 0 = no rotation (default).
+            affinity = _provider_affinity.get(0)
+            if affinity and len(base) > 1:
+                rotation = affinity % len(base)
+                result = base[rotation:] + base[:rotation]
+                logger.debug(f"[_get_model_order] Affinity rotation={rotation}, order: {result}")
+            else:
+                result = base
+                logger.debug(f"[_get_model_order] No affinity, default order: {result}")
             return result
         
         # Preferred models (from caller_context task routing) always go first,

@@ -36,6 +36,7 @@ import {
   Trash2,
   ListTodo,
   BookOpen,
+  FileSpreadsheet,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -189,6 +190,9 @@ const TOOL_ICONS: Record<string, React.ElementType> = {
   'run_pwerm_analysis': Target,
   'get_portfolio_metrics': DollarSign,
   'predict_exit_timing': Activity,
+  'pnl.upload_csv': FileSpreadsheet,
+  'pnl.clean_match': FileSpreadsheet,
+  'document.extract': FileTextIcon,
 };
 
 /** Build compressed matrix context for backend (< 5KB) with optional gridSnapshot for cell values */
@@ -2088,21 +2092,26 @@ export default function AgentChat({
                       return (
                         <Tooltip key={`${entry.row_id}-${entry.column_id}-${entry.action_id}-${entryIdx}`}>
                           <TooltipTrigger asChild>
-                            <div className="flex items-center gap-2 rounded-md border border-gray-100 dark:border-gray-800 px-2 py-1.5 text-sm">
-                              {entry.status === 'running' && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground shrink-0" />}
-                              {entry.status === 'success' && <Check className="h-3.5 w-3.5 text-green-600 shrink-0" />}
-                              {entry.status === 'error' && <X className="h-3.5 w-3.5 text-destructive shrink-0" />}
-                              <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                              <span className="truncate font-medium capitalize">{label}</span>
-                              {entry.companyName && <span className="text-xs text-muted-foreground truncate">{entry.companyName}</span>}
-                              {entry.status === 'error' && entry.error && (
-                                <span className="text-xs text-destructive truncate max-w-[100px]">{entry.error}</span>
+                            <div className="rounded-md border border-gray-100 dark:border-gray-800 px-2 py-1.5 text-sm">
+                              <div className="flex items-center gap-2">
+                                {entry.status === 'running' && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground shrink-0" />}
+                                {entry.status === 'success' && <Check className="h-3.5 w-3.5 text-green-600 shrink-0" />}
+                                {entry.status === 'error' && <X className="h-3.5 w-3.5 text-destructive shrink-0" />}
+                                <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                <span className="truncate font-medium capitalize">{label}</span>
+                                {entry.companyName && <span className="text-xs text-muted-foreground truncate">{entry.companyName}</span>}
+                                {entry.status === 'error' && entry.error && (
+                                  <span className="text-xs text-destructive truncate max-w-[100px]">{entry.error}</span>
+                                )}
+                              </div>
+                              {entry.explanation && entry.status === 'success' && (
+                                <p className="mt-1 text-xs text-muted-foreground leading-relaxed whitespace-pre-line">{entry.explanation}</p>
                               )}
                             </div>
                           </TooltipTrigger>
-                          <TooltipContent>
-                            {label}
-                            {entry.companyName && ` · ${entry.companyName}`}
+                          <TooltipContent side="bottom" className="max-w-xs">
+                            {entry.explanation || label}
+                            {!entry.explanation && entry.companyName && ` · ${entry.companyName}`}
                             {entry.status === 'running' && ' — Running…'}
                             {entry.status === 'error' && entry.error && ` — ${entry.error}`}
                           </TooltipContent>

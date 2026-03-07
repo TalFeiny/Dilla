@@ -2,13 +2,14 @@
 Unified Brain API Endpoints - Single entry point for all agent operations
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 import uuid
 from datetime import datetime
 
 from ..services.unified_mcp_orchestrator import UnifiedMCPOrchestrator
+from ..services.model_router import set_provider_affinity
 
 # Initialize the orchestrator service
 orchestrator_service = UnifiedMCPOrchestrator()
@@ -32,13 +33,27 @@ class UnifiedResponse(BaseModel):
     skills_used: Optional[List[str]] = None
 
 @router.post("/unified-brain", response_model=UnifiedResponse)
-async def unified_brain(request: UnifiedRequest, background_tasks: BackgroundTasks):
+async def unified_brain(request: UnifiedRequest, background_tasks: BackgroundTasks, raw_request: Request):
     """
     Main endpoint for all agent operations
     Replaces all individual agent endpoints
     """
     task_id = str(uuid.uuid4())
-    
+
+    # Set provider affinity for load distribution.
+    # Use auth user_id if available, fall back to task_id so even
+    # unauthenticated requests get distributed across providers.
+    user_id = None
+    if request.context and request.context.get("user_id"):
+        user_id = request.context["user_id"]
+    if not user_id:
+        # Check Authorization header for JWT sub claim (best-effort)
+        auth_header = raw_request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer ") and len(auth_header) > 40:
+            # Use the token itself as a stable user identifier
+            user_id = auth_header[7:39]  # first 32 chars of token = stable per-user
+    set_provider_affinity(user_id or task_id)
+
     try:
         # Execute task using the UnifiedMCPOrchestrator
         result = await orchestrator_service.process_request(

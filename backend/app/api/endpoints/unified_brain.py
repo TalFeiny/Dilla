@@ -14,11 +14,23 @@ from app.services.unified_mcp_orchestrator import (
     get_unified_orchestrator,
     OutputFormat
 )
+from app.services.model_router import set_provider_affinity
 from app.utils.json_serializer import safe_json_dumps, clean_for_json
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent", tags=["unified-brain"])
+
+
+def _extract_user_id(request: Request, context: Optional[Dict] = None) -> str:
+    """Best-effort user ID for provider affinity. Falls back to random UUID."""
+    import uuid as _uuid
+    if context and context.get("user_id"):
+        return context["user_id"]
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer ") and len(auth) > 40:
+        return auth[7:39]
+    return str(_uuid.uuid4())
 
 
 class UnifiedRequest(BaseModel):
@@ -33,11 +45,12 @@ class UnifiedRequest(BaseModel):
 
 
 @router.post("/unified-brain")
-async def process_unified_request(request: UnifiedRequest):
+async def process_unified_request(request: UnifiedRequest, raw_request: Request):
     """
     Main endpoint for all agent requests
     Handles data gathering, analysis, and formatting
     """
+    set_provider_affinity(_extract_user_id(raw_request, request.context))
     logger.info(f"[UNIFIED-BRAIN] Received request with output_format: {request.output_format}")
     logger.info(f"[UNIFIED-BRAIN] Prompt: {request.prompt[:100]}")
     try:
@@ -376,7 +389,7 @@ async def process_unified_request(request: UnifiedRequest):
 
 
 @router.post("/unified-brain-stream")
-async def process_unified_stream(request: UnifiedRequest):
+async def process_unified_stream(request: UnifiedRequest, raw_request: Request):
     """
     Streaming endpoint — yields NDJSON progress events followed by a final complete event.
     Each line is a JSON object with a 'type' field: 'progress' or 'complete'.
@@ -384,6 +397,7 @@ async def process_unified_stream(request: UnifiedRequest):
     from fastapi.responses import StreamingResponse
     import json as _json
 
+    set_provider_affinity(_extract_user_id(raw_request, request.context))
     logger.info(f"[UNIFIED-BRAIN-STREAM] Streaming request for: {request.prompt[:80]}")
 
     orchestrator = get_unified_orchestrator()

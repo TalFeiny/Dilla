@@ -297,11 +297,11 @@ async def batch_search_companies(request: BatchSearchRequest):
     """
     try:
         from app.services.unified_mcp_orchestrator import get_unified_orchestrator
-        
+
         # Generate job ID
         import uuid
         job_id = str(uuid.uuid4())
-        
+
         # Initialize job
         _batch_search_jobs[job_id] = {
             "status": "processing",
@@ -309,7 +309,7 @@ async def batch_search_companies(request: BatchSearchRequest):
             "results": {},
             "createdAt": asyncio.get_event_loop().time()
         }
-        
+
         # Start async batch search
         async def perform_search():
             try:
@@ -320,12 +320,12 @@ async def batch_search_companies(request: BatchSearchRequest):
             except Exception as e:
                 _batch_search_jobs[job_id]["status"] = "failed"
                 _batch_search_jobs[job_id]["error"] = str(e)
-        
+
         # Run in background
         asyncio.create_task(perform_search())
-        
+
         return {"jobId": job_id}
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -335,7 +335,7 @@ async def get_batch_search_status(job_id: str):
     """Get status of a batch search job"""
     if job_id not in _batch_search_jobs:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     job = _batch_search_jobs[job_id]
     return {
         "status": job["status"],

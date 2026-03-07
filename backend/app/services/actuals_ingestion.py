@@ -101,6 +101,7 @@ def ingest_time_series(
                 "document_id": document_id,
                 "period": period.isoformat(),
                 "category": category,
+                "subcategory": "",
                 "amount": amount,
                 "source": source,
             })
@@ -142,6 +143,7 @@ def ingest_time_series(
             "document_id": document_id,
             "period": period_str,
             "category": parent_cat,
+            "subcategory": "",
             "amount": total,
             "source": source,
         })
@@ -149,10 +151,10 @@ def ingest_time_series(
     if not rows:
         return 0
 
-    # Upsert: if same company+period+category+source exists, update amount
+    # Upsert: unique index is (company_id, period, category, subcategory, source)
     sb.table("fpa_actuals").upsert(
         rows,
-        on_conflict="company_id,period,category,source",
+        on_conflict="company_id,period,category,subcategory,source",
     ).execute()
 
     return len(rows)
@@ -317,7 +319,7 @@ def get_subcategory_breakdown(
         .select("period, subcategory, amount")
         .eq("company_id", company_id)
         .eq("category", parent_category)
-        .not_.is_("subcategory", "null")
+        .neq("subcategory", "")
         .order("period", desc=True)
         .limit(months * 10)  # generous limit for multiple subcategories
         .execute()

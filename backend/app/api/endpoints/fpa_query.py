@@ -318,33 +318,62 @@ _MONTH_NAMES = {
 }
 
 # Category header patterns for row labels
+# Order matters: more specific patterns first to avoid false matches
 _CATEGORY_PATTERNS: List[tuple] = [
-    (re.compile(r"(?:total\s+)?revenue|sales|top\s*line", re.I), "revenue"),
+    # Recurring revenue (before general revenue)
     (re.compile(r"arr|annual\s*recurring", re.I), "arr"),
     (re.compile(r"mrr|monthly\s*recurring", re.I), "mrr"),
-    (re.compile(r"co[gs]s|cost\s*of\s*(goods|sales|revenue)|direct\s*cost", re.I), "cogs"),
-    (re.compile(r"r\s*&?\s*d|research|engineering", re.I), "opex_rd"),
-    (re.compile(r"s\s*&?\s*m|sales\s*&?\s*market|marketing", re.I), "opex_sm"),
-    (re.compile(r"g\s*&?\s*a|general\s*&?\s*admin|admin", re.I), "opex_ga"),
-    (re.compile(r"(?:total\s+)?op(?:erating\s+)?ex|opex", re.I), "opex_total"),
+    # COGS (before revenue — "Cost of Sales" must not match "sales" → revenue)
+    (re.compile(r"co[gs]s|cost\s*of\s*(?:goods|sales|revenue)|direct\s*cost", re.I), "cogs"),
+    # Revenue
+    (re.compile(r"(?:total\s+)?revenue|(?:total\s+)?sales(?!\s*&?\s*m)|top\s*line|turnover|gross\s*revenue", re.I), "revenue"),
+    (re.compile(r"other\s*income|non.?operating\s*income|interest\s*income|sundry\s*income", re.I), "other_income"),
+    # OpEx subcategories (before opex_total to avoid swallowing them)
+    (re.compile(r"r\s*&?\s*d|research|engineering|product\s*development|technology", re.I), "opex_rd"),
+    (re.compile(r"s\s*&?\s*m|sales\s*(?:&|and)\s*market|marketing|advertising|commercial", re.I), "opex_sm"),
+    (re.compile(r"g\s*&?\s*a|general\s*(?:&|and)\s*admin|admin(?:istrative)?", re.I), "opex_ga"),
+    (re.compile(r"payroll|salaries|wages|compensation|personnel|staff\s*costs?|people\s*costs?", re.I), "opex_ga"),
+    (re.compile(r"establishment\s*costs?|premises|rent|occupancy", re.I), "opex_ga"),
+    # OpEx total
+    (re.compile(r"(?:total\s+)?op(?:erating\s+)?ex|opex|overheads?|indirect\s*costs?", re.I), "opex_total"),
+    # Computed / P&L waterfall
+    (re.compile(r"gross\s*profit|gp", re.I), "gross_profit"),
     (re.compile(r"ebitda", re.I), "ebitda"),
+    (re.compile(r"operating\s*(?:income|profit|loss)", re.I), "operating_income"),
+    (re.compile(r"depreciation|amortization|d\s*&?\s*a", re.I), "depreciation"),
+    (re.compile(r"interest\s*expense|finance\s*costs?|debt\s*service", re.I), "interest_expense"),
+    (re.compile(r"profit\s*before\s*tax|pbt|earnings\s*before\s*tax|ebt", re.I), "ebt"),
+    (re.compile(r"(?:income\s*)?tax(?:es)?|corporation\s*tax|provision\s*for\s*tax", re.I), "tax"),
+    (re.compile(r"net\s*(?:income|profit|loss)|profit\s*after\s*tax|pat|earnings\s*after\s*tax", re.I), "net_income"),
+    # Operational
     (re.compile(r"cash\s*(?:balance|in\s*bank)?|bank\s*balance", re.I), "cash_balance"),
     (re.compile(r"burn\s*rate|monthly\s*burn|net\s*burn", re.I), "burn_rate"),
     (re.compile(r"headcount|employees|fte|hc", re.I), "headcount"),
     (re.compile(r"customers?|clients?", re.I), "customers"),
-    (re.compile(r"gross\s*profit|gp", re.I), "gross_profit"),
-    (re.compile(r"net\s*(?:income|profit|loss)", re.I), "net_income"),
 ]
 
 
-def _parse_month_header(header: str) -> Optional[str]:
-    """Try to parse a column header as a month. Returns 'YYYY-MM' or None."""
-    h = header.strip().lower()
+def _clean_header(raw: str) -> str:
+    """Strip parenthetical suffixes and noise from a column header."""
+    h = raw.strip()
+    # Remove trailing parenthetical: (Est.), (Actual), (Budget), (Forecast)
+    h = re.sub(r"\s*\((?:Est\.?|Actual|Budget|Forecast|Projected|Plan)\)\s*$", "", h, flags=re.I)
+    return h.strip()
+
+
+def _parse_period_header(header: str) -> Optional[List[tuple]]:
+    """Parse a column header as period(s). Returns list of (period, divisor) or None.
+
+    Monthly:   [("2025-01", 1)]
+    Quarterly: [("2026-01", 3), ("2026-02", 3), ("2026-03", 3)]
+    Annual:    [("2025-01", 12), ..., ("2025-12", 12)]
+    """
+    h = _clean_header(header).lower()
 
     # "2025-01" or "2025-01-01"
     m = re.match(r"^(\d{4})-(\d{2})(?:-\d{2})?$", h)
     if m:
-        return f"{m.group(1)}-{m.group(2)}"
+        return [(f"{m.group(1)}-{m.group(2)}", 1)]
 
     # "Jan-25", "Jan 25", "Jan-2025", "Jan 2025"
     m = re.match(r"^([a-z]+)[\s\-](\d{2,4})$", h)
@@ -354,16 +383,69 @@ def _parse_month_header(header: str) -> Optional[str]:
             year = m.group(2)
             if len(year) == 2:
                 year = f"20{year}"
-            return f"{year}-{month_num:02d}"
+            return [(f"{year}-{month_num:02d}", 1)]
 
     # "1/2025", "01/2025"
     m = re.match(r"^(\d{1,2})/(\d{4})$", h)
     if m:
         month_num = int(m.group(1))
         if 1 <= month_num <= 12:
-            return f"{m.group(2)}-{month_num:02d}"
+            return [(f"{m.group(2)}-{month_num:02d}", 1)]
 
-    # Bare month name with no year — skip (ambiguous)
+    # Quarterly: "Q1 2026", "Q4-2025", "q2 26"
+    m = re.match(r"^q([1-4])[\s\-](\d{2,4})$", h)
+    if m:
+        q = int(m.group(1))
+        year = m.group(2)
+        if len(year) == 2:
+            year = f"20{year}"
+        start_month = (q - 1) * 3 + 1
+        return [(f"{year}-{start_month + i:02d}", 3) for i in range(3)]
+
+    # Half-year: "H1 2026", "H2-2025"
+    m = re.match(r"^h([12])[\s\-](\d{2,4})$", h)
+    if m:
+        half = int(m.group(1))
+        year = m.group(2)
+        if len(year) == 2:
+            year = f"20{year}"
+        start_month = 1 if half == 1 else 7
+        return [(f"{year}-{start_month + i:02d}", 6) for i in range(6)]
+
+    # Annual: "FY2025", "FY 2025", "FY25"
+    m = re.match(r"^fy\s?(\d{2,4})$", h)
+    if m:
+        year = m.group(1)
+        if len(year) == 2:
+            year = f"20{year}"
+        return [(f"{year}-{i:02d}", 12) for i in range(1, 13)]
+
+    # Bare year: "2025"
+    m = re.match(r"^(\d{4})$", h)
+    if m:
+        year = m.group(1)
+        yr = int(year)
+        if 2000 <= yr <= 2099:
+            return [(f"{year}-{i:02d}", 12) for i in range(1, 13)]
+
+    # Month range: "January - March 2025", "Jan-Mar 2025"
+    m = re.match(r"^([a-z]+)\s*[\-–]\s*([a-z]+)\s+(\d{4})$", h)
+    if m:
+        start = _MONTH_NAMES.get(m.group(1))
+        end = _MONTH_NAMES.get(m.group(2))
+        year = m.group(3)
+        if start and end and end >= start:
+            count = end - start + 1
+            return [(f"{year}-{start + i:02d}", count) for i in range(count)]
+
+    return None
+
+
+def _parse_month_header(header: str) -> Optional[str]:
+    """Backward-compatible wrapper: returns single 'YYYY-MM' or None."""
+    result = _parse_period_header(header)
+    if result and len(result) == 1 and result[0][1] == 1:
+        return result[0][0]
     return None
 
 
@@ -375,26 +457,196 @@ def _match_category(label: str) -> Optional[str]:
     return None
 
 
+# --- Label cleaning & hierarchy detection ---
+
+_NOISE_PREFIXES = re.compile(
+    r"^(?:total|less|plus|sub[\-\s]?total|subtotal)\s+", re.I
+)
+# Noise words that are safe to strip (not "net" — needed for "Net Income")
+_NOISE_SUFFIXES = re.compile(
+    r"\s+(?:total|amount|balance)$", re.I
+)
+
+
+def _clean_label(raw: str) -> tuple:
+    """Clean a row label for matching. Returns (cleaned_label, indent_depth, original_stripped)."""
+    stripped = raw.rstrip()
+    leading = len(stripped) - len(stripped.lstrip())
+    stripped = stripped.strip()
+    # Normalize indent: 2-4 spaces or 1 tab = depth 1
+    depth = 0
+    if leading > 0:
+        raw_prefix = raw[:leading]
+        if "\t" in raw_prefix:
+            depth = raw_prefix.count("\t")
+        else:
+            depth = max(1, leading // 2)
+
+    original = stripped
+
+    # Strip parenthetical suffixes for matching, but keep for subcategory naming
+    # "Cost of Goods Sold (COGS)" → "Cost of Goods Sold"
+    cleaned = re.sub(r"\s*\([^)]*\)\s*$", "", stripped)
+
+    # Strip noise prefixes: "Total Revenue" → "Revenue", "Less Cost of Sales" → "Cost of Sales"
+    cleaned = _NOISE_PREFIXES.sub("", cleaned)
+    cleaned = _NOISE_SUFFIXES.sub("", cleaned)
+
+    # Normalize slashes and extra whitespace
+    cleaned = re.sub(r"\s*/\s*", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    return cleaned, depth, original
+
+
+def _is_separator_row(row: list) -> bool:
+    """Skip rows that are formatting separators (---, ===, blank)."""
+    return all(re.match(r"^[\s\-=_]*$", cell) for cell in row)
+
+
+# Computed rows that should be skipped when their component rows are present
+_COMPUTED_DEPENDENCIES = {
+    "gross_profit": [{"revenue", "cogs"}],
+    "ebitda": [
+        {"revenue", "cogs", "opex_total"},
+        {"revenue", "cogs", "opex_rd", "opex_sm", "opex_ga"},
+    ],
+    "operating_income": [
+        {"revenue", "cogs", "opex_total"},
+        {"revenue", "cogs", "opex_rd", "opex_sm", "opex_ga"},
+    ],
+    "net_income": [{"revenue", "cogs"}],  # skip if any expense categories present
+}
+
+
+def _should_skip_computed(category: str, present_categories: set) -> bool:
+    """Check if a computed row should be skipped because its components are present."""
+    dep_sets = _COMPUTED_DEPENDENCIES.get(category)
+    if not dep_sets:
+        return False
+    return any(deps.issubset(present_categories) for deps in dep_sets)
+
+
+# --- Fuzzy category fallback ---
+
+from difflib import SequenceMatcher
+
+_CATEGORY_SYNONYMS = {
+    "revenue": ["revenue", "sales", "income", "turnover", "top line", "gross revenue"],
+    "cogs": ["cost of goods sold", "cost of sales", "direct costs", "cogs", "cost of revenue"],
+    "opex_rd": ["research and development", "r&d", "engineering", "product development", "technology"],
+    "opex_sm": ["sales and marketing", "s&m", "marketing", "commercial", "advertising"],
+    "opex_ga": ["general and administrative", "g&a", "admin", "overhead", "payroll",
+                "salaries", "wages", "compensation", "personnel", "staff costs",
+                "finance legal", "office", "rent", "occupancy", "establishment costs",
+                "premises", "insurance"],
+    "opex_total": ["operating expenses", "opex", "total expenses", "overheads", "indirect costs"],
+    "ebitda": ["ebitda", "operating income", "operating profit"],
+    "gross_profit": ["gross profit", "gross margin"],
+    "net_income": ["net income", "net profit", "net loss", "profit after tax", "pat",
+                   "earnings after tax", "bottom line"],
+    "depreciation": ["depreciation", "amortization", "d&a", "deprec"],
+    "interest_expense": ["interest expense", "finance costs", "debt service"],
+    "tax": ["tax", "income tax", "corporation tax", "provision for tax"],
+    "other_income": ["other income", "non operating income", "interest income", "sundry income"],
+    "ebt": ["profit before tax", "pbt", "earnings before tax", "ebt"],
+    "cash_balance": ["cash balance", "cash in bank", "bank balance", "cash"],
+    "burn_rate": ["burn rate", "monthly burn", "net burn"],
+    "headcount": ["headcount", "employees", "fte", "head count"],
+    "customers": ["customers", "clients"],
+    "arr": ["arr", "annual recurring revenue"],
+    "mrr": ["mrr", "monthly recurring revenue"],
+}
+
+
+def _fuzzy_match_category(label: str, threshold: float = 0.65) -> Optional[tuple]:
+    """Fuzzy match a row label to a category. Returns (category, score) or None."""
+    label_lower = label.lower().strip()
+    best_score = 0.0
+    best_category = None
+
+    for category, synonyms in _CATEGORY_SYNONYMS.items():
+        for synonym in synonyms:
+            score = SequenceMatcher(None, label_lower, synonym).ratio()
+            # Boost if one contains the other
+            if label_lower in synonym or synonym in label_lower:
+                score = max(score, 0.85)
+            if score > best_score:
+                best_score = score
+                best_category = category
+
+    if best_score >= threshold and best_category:
+        return (best_category, round(best_score, 2))
+    return None
+
+
+def _label_to_subcategory(label: str) -> str:
+    """Normalize a label to snake_case for dynamic subcategory storage."""
+    s = label.lower().strip()
+    s = re.sub(r"[^a-z0-9\s]", "", s)
+    s = re.sub(r"\s+", "_", s).strip("_")
+    return s
+
+
+# --- Section header detection for hierarchy ---
+
+_SECTION_HEADER_PATTERNS = [
+    (re.compile(r"^(?:total\s+)?(?:revenue|income|sales)$", re.I), "revenue"),
+    (re.compile(r"^(?:cost\s+of\s+(?:goods\s+)?(?:sold|sales)|cogs|direct\s+costs?)$", re.I), "cogs"),
+    (re.compile(r"^(?:(?:less\s+)?operating\s+expenses?|opex|overheads?)$", re.I), "opex_total"),
+    (re.compile(r"^(?:r\s*&?\s*d|research\s*(?:&|and)\s*development)$", re.I), "opex_rd"),
+    (re.compile(r"^(?:s\s*&?\s*m|sales\s*(?:&|and)\s*marketing)$", re.I), "opex_sm"),
+    (re.compile(r"^(?:g\s*&?\s*a|general\s*(?:&|and)\s*admin(?:istrative)?)$", re.I), "opex_ga"),
+]
+
+# Map section header categories to the parent category for child rows
+_SECTION_TO_PARENT = {
+    "revenue": "revenue",
+    "cogs": "cogs",
+    "opex_total": "opex_total",
+    "opex_rd": "opex_rd",
+    "opex_sm": "opex_sm",
+    "opex_ga": "opex_ga",
+}
+
+
 def _parse_amount(raw: str) -> Optional[float]:
-    """Parse a cell value as a number, handling currency symbols, commas, parens, K/M/B."""
+    """Parse a cell value as a number, handling currency, commas, parens, K/M/B/bn/mm, European notation."""
     if not raw:
         return None
     s = raw.strip()
+    if not s:
+        return None
+
+    # Skip percentage values in P&L context
+    if s.endswith("%"):
+        return None
+
     neg = s.startswith("(") and s.endswith(")")
     if neg:
         s = s[1:-1]
+
+    # Strip currency symbols and whitespace
     s = re.sub(r"[$€£¥₹\s]", "", s)
-    s = s.replace(",", "")
-    m = re.match(r"^(-?[\d.]+)\s*([BMKbmk])?$", s)
+
+    # Detect European notation: "1.234.567,89" or "1.234,56"
+    # Pattern: dots as thousand separators + comma as decimal
+    if re.match(r"^-?[\d.]+,\d{1,2}$", s):
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", "")
+
+    # Match number with optional suffix
+    m = re.match(r"^(-?[\d.]+)\s*(bn|mm|[BMKbmk])?$", s, re.I)
     if not m:
         return None
     val = float(m.group(1))
-    suffix = (m.group(2) or "").upper()
-    if suffix == "B":
+    suffix = (m.group(2) or "").lower()
+    if suffix in ("b", "bn"):
         val *= 1_000_000_000
-    elif suffix == "M":
+    elif suffix in ("m", "mm"):
         val *= 1_000_000
-    elif suffix == "K":
+    elif suffix == "k":
         val *= 1_000
     return -val if neg else val
 
@@ -408,12 +660,15 @@ async def upload_actuals_csv(
     """
     Upload a P&L-style CSV and ingest into fpa_actuals.
 
-    Accepts CSVs where:
-    - Rows = categories (Revenue, COGS, OpEx, etc.)
-    - Columns = months (Jan-25, 2025-01, Feb 2025, etc.)
-    OR transposed (months as rows, categories as columns).
+    ERP-agnostic 3-pass pipeline:
+      Pass 1: Scan all rows — detect hierarchy, match categories, identify skippable rows
+      Pass 2: Determine which computed rows to skip (only if dependencies present)
+      Pass 3: Extract amounts, build actuals_rows with subcategory support
 
-    Auto-detects orientation and maps headers to fpa_actuals categories.
+    Supports: monthly/quarterly/annual/half-year periods, indented subcategories,
+    separator row exclusion, computed row dedup, fuzzy category matching.
+
+    Returns detailed mapping report so the upload is never a black box.
     """
     from app.core.supabase_client import get_supabase_client
 
@@ -432,71 +687,59 @@ async def upload_actuals_csv(
     headers = [h.strip() for h in all_rows[0]]
     data_rows = all_rows[1:]
 
-    # Detect orientation: are column headers months or category labels?
-    month_cols: Dict[int, str] = {}  # col_index → "YYYY-MM"
+    # --- Detect orientation & parse period columns ---
+    # Try standard: col headers are periods
+    period_cols: Dict[int, List[tuple]] = {}  # col_index → [(period, divisor), ...]
     for i, h in enumerate(headers):
         if i == 0:
-            continue  # first column is typically the row label
-        period = _parse_month_header(h)
-        if period:
-            month_cols[i] = period
+            continue
+        periods = _parse_period_header(h)
+        if periods:
+            period_cols[i] = periods
 
-    # Standard orientation: first col = category, other cols = months
-    if len(month_cols) >= 1:
-        actuals_rows = []
-        mapped_categories = []
-        unmapped_labels = []
+    is_transposed = False
+    cat_cols: Dict[int, str] = {}
 
-        for row in data_rows:
-            if not row or not row[0].strip():
-                continue
-            label = row[0].strip()
-            category = _match_category(label)
-            if not category:
-                unmapped_labels.append(label)
-                continue
-            mapped_categories.append({"label": label, "category": category})
-
-            for col_idx, period in month_cols.items():
-                if col_idx >= len(row):
-                    continue
-                amount = _parse_amount(row[col_idx])
-                if amount is None:
-                    continue
-                actuals_rows.append({
-                    "company_id": company_id,
-                    "fund_id": fund_id,
-                    "period": f"{period}-01",
-                    "category": category,
-                    "amount": amount,
-                    "source": "csv_upload",
-                })
-    else:
-        # Try transposed: first col = month, other cols = categories
-        cat_cols: Dict[int, str] = {}
+    if not period_cols:
+        # Try transposed: col headers are categories, row[0] is the period
         for i, h in enumerate(headers):
             if i == 0:
                 continue
             cat = _match_category(h)
             if cat:
                 cat_cols[i] = cat
-
-        if len(cat_cols) < 1:
+        if not cat_cols:
             raise HTTPException(
                 status_code=400,
-                detail="Could not detect month columns or category columns. "
-                       "Expected either months as columns (Jan-25, 2025-01...) or categories as columns (Revenue, COGS...)."
+                detail="Could not detect period columns or category columns. "
+                       "Expected either periods as columns (Jan-25, Q1 2026, FY2025...) "
+                       "or categories as columns (Revenue, COGS...)."
             )
+        is_transposed = True
 
+    # --- Tracking for detailed response ---
+    mapped_categories = []
+    unmapped_labels = []
+    warnings = []
+    skipped_separators = 0
+    skipped_computed = []
+    skipped_empty = 0
+    subcategories_created = []
+
+    if is_transposed:
+        # Transposed: simple path — no hierarchy detection needed
+        mapped_categories = [{"label": headers[i], "category": c, "match": "regex"} for i, c in cat_cols.items()]
         actuals_rows = []
-        mapped_categories = [{"label": headers[i], "category": c} for i, c in cat_cols.items()]
-        unmapped_labels = []
 
         for row in data_rows:
             if not row or not row[0].strip():
+                skipped_empty += 1
                 continue
-            period = _parse_month_header(row[0].strip())
-            if not period:
+            if _is_separator_row(row):
+                skipped_separators += 1
+                continue
+            periods = _parse_period_header(row[0].strip())
+            if not periods:
                 unmapped_labels.append(row[0].strip())
                 continue
 
@@ -506,22 +749,235 @@ async def upload_actuals_csv(
                 amount = _parse_amount(row[col_idx])
                 if amount is None:
                     continue
-                actuals_rows.append({
-                    "company_id": company_id,
-                    "fund_id": fund_id,
-                    "period": f"{period}-01",
-                    "category": category,
-                    "amount": amount,
-                    "source": "csv_upload",
-                })
+                for period, divisor in periods:
+                    actuals_rows.append({
+                        "company_id": company_id,
+                        "fund_id": fund_id,
+                        "period": f"{period}-01",
+                        "category": category,
+                        "subcategory": "",
+                        "amount": amount / divisor,
+                        "source": "csv_upload",
+                    })
 
+        if divisor_used := any(d > 1 for ps in [_parse_period_header(row[0].strip()) or [] for row in data_rows] for _, d in ps):
+            warnings.append("Quarterly/annual amounts divided evenly across constituent months")
+
+    else:
+        # Standard orientation: 3-pass pipeline
+
+        # =============================================
+        # PASS 1: Scan all rows — build category + hierarchy map
+        # =============================================
+        row_info = []  # [{label, cleaned, depth, original, category, match_type, subcategory, is_separator, is_section_header, has_amounts}]
+        current_section_parent = None  # track the current depth=0 section header category
+
+        for row in data_rows:
+            if not row:
+                row_info.append({"skip": "empty"})
+                skipped_empty += 1
+                continue
+
+            if _is_separator_row(row):
+                row_info.append({"skip": "separator"})
+                skipped_separators += 1
+                continue
+
+            raw_label = row[0] if row else ""
+            if not raw_label.strip():
+                row_info.append({"skip": "empty"})
+                skipped_empty += 1
+                continue
+
+            cleaned, depth, original = _clean_label(raw_label)
+
+            # Check if any data cells have amounts
+            has_amounts = any(
+                _parse_amount(row[ci]) is not None
+                for ci in period_cols
+                if ci < len(row)
+            )
+
+            info = {
+                "skip": None,
+                "raw_label": raw_label,
+                "cleaned": cleaned,
+                "depth": depth,
+                "original": original,
+                "category": None,
+                "subcategory": None,
+                "match_type": None,
+                "is_section_header": False,
+                "has_amounts": has_amounts,
+            }
+
+            if depth == 0:
+                # Try matching as a known category
+                cat = _match_category(cleaned)
+                if cat:
+                    info["category"] = cat
+                    info["match_type"] = "regex"
+                    current_section_parent = _SECTION_TO_PARENT.get(cat)
+
+                    # Section header with no amounts = just a label row
+                    if not has_amounts and cat in _SECTION_TO_PARENT:
+                        info["is_section_header"] = True
+                else:
+                    # Also try matching the original (with parenthetical)
+                    cat = _match_category(original)
+                    if cat:
+                        info["category"] = cat
+                        info["match_type"] = "regex"
+                        current_section_parent = _SECTION_TO_PARENT.get(cat)
+                        if not has_amounts and cat in _SECTION_TO_PARENT:
+                            info["is_section_header"] = True
+                    else:
+                        # Check if it's a section header pattern
+                        for pat, sec_cat in _SECTION_HEADER_PATTERNS:
+                            if pat.search(cleaned):
+                                info["is_section_header"] = True
+                                current_section_parent = _SECTION_TO_PARENT.get(sec_cat, sec_cat)
+                                break
+
+                        if not info["is_section_header"]:
+                            # Fuzzy fallback
+                            fuzzy = _fuzzy_match_category(cleaned)
+                            if fuzzy:
+                                info["category"] = fuzzy[0]
+                                info["match_type"] = f"fuzzy ({fuzzy[1]})"
+                                warnings.append(f"Fuzzy-matched '{original}' → {fuzzy[0]} (score: {fuzzy[1]})")
+                                current_section_parent = _SECTION_TO_PARENT.get(fuzzy[0])
+                            else:
+                                info["skip"] = "unmapped"
+                                unmapped_labels.append(original)
+
+            else:
+                # depth > 0: child row — try matching as known category first
+                cat = _match_category(cleaned)
+                if cat and cat != current_section_parent:
+                    # Matches a DIFFERENT category (e.g. "Sales & Marketing" under OpEx → opex_sm)
+                    info["category"] = cat
+                    info["match_type"] = "regex"
+                elif cat and cat == current_section_parent:
+                    # Matches SAME category as parent (e.g. "API Revenue" under Revenue)
+                    # → treat as subcategory for department drilldown
+                    sub_name = _label_to_subcategory(original)
+                    if sub_name:
+                        info["category"] = cat
+                        info["subcategory"] = sub_name
+                        info["match_type"] = "hierarchy"
+                        if sub_name not in subcategories_created:
+                            subcategories_created.append(sub_name)
+                    else:
+                        info["category"] = cat
+                        info["match_type"] = "regex"
+                else:
+                    # Try fuzzy
+                    fuzzy = _fuzzy_match_category(cleaned)
+                    if fuzzy and fuzzy[0] != current_section_parent:
+                        # Fuzzy-matched to a DIFFERENT category than parent
+                        info["category"] = fuzzy[0]
+                        info["match_type"] = f"fuzzy ({fuzzy[1]})"
+                        warnings.append(f"Fuzzy-matched '{original}' → {fuzzy[0]} (score: {fuzzy[1]})")
+                    elif current_section_parent:
+                        # Dynamic subcategory under the current section parent
+                        sub_name = _label_to_subcategory(original)
+                        if sub_name:
+                            info["category"] = current_section_parent
+                            info["subcategory"] = sub_name
+                            info["match_type"] = "hierarchy"
+                            if sub_name not in subcategories_created:
+                                subcategories_created.append(sub_name)
+                    else:
+                        info["skip"] = "unmapped"
+                        unmapped_labels.append(original)
+
+            row_info.append(info)
+
+        # =============================================
+        # PASS 2: Determine which computed rows to skip
+        # =============================================
+        present_categories = {
+            ri["category"] for ri in row_info
+            if ri.get("category") and not ri.get("skip")
+        }
+
+        for ri in row_info:
+            if ri.get("skip") or ri.get("is_section_header"):
+                continue
+            cat = ri.get("category")
+            if cat and _should_skip_computed(cat, present_categories):
+                ri["skip"] = "computed"
+                skipped_computed.append(ri.get("original", cat))
+
+        # Build mapped_categories from pass 1
+        for ri in row_info:
+            if ri.get("skip") or ri.get("is_section_header"):
+                continue
+            if ri.get("category"):
+                entry = {
+                    "label": ri.get("original", ""),
+                    "category": ri["category"],
+                    "match": ri.get("match_type", "regex"),
+                }
+                if ri.get("subcategory"):
+                    entry["subcategory"] = ri["subcategory"]
+                mapped_categories.append(entry)
+
+        # =============================================
+        # PASS 3: Extract amounts and build actuals_rows
+        # =============================================
+        actuals_rows = []
+        has_multi_month_periods = False
+
+        for idx, row in enumerate(data_rows):
+            if idx >= len(row_info):
+                break
+            ri = row_info[idx]
+            if ri.get("skip") or ri.get("is_section_header"):
+                continue
+            if not ri.get("category"):
+                continue
+
+            category = ri["category"]
+            subcategory = ri.get("subcategory")
+
+            for col_idx, period_tuples in period_cols.items():
+                if col_idx >= len(row):
+                    continue
+                amount = _parse_amount(row[col_idx])
+                if amount is None:
+                    continue
+
+                for period, divisor in period_tuples:
+                    if divisor > 1:
+                        has_multi_month_periods = True
+                    actuals_rows.append({
+                        "company_id": company_id,
+                        "fund_id": fund_id,
+                        "period": f"{period}-01",
+                        "category": category,
+                        "subcategory": subcategory or "",
+                        "amount": amount / divisor,
+                        "source": "csv_upload",
+                    })
+
+        if has_multi_month_periods:
+            warnings.append("Quarterly/annual amounts divided evenly across constituent months")
+
+    # --- Final checks ---
     if not actuals_rows:
-        raise HTTPException(status_code=400, detail="No valid data rows found after parsing")
+        raise HTTPException(
+            status_code=400,
+            detail="No valid data rows found after parsing. "
+                   f"Unmapped labels: {unmapped_labels[:10]}" if unmapped_labels else "No valid data rows found after parsing",
+        )
 
     # Upsert into fpa_actuals
+    # Unique index: (company_id, period, category, subcategory, source)
     sb.table("fpa_actuals").upsert(
         actuals_rows,
-        on_conflict="company_id,period,category,source",
+        on_conflict="company_id,period,category,subcategory,source",
     ).execute()
 
     periods = sorted(set(r["period"][:7] for r in actuals_rows))
@@ -531,8 +987,15 @@ async def upload_actuals_csv(
         "ingested": len(actuals_rows),
         "periods": periods,
         "categories": categories,
+        "subcategories_created": subcategories_created,
         "mapped_categories": mapped_categories,
         "unmapped_labels": unmapped_labels,
+        "skipped_rows": {
+            "separators": skipped_separators,
+            "computed": skipped_computed,
+            "empty": skipped_empty,
+        },
+        "warnings": warnings,
     }
 
 

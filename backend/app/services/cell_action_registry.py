@@ -1856,7 +1856,150 @@ class CellActionRegistry:
             mode_availability=['portfolio', 'custom', 'lp'],
             column_compatibility=['number', 'currency', 'percentage', 'object']
         )
-        
+
+        # ── PnL Mode Actions (column / en-masse operations) ──
+
+        self.register_workflow(
+            action_id="pnl.rebuild_forecast",
+            name="Rebuild Forecast",
+            service_name="pnl_builder",
+            required_inputs={"company_id": "string"},
+            output_type=OutputType.OBJECT,
+            description="Rebuild entire P&L forecast from actuals — recalculates all forecast columns",
+            mode_availability=['pnl'],
+            column_compatibility=['number', 'currency'],
+            config={"scope": "all_columns"}
+        )
+
+        self.register_workflow(
+            action_id="pnl.adjust_growth_rate",
+            name="Adjust Growth Rate",
+            service_name="cash_flow_planning_service",
+            required_inputs={"company_id": "string", "growth_rate": "number"},
+            output_type=OutputType.OBJECT,
+            description="Override revenue growth rate and recalculate all forecast periods",
+            mode_availability=['pnl'],
+            column_compatibility=['number', 'currency', 'percentage'],
+            config={"scope": "all_columns", "cascades": True}
+        )
+
+        self.register_workflow(
+            action_id="pnl.adjust_burn_rate",
+            name="Adjust Burn Rate",
+            service_name="cash_flow_planning_service",
+            required_inputs={"company_id": "string", "burn_rate": "number"},
+            output_type=OutputType.OBJECT,
+            description="Override monthly burn rate and recalculate OpEx, EBITDA, cash, runway",
+            mode_availability=['pnl'],
+            column_compatibility=['number', 'currency'],
+            config={"scope": "all_columns", "cascades": True}
+        )
+
+        self.register_workflow(
+            action_id="pnl.adjust_opex_split",
+            name="Adjust OpEx Split",
+            service_name="cash_flow_planning_service",
+            required_inputs={"company_id": "string", "rd_pct": "number", "sm_pct": "number", "ga_pct": "number"},
+            output_type=OutputType.OBJECT,
+            description="Change R&D / S&M / G&A split percentages and recalculate all forecast periods",
+            mode_availability=['pnl'],
+            column_compatibility=['number', 'currency', 'percentage'],
+            config={"scope": "all_columns", "cascades": True}
+        )
+
+        self.register_workflow(
+            action_id="pnl.adjust_headcount",
+            name="Adjust Headcount Plan",
+            service_name="cash_flow_planning_service",
+            required_inputs={"company_id": "string", "headcount": "number"},
+            output_type=OutputType.OBJECT,
+            description="Set target headcount — recalculates payroll-driven OpEx across all periods",
+            mode_availability=['pnl'],
+            column_compatibility=['number'],
+            config={"scope": "all_columns", "cascades": True}
+        )
+
+        self.register_workflow(
+            action_id="pnl.scenario_branch",
+            name="Create Scenario Branch",
+            service_name="scenario_branch_service",
+            required_inputs={"company_id": "string", "query": "string"},
+            output_type=OutputType.OBJECT,
+            description="Fork a what-if scenario from current P&L — creates new forecast branch",
+            mode_availability=['pnl'],
+            column_compatibility=['number', 'currency', 'object'],
+            config={"scope": "all_columns"}
+        )
+
+        self.register_workflow(
+            action_id="pnl.compare_scenarios",
+            name="Compare Scenarios",
+            service_name="scenario_branch_service",
+            required_inputs={"company_id": "string", "branch_ids": "array"},
+            output_type=OutputType.OBJECT,
+            description="Side-by-side comparison of scenario branches against base forecast",
+            mode_availability=['pnl'],
+            column_compatibility=['number', 'currency', 'object']
+        )
+
+        self.register_workflow(
+            action_id="pnl.variance_report",
+            name="Budget vs Actuals Variance",
+            service_name="budget_variance_service",
+            required_inputs={"company_id": "string"},
+            output_type=OutputType.OBJECT,
+            description="Calculate variance between budget and actuals across all periods",
+            mode_availability=['pnl'],
+            column_compatibility=['number', 'currency', 'percentage'],
+            config={"scope": "all_columns"}
+        )
+
+        self.register_workflow(
+            action_id="pnl.cash_flow_model",
+            name="Full Cash Flow Model",
+            service_name="cash_flow_planning_service",
+            required_inputs={"company_id": "string", "months": "number"},
+            output_type=OutputType.OBJECT,
+            description="Build complete monthly cash flow model with revenue, COGS, OpEx, EBITDA, FCF, runway",
+            mode_availability=['pnl'],
+            column_compatibility=['number', 'currency'],
+            config={"scope": "all_columns"}
+        )
+
+        self.register_workflow(
+            action_id="pnl.monte_carlo",
+            name="Monte Carlo Simulation",
+            service_name="unified_mcp_orchestrator",
+            required_inputs={"company_id": "string"},
+            output_type=OutputType.OBJECT,
+            description="Run Monte Carlo simulation on P&L — probability distributions for revenue, cash, runway",
+            mode_availability=['pnl'],
+            column_compatibility=['number', 'object', 'chart']
+        )
+
+        self.register_workflow(
+            action_id="pnl.driver_impact",
+            name="Driver Impact Analysis",
+            service_name="driver_impact_service",
+            required_inputs={"company_id": "string"},
+            output_type=OutputType.OBJECT,
+            description="Rank financial drivers by impact — which levers move the P&L most",
+            mode_availability=['pnl'],
+            column_compatibility=['object', 'number']
+        )
+
+        # Also add pnl to scenario.compose and chain.execute
+        self.register_workflow(
+            action_id="pnl.chain_execute",
+            name="Chain Execute (PnL)",
+            service_name="chain_executor",
+            required_inputs={"steps": "array"},
+            output_type=OutputType.OBJECT,
+            description="Execute multiple PnL actions sequentially (e.g., adjust growth → rebuild → variance)",
+            mode_availability=['pnl'],
+            column_compatibility=['object', 'array']
+        )
+
         self._initialized = True
         logger.info(f"Initialized {len(self._actions)} core cell actions")
 

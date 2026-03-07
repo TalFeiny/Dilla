@@ -8,7 +8,12 @@
  */
 
 import { MatrixData, MatrixColumn, MatrixRow, MatrixCell } from '@/components/matrix/UnifiedMatrix';
-import { supabaseService } from '@/lib/supabase';
+import { getSupabaseBrowser } from '@/lib/supabase/browser';
+
+// Browser-safe client (cookie-based auth, respects RLS).
+// This file is imported from 'use client' components (UnifiedMatrix, etc.)
+// so it MUST NOT use the service-role server-only client.
+const supabaseBrowser = getSupabaseBrowser();
 
 export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl';
 export type DataSource = 'manual' | 'agent' | 'document' | 'api' | 'formula';
@@ -547,11 +552,11 @@ export async function getStoredValuationMethod(
   companyId: string,
   columnId: string = 'valuation'
 ): Promise<string | null> {
-  if (!supabaseService) return null;
+  if (!supabaseBrowser) return null;
   if (typeof companyId !== 'string' || !companyId.trim()) return null;
 
   try {
-    const { data, error } = await supabaseService
+    const { data, error } = await supabaseBrowser
       .from('matrix_edits')
       .select('metadata')
       .eq('company_id', companyId)
@@ -841,10 +846,10 @@ export async function checkManualValuation(
   companyId: string,
   columnId: string = 'valuation'
 ): Promise<any | null> {
-  if (!supabaseService) return null;
+  if (!supabaseBrowser) return null;
 
   try {
-    const { data, error } = await supabaseService
+    const { data, error } = await supabaseBrowser
       .from('matrix_edits')
       .select('new_value, edited_at')
       .eq('company_id', companyId)
@@ -873,10 +878,10 @@ async function logServiceOperation(request: {
   serviceName: string;
   metadata?: Record<string, any>;
 }): Promise<void> {
-  if (!supabaseService) return;
+  if (!supabaseBrowser) return;
 
   try {
-    await supabaseService
+    await supabaseBrowser
       .from('matrix_edits')
       .insert({
         company_id: request.companyId,
@@ -1016,14 +1021,14 @@ export async function fetchLPsForMatrix(fundId?: string): Promise<import('@/comp
 
   const emptyResult = { columns: LP_COLUMNS, rows: [], metadata: { dataSource: 'lp', lastUpdated: new Date().toISOString() } };
 
-  if (!supabaseService) return emptyResult;
+  if (!supabaseBrowser) return emptyResult;
 
   let data: any[] | null = null;
   let usedView = false;
 
   // Primary: fund_lp_summary view (joins lp_fund_commitments <-> limited_partners)
   if (fundId) {
-    const result = await supabaseService
+    const result = await supabaseBrowser
       .from('fund_lp_summary')
       .select('*')
       .eq('fund_id', fundId);
@@ -1038,7 +1043,7 @@ export async function fetchLPsForMatrix(fundId?: string): Promise<import('@/comp
 
   // Fallback: limited_partners table (old 1:1 schema)
   if (!usedView) {
-    let query = supabaseService
+    let query = supabaseBrowser
       .from('limited_partners')
       .select('id, name, lp_type, status, commitment_usd, called_usd, distributed_usd, co_invest_rights, fund_id')
       .order('name', { ascending: true });
