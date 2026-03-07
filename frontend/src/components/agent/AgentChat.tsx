@@ -139,7 +139,7 @@ interface AgentChatProps {
   mode?: 'portfolio' | 'custom' | 'lp' | 'pnl';
   onCellEdit?: (rowId: string, columnId: string, value: unknown, options?: { data_source?: string; metadata?: Record<string, unknown> }) => Promise<void>;
   onRunService?: (actionId: string, rowId: string, columnId: string) => Promise<void>;
-  onToolCallLog?: (entry: Omit<{ action_id: string; row_id: string; column_id: string; status: 'running' | 'success' | 'error'; error?: string; companyName?: string }, 'id' | 'at'>) => void;
+  onToolCallLog?: (entry: Omit<{ action_id: string; row_id: string; column_id: string; status: 'running' | 'success' | 'error'; error?: string; companyName?: string; explanation?: string }, 'id' | 'at'>) => void;
   availableActions?: Array<{ action_id: string; name?: string }>;
   onExportRequest?: (format: ExportFormat, payload?: { matrixData?: MatrixData; messageContent?: string }) => void;
   onRequestChart?: (chartType: 'nav' | 'dpi_sankey') => Promise<Array<{ type: string; title?: string; data: any }>>;
@@ -156,7 +156,7 @@ interface AgentChatProps {
   onSuggestionReject?: (suggestionId: string) => void;
   onRetrySuggestion?: (suggestion: DocumentSuggestion) => Promise<void>;
   /** Live tool runs (running/success/error) — shown inline in chat like Cursor */
-  toolCallEntries?: Array<{ action_id: string; row_id: string; column_id: string; status: 'running' | 'success' | 'error'; error?: string; companyName?: string }>;
+  toolCallEntries?: Array<{ action_id: string; row_id: string; column_id: string; status: 'running' | 'success' | 'error'; error?: string; companyName?: string; explanation?: string }>;
   /** Optional: highlight target cell in grid when suggestion is hovered/focused */
   onHighlightCell?: (rowId: string, columnId: string) => void;
   /** Callback when agent response contains memo_updates (sections to append/replace) */
