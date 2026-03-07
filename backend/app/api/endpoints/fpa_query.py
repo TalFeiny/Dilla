@@ -442,7 +442,7 @@ async def upload_actuals_csv(
             month_cols[i] = period
 
     # Standard orientation: first col = category, other cols = months
-    if len(month_cols) >= 2:
+    if len(month_cols) >= 1:
         actuals_rows = []
         mapped_categories = []
         unmapped_labels = []
@@ -481,7 +481,7 @@ async def upload_actuals_csv(
             if cat:
                 cat_cols[i] = cat
 
-        if len(cat_cols) < 2:
+        if len(cat_cols) < 1:
             raise HTTPException(
                 status_code=400,
                 detail="Could not detect month columns or category columns. "
