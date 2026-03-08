@@ -668,6 +668,11 @@ export function UnifiedMatrix({
           });
 
           window.dispatchEvent(new CustomEvent('refreshMatrix'));
+          // Also reload P&L data directly — refreshMatrix handler uses a ref
+          // that may be stale; direct call ensures grid updates immediately.
+          if (mode === 'pnl') {
+            await loadPnlData();
+          }
         }
       }
       if (!otherFiles.length) return;
@@ -4352,14 +4357,7 @@ export function UnifiedMatrix({
       // Period upsert info persists in cell status until next upload starts
       // (Stage 1 of the next upload resets it to 'loading')
 
-      // Reload grid from PnlBuilder after a brief delay to let Supabase propagate.
-      // Uses editInFlightRef guard so concurrent loadPnlData calls don't race.
-      editInFlightRef.current++;
-      try {
-        await new Promise(r => setTimeout(r, 300));
-      } finally {
-        editInFlightRef.current--;
-      }
+      // Reload grid from Supabase — upsert is synchronous, no delay needed.
       await loadPnlData();
     } catch (err) {
       console.error('[PnL CSV upload] error:', err);

@@ -281,6 +281,15 @@ export default function MatrixControlPanel() {
       });
   }, [mode, pnlView, granularity, trailing, forward, pnlCompanyId, fundId, pnlRefreshTrigger]);
 
+  // Listen for refreshPnl events from agent (FPA write tools trigger this)
+  useEffect(() => {
+    const handleRefreshPnl = () => {
+      setPnlRefreshTrigger((n) => n + 1);
+    };
+    window.addEventListener('refreshPnl', handleRefreshPnl);
+    return () => window.removeEventListener('refreshPnl', handleRefreshPnl);
+  }, []);
+
   // Reset to waterfall when leaving P&L mode
   useEffect(() => {
     if (mode !== 'pnl') {

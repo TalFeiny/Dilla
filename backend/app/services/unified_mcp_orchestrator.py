@@ -637,6 +637,15 @@ AGENT_TOOLS: list[AgentTool] = [
         input_schema={"company": "str", "column": "str", "value": "any", "reasoning": "str"},
     ),
     AgentTool(
+        name="bulk_write_grid",
+        description="Batch write cells to the P&L/FPA grid. Use for forecasts, actuals, or any multi-cell update.",
+        handler="_execute_bulk_write_grid",
+        input_schema={
+            "cells": "list[{company_id: str, category: str, period: str, amount: float}]",
+            "source": "str? (default: agent_write)",
+        },
+    ),
+    AgentTool(
         name="suggest_action",
         description="Suggest an action item, warning, or insight. Persisted to DB for accept/reject.",
         handler="_tool_suggest_action",
@@ -2165,16 +2174,20 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "enrich_sparse_grid",       # bulk grid fill
         "resolve_data_gaps",        # targeted gap filling
         "suggest_grid_edit",        # propose edits
+        "bulk_write_grid",          # batch write to grid
         "query_portfolio",          # read current state
         "web_search",               # supplemental research
     ],
     "grid_edit": [
         "suggest_grid_edit",        # primary action
+        "bulk_write_grid",          # batch write cells
         "enrich_cell",              # fill during edit
         "resolve_data_gaps",        # fix gaps found during edit
         "query_portfolio",          # read current grid
         "suggest_action",           # propose next steps
         "emit_todo",                # track follow-ups
+        "fpa_cell_edit",            # edit a single P&L cell (persists to fpa_actuals)
+        "fpa_upload_actuals",       # bulk ingest actuals into P&L grid
     ],
 
     # --- Analysis ---
@@ -2197,6 +2210,8 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "three_scenario_cash_flow", # bull/base/bear P&L models
         "run_projection",           # revenue projections
         "run_fpa",                  # FP&A: forecast, stress test
+        "fpa_forecast",             # generate forecast from actuals
+        "fpa_pnl",                  # P&L waterfall view
         "run_regression",           # regression, monte carlo, sensitivity
         "sensitivity_matrix",       # sensitivity analysis
         "monte_carlo_portfolio",    # probabilistic modeling
@@ -2206,6 +2221,13 @@ INTENT_TOOLS: dict[str, list[str]] = {
     ],
     "forecast": [
         "run_fpa",                  # primary: FP&A forecast, stress test
+        "fpa_forecast",             # generate forecast from actuals (persists to DB)
+        "fpa_pnl",                  # P&L waterfall view (actuals + forecast)
+        "fpa_actuals",              # fetch structured actuals
+        "fpa_cell_edit",            # edit a single P&L cell
+        "fpa_apply_forecast",       # write forecast values into fpa_actuals
+        "fpa_upload_actuals",       # bulk ingest actuals
+        "bulk_write_grid",          # batch write forecast values to grid
         "strategic_analysis",       # cross-domain strategic reasoning
         "run_bull_bear_base",       # bull/bear/base scenario modeling
         "analyse_macro_event",      # macro event impact on forecasts
@@ -2276,6 +2298,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "run_portfolio_health",     # health dashboard
         "calculate_fund_metrics",   # DPI, TVPI, IRR
         "enrich_portfolio",         # fill missing data
+        "bulk_write_grid",          # batch write to grid
         "generate_chart",           # portfolio charts
         "run_followon_strategy",    # follow-on analysis
         "emit_todo",                # action items
@@ -2284,6 +2307,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "generate_rubric",          # thesis → weights + filters (call first)
         "source_companies",         # primary action — DB query + web discovery + scoring
         "query_portfolio",          # portfolio context
+        "bulk_write_grid",          # batch write sourced data to grid
         "generate_chart",           # visualize results
         "suggest_grid_edit",        # push to grid
         "suggest_action",           # recommend next steps on sourced companies
@@ -2304,6 +2328,8 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "fpa_kpi_dashboard",           # primary: compute KPIs with time series
         "fpa_pnl",                     # P&L context
         "fpa_actuals",                 # raw actuals
+        "fpa_forecast",                # generate forecast from actuals
+        "fpa_cell_edit",               # edit a single P&L cell
         "generate_chart",              # visualize KPI trends
         "query_portfolio",             # company context
     ],
@@ -2323,6 +2349,9 @@ INTENT_TOOLS: dict[str, list[str]] = {
     "strategy": [
         "strategic_analysis",           # primary: cross-domain CFO reasoning
         "fpa_kpi_dashboard",            # KPI context
+        "fpa_pnl",                      # P&L waterfall view
+        "fpa_actuals",                  # raw actuals
+        "fpa_forecast",                 # generate forecast from actuals
         "fpa_cash_flow",                # cash flow model
         "fpa_scenario_compare",         # scenario comparison
         "analyse_macro_event",          # macro event impact
@@ -2343,6 +2372,12 @@ INTENT_TOOLS: dict[str, list[str]] = {
     "general": [
         "fetch_company_data",       # most common need
         "query_portfolio",          # read state
+        "bulk_write_grid",          # batch write to grid
+        "fpa_pnl",                  # P&L waterfall view
+        "fpa_actuals",              # fetch structured actuals
+        "fpa_cell_edit",            # edit a single P&L cell
+        "fpa_upload_actuals",       # bulk ingest actuals
+        "fpa_forecast",             # generate forecast from actuals
         "web_search",               # research
         "analyse_macro_event",      # macro event impact analysis
         "strategic_analysis",       # strategic CFO reasoning
@@ -2425,6 +2460,7 @@ class QueryClassification:
     needs_portfolio: bool = False  # Touches existing portfolio data
     needs_external: bool = False  # Needs to fetch external (non-portfolio) company data
     confidence: float = 1.0
+    response_mode: str = "task"  # "reply" | "action" | "task" — gates memo generation & loop depth
 
 
 @dataclass
@@ -2978,7 +3014,7 @@ class UnifiedMCPOrchestrator:
             "- Valuation: valuation-engine (DCF/comps/cost/milestone), pwerm-calculator, waterfall-calculator, cap-table-generator, exit-modeler, round-modeler, followon-strategy, debt-converter\n"
             "- Analysis: scenario-generator, financial-analyzer, deal-comparer, team-comparison, monte-carlo-simulator, sensitivity-analyzer, time-series-forecaster, revenue-projector\n"
             "- Portfolio: portfolio-analyzer, fund-metrics-calculator, bulk-valuation, fund-analyzer, followon-deep-dive\n"
-            "- Grid: nl-matrix-controller — edit cells, write enrichment back to matrix (ARR, valuation, ownership, runway)\n"
+            "- Grid: bulk_write_grid — batch write cells to the P&L grid (forecasts, actuals, metrics). nl-matrix-controller — show/hide columns, filter, sort\n"
             "- Memos (memo-writer, memo_type=...): ic_memo, followon, followon_deep_dive, lp_report, lp_quarterly_enhanced, gp_strategy, "
             "comparison, competitive_landscape, diligence_memo, market_dynamics, team_comparison, ownership_analysis, "
             "portfolio_construction, pipeline_review, fund_analysis, bespoke_lp, comparable_analysis, company_list, citation_report\n"
@@ -3211,6 +3247,12 @@ class UnifiedMCPOrchestrator:
                 "category": SkillCategory.ANALYSIS,
                 "handler": self._execute_nl_matrix_command,
                 "description": "Natural language to matrix commands: show columns, filter, sort"
+            },
+            "bulk_write_grid": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_bulk_write_grid,
+                "description": "Batch write cells to the P&L grid. Accepts a list of {company_id, category, period, amount} objects. "
+                               "Use for forecasts, actuals, or any multi-cell update. Writes to fpa_actuals and returns grid_commands for frontend."
             },
             "waterfall-calculator": {
                 "category": SkillCategory.ANALYSIS,
@@ -3735,6 +3777,24 @@ JUST THE JSON:"""
         company_names = (entities or {}).get("companies", [])
         has_companies = bool(has_at or company_names)
 
+        # --- Fast path 0: Reply mode — greetings, thanks, status checks, clarifications ---
+        _reply_patterns = [
+            r"^(hi|hello|hey|thanks|thank you|ok|okay|got it|cool|great|nice|perfect|sure|yep|yes|no|nope)\b",
+            r"^what did you (just )?(do|say|find|run)",
+            r"^(what's|whats|what is) (the |our )?(status|progress)",
+            r"^(can you |could you )?(explain|clarify|elaborate)",
+            r"^(who are you|what can you do|help)\b",
+        ]
+        if any(re.match(p, lower) for p in _reply_patterns) and not has_companies:
+            logger.info(f"[CLASSIFY] Fast-path: reply mode for: {prompt[:80]}")
+            return QueryClassification(
+                complexity="simple",
+                intent="reply",
+                needs_portfolio=False,
+                confidence=0.95,
+                response_mode="reply",
+            )
+
         # --- Fast path 1: simple single-metric regex (no LLM needed) ---
         simple_patterns = [
             r"^what('s| is) (our|the|my) (dpi|tvpi|irr|nav|fund size)",
@@ -3746,6 +3806,7 @@ JUST THE JSON:"""
                 intent="metric_lookup",
                 needs_portfolio=True,
                 confidence=0.95,
+                response_mode="reply",
             )
 
         # --- Fast path 2: memo polish (user refining an existing memo) ---
@@ -3826,13 +3887,22 @@ Return:
 {{
   "complexity": "simple|complex",
   "intent": "<free-form intent description>",
+  "response_mode": "reply|action|task",
   "suggested_chain": ["tool1", "tool2"],
   "needs_portfolio": true/false,
   "needs_external": true/false,
   "confidence": 0.0-1.0
 }}
 
-Rules:
+Response mode rules:
+- "reply" = Question, greeting, clarification, status check. Answer from context/memory. Zero or one tool call max. NO memo. Target: <2s.
+  Examples: "what's our burn?", "how many companies?", "what did you just do?"
+- "action" = Direct command: "update X", "write Y", "add Z", "edit the cell", "upload this". Execute the action. Short confirmation. NO memo. Target: 2-5s.
+  Examples: "update revenue to 5M", "add Acme to the portfolio", "set Q1 COGS to 200K"
+- "task" = Complex request: "forecast revenue", "build a model", "analyze the portfolio", "write an IC memo". Plan → execute → synthesize. Memo only if appropriate. Target: 10-30s.
+  Examples: "forecast 24 months", "analyze portfolio performance", "build a cash flow model"
+
+Classification rules:
 - "simple" = ONLY for single metric lookups that need no tools (e.g. "what is our DPI?")
 - "complex" = EVERYTHING ELSE — any query that needs enrichment, search, valuation, memo, comparison, gap filling, or analysis. When in doubt, classify as complex.
 - If grid state shows GAPS or missing data and the query relates to those companies, suggest resolve_data_gaps in chain
@@ -3859,6 +3929,11 @@ Rules:
             if complexity not in ("simple",):
                 complexity = "complex"
 
+            # Extract response_mode from LLM classification
+            _response_mode = parsed.get("response_mode", "task")
+            if _response_mode not in ("reply", "action", "task"):
+                _response_mode = "task"
+
             return QueryClassification(
                 complexity=complexity,
                 intent=parsed.get("intent", "unknown"),
@@ -3866,6 +3941,7 @@ Rules:
                 needs_portfolio=parsed.get("needs_portfolio", False),
                 needs_external=parsed.get("needs_external", False),
                 confidence=parsed.get("confidence", 0.7),
+                response_mode=_response_mode,
             )
         except Exception as e:
             logger.warning(f"[CLASSIFY] LLM classification failed: {e}, defaulting to complex")
@@ -10638,8 +10714,7 @@ Rules:
             return f"- {t.name}: {t.description}{schema_str}"
         tool_catalog = "\n".join(_format_tool_for_catalog(t) for t in _scoped_tools)
 
-        ROUTE_MAX_TOKENS = 500
-        REFLECT_MAX_TOKENS = 300
+        ROUTE_MAX_TOKENS = 600
         SYNTH_MAX_TOKENS = 6000
 
         # Track correction count at loop start for mid-loop interruption detection
@@ -10647,22 +10722,30 @@ Rules:
 
         # ── Extract structured goals from user request (LLM-driven, no keywords) ──
         _company_names_json = json.dumps((entities or {}).get('companies', []))
+        # Gate memo goal extraction on response mode
+        _resp_mode = classification.response_mode if classification else "task"
+        _memo_rule = ""
+        if _resp_mode == "task":
+            _memo_rule = (
+                "MEMO RULE — when to include memo_count > 0:\n"
+                "Include a memo goal ONLY when the request explicitly asks for:\n"
+                "- An IC memo, report, deck, or write-up\n"
+                "- A comprehensive analysis that warrants a document\n\n"
+                "SKIP memo goals for:\n"
+                "- Single data lookups, simple analysis, forecasting, grid edits\n"
+                "- Questions that can be answered in 1-3 sentences\n"
+                "- Actions like 'update X', 'forecast Y', 'edit Z'\n\n"
+                "DEFAULT: If in doubt, SKIP the memo goal. Only generate memos when explicitly requested or the task clearly warrants a document.\n\n"
+            )
+        elif _resp_mode in ("reply", "action"):
+            _memo_rule = "MEMO RULE: NEVER include memo goals. This is a quick {_resp_mode} — no documents.\n\n"
+
         _goal_extraction_prompt = (
             f"User request: {prompt}\n"
             f"Companies mentioned: {_company_names_json}\n\n"
             "Extract the concrete goals the user wants achieved. Each goal should map to a tool outcome.\n"
             "Each goal: {\"id\": \"short_slug\", \"description\": \"what must be true when done\", \"check\": \"scoreboard check\"}\n\n"
-            "MEMO RULE — when to include memo_count > 0:\n"
-            "ALWAYS include a memo goal when the request involves:\n"
-            "- Analysis, comparison, review, assessment, or evaluation of companies/portfolio\n"
-            "- Questions about performance, winners/losers, financing needs, runway, health\n"
-            "- Any multi-company or portfolio-level question that requires synthesis\n"
-            "- Anything that takes more than a single data lookup to answer\n"
-            "- Explicit memo/report/deck/write-up requests\n\n"
-            "Only SKIP memo goals for:\n"
-            "- Single data lookups (\"what is X's revenue?\")\n"
-            "- Simple enrichment without analysis (\"fill gaps\", \"enrich\")\n\n"
-            "DEFAULT: If in doubt, INCLUDE the memo goal. Users expect written deliverables, not chat dumps.\n\n"
+            f"{_memo_rule}"
             "Examples:\n"
             '- "portfolio performance and financing needs" -> [{"id":"enrich","description":"Fetch data for all portfolio companies","check":"fetch_count > 0"},{"id":"analyze","description":"Run valuations and metrics","check":"valuation_count > 0"},{"id":"write_memo","description":"Write analysis memo with findings","check":"memo_count > 0"}]\n'
             '- "analyze @Ramp" -> [{"id":"enrich_ramp","description":"Fetch and enrich Ramp data","check":"fetch_count > 0"},{"id":"valuate_ramp","description":"Run valuation on Ramp","check":"valuation_count > 0"},{"id":"write_memo","description":"Generate investment memo for Ramp","check":"memo_count > 0"}]\n'
@@ -10967,6 +11050,45 @@ Rules:
                 _tool_calls_so_far = [f"  - {r['tool']}({json.dumps(r.get('input', {}))[:120]})" for r in tool_results]
                 _tool_history = "\nTOOLS ALREADY CALLED (do NOT repeat these):\n" + "\n".join(_tool_calls_so_far) + "\n"
 
+            # ── Build scoreboard BEFORE reason prompt (moved from old REFLECT) ──
+            _scoreboard_text = ""
+            if tool_results:
+                if Scoreboard:
+                    _scoreboard = Scoreboard.from_tool_results(tool_results)
+                    _portfolio_size = state.portfolio_size if state else len(
+                        self.shared_data.get("matrix_context", {}).get("companyNames")
+                        or self.shared_data.get("matrix_context", {}).get("company_names")
+                        or []
+                    )
+                    fetch_count = _scoreboard.fetch_count
+                    valuation_count = _scoreboard.valuation_count
+                    memo_section_count = max(_scoreboard.memo_section_count, len(memo_sections))
+                    memo_count = _scoreboard.memo_count
+                    if memo_section_count >= 2 and memo_count == 0:
+                        memo_count = 1
+                    chart_count = _scoreboard.chart_count
+                else:
+                    fetch_count = sum(1 for r in tool_results if r["tool"] in ("fetch_company_data", "resolve_data_gaps"))
+                    valuation_count = sum(1 for r in tool_results if r["tool"] == "run_valuation")
+                    memo_section_count = len(memo_sections)
+                    memo_tool_count = sum(1 for r in tool_results if r["tool"] in ("generate_memo", "run_report", "write_to_memo"))
+                    memo_count = memo_tool_count if memo_tool_count else (1 if memo_section_count >= 2 else 0)
+                    chart_count = sum(1 for r in tool_results if r["tool"] == "generate_chart")
+                    _portfolio_size = len(
+                        self.shared_data.get("matrix_context", {}).get("companyNames")
+                        or self.shared_data.get("matrix_context", {}).get("company_names")
+                        or []
+                    )
+
+                _scoreboard_text = (
+                    f"\nSCOREBOARD (what's been done so far):\n"
+                    f"- Portfolio companies: {_portfolio_size}\n"
+                    f"- Fetched/enriched: {fetch_count}\n"
+                    f"- Valuations: {valuation_count}\n"
+                    f"- Memos: {memo_count} | Memo sections: {memo_section_count}\n"
+                    f"- Charts: {chart_count}\n"
+                )
+
             route_prompt = f"""Task: {prompt}
 
 Available tools:
@@ -10976,29 +11098,33 @@ State:
 {sd_summary}{auto_enrich_guidance}{skip_guidance}
 {_task_state}{_memo_canvas_state}
 {_results_display}
-{_goals_status}{intent_guidance}{plan_guidance}{correction_guidance}{_tool_history}
-RULES:
-1. Look at State — what data exists? Use available data to answer the user's request.
-2. If a CRITICAL field is truly missing (e.g. no revenue at all), fetch it ONCE. Do NOT chase every '-' in the checklist.
-3. Run independent calls in parallel. Never say "no data" — use tools to get it.
-4. NEVER repeat a tool call that already ran — check TOOLS ALREADY CALLED above.
-5. After data tools finish, ALWAYS write results somewhere persistent:
-   - Use generate_memo or write_to_memo to write analysis to the memo (context bridge for future turns)
-   - Use nl-matrix-controller to push extracted values (ARR, valuation, runway) back into the grid
-   - The memo is NOT optional — it preserves context across agent turns
-6. NEVER loop trying to get a "complete dataset". Some fields (TAM, team size, etc.) are often unavailable.
-   Work with what you have. Incomplete data with analysis > perfect data with no output.
-6. Charts go in the memo, not the chat. Generate charts as part of memo/analysis output.
-7. You are done when: data is fetched AND written to memo AND grid values updated.
-   Do NOT say "done" if you only searched/fetched but never wrote to memo or grid.
+{_goals_status}{intent_guidance}{plan_guidance}{correction_guidance}{_tool_history}{_scoreboard_text}
+Pick the next action. Think step by step:
+1. What did the user ask for?
+2. What has already been done? (check TOOLS ALREADY CALLED + SCOREBOARD)
+3. What's still missing?
+4. If everything is done, say done.
 
-For a SINGLE tool: {{"action":"call_tool","tool":"name","input":{{...}},"reasoning":"1 sentence"}}
-For PARALLEL tools: {{"action":"call_tools","tools":[{{"tool":"name","input":{{...}}}},{{"tool":"name2","input":{{...}}}}],"reasoning":"1 sentence"}}
-When done: {{"action":"done"}}"""
+RULES:
+- Use available data. Do NOT re-fetch what you already have.
+- Run independent calls in parallel via call_tools.
+- NEVER repeat a tool call — check TOOLS ALREADY CALLED.
+- After fetching data, write results: generate_memo for analysis, bulk_write_grid for grid values.
+- Work with incomplete data. Do NOT loop chasing every missing field.
+- If fetches happened but no memo written yet, call generate_memo NOW.
+- Say done when: the user's request is answered AND results are persisted (memo/grid).
+
+RESPOND WITH EXACTLY ONE JSON OBJECT:
+{{"action":"call_tool","tool":"name","input":{{...}},"reasoning":"why"}}
+{{"action":"call_tools","tools":[{{"tool":"name","input":{{...}}}}],"reasoning":"why"}}
+{{"action":"done","reasoning":"why this is complete"}}"""
 
             route_response = await self.model_router.get_completion(
                 prompt=route_prompt,
-                system_prompt=self._build_system_prompt("Pick the next tool(s). Return valid JSON only."),
+                system_prompt=self._build_system_prompt(
+                    "You are a tool-calling agent. Read the user's task, check what's been done, "
+                    "pick the next tool(s) or say done. Return exactly one JSON object. No prose."
+                ),
                 capability=ModelCapability.ANALYSIS,
                 max_tokens=ROUTE_MAX_TOKENS,
                 temperature=0.0,
@@ -11275,217 +11401,49 @@ When done: {{"action":"done"}}"""
                 "plan_steps": plan_steps,
             }
 
-            # --- Check if SessionPlan is fully resolved (skip REASON/REFLECT) ---
+            # --- Check if SessionPlan is fully resolved ---
             if session_plan and session_plan.is_complete():
                 logger.info(f"[AGENT_LOOP] SessionPlan {session_plan.plan_id} fully resolved")
-                # Persist completed plan to DB
                 fund_id = self.shared_data.get("fund_context", {}).get("fundId")
                 session_plan.persist_to_db(fund_id=fund_id)
                 break
 
-            # --- REFLECT (Python-first, LLM fallback) ---
-            # Hard rule: if no tools have run yet, skip reflection and force another iteration
-            if not tool_results:
-                logger.info(f"[AGENT_LOOP] No tools called yet (iter {i}), skipping reflect — forcing tool execution")
-                continue
+            # --- COMPLETION CHECK (pure Python, zero LLM calls) ---
+            # The REASON prompt now includes the scoreboard + decides done/next-tool
+            # in a single call. No separate REFLECT LLM call needed.
 
-            # Build scoreboard from tool_results (pure Python)
-            if Scoreboard:
-                _scoreboard = Scoreboard.from_tool_results(tool_results)
-                _portfolio_size = state.portfolio_size if state else len(
-                    self.shared_data.get("matrix_context", {}).get("companyNames")
-                    or self.shared_data.get("matrix_context", {}).get("company_names")
-                    or []
-                )
-            else:
-                _scoreboard = None
-                _portfolio_size = 0
-
-            # Phase 2: TaskLedger completion check (deterministic, zero LLM tokens)
-            # Only gate on ledger if it was populated from an actual plan
+            # TaskLedger completion (deterministic)
             if ledger.goals and ledger.is_complete():
-                logger.info(f"[REFLECT_PY] All {len(ledger.goals)} plan tasks complete — breaking loop")
+                logger.info(f"[COMPLETION] All {len(ledger.goals)} plan tasks complete — done")
                 break
             if ledger.goals:
                 pending = ledger.pending_goals()
-                ready = ledger.next_actions()
-                logger.info(
-                    f"[REFLECT_PY] iter={i} — {len(pending)} pending, "
-                    f"{len(ready)} ready: {[g.id for g in pending]}"
-                )
-                continue  # ledger is tracking — skip LLM reflection unless stale
+                logger.info(f"[COMPLETION] iter={i} — {len(pending)} pending: {[g.id for g in pending]}")
+                # Ledger still has work — next REASON iteration will pick it up
+                continue
 
-            # ── Fallback: LLM-based reflection (only when CompletionChecker unavailable) ──
-            # Prefer the pre-built Scoreboard which counts side-effect
-            # memo_sections from tool outputs.  Also take max with the live
-            # memo_sections list to capture sections from non-tool paths.
-            if _scoreboard:
-                fetch_count = _scoreboard.fetch_count
-                valuation_count = _scoreboard.valuation_count
-                chart_count = _scoreboard.chart_count
-                suggest_count = _scoreboard.suggest_count
-                auto_suggest_count = _scoreboard.auto_suggest_count
-                memo_section_count = max(_scoreboard.memo_section_count, len(memo_sections))
-                memo_count = _scoreboard.memo_count
-                if memo_section_count >= 2 and memo_count == 0:
-                    memo_count = 1
-                portfolio_size = _portfolio_size
-            else:
-                suggest_count = sum(1 for r in tool_results if r["tool"] in ("suggest_grid_edit", "suggest_action"))
-                auto_suggest_count = sum(
-                    r.get("output", {}).get("auto_suggestions_count", 0)
-                    for r in tool_results
-                    if isinstance(r.get("output"), dict)
-                )
-                valuation_count = sum(1 for r in tool_results if r["tool"] == "run_valuation")
-                fetch_count = sum(1 for r in tool_results if r["tool"] in ("fetch_company_data", "resolve_data_gaps"))
-                memo_section_count = len(memo_sections)
-                memo_tool_count = sum(1 for r in tool_results if r["tool"] in ("generate_memo", "run_report", "write_to_memo"))
-                memo_count = memo_tool_count if memo_tool_count else (1 if memo_section_count >= 2 else 0)
-                chart_count = sum(1 for r in tool_results if r["tool"] == "generate_chart")
-                grid_company_names = (
-                    self.shared_data.get("matrix_context", {}).get("companyNames")
-                    or self.shared_data.get("matrix_context", {}).get("company_names")
-                    or []
-                )
-                portfolio_size = len(grid_company_names)
-
-            _goals_checklist = ""
-            if _extracted_goals:
-                _goals_checklist = "GOALS TO ACHIEVE:\n" + "\n".join(
-                    f"  - [{g.get('id')}] {g.get('description')} (check: {g.get('check', 'N/A')})"
-                    for g in _extracted_goals
-                ) + "\n\n"
-
-            # Detect redundant tool calls
+            # Anti-loop guards (pure Python — no LLM, no forced memos)
             _tool_call_counts: Dict[str, int] = {}
             for r in tool_results:
                 _tool_call_counts[r["tool"]] = _tool_call_counts.get(r["tool"], 0) + 1
-            _repeated_tools = [f"{t}(x{c})" for t, c in _tool_call_counts.items() if c >= 2]
-            _dedup_warning = ""
-            if _repeated_tools:
-                _dedup_warning = (
-                    f"\nWARNING: These tools were called multiple times: {', '.join(_repeated_tools)}. "
-                    "STOP repeating them. Either use generate_memo to write findings, or say done.\n"
-                )
 
-            # Check if we have data but no memo — force escalation
-            _has_data_no_memo = fetch_count > 0 and memo_count == 0 and memo_section_count == 0
-            _escalation_hint = ""
-            if _has_data_no_memo:
-                _escalation_hint = (
-                    "\nIMPORTANT: Data has been fetched but NO memo/analysis has been written yet. "
-                    "The memo is the context bridge — call generate_memo or write_to_memo NOW. "
-                    "Do NOT mark as sufficient without writing to the memo.\n"
-                )
-
-            # Build a compact but COMPLETE summary of what the last tool returned.
-            # Instead of blind 1500-char truncation that makes the LLM think it got
-            # nothing, extract structured signals: counts, names, field coverage.
-            _last_result_summary = ""
-            if isinstance(last_result, dict):
-                _lr_companies = last_result.get("companies", [])
-                if _lr_companies:
-                    _lr_names = [c.get("company") or c.get("name") or "?" for c in _lr_companies]
-                    _lr_with_rev = sum(1 for c in _lr_companies if c.get("revenue") or c.get("inferred_revenue") or c.get("arr"))
-                    _lr_with_val = sum(1 for c in _lr_companies if c.get("valuation") or c.get("inferred_valuation"))
-                    _last_result_summary = (
-                        f"Returned {len(_lr_companies)} companies: {', '.join(_lr_names[:20])}"
-                        f" | {_lr_with_rev} have revenue data | {_lr_with_val} have valuation data"
-                    )
-                else:
-                    _last_result_summary = self._truncate(json.dumps(last_result), 2000)
-            else:
-                _last_result_summary = self._truncate(json.dumps(last_result), 2000)
-
-            # Also show total accumulated data from shared_data so reflection sees the full picture
-            _sd_companies = self.shared_data.get("companies", [])
-            _accumulated_line = ""
-            if _sd_companies:
-                _accumulated_line = f"\nACCUMULATED DATA: {len(_sd_companies)} total companies in shared_data"
-
-            reflect_prompt = f"""Task: {prompt}
-Tools called so far: {', '.join(r['tool'] for r in tool_results)}
-Latest tool: {last_tool_name}
-Result summary: {_last_result_summary}{_accumulated_line}
-{_dedup_warning}{_escalation_hint}
-{_goals_checklist}SCOREBOARD:
-- Portfolio companies: {portfolio_size}
-- Companies fetched/enriched: {fetch_count}
-- Valuations run: {valuation_count}
-- Memos generated: {memo_count}
-- Memo sections (auto-emitted from tools): {memo_section_count}
-- Charts generated: {chart_count}
-- Suggestions emitted: {suggest_count + auto_suggest_count}
-
-Look at the user's request and the scoreboard. Is the request fully satisfied?
-- CRITICAL: If fetch_count > 0 but memo_count is 0 and memo_section_count is 0, it is NOT sufficient.
-  The user expects a written deliverable in the memo, not a chat dump.
-- If memo sections > 0, the memo already has content from tools — do NOT loop to write more sections.
-- If the user asked for valuations but valuation_count is 0, that's not satisfied.
-- If the user asked about the whole portfolio but only some companies were processed, that's not satisfied.
-- resolve_data_gaps fills gaps but does NOT count as a valuation — you still need run_valuation.
-- NEVER mark as sufficient if the same tool was called 3+ times — you're stuck in a loop.
-  Call generate_memo to write what you have, then say done.
-
-{{"sufficient":true|false,"reason":"1 sentence","missing":"what tool to call next if not sufficient"}}"""
-
-            reflect_response = await self.model_router.get_completion(
-                prompt=reflect_prompt,
-                system_prompt="You are a completion checker. Look at the user's request and the scoreboard numbers. Is the request fully satisfied? Return JSON only.",
-                capability=ModelCapability.FAST,
-                max_tokens=REFLECT_MAX_TOKENS,
-                temperature=0.0,
-                json_mode=True,
-                caller_context="agent_loop_reflect",
-            )
-            reflect_text = reflect_response.get("response", "{}") if isinstance(reflect_response, dict) else str(reflect_response)
-
-            try:
-                reflection = json.loads(reflect_text)
-            except json.JSONDecodeError as e:
-                logger.warning(f"[AGENT] Reflect JSON parse failed (iter {i}): {e}\nRaw text: {reflect_text[:500]}")
-                reflection = {"sufficient": False, "reason": "JSON parse failed, continuing"}
-
-            logger.info(f"[REFLECT] iter={i} sufficient={reflection.get('sufficient')} reason={reflection.get('reason', '')}")
-
-            # ── Anti-loop: force memo generation if stuck ──
-            # If we've done 3+ iterations with data but no memo, force generate_memo
+            # Force done if any tool called 3+ times — stuck in a loop
             _any_repeated = any(c >= 3 for c in _tool_call_counts.values())
-            # Also detect gap-fill cycling: alternating between fetch/resolve counts as looping
+            if _any_repeated and i >= 2:
+                _repeated = [f"{t}(x{c})" for t, c in _tool_call_counts.items() if c >= 3]
+                logger.warning(f"[COMPLETION] iter={i} — tool loop ({_repeated}), forcing done")
+                break
+
+            # Force done if gap-fill cycling (3+ fetch/resolve without progress)
             _gap_fill_total = sum(
                 _tool_call_counts.get(t, 0) for t in ("resolve_data_gaps", "fetch_company_data")
             )
-            _gap_fill_looping = _gap_fill_total >= 3 and i >= 2
-
-            if _gap_fill_looping and memo_count == 0 and memo_section_count == 0:
-                logger.warning(
-                    f"[REFLECT] iter={i} — gap-fill loop detected "
-                    f"({_gap_fill_total} fetch/resolve calls), forcing generate_memo"
-                )
-                action = {
-                    "action": "call_tool",
-                    "tool": "generate_memo",
-                    "input": {"prompt": prompt},
-                    "reasoning": f"Gap-fill loop — {_gap_fill_total} data calls but 0 memo sections, proceeding with available data",
-                }
-                continue
-            elif i >= 2 and fetch_count > 0 and memo_count == 0 and memo_section_count == 0:
-                logger.warning(f"[REFLECT] iter={i} — data fetched but no memo after {i+1} iterations, forcing generate_memo")
-                action = {
-                    "action": "call_tool",
-                    "tool": "generate_memo",
-                    "input": {"prompt": prompt},
-                    "reasoning": f"Forced memo generation — {fetch_count} fetches but 0 memo sections after {i+1} iterations",
-                }
-                # Don't break — let the tool execute in the next iteration
-                continue
-            elif _any_repeated and i >= 2:
-                logger.warning(f"[REFLECT] iter={i} — tool loop detected ({_repeated_tools}), forcing done")
+            if _gap_fill_total >= 3 and i >= 2:
+                logger.warning(f"[COMPLETION] iter={i} — gap-fill loop ({_gap_fill_total} calls), forcing done")
                 break
 
-            if reflection.get("sufficient"):
-                break
+            # Otherwise: let the next REASON iteration decide what to do
+            # The REASON prompt has the scoreboard and can see what's done/missing
 
         # --- SYNTHESIZE (full model, one call) ---
         # When grid_commands are the primary output, enrich synth context with
@@ -11582,6 +11540,46 @@ Look at the user's request and the scoreboard. Is the request fully satisfied?
         # Inject portfolio intelligence context so synthesis sees actual portfolio data
         portfolio_text = self._build_portfolio_intelligence()
         portfolio_context = f"\n\nPortfolio Context:\n{portfolio_text}\n" if portfolio_text.strip() else ""
+
+        # ── Response mode gate: skip memo for reply/action modes ──
+        _response_mode = classification.response_mode if classification else "task"
+        if _response_mode in ("reply", "action"):
+            logger.info(f"[AGENT_LOOP] {_response_mode} mode — skipping memo generation")
+            # Short synthesis: 1-3 sentence confirmation, no structured memo
+            _short_synth_prompt = f"User asked: {prompt}\nTool results:\n{json.dumps([{{'tool': r.get('tool',''), 'output': self._truncate(json.dumps(r.get('output',{{}})),2000)}} for r in tool_results])}\n\nRespond in 1-3 concise sentences. No preamble. No 'based on'. Just the answer or confirmation."
+            _short_response = await self.model_router.get_completion(
+                prompt=_short_synth_prompt,
+                system_prompt="You are a CFO agent. Give short, direct answers. Lead with the number or confirmation. No filler.",
+                capability=ModelCapability.FAST,
+                max_tokens=300,
+                temperature=0.2,
+                caller_context=f"agent_loop_synth_{_response_mode}",
+            )
+            synthesis = _short_response.get("response", "") if isinstance(_short_response, dict) else str(_short_response)
+
+            # Build minimal working memory
+            working_memory = [
+                {"tool": r["tool"], "summary": self._truncate(json.dumps(r.get("output", {})), 500)}
+                for r in tool_results
+            ]
+
+            # Check if any FPA write tool was used → signal P&L refresh
+            _fpa_write_tools = {"fpa_cell_edit", "fpa_upload_actuals", "fpa_apply_forecast", "fpa_forecast"}
+            _pnl_refresh = any(r.get("tool") in _fpa_write_tools for r in tool_results)
+
+            yield {
+                "type": "complete",
+                "result": {
+                    "content": synthesis,
+                    "format": "analysis",
+                    "grid_commands": grid_commands,
+                    "suggestions": suggestions,
+                    "charts": charts,
+                    "working_memory": working_memory,
+                    "pnl_refresh": _pnl_refresh,
+                },
+            }
+            return
 
         # Determine if we should use lightweight memo (structured docs) vs raw text
         has_company_data = bool(self.shared_data.get("companies"))
@@ -11825,6 +11823,10 @@ ABSOLUTE RULES:
             for noise_key in ("plan_steps", "working_memory", "session_plan", "plan_context"):
                 extra_result_fields.pop(noise_key, None)
 
+        # Check if any FPA write tool was used → signal P&L refresh
+        _fpa_write_tools = {"fpa_cell_edit", "fpa_upload_actuals", "fpa_apply_forecast", "fpa_forecast"}
+        _pnl_refresh = any(r.get("tool") in _fpa_write_tools for r in tool_results)
+
         yield {
             "type": "complete",
             "result": {
@@ -11850,6 +11852,7 @@ ABSOLUTE RULES:
                 "artifacts": result_artifacts if result_artifacts else None,
                 "session_plan": None if detected_format == "docs" else session_plan_dict,
                 "plan_context": None if detected_format == "docs" else plan_ctx_dict,
+                "pnl_refresh": _pnl_refresh,
             },
         }
 
@@ -12024,7 +12027,8 @@ ABSOLUTE RULES:
             )
             logger.info(
                 f"[ORCHESTRATOR] Classification: complexity={classification.complexity}, "
-                f"intent={classification.intent}, needs_portfolio={classification.needs_portfolio}, "
+                f"intent={classification.intent}, response_mode={classification.response_mode}, "
+                f"needs_portfolio={classification.needs_portfolio}, "
                 f"needs_external={classification.needs_external}, confidence={classification.confidence}"
             )
             # Store classification for downstream use
@@ -12036,6 +12040,7 @@ ABSOLUTE RULES:
                     "needs_portfolio": classification.needs_portfolio,
                     "needs_external": classification.needs_external,
                     "confidence": classification.confidence,
+                    "response_mode": classification.response_mode,
                 }
 
             # --- Fast path: memo polish (1 cheap LLM call) ---
@@ -12062,6 +12067,26 @@ ABSOLUTE RULES:
                 }
                 return
 
+            # --- Response mode: Reply ---
+            # Quick answer from context/memory, max 1 tool call, NO memo.
+            if classification.response_mode == "reply":
+                logger.info(f"[ORCHESTRATOR] Reply mode — answering from context, no memo")
+                result = await self._direct_dispatch(prompt, context)
+                if result is not None:
+                    budget_summary = self.model_router.end_budget() or {}
+                    yield {
+                        "type": "complete",
+                        "result": result,
+                        "success": True,
+                        "metadata": {"budget": budget_summary, "complexity": "simple",
+                                     "intent": classification.intent, "response_mode": "reply"},
+                    }
+                    return
+                # Reply mode but direct dispatch can't handle → fall through to action/task
+                logger.info("[ORCHESTRATOR] Reply mode fallback → upgrading to action mode")
+                classification.response_mode = "action"
+                classification.complexity = "complex"
+
             if classification.complexity == "simple":
                 # Try direct dispatch — returns None if it can't handle it
                 result = await self._direct_dispatch(prompt, context)
@@ -12082,9 +12107,12 @@ ABSOLUTE RULES:
                 memo_ctx = self.shared_data.get("agent_context", {}).get("memo_sections", [])
                 memo_text = self._serialize_memo_sections(memo_ctx) if memo_ctx else ""
                 approved_plan = bool(context.get("approved_plan")) if context else False
+                # Action mode: short loop (max 3 iterations), no memo
+                _max_iters = 3 if classification.response_mode == "action" else 10
                 async for event in self._run_agent_loop(
                     prompt, context, memo_text=memo_text, approved_plan=approved_plan,
                     entities=entities, classification=classification,
+                    max_iterations=_max_iters,
                 ):
                     yield event
                 self.model_router.end_budget()
@@ -29718,6 +29746,86 @@ Return a JSON with this structure:
             result = controller.process_nl_command(command=command, fund_id=fund_id)
             return result if isinstance(result, dict) else {"result": result}
         except Exception as e:
+            return {"error": str(e)}
+
+    async def _execute_bulk_write_grid(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Batch write cells to the P&L grid via fpa_actuals.
+
+        Input: {"cells": [{"company_id": "...", "category": "revenue", "period": "2025-01", "amount": 500000}, ...]}
+        Optional per-cell: fund_id, subcategory, hierarchy_path, source (default: "agent_write")
+
+        Used by: CFO agent (forecasts), portfolio agent (actuals), sourcing agent (metrics).
+        """
+        try:
+            from app.core.supabase_client import get_supabase_client
+
+            cells = inputs.get("cells", [])
+            if not cells:
+                return {"error": "No cells provided"}
+
+            sb = get_supabase_client()
+            if not sb:
+                return {"error": "Database unavailable"}
+
+            default_source = inputs.get("source", "agent_write")
+            rows = []
+            for cell in cells:
+                period_str = str(cell.get("period", "")).strip()
+                if len(period_str) == 7:
+                    period_str = f"{period_str}-01"
+                category = cell.get("category", "")
+                subcategory = cell.get("subcategory", "")
+                hierarchy_path = cell.get("hierarchy_path") or (
+                    f"{category}/{subcategory}" if subcategory else category
+                )
+                rows.append({
+                    "company_id": cell["company_id"],
+                    "fund_id": cell.get("fund_id") or self.shared_data.get("fund_context", {}).get("fundId"),
+                    "period": period_str,
+                    "category": category,
+                    "subcategory": subcategory,
+                    "hierarchy_path": hierarchy_path,
+                    "amount": float(cell.get("amount", 0)),
+                    "source": cell.get("source", default_source),
+                })
+
+            # Batch upsert in 500-row chunks
+            for i in range(0, len(rows), 500):
+                chunk = rows[i:i + 500]
+                sb.table("fpa_actuals").upsert(
+                    chunk,
+                    on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+                ).execute()
+
+            # Build grid_commands for frontend
+            grid_commands = []
+            for row in rows:
+                grid_commands.append({
+                    "action": "edit",
+                    "company_id": row["company_id"],
+                    "field": row["category"],
+                    "period": row["period"][:7],
+                    "value": row["amount"],
+                    "source": row["source"],
+                })
+
+            periods = sorted(set(r["period"][:7] for r in rows))
+            categories = sorted(set(r["category"] for r in rows))
+            companies = sorted(set(r["company_id"] for r in rows))
+
+            logger.info(f"[BULK_WRITE_GRID] Wrote {len(rows)} cells for {len(companies)} companies across {len(periods)} periods")
+
+            return {
+                "success": True,
+                "rows_written": len(rows),
+                "companies": companies,
+                "periods": periods,
+                "categories": categories,
+                "grid_commands": grid_commands,
+            }
+
+        except Exception as e:
+            logger.error(f"[BULK_WRITE_GRID] Failed: {e}", exc_info=True)
             return {"error": str(e)}
 
     async def _execute_waterfall_calculation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:

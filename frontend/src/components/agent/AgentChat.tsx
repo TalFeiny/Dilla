@@ -515,6 +515,7 @@ export default function AgentChat({
       memoType: result.memo_type ?? data.memo_type ?? null,
       isResumable: result.is_resumable ?? data.is_resumable ?? false,
       todos: result.todos ?? result.todo_items ?? data.todos ?? [],
+      pnlRefresh: result.pnl_refresh ?? data.pnl_refresh ?? false,
     };
   };
 
@@ -895,6 +896,11 @@ export default function AgentChat({
         onGridCommandsFromBackend(suggestionCmds).catch((err: any) =>
           console.error('[AgentChat] grid_suggestions error:', err)
         );
+      }
+
+      // P&L grid refresh: when FPA write tools ran, signal the control panel to re-fetch
+      if (norm.pnlRefresh) {
+        window.dispatchEvent(new CustomEvent('refreshPnl'));
       }
 
       // Store resumable memo artifacts (plan memos) for cross-session context

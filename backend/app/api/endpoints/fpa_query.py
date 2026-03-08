@@ -131,6 +131,31 @@ class PnlCellEditRequest(BaseModel):
     source: str = "manual_cell_edit"
 
 
+class BulkPnlWriteRequest(BaseModel):
+    """Batch cell writes — used by agents, CSV ingest, forecast apply."""
+    cells: List[PnlCellEditRequest] = Field(..., min_length=1, max_length=5000)
+
+
+def _normalize_cell_row(cell: PnlCellEditRequest) -> dict:
+    """Normalize a single cell edit into an fpa_actuals row."""
+    period_str = cell.period.strip()
+    if len(period_str) == 7:
+        period_str = f"{period_str}-01"
+    hierarchy_path = cell.hierarchy_path or (
+        f"{cell.category}/{cell.subcategory}" if cell.subcategory else cell.category
+    )
+    return {
+        "company_id": cell.company_id,
+        "fund_id": cell.fund_id,
+        "period": period_str,
+        "category": cell.category,
+        "subcategory": cell.subcategory,
+        "hierarchy_path": hierarchy_path,
+        "amount": cell.amount,
+        "source": cell.source,
+    }
+
+
 @router.post("/pnl")
 async def upsert_pnl_cell(req: PnlCellEditRequest):
     """Upsert a single P&L cell value into fpa_actuals (manual override)."""
@@ -140,28 +165,11 @@ async def upsert_pnl_cell(req: PnlCellEditRequest):
     if not sb:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
-    # Normalize period to first-of-month date
-    period_str = req.period.strip()
-    if len(period_str) == 7:  # "2025-09"
-        period_str = f"{period_str}-01"
-
-    # Build hierarchy_path if not provided
-    hierarchy_path = req.hierarchy_path or (
-        f"{req.category}/{req.subcategory}" if req.subcategory else req.category
-    )
+    row = _normalize_cell_row(req)
 
     try:
         sb.table("fpa_actuals").upsert(
-            {
-                "company_id": req.company_id,
-                "fund_id": req.fund_id,
-                "period": period_str,
-                "category": req.category,
-                "subcategory": req.subcategory,
-                "hierarchy_path": hierarchy_path,
-                "amount": req.amount,
-                "source": req.source,
-            },
+            row,
             on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
         ).execute()
     except Exception as e:
@@ -169,6 +177,60 @@ async def upsert_pnl_cell(req: PnlCellEditRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
     return {"success": True, "category": req.category, "period": req.period, "amount": req.amount}
+
+
+@router.post("/pnl/bulk")
+async def bulk_upsert_pnl_cells(req: BulkPnlWriteRequest):
+    """Batch upsert up to 5000 cells into fpa_actuals in one call.
+
+    Used by: agents (CFO, portfolio, sourcing), CSV ingest, forecast apply.
+    Chunks into 500-row batches for Supabase.
+    Returns grid_commands so the frontend can update the grid in one pass.
+    """
+    from app.core.supabase_client import get_supabase_client
+
+    sb = get_supabase_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    rows = [_normalize_cell_row(c) for c in req.cells]
+
+    try:
+        # Batch upsert in 500-row chunks
+        for i in range(0, len(rows), 500):
+            chunk = rows[i:i + 500]
+            sb.table("fpa_actuals").upsert(
+                chunk,
+                on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+            ).execute()
+    except Exception as e:
+        logger.error("Bulk P&L upsert failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Build grid_commands so frontend can update without re-fetching
+    grid_commands = []
+    for row in rows:
+        grid_commands.append({
+            "action": "edit",
+            "company_id": row["company_id"],
+            "field": row["category"],
+            "period": row["period"][:7],
+            "value": row["amount"],
+            "source": row["source"],
+        })
+
+    periods = sorted(set(r["period"][:7] for r in rows))
+    categories = sorted(set(r["category"] for r in rows))
+    companies = sorted(set(r["company_id"] for r in rows))
+
+    return {
+        "success": True,
+        "rows_written": len(rows),
+        "companies": companies,
+        "periods": periods,
+        "categories": categories,
+        "grid_commands": grid_commands,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1224,6 +1286,18 @@ async def upload_actuals_csv(
         periods = sorted(set(r["period"][:7] for r in actuals_rows))
         categories = sorted(set(r["category"] for r in actuals_rows))
 
+        # --- Build grid_commands so frontend updates the grid in one pass ---
+        grid_commands = []
+        for row in actuals_rows:
+            grid_commands.append({
+                "action": "edit",
+                "company_id": row["company_id"],
+                "field": row["category"],
+                "period": row["period"][:7],
+                "value": row["amount"],
+                "source": row.get("source", "csv_upload"),
+            })
+
         # --- Mark completed ---
         _update_job({
             "status": "completed",
@@ -1257,6 +1331,7 @@ async def upload_actuals_csv(
                 "empty": skipped_empty,
             },
             "warnings": warnings,
+            "grid_commands": grid_commands,
         }
 
     except HTTPException:
