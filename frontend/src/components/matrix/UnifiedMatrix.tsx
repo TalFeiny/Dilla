@@ -612,20 +612,61 @@ export function UnifiedMatrix({
 
     if (csvFiles.length > 0 && mode === 'pnl' && (opts.companyId || companyId)) {
       for (const csvFile of csvFiles) {
-        // Call PnL CSV upload directly — same logic as handlePnlCsvUpload
         const cid = opts.companyId || companyId;
         const fd = new FormData();
         fd.append('file', csvFile);
         fd.append('company_id', cid!);
         if (opts.fundId || fundId) fd.append('fund_id', (opts.fundId || fundId)!);
+
+        onToolCallLog?.({
+          action_id: 'pnl.upload_csv',
+          row_id: 'pnl_root',
+          column_id: 'csv_upload',
+          status: 'running',
+          companyName: csvFile.name,
+        });
+
         const csvRes = await fetch('/api/fpa/upload-actuals', { method: 'POST', body: fd });
         const csvData = await csvRes.json();
         if (!csvRes.ok) {
-          toast.error(csvData.error || 'CSV upload failed');
-        } else {
-          toast.success(`Ingested ${csvData.ingested || 0} rows from ${csvFile.name}`, {
-            description: `${csvData.periods?.length || 0} periods, ${csvData.categories?.length || 0} categories`,
+          const errMsg = csvData.error || 'CSV upload failed';
+          toast.error(errMsg);
+          onToolCallLog?.({
+            action_id: 'pnl.upload_csv',
+            row_id: 'pnl_root',
+            column_id: 'csv_upload',
+            status: 'error',
+            error: errMsg,
+            companyName: csvFile.name,
           });
+        } else {
+          const ingested = csvData.ingested || 0;
+          const periodCount = csvData.periods?.length || 0;
+          const categoryCount = csvData.categories?.length || 0;
+          const unmapped = csvData.unmapped_labels || [];
+          const skipped = csvData.skipped_rows || {};
+          const warnings = csvData.warnings || [];
+
+          const parts: string[] = [
+            `Imported ${ingested} data points across ${periodCount} period${periodCount !== 1 ? 's' : ''} and ${categoryCount} categor${categoryCount !== 1 ? 'ies' : 'y'}.`,
+          ];
+          if (unmapped.length) parts.push(`Unmapped labels: ${unmapped.join(', ')}.`);
+          if (skipped.computed?.length) parts.push(`Skipped computed: ${skipped.computed.join(', ')}.`);
+          if (warnings.length) parts.push(...warnings);
+
+          toast.success(`Ingested ${ingested} rows from ${csvFile.name}`, {
+            description: `${periodCount} periods, ${categoryCount} categories${unmapped.length ? `, ${unmapped.length} unmapped` : ''}`,
+          });
+
+          onToolCallLog?.({
+            action_id: 'pnl.upload_csv',
+            row_id: 'pnl_root',
+            column_id: 'csv_upload',
+            status: 'success',
+            companyName: csvFile.name,
+            explanation: parts.join(' '),
+          });
+
           window.dispatchEvent(new CustomEvent('refreshMatrix'));
         }
       }
