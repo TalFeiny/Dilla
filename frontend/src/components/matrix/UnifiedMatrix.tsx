@@ -1473,12 +1473,40 @@ export function UnifiedMatrix({
   }, [fundId, onDataChange]);
 
   // Load P&L data for pnl mode
+  // Uses the same abort/retry/guard pattern as loadPortfolioData.
+  const pnlAbortRef = useRef<AbortController | null>(null);
   const loadPnlData = useCallback(async () => {
+    if (editInFlightRef.current > 0) {
+      console.log('[UnifiedMatrix] Skipping loadPnlData - edit/upload in flight');
+      return;
+    }
+
+    // Abort any previous in-flight PnL load to prevent stale data
+    pnlAbortRef.current?.abort();
+    const controller = new AbortController();
+    pnlAbortRef.current = controller;
+
     setIsLoading(true);
     setError(null);
     try {
       const { fetchPnlForMatrix } = await import('@/lib/matrix/matrix-api-service');
-      const pnlData = await fetchPnlForMatrix(fundId, companyId);
+
+      // Retry once on transient failure (mirrors portfolio pattern)
+      let pnlData: Awaited<ReturnType<typeof fetchPnlForMatrix>> | null = null;
+      for (let attempt = 0; attempt <= 1; attempt++) {
+        try {
+          if (controller.signal.aborted) return;
+          pnlData = await fetchPnlForMatrix(fundId, companyId);
+          break;
+        } catch (err) {
+          if (err instanceof DOMException && err.name === 'AbortError') return;
+          if (attempt === 1) throw err;
+          console.warn('[UnifiedMatrix] PnL fetch transient failure, retrying...');
+          await new Promise(r => setTimeout(r, 500));
+        }
+      }
+      if (!pnlData || controller.signal.aborted) return;
+
       // Only replace matrix if backend returned real data rows (not just the lineItem column).
       // Otherwise keep the skeleton so the user sees a proper P&L grid with month columns.
       const hasRealData = pnlData.rows.length > 0 && pnlData.columns.length > 1;
@@ -1495,6 +1523,7 @@ export function UnifiedMatrix({
         });
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       console.error('[UnifiedMatrix] Error loading P&L data:', err);
       setError(err instanceof Error ? err.message : 'Failed to load P&L data');
     } finally {
@@ -4235,8 +4264,15 @@ export function UnifiedMatrix({
       // Period upsert info persists in cell status until next upload starts
       // (Stage 1 of the next upload resets it to 'loading')
 
-      // Reload grid from PnlBuilder
-      loadPnlData();
+      // Reload grid from PnlBuilder after a brief delay to let Supabase propagate.
+      // Uses editInFlightRef guard so concurrent loadPnlData calls don't race.
+      editInFlightRef.current++;
+      try {
+        await new Promise(r => setTimeout(r, 300));
+      } finally {
+        editInFlightRef.current--;
+      }
+      await loadPnlData();
     } catch (err) {
       console.error('[PnL CSV upload] error:', err);
       const errMsg = err instanceof Error ? err.message : 'CSV upload failed';

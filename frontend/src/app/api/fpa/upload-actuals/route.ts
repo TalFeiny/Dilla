@@ -5,6 +5,10 @@ import { getBackendUrl } from '@/lib/backend-url';
  * POST /api/fpa/upload-actuals
  * Proxy multipart form upload (CSV file + company_id + fund_id) to backend.
  * Backend parses CSV, auto-detects orientation, and upserts into fpa_actuals.
+ *
+ * State-tracked: backend creates an fpa_upload_jobs record that transitions
+ * pending → processing → completed/failed (mirrors document processing pattern).
+ * Response includes job_id for status polling.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -27,7 +31,7 @@ export async function POST(request: NextRequest) {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
       return NextResponse.json(
-        { error: err.detail ?? 'Upload failed' },
+        { error: err.detail ?? 'Upload failed', job_id: err.job_id },
         { status: res.status },
       );
     }

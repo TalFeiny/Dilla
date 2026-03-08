@@ -817,190 +817,224 @@ async def upload_actuals_csv(
     Supports: monthly/quarterly/annual/half-year periods, indented subcategories,
     separator row exclusion, computed row dedup, fuzzy category matching.
 
-    Returns detailed mapping report so the upload is never a black box.
+    State-tracked: creates an fpa_upload_jobs record that transitions through
+    pending → processing → completed/failed so failures are never a black box.
     """
     from app.core.supabase_client import get_supabase_client
+    from datetime import datetime
 
     sb = get_supabase_client()
     if not sb:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
-    content = await file.read()
-    text = content.decode("utf-8-sig")  # handle BOM
-    reader = csv.reader(io.StringIO(text))
-    all_rows = [row for row in reader if any(cell.strip() for cell in row)]
+    # --- Create upload job record (pending) ---
+    job_payload = {
+        "company_id": company_id,
+        "fund_id": fund_id,
+        "source": "csv_upload",
+        "file_name": file.filename,
+        "file_size": file.size,
+        "status": "pending",
+        "step": "validating",
+        "message": "Upload received, validating file",
+    }
+    job_row = sb.table("fpa_upload_jobs").insert(job_payload).execute()
+    job_id = job_row.data[0]["id"] if job_row.data else None
 
-    if len(all_rows) < 2:
-        raise HTTPException(status_code=400, detail="CSV needs at least a header row and one data row")
+    def _update_job(updates: dict):
+        """Update the job record with current step/status."""
+        if not job_id:
+            return
+        try:
+            sb.table("fpa_upload_jobs").update(updates).eq("id", job_id).execute()
+        except Exception as ue:
+            logger.warning(f"[upload-actuals] Failed to update job {job_id}: {ue}")
 
-    headers = [h.strip() for h in all_rows[0]]
-    data_rows = all_rows[1:]
+    try:
+        # Transition: pending → processing
+        _update_job({
+            "status": "processing",
+            "started_at": datetime.utcnow().isoformat(),
+            "step": "validating",
+            "message": "Reading and validating CSV",
+        })
 
-    # --- Detect orientation & parse period columns ---
-    # Try standard: col headers are periods
-    period_cols: Dict[int, List[tuple]] = {}  # col_index → [(period, divisor), ...]
-    for i, h in enumerate(headers):
-        if i == 0:
-            continue
-        periods = _parse_period_header(h)
-        if periods:
-            period_cols[i] = periods
+        content = await file.read()
+        text = content.decode("utf-8-sig")  # handle BOM
+        reader = csv.reader(io.StringIO(text))
+        all_rows = [row for row in reader if any(cell.strip() for cell in row)]
 
-    is_transposed = False
-    cat_cols: Dict[int, str] = {}
+        if len(all_rows) < 2:
+            _update_job({
+                "status": "failed",
+                "step": "validating",
+                "error": "CSV needs at least a header row and one data row",
+                "completed_at": datetime.utcnow().isoformat(),
+            })
+            raise HTTPException(status_code=400, detail="CSV needs at least a header row and one data row")
 
-    if not period_cols:
-        # Try transposed: col headers are categories, row[0] is the period
+        headers = [h.strip() for h in all_rows[0]]
+        data_rows = all_rows[1:]
+
+        _update_job({"step": "parsing_headers", "message": f"Parsing {len(headers)} columns, {len(data_rows)} rows"})
+
+        # --- Detect orientation & parse period columns ---
+        # Try standard: col headers are periods
+        period_cols: Dict[int, List[tuple]] = {}  # col_index → [(period, divisor), ...]
         for i, h in enumerate(headers):
             if i == 0:
                 continue
-            cat = _match_category(h)
-            if cat:
-                cat_cols[i] = cat
-        if not cat_cols:
-            raise HTTPException(
-                status_code=400,
-                detail="Could not detect period columns or category columns. "
+            periods = _parse_period_header(h)
+            if periods:
+                period_cols[i] = periods
+
+        is_transposed = False
+        cat_cols: Dict[int, str] = {}
+
+        if not period_cols:
+            # Try transposed: col headers are categories, row[0] is the period
+            for i, h in enumerate(headers):
+                if i == 0:
+                    continue
+                cat = _match_category(h)
+                if cat:
+                    cat_cols[i] = cat
+            if not cat_cols:
+                err = ("Could not detect period columns or category columns. "
                        "Expected either periods as columns (Jan-25, Q1 2026, FY2025...) "
-                       "or categories as columns (Revenue, COGS...)."
-            )
-        is_transposed = True
+                       "or categories as columns (Revenue, COGS...).")
+                _update_job({
+                    "status": "failed",
+                    "step": "parsing_headers",
+                    "error": err,
+                    "completed_at": datetime.utcnow().isoformat(),
+                })
+                raise HTTPException(status_code=400, detail=err)
+            is_transposed = True
 
-    # --- Tracking for detailed response ---
-    mapped_categories = []
-    unmapped_labels = []
-    warnings = []
-    skipped_separators = 0
-    skipped_computed = []
-    skipped_empty = 0
-    subcategories_created = []
+        _update_job({"step": "detecting_categories", "message": f"Detected {'transposed' if is_transposed else 'standard'} orientation"})
 
-    if is_transposed:
-        # Transposed: simple path — no hierarchy detection needed
-        mapped_categories = [{"label": headers[i], "category": c, "match": "regex"} for i, c in cat_cols.items()]
-        actuals_rows = []
+        # --- Tracking for detailed response ---
+        mapped_categories = []
+        unmapped_labels = []
+        warnings = []
+        skipped_separators = 0
+        skipped_computed = []
+        skipped_empty = 0
+        subcategories_created = []
 
-        for row in data_rows:
-            if not row or not row[0].strip():
-                skipped_empty += 1
-                continue
-            if _is_separator_row(row):
-                skipped_separators += 1
-                continue
-            periods = _parse_period_header(row[0].strip())
-            if not periods:
-                unmapped_labels.append(row[0].strip())
-                continue
+        if is_transposed:
+            # Transposed: simple path — no hierarchy detection needed
+            mapped_categories = [{"label": headers[i], "category": c, "match": "regex"} for i, c in cat_cols.items()]
+            actuals_rows = []
 
-            for col_idx, category in cat_cols.items():
-                if col_idx >= len(row):
+            for row in data_rows:
+                if not row or not row[0].strip():
+                    skipped_empty += 1
                     continue
-                amount = _parse_amount(row[col_idx])
-                if amount is None:
+                if _is_separator_row(row):
+                    skipped_separators += 1
                     continue
-                for period, divisor in periods:
-                    actuals_rows.append({
-                        "company_id": company_id,
-                        "fund_id": fund_id,
-                        "period": f"{period}-01",
-                        "category": category,
-                        "subcategory": "",
-                        "hierarchy_path": category,
-                        "amount": amount / divisor,
-                        "source": "csv_upload",
-                    })
+                periods = _parse_period_header(row[0].strip())
+                if not periods:
+                    unmapped_labels.append(row[0].strip())
+                    continue
 
-        if divisor_used := any(d > 1 for ps in [_parse_period_header(row[0].strip()) or [] for row in data_rows] for _, d in ps):
-            warnings.append("Quarterly/annual amounts divided evenly across constituent months")
+                for col_idx, category in cat_cols.items():
+                    if col_idx >= len(row):
+                        continue
+                    amount = _parse_amount(row[col_idx])
+                    if amount is None:
+                        continue
+                    for period, divisor in periods:
+                        actuals_rows.append({
+                            "company_id": company_id,
+                            "fund_id": fund_id,
+                            "period": f"{period}-01",
+                            "category": category,
+                            "subcategory": "",
+                            "hierarchy_path": category,
+                            "amount": amount / divisor,
+                            "source": "csv_upload",
+                        })
 
-    else:
-        # Standard orientation: 3-pass pipeline
+            if divisor_used := any(d > 1 for ps in [_parse_period_header(row[0].strip()) or [] for row in data_rows] for _, d in ps):
+                warnings.append("Quarterly/annual amounts divided evenly across constituent months")
 
-        # --- Detect ERP hierarchy strategy ---
-        hierarchy_info = _detect_hierarchy_columns(headers)
-        row_depth_map: Dict[int, int] = {}
+        else:
+            # Standard orientation: 3-pass pipeline
 
-        if hierarchy_info["strategy"] == "account_number":
-            row_depth_map = _build_account_number_tree(
-                data_rows, hierarchy_info["account_col"], hierarchy_info.get("label_col", 0)
-            )
-        elif hierarchy_info["strategy"] == "parent_id":
-            row_depth_map = _build_parent_id_tree(
-                data_rows, hierarchy_info["account_col"], hierarchy_info["parent_col"]
-            )
-        elif hierarchy_info["strategy"] == "level_column":
-            row_depth_map = _build_level_column_map(
-                data_rows, hierarchy_info["level_col"]
-            )
+            # --- Detect ERP hierarchy strategy ---
+            hierarchy_info = _detect_hierarchy_columns(headers)
+            row_depth_map: Dict[int, int] = {}
 
-        if hierarchy_info["strategy"] != "indent":
-            warnings.append(f"Detected ERP hierarchy format: {hierarchy_info['strategy']}")
-
-        # =============================================
-        # PASS 1: Scan all rows — build category + hierarchy map
-        # =============================================
-        row_info = []  # [{label, cleaned, depth, original, category, match_type, subcategory, is_separator, is_section_header, has_amounts}]
-        current_section_parent = None  # track the current depth=0 section header category
-
-        for idx_row, row in enumerate(data_rows):
-            if not row:
-                row_info.append({"skip": "empty"})
-                skipped_empty += 1
-                continue
-
-            if _is_separator_row(row):
-                row_info.append({"skip": "separator"})
-                skipped_separators += 1
-                continue
-
-            # Determine label column and depth based on hierarchy strategy
-            label_col_idx = hierarchy_info.get("label_col", 0) if hierarchy_info["strategy"] != "indent" else 0
-            raw_label = row[label_col_idx] if label_col_idx < len(row) else (row[0] if row else "")
-            if not raw_label.strip():
-                row_info.append({"skip": "empty"})
-                skipped_empty += 1
-                continue
+            if hierarchy_info["strategy"] == "account_number":
+                row_depth_map = _build_account_number_tree(
+                    data_rows, hierarchy_info["account_col"], hierarchy_info.get("label_col", 0)
+                )
+            elif hierarchy_info["strategy"] == "parent_id":
+                row_depth_map = _build_parent_id_tree(
+                    data_rows, hierarchy_info["account_col"], hierarchy_info["parent_col"]
+                )
+            elif hierarchy_info["strategy"] == "level_column":
+                row_depth_map = _build_level_column_map(
+                    data_rows, hierarchy_info["level_col"]
+                )
 
             if hierarchy_info["strategy"] != "indent":
-                depth = row_depth_map.get(idx_row, 0)
-                cleaned, _, original = _clean_label(raw_label)  # ignore indent depth
-            else:
-                cleaned, depth, original = _clean_label(raw_label)
+                warnings.append(f"Detected ERP hierarchy format: {hierarchy_info['strategy']}")
 
-            # Check if any data cells have amounts
-            has_amounts = any(
-                _parse_amount(row[ci]) is not None
-                for ci in period_cols
-                if ci < len(row)
-            )
+            # =============================================
+            # PASS 1: Scan all rows — build category + hierarchy map
+            # =============================================
+            row_info = []
+            current_section_parent = None
 
-            info = {
-                "skip": None,
-                "raw_label": raw_label,
-                "cleaned": cleaned,
-                "depth": depth,
-                "original": original,
-                "category": None,
-                "subcategory": None,
-                "match_type": None,
-                "is_section_header": False,
-                "has_amounts": has_amounts,
-            }
+            for idx_row, row in enumerate(data_rows):
+                if not row:
+                    row_info.append({"skip": "empty"})
+                    skipped_empty += 1
+                    continue
 
-            if depth == 0:
-                # Try matching as a known category
-                cat = _match_category(cleaned)
-                if cat:
-                    info["category"] = cat
-                    info["match_type"] = "regex"
-                    current_section_parent = _SECTION_TO_PARENT.get(cat)
+                if _is_separator_row(row):
+                    row_info.append({"skip": "separator"})
+                    skipped_separators += 1
+                    continue
 
-                    # Section header with no amounts = just a label row
-                    if not has_amounts and cat in _SECTION_TO_PARENT:
-                        info["is_section_header"] = True
+                label_col_idx = hierarchy_info.get("label_col", 0) if hierarchy_info["strategy"] != "indent" else 0
+                raw_label = row[label_col_idx] if label_col_idx < len(row) else (row[0] if row else "")
+                if not raw_label.strip():
+                    row_info.append({"skip": "empty"})
+                    skipped_empty += 1
+                    continue
+
+                if hierarchy_info["strategy"] != "indent":
+                    depth = row_depth_map.get(idx_row, 0)
+                    cleaned, _, original = _clean_label(raw_label)
                 else:
-                    # Also try matching the original (with parenthetical)
-                    cat = _match_category(original)
+                    cleaned, depth, original = _clean_label(raw_label)
+
+                has_amounts = any(
+                    _parse_amount(row[ci]) is not None
+                    for ci in period_cols
+                    if ci < len(row)
+                )
+
+                info = {
+                    "skip": None,
+                    "raw_label": raw_label,
+                    "cleaned": cleaned,
+                    "depth": depth,
+                    "original": original,
+                    "category": None,
+                    "subcategory": None,
+                    "match_type": None,
+                    "is_section_header": False,
+                    "has_amounts": has_amounts,
+                }
+
+                if depth == 0:
+                    cat = _match_category(cleaned)
                     if cat:
                         info["category"] = cat
                         info["match_type"] = "regex"
@@ -1008,197 +1042,276 @@ async def upload_actuals_csv(
                         if not has_amounts and cat in _SECTION_TO_PARENT:
                             info["is_section_header"] = True
                     else:
-                        # Check if it's a section header pattern
-                        for pat, sec_cat in _SECTION_HEADER_PATTERNS:
-                            if pat.search(cleaned):
+                        cat = _match_category(original)
+                        if cat:
+                            info["category"] = cat
+                            info["match_type"] = "regex"
+                            current_section_parent = _SECTION_TO_PARENT.get(cat)
+                            if not has_amounts and cat in _SECTION_TO_PARENT:
                                 info["is_section_header"] = True
-                                current_section_parent = _SECTION_TO_PARENT.get(sec_cat, sec_cat)
-                                break
+                        else:
+                            for pat, sec_cat in _SECTION_HEADER_PATTERNS:
+                                if pat.search(cleaned):
+                                    info["is_section_header"] = True
+                                    current_section_parent = _SECTION_TO_PARENT.get(sec_cat, sec_cat)
+                                    break
 
-                        if not info["is_section_header"]:
-                            # Fuzzy fallback
-                            fuzzy = _fuzzy_match_category(cleaned)
-                            if fuzzy:
-                                info["category"] = fuzzy[0]
-                                info["match_type"] = f"fuzzy ({fuzzy[1]})"
-                                warnings.append(f"Fuzzy-matched '{original}' → {fuzzy[0]} (score: {fuzzy[1]})")
-                                current_section_parent = _SECTION_TO_PARENT.get(fuzzy[0])
-                            else:
-                                info["skip"] = "unmapped"
-                                unmapped_labels.append(original)
+                            if not info["is_section_header"]:
+                                fuzzy = _fuzzy_match_category(cleaned)
+                                if fuzzy:
+                                    info["category"] = fuzzy[0]
+                                    info["match_type"] = f"fuzzy ({fuzzy[1]})"
+                                    warnings.append(f"Fuzzy-matched '{original}' → {fuzzy[0]} (score: {fuzzy[1]})")
+                                    current_section_parent = _SECTION_TO_PARENT.get(fuzzy[0])
+                                else:
+                                    info["skip"] = "unmapped"
+                                    unmapped_labels.append(original)
 
-            else:
-                # depth > 0: child row — try matching as known category first
-                cat = _match_category(cleaned)
-                if cat and cat != current_section_parent:
-                    # Matches a DIFFERENT category (e.g. "Sales & Marketing" under OpEx → opex_sm)
-                    info["category"] = cat
-                    info["match_type"] = "regex"
-                elif cat and cat == current_section_parent:
-                    # Matches SAME category as parent (e.g. "API Revenue" under Revenue)
-                    # → treat as subcategory for department drilldown
-                    sub_name = _label_to_subcategory(original)
-                    if sub_name:
-                        info["category"] = cat
-                        info["subcategory"] = sub_name
-                        info["match_type"] = "hierarchy"
-                        if sub_name not in subcategories_created:
-                            subcategories_created.append(sub_name)
-                    else:
+                else:
+                    cat = _match_category(cleaned)
+                    if cat and cat != current_section_parent:
                         info["category"] = cat
                         info["match_type"] = "regex"
-                else:
-                    # Try fuzzy
-                    fuzzy = _fuzzy_match_category(cleaned)
-                    if fuzzy and fuzzy[0] != current_section_parent:
-                        # Fuzzy-matched to a DIFFERENT category than parent
-                        info["category"] = fuzzy[0]
-                        info["match_type"] = f"fuzzy ({fuzzy[1]})"
-                        warnings.append(f"Fuzzy-matched '{original}' → {fuzzy[0]} (score: {fuzzy[1]})")
-                    elif current_section_parent:
-                        # Dynamic subcategory under the current section parent
+                    elif cat and cat == current_section_parent:
                         sub_name = _label_to_subcategory(original)
                         if sub_name:
-                            info["category"] = current_section_parent
+                            info["category"] = cat
                             info["subcategory"] = sub_name
                             info["match_type"] = "hierarchy"
                             if sub_name not in subcategories_created:
                                 subcategories_created.append(sub_name)
+                        else:
+                            info["category"] = cat
+                            info["match_type"] = "regex"
                     else:
-                        info["skip"] = "unmapped"
-                        unmapped_labels.append(original)
+                        fuzzy = _fuzzy_match_category(cleaned)
+                        if fuzzy and fuzzy[0] != current_section_parent:
+                            info["category"] = fuzzy[0]
+                            info["match_type"] = f"fuzzy ({fuzzy[1]})"
+                            warnings.append(f"Fuzzy-matched '{original}' → {fuzzy[0]} (score: {fuzzy[1]})")
+                        elif current_section_parent:
+                            sub_name = _label_to_subcategory(original)
+                            if sub_name:
+                                info["category"] = current_section_parent
+                                info["subcategory"] = sub_name
+                                info["match_type"] = "hierarchy"
+                                if sub_name not in subcategories_created:
+                                    subcategories_created.append(sub_name)
+                        else:
+                            info["skip"] = "unmapped"
+                            unmapped_labels.append(original)
 
-            row_info.append(info)
+                row_info.append(info)
 
-        # =============================================
-        # PASS 1.5: Build hierarchy_path for each row using path stack
-        # =============================================
-        path_stack: List[tuple] = []  # [(depth, label_segment)]
-        for ri in row_info:
-            if ri.get("skip"):
-                ri["hierarchy_path"] = ""
-                continue
-            if ri.get("is_section_header"):
-                # Section headers reset the path stack
-                path_stack = []
-                ri["hierarchy_path"] = ""
-                continue
+            # =============================================
+            # PASS 1.5: Build hierarchy_path for each row using path stack
+            # =============================================
+            path_stack: List[tuple] = []
+            for ri in row_info:
+                if ri.get("skip"):
+                    ri["hierarchy_path"] = ""
+                    continue
+                if ri.get("is_section_header"):
+                    path_stack = []
+                    ri["hierarchy_path"] = ""
+                    continue
 
-            depth = ri.get("depth", 0)
-            segment = ri.get("subcategory") or ri.get("category") or ""
+                depth = ri.get("depth", 0)
+                segment = ri.get("subcategory") or ri.get("category") or ""
 
-            # Pop stack entries at same or deeper depth
-            while path_stack and path_stack[-1][0] >= depth:
-                path_stack.pop()
+                while path_stack and path_stack[-1][0] >= depth:
+                    path_stack.pop()
 
-            path_stack.append((depth, segment))
-            ri["hierarchy_path"] = "/".join(p[1] for p in path_stack if p[1])
+                path_stack.append((depth, segment))
+                ri["hierarchy_path"] = "/".join(p[1] for p in path_stack if p[1])
 
-        # =============================================
-        # PASS 2: Determine which computed rows to skip
-        # =============================================
-        present_categories = {
-            ri["category"] for ri in row_info
-            if ri.get("category") and not ri.get("skip")
+            # =============================================
+            # PASS 2: Determine which computed rows to skip
+            # =============================================
+            present_categories = {
+                ri["category"] for ri in row_info
+                if ri.get("category") and not ri.get("skip")
+            }
+
+            for ri in row_info:
+                if ri.get("skip") or ri.get("is_section_header"):
+                    continue
+                cat = ri.get("category")
+                if cat and _should_skip_computed(cat, present_categories):
+                    ri["skip"] = "computed"
+                    skipped_computed.append(ri.get("original", cat))
+
+            # Build mapped_categories from pass 1
+            for ri in row_info:
+                if ri.get("skip") or ri.get("is_section_header"):
+                    continue
+                if ri.get("category"):
+                    entry = {
+                        "label": ri.get("original", ""),
+                        "category": ri["category"],
+                        "match": ri.get("match_type", "regex"),
+                    }
+                    if ri.get("subcategory"):
+                        entry["subcategory"] = ri["subcategory"]
+                    mapped_categories.append(entry)
+
+            _update_job({"step": "extracting_amounts", "message": f"Matched {len(mapped_categories)} categories, extracting amounts"})
+
+            # =============================================
+            # PASS 3: Extract amounts and build actuals_rows
+            # =============================================
+            actuals_rows = []
+            has_multi_month_periods = False
+
+            for idx, row in enumerate(data_rows):
+                if idx >= len(row_info):
+                    break
+                ri = row_info[idx]
+                if ri.get("skip") or ri.get("is_section_header"):
+                    continue
+                if not ri.get("category"):
+                    continue
+
+                category = ri["category"]
+                subcategory = ri.get("subcategory")
+                hierarchy_path = ri.get("hierarchy_path", "")
+
+                for col_idx, period_tuples in period_cols.items():
+                    if col_idx >= len(row):
+                        continue
+                    amount = _parse_amount(row[col_idx])
+                    if amount is None:
+                        continue
+
+                    for period, divisor in period_tuples:
+                        if divisor > 1:
+                            has_multi_month_periods = True
+                        actuals_rows.append({
+                            "company_id": company_id,
+                            "fund_id": fund_id,
+                            "period": f"{period}-01",
+                            "category": category,
+                            "subcategory": subcategory or "",
+                            "hierarchy_path": hierarchy_path or (f"{category}/{subcategory}" if subcategory else category),
+                            "amount": amount / divisor,
+                            "source": "csv_upload",
+                        })
+
+            if has_multi_month_periods:
+                warnings.append("Quarterly/annual amounts divided evenly across constituent months")
+
+        # --- Final checks ---
+        if not actuals_rows:
+            err = ("No valid data rows found after parsing. "
+                   f"Unmapped labels: {unmapped_labels[:10]}" if unmapped_labels else "No valid data rows found after parsing")
+            _update_job({
+                "status": "failed",
+                "step": "extracting_amounts",
+                "error": err,
+                "unmapped_labels": unmapped_labels[:20],
+                "completed_at": datetime.utcnow().isoformat(),
+            })
+            raise HTTPException(status_code=400, detail=err)
+
+        # --- Upsert into fpa_actuals ---
+        _update_job({"step": "upserting", "message": f"Upserting {len(actuals_rows)} rows into fpa_actuals"})
+
+        sb.table("fpa_actuals").upsert(
+            actuals_rows,
+            on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+        ).execute()
+
+        periods = sorted(set(r["period"][:7] for r in actuals_rows))
+        categories = sorted(set(r["category"] for r in actuals_rows))
+
+        # --- Mark completed ---
+        _update_job({
+            "status": "completed",
+            "step": "completed",
+            "message": f"Ingested {len(actuals_rows)} rows across {len(periods)} periods",
+            "rows_ingested": len(actuals_rows),
+            "periods_found": periods,
+            "categories_found": categories,
+            "mapped_categories": mapped_categories,
+            "unmapped_labels": unmapped_labels,
+            "warnings": warnings,
+            "skipped": {
+                "separators": skipped_separators,
+                "computed": skipped_computed,
+                "empty": skipped_empty,
+            },
+            "completed_at": datetime.utcnow().isoformat(),
+        })
+
+        return {
+            "ingested": len(actuals_rows),
+            "job_id": job_id,
+            "periods": periods,
+            "categories": categories,
+            "subcategories_created": subcategories_created,
+            "mapped_categories": mapped_categories,
+            "unmapped_labels": unmapped_labels,
+            "skipped_rows": {
+                "separators": skipped_separators,
+                "computed": skipped_computed,
+                "empty": skipped_empty,
+            },
+            "warnings": warnings,
         }
 
-        for ri in row_info:
-            if ri.get("skip") or ri.get("is_section_header"):
-                continue
-            cat = ri.get("category")
-            if cat and _should_skip_computed(cat, present_categories):
-                ri["skip"] = "computed"
-                skipped_computed.append(ri.get("original", cat))
+    except HTTPException:
+        raise  # Re-raise HTTP errors (already marked job as failed above)
+    except Exception as e:
+        logger.error(f"[upload-actuals] Unexpected error for job {job_id}: {e}", exc_info=True)
+        _update_job({
+            "status": "failed",
+            "step": "failed",
+            "error": str(e),
+            "completed_at": datetime.utcnow().isoformat(),
+        })
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-        # Build mapped_categories from pass 1
-        for ri in row_info:
-            if ri.get("skip") or ri.get("is_section_header"):
-                continue
-            if ri.get("category"):
-                entry = {
-                    "label": ri.get("original", ""),
-                    "category": ri["category"],
-                    "match": ri.get("match_type", "regex"),
-                }
-                if ri.get("subcategory"):
-                    entry["subcategory"] = ri["subcategory"]
-                mapped_categories.append(entry)
 
-        # =============================================
-        # PASS 3: Extract amounts and build actuals_rows
-        # =============================================
-        actuals_rows = []
-        has_multi_month_periods = False
+@router.get("/upload-jobs")
+async def list_upload_jobs(
+    company_id: str = Query(...),
+    status: Optional[str] = Query(None),
+    limit: int = Query(20),
+):
+    """List recent upload jobs for a company. Mirrors document status polling."""
+    from app.core.supabase_client import get_supabase_client
 
-        for idx, row in enumerate(data_rows):
-            if idx >= len(row_info):
-                break
-            ri = row_info[idx]
-            if ri.get("skip") or ri.get("is_section_header"):
-                continue
-            if not ri.get("category"):
-                continue
+    sb = get_supabase_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
-            category = ri["category"]
-            subcategory = ri.get("subcategory")
-            hierarchy_path = ri.get("hierarchy_path", "")
+    query = (
+        sb.table("fpa_upload_jobs")
+        .select("*")
+        .eq("company_id", company_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+    if status:
+        query = query.eq("status", status)
 
-            for col_idx, period_tuples in period_cols.items():
-                if col_idx >= len(row):
-                    continue
-                amount = _parse_amount(row[col_idx])
-                if amount is None:
-                    continue
+    result = query.execute()
+    return {"jobs": result.data or []}
 
-                for period, divisor in period_tuples:
-                    if divisor > 1:
-                        has_multi_month_periods = True
-                    actuals_rows.append({
-                        "company_id": company_id,
-                        "fund_id": fund_id,
-                        "period": f"{period}-01",
-                        "category": category,
-                        "subcategory": subcategory or "",
-                        "hierarchy_path": hierarchy_path or (f"{category}/{subcategory}" if subcategory else category),
-                        "amount": amount / divisor,
-                        "source": "csv_upload",
-                    })
 
-        if has_multi_month_periods:
-            warnings.append("Quarterly/annual amounts divided evenly across constituent months")
+@router.get("/upload-jobs/{job_id}")
+async def get_upload_job(job_id: str):
+    """Get a single upload job by ID. Use to poll status after upload."""
+    from app.core.supabase_client import get_supabase_client
 
-    # --- Final checks ---
-    if not actuals_rows:
-        raise HTTPException(
-            status_code=400,
-            detail="No valid data rows found after parsing. "
-                   f"Unmapped labels: {unmapped_labels[:10]}" if unmapped_labels else "No valid data rows found after parsing",
-        )
+    sb = get_supabase_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
-    # Upsert into fpa_actuals
-    # Unique index: (company_id, period, category, subcategory, hierarchy_path, source)
-    sb.table("fpa_actuals").upsert(
-        actuals_rows,
-        on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
-    ).execute()
-
-    periods = sorted(set(r["period"][:7] for r in actuals_rows))
-    categories = sorted(set(r["category"] for r in actuals_rows))
-
-    return {
-        "ingested": len(actuals_rows),
-        "periods": periods,
-        "categories": categories,
-        "subcategories_created": subcategories_created,
-        "mapped_categories": mapped_categories,
-        "unmapped_labels": unmapped_labels,
-        "skipped_rows": {
-            "separators": skipped_separators,
-            "computed": skipped_computed,
-            "empty": skipped_empty,
-        },
-        "warnings": warnings,
-    }
+    result = sb.table("fpa_upload_jobs").select("*").eq("id", job_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return result.data[0]
 
 
 @router.post("/upload-budget")

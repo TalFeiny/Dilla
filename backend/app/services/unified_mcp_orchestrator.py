@@ -8150,14 +8150,50 @@ Return JSON with ONLY these fields (use null if unknown):
             return {"error": str(e)}
 
     async def _tool_fpa_upload_actuals(self, inputs: dict) -> dict:
-        """Ingest structured actuals time series into fpa_actuals."""
+        """Ingest structured actuals time series into fpa_actuals.
+
+        State-tracked via fpa_upload_jobs so failures are never a black box.
+        """
+        from datetime import datetime
+
+        company_id = inputs.get("company_id")
+        time_series = inputs.get("time_series")
+        if not company_id or not time_series:
+            return {"error": "company_id and time_series are required"}
+
+        job_id = None
         try:
+            from app.core.supabase_client import get_supabase_client
             from app.services.actuals_ingestion import ingest_time_series
 
-            company_id = inputs.get("company_id")
-            time_series = inputs.get("time_series")
-            if not company_id or not time_series:
-                return {"error": "company_id and time_series are required"}
+            sb = get_supabase_client()
+
+            # Create upload job record (mirrors document processing state pattern)
+            if sb:
+                job_row = sb.table("fpa_upload_jobs").insert({
+                    "company_id": company_id,
+                    "fund_id": inputs.get("fund_id"),
+                    "source": "agent_tool",
+                    "status": "pending",
+                    "step": "validating",
+                    "message": f"Received {len(time_series)} time series entries",
+                }).execute()
+                job_id = job_row.data[0]["id"] if job_row.data else None
+
+            def _update_job(updates: dict):
+                if not job_id or not sb:
+                    return
+                try:
+                    sb.table("fpa_upload_jobs").update(updates).eq("id", job_id).execute()
+                except Exception as ue:
+                    logger.warning(f"[TOOL] fpa_upload_actuals job update failed: {ue}")
+
+            _update_job({
+                "status": "processing",
+                "started_at": datetime.utcnow().isoformat(),
+                "step": "extracting_amounts",
+                "message": f"Processing {len(time_series)} entries",
+            })
 
             count = ingest_time_series(
                 time_series=time_series,
@@ -8165,10 +8201,45 @@ Return JSON with ONLY these fields (use null if unknown):
                 fund_id=inputs.get("fund_id"),
                 document_id=0,
             )
-            return {"success": True, "rows_ingested": count}
+
+            # Collect what was ingested for the job record
+            periods = sorted(set(
+                e.get("period", "")[:7] for e in time_series if e.get("period")
+            ))
+            categories = sorted(set(
+                k for e in time_series for k in e.keys()
+                if k not in ("period", "subcategory", "parent_category", "amount", "hierarchy_path")
+                and e.get(k) is not None
+            ))
+
+            _update_job({
+                "status": "completed",
+                "step": "completed",
+                "message": f"Ingested {count} rows across {len(periods)} periods",
+                "rows_ingested": count,
+                "periods_found": periods,
+                "categories_found": categories,
+                "completed_at": datetime.utcnow().isoformat(),
+            })
+
+            return {"success": True, "rows_ingested": count, "job_id": job_id}
+
         except Exception as e:
             logger.warning(f"[TOOL] fpa_upload_actuals failed: {e}")
-            return {"error": str(e)}
+            if job_id:
+                try:
+                    from app.core.supabase_client import get_supabase_client
+                    sb = get_supabase_client()
+                    if sb:
+                        sb.table("fpa_upload_jobs").update({
+                            "status": "failed",
+                            "step": "failed",
+                            "error": str(e),
+                            "completed_at": datetime.utcnow().isoformat(),
+                        }).eq("id", job_id).execute()
+                except Exception:
+                    pass
+            return {"error": str(e), "job_id": job_id}
 
     async def _tool_fpa_upload_budget(self, inputs: dict) -> dict:
         """Upload budget line items for an existing budget."""

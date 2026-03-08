@@ -103,6 +103,7 @@ export default function MatrixControlPanel() {
   const [trailing, setTrailing] = useState(6);
   const [forward, setForward] = useState(6);
   const [pnlViewLoading, setPnlViewLoading] = useState(false);
+  const [pnlRefreshTrigger, setPnlRefreshTrigger] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [newCompany, setNewCompany] = useState({
@@ -278,7 +279,7 @@ export default function MatrixControlPanel() {
           setPnlViewLoading(false);
         }
       });
-  }, [mode, pnlView, granularity, trailing, forward, pnlCompanyId, fundId]);
+  }, [mode, pnlView, granularity, trailing, forward, pnlCompanyId, fundId, pnlRefreshTrigger]);
 
   // Reset to waterfall when leaving P&L mode
   useEffect(() => {
