@@ -1264,11 +1264,12 @@ export default function MatrixControlPanel() {
               onQuery={handleQuery}
               onCitationsChange={setCitations}
               onRefresh={async () => {
-                // Reload portfolio data when refresh is triggered
                 if (fundId && mode === 'portfolio') {
                   await loadPortfolioMetrics();
-                  // Force reload by clearing and reloading matrix data
                   setMatrixData(null);
+                } else if (mode === 'pnl') {
+                  // Re-trigger parent PnL fetch so grid reloads with current view settings
+                  setPnlRefreshTrigger((n) => n + 1);
                 }
               }}
               onRowEdit={(rowId) => {

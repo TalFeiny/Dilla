@@ -538,6 +538,7 @@ export function UnifiedMatrix({
   /** Plan steps from agent (Plan tab) - updated by AgentChat when backend returns plan_steps */
   const [planStepsState, setPlanStepsState] = useState<PlanStep[]>(planSteps || []);
   const loadPortfolioDataRef = useRef<() => Promise<void>>();
+  const loadPnlDataRef = useRef<() => Promise<void>>();
   const portfolioAbortRef = useRef<AbortController | null>(null);
   const matrixDataRef = useRef<MatrixData | null>(null);
   matrixDataRef.current = matrixData;
@@ -604,8 +605,40 @@ export function UnifiedMatrix({
   /** Document upload from chat: bulk upload → Celery process-batch-async; poll for suggestions so they appear in chat. */
   const handleUploadDocument = useCallback(async (files: File[], opts: { companyId?: string; fundId?: string }) => {
     if (!files.length) return;
+
+    // In PnL mode, route CSV files to the actuals ingestion endpoint
+    const csvFiles = files.filter((f) => f.name.toLowerCase().endsWith('.csv'));
+    const otherFiles = files.filter((f) => !f.name.toLowerCase().endsWith('.csv'));
+
+    if (csvFiles.length > 0 && mode === 'pnl' && (opts.companyId || companyId)) {
+      for (const csvFile of csvFiles) {
+        // Call PnL CSV upload directly — same logic as handlePnlCsvUpload
+        const cid = opts.companyId || companyId;
+        const fd = new FormData();
+        fd.append('file', csvFile);
+        fd.append('company_id', cid!);
+        if (opts.fundId || fundId) fd.append('fund_id', (opts.fundId || fundId)!);
+        const csvRes = await fetch('/api/fpa/upload-actuals', { method: 'POST', body: fd });
+        const csvData = await csvRes.json();
+        if (!csvRes.ok) {
+          toast.error(csvData.error || 'CSV upload failed');
+        } else {
+          toast.success(`Ingested ${csvData.ingested || 0} rows from ${csvFile.name}`, {
+            description: `${csvData.periods?.length || 0} periods, ${csvData.categories?.length || 0} categories`,
+          });
+          window.dispatchEvent(new CustomEvent('refreshMatrix'));
+        }
+      }
+      if (!otherFiles.length) return;
+    }
+
+    if (!otherFiles.length && csvFiles.length > 0 && mode !== 'pnl') {
+      toast.info('CSV uploaded to document pipeline. Switch to P&L mode to ingest as actuals.');
+    }
+
+    const filesToUpload = otherFiles.length > 0 ? otherFiles : files;
     const formData = new FormData();
-    for (const file of files) formData.append('file', file);
+    for (const file of filesToUpload) formData.append('file', file);
     if (opts.companyId) formData.append('company_id', opts.companyId);
     if (opts.fundId) formData.append('fund_id', opts.fundId);
     const res = await fetch('/api/documents/batch', { method: 'POST', body: formData });
@@ -614,14 +647,12 @@ export function UnifiedMatrix({
       throw new Error(data.error || res.statusText);
     }
     const data = await res.json();
-    toast.success(`Uploaded ${data.documentIds?.length ?? files.length} document(s)`, {
+    toast.success(`Uploaded ${data.documentIds?.length ?? filesToUpload.length} document(s)`, {
       description: 'Processing queued in background (Celery)',
     });
     window.dispatchEvent(new CustomEvent('refreshMatrix'));
-    // The batch route processes synchronously, so suggestions should be
-    // available after a short delay. Single refresh is enough — no polling loop.
     await refreshSuggestions();
-  }, [fundId, refreshSuggestions]);
+  }, [fundId, mode, companyId, refreshSuggestions]);
 
   /** Chart viewport "Ask" bar: send prompt to same agent (unified-brain) that has tools for docs, memo, modeling, what-if. */
   const handleAskFromViewport = useCallback(async (prompt: string) => {
@@ -1000,7 +1031,6 @@ export function UnifiedMatrix({
         console.log('[UnifiedMatrix] Refresh event received, reloading portfolio data');
         setIsLoading(true);
         try {
-          // Use ref to get latest loadPortfolioData function
           if (loadPortfolioDataRef.current) {
             await loadPortfolioDataRef.current();
             console.log('[UnifiedMatrix] Portfolio data reloaded successfully');
@@ -1008,6 +1038,17 @@ export function UnifiedMatrix({
           }
         } catch (err) {
           console.error('[UnifiedMatrix] Error during refresh:', err);
+        }
+      } else if (mode === 'pnl') {
+        console.log('[UnifiedMatrix] Refresh event received, reloading P&L data');
+        try {
+          if (loadPnlDataRef.current) {
+            await loadPnlDataRef.current();
+            console.log('[UnifiedMatrix] P&L data reloaded successfully');
+            onRefresh?.();
+          }
+        } catch (err) {
+          console.error('[UnifiedMatrix] Error during P&L refresh:', err);
         }
       }
     };
@@ -1475,6 +1516,7 @@ export function UnifiedMatrix({
   // Load P&L data for pnl mode
   // Uses the same abort/retry/guard pattern as loadPortfolioData.
   const pnlAbortRef = useRef<AbortController | null>(null);
+  const pnlCsvInputRef = useRef<HTMLInputElement | null>(null);
   const loadPnlData = useCallback(async () => {
     if (editInFlightRef.current > 0) {
       console.log('[UnifiedMatrix] Skipping loadPnlData - edit/upload in flight');
@@ -1530,6 +1572,11 @@ export function UnifiedMatrix({
       setIsLoading(false);
     }
   }, [fundId, companyId, onDataChange, getDefaultMatrixData]);
+
+  // Store latest loadPnlData in ref for event handlers
+  useEffect(() => {
+    loadPnlDataRef.current = loadPnlData;
+  }, [loadPnlData]);
 
   // Load portfolio, LP, or P&L data on mount or when mode/fundId/companyId changes
   useEffect(() => {
@@ -4276,6 +4323,7 @@ export function UnifiedMatrix({
     } catch (err) {
       console.error('[PnL CSV upload] error:', err);
       const errMsg = err instanceof Error ? err.message : 'CSV upload failed';
+      toast.error(errMsg);
 
       setCellActionStatus((prev) => ({ ...prev, [statusKey]: { state: 'error', message: errMsg } }));
       onToolCallLog?.({
@@ -4548,6 +4596,14 @@ export function UnifiedMatrix({
 
   return (
     <div className="flex flex-col h-full space-y-2">
+      {/* Hidden file input for PnL CSV upload — lives outside dropdown so it isn't unmounted when menu closes */}
+      <input
+        ref={pnlCsvInputRef}
+        type="file"
+        accept=".csv"
+        className="hidden"
+        onChange={(e) => { handlePnlCsvUpload(null, e); }}
+      />
       {/* Minimal toolbar: query bar only when needed, single menu for rest */}
       <div className="flex items-center gap-2 shrink-0">
         {/* Query bar removed — use main chat to search companies */}
@@ -4620,8 +4676,7 @@ export function UnifiedMatrix({
             {mode === 'pnl' && (
               <>
                 <DropdownMenuSeparator />
-                <input type="file" accept=".csv" onChange={(e) => handlePnlCsvUpload(null, e)} className="hidden" id="pnl-csv-import-input" />
-                <DropdownMenuItem onClick={() => document.getElementById('pnl-csv-import-input')?.click()} disabled={isPnlUploading}>
+                <DropdownMenuItem onClick={() => pnlCsvInputRef.current?.click()} disabled={isPnlUploading}>
                   {isPnlUploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
                   Upload CSV
                 </DropdownMenuItem>
