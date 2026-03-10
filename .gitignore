@@ -227,3 +227,6 @@ CALCULATION_*.md
 CAP_TABLE_*.md
 DECK_*.md
 *_INVESTIGATION.md
+
+# Internal strategy/planning docs
+docs/*.md
