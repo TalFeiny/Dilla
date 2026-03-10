@@ -136,7 +136,7 @@ interface AgentChatProps {
   onMessageSent?: (message: string) => void;
   matrixData?: MatrixData | null;
   fundId?: string;
-  mode?: 'portfolio' | 'custom' | 'lp' | 'pnl';
+  mode?: 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal';
   onCellEdit?: (rowId: string, columnId: string, value: unknown, options?: { data_source?: string; metadata?: Record<string, unknown> }) => Promise<void>;
   onRunService?: (actionId: string, rowId: string, columnId: string) => Promise<void>;
   onToolCallLog?: (entry: Omit<{ action_id: string; row_id: string; column_id: string; status: 'running' | 'success' | 'error'; error?: string; companyName?: string; explanation?: string }, 'id' | 'at'>) => void;
@@ -666,6 +666,8 @@ export default function AgentChat({
           company: companiesFromMentions[0], // Backward compat: single company
           companies: companiesFromMentions,  // Phase 1: all @mentions
           matrixContext,
+          // Grid mode: tells backend what the user is looking at (portfolio, pnl, lp, custom)
+          gridMode: mode || 'portfolio',
           fundId,
           // Pass plan steps back so backend can execute the approved plan
           plan_steps: planStepsToSend.length > 0 ? planStepsToSend : undefined,

@@ -11,9 +11,13 @@ import { getBackendUrl, getBackendHeaders } from '@/lib/backend-url';
 function triggerProcessing(doc: {
   id: string; storagePath: string; documentType: string;
   companyId: string | null; fundId: string | null;
+  erpCategoryHint?: string | null; erpSubcategoryHint?: string | null;
 }): void {
   const backendUrl = getBackendUrl();
-  const payload = { documents: [{ document_id: String(doc.id), file_path: doc.storagePath, document_type: doc.documentType, company_id: doc.companyId, fund_id: doc.fundId }] };
+  const docPayload: Record<string, any> = { document_id: String(doc.id), file_path: doc.storagePath, document_type: doc.documentType, company_id: doc.companyId, fund_id: doc.fundId };
+  if (doc.erpCategoryHint) docPayload.erp_category_hint = doc.erpCategoryHint;
+  if (doc.erpSubcategoryHint) docPayload.erp_subcategory_hint = doc.erpSubcategoryHint;
+  const payload = { documents: [docPayload] };
   // Fire-and-forget: kick off processing without blocking the upload response.
   // The sync endpoint will process in the background; document.extract cell action
   // handles waiting for results and emitting suggestions.
@@ -329,7 +333,9 @@ export async function POST(request: NextRequest) {
     const companyId = formData.get('company_id') as string | null;
     const fundId = formData.get('fund_id') as string | null;
     const formDocumentType = formData.get('document_type') as string | null;
-    
+    const erpCategoryHint = formData.get('erp_category_hint') as string | null;
+    const erpSubcategoryHint = formData.get('erp_subcategory_hint') as string | null;
+
     if (!file) {
       return NextResponse.json({ error: 'No file uploaded' }, { status: 400 });
     }
@@ -423,6 +429,8 @@ export async function POST(request: NextRequest) {
       documentType,
       companyId,
       fundId,
+      erpCategoryHint,
+      erpSubcategoryHint,
     });
     console.log('[documents] Document %s inserted. Processing triggered (non-blocking).', insertData.id);
 

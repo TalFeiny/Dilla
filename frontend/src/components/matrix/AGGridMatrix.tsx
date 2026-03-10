@@ -11,7 +11,7 @@ import { FileText, Copy, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
-import { MatrixData, MatrixColumn, MatrixRow, MatrixCell } from './UnifiedMatrix';
+import { MatrixData, MatrixColumn, MatrixRow, MatrixCell, MatrixMode } from './UnifiedMatrix';
 import { buildPnlColumns } from '@/lib/matrix/pnl-columns';
 import { formatCellValue as formatCellValueShared, formatCurrency, parseCurrencyInput } from '@/lib/matrix/cell-formatters';
 import { CellDropdownRenderer } from './CellDropdownRenderer';
@@ -52,6 +52,7 @@ export interface AGGridMatrixProps {
   onWorkflowStart?: (rowId: string, columnId: string, formula: string) => void;
   /** Write formula and run workflow immediately (no second Apply). */
   onWorkflowRun?: (rowId: string, columnId: string, formula: string) => void | Promise<void>;
+  onAddLineItem?: (parentRowId: string, section: string) => void;
   onAddRow?: () => void | Promise<void>;
   onAddColumn?: () => void;
   onSelectionChange?: (selectedRowIds: string[]) => void;
@@ -60,7 +61,7 @@ export interface AGGridMatrixProps {
   onStartEditingCell?: (callback: (rowId: string, columnId: string) => void) => void;
   /** When document extraction completes (from Documents cell), refresh suggestions and open viewport. */
   onSuggestChanges?: (documentId: string, extractedData?: unknown) => void;
-  mode?: 'portfolio' | 'custom' | 'lp' | 'pnl';
+  mode?: MatrixMode;
   /** When true (chat-first), de-emphasize Run valuation/PWERM in dropdown and show chat hint. */
   useAgentPanel?: boolean;
 }
@@ -179,6 +180,7 @@ export function AGGridMatrix({
   actionInProgressRef,
   onWorkflowStart,
   onWorkflowRun,
+  onAddLineItem,
   onAddRow,
   onAddColumn,
   onSelectionChange,
@@ -665,6 +667,9 @@ export function AGGridMatrix({
         baseColDef.cellRendererParams = {
           collapsedSections,
           onToggleSection: toggleSection,
+          onAddLineItem: (parentRowId: string, section: string) => {
+            propsRef.current.onAddLineItem?.(parentRowId, section);
+          },
         };
         baseColDef.editable = false;
         baseColDef.width = 260;

@@ -34,6 +34,12 @@ export interface RawSection {
   todos?: any[];
   skill_chain?: any[];
   citations?: any[];
+  redline?: {
+    original: string;
+    revised: string;
+    reasoning: string;
+    clause_type?: string;
+  };
   is_context?: boolean;
   imageUrl?: string;
   imageCaption?: string;
@@ -45,7 +51,7 @@ export interface RawSection {
  */
 function normalizeOne(raw: RawSection): DocumentSection[] {
   // Already has a valid `type` field — pass through with minimal fixup
-  if (raw.type && ['heading1', 'heading2', 'heading3', 'paragraph', 'chart', 'list', 'quote', 'code', 'table', 'image', 'todo_list', 'skill_chain'].includes(raw.type)) {
+  if (raw.type && ['heading1', 'heading2', 'heading3', 'paragraph', 'chart', 'list', 'quote', 'code', 'table', 'image', 'todo_list', 'skill_chain', 'redline'].includes(raw.type)) {
     return [raw as DocumentSection];
   }
 

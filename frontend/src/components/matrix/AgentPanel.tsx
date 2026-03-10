@@ -14,7 +14,7 @@ import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { BarChart3, FileText } from 'lucide-react';
 import type { ExportFormat } from '@/components/agent/AgentChat';
-import { MatrixData } from './UnifiedMatrix';
+import { MatrixData, MatrixMode } from './UnifiedMatrix';
 import { DocumentSuggestion, DocumentInsight, type SuggestionAcceptPayload } from './DocumentSuggestions';
 import type { CellAction } from '@/lib/matrix/cell-action-registry';
 import AgentChat from '@/components/agent/AgentChat';
@@ -42,7 +42,7 @@ export type PlanStep = {
 export interface AgentPanelProps {
   matrixData: MatrixData | null;
   fundId?: string;
-  mode?: 'portfolio' | 'custom' | 'lp' | 'pnl';
+  mode?: MatrixMode;
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   /** ChartViewport / suggestions */

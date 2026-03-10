@@ -28,7 +28,7 @@ export interface SkillChainStep {
 }
 
 export interface DocumentSection {
-  type: 'heading1' | 'heading2' | 'heading3' | 'paragraph' | 'chart' | 'list' | 'quote' | 'code' | 'image' | 'table' | 'todo_list' | 'skill_chain';
+  type: 'heading1' | 'heading2' | 'heading3' | 'paragraph' | 'chart' | 'list' | 'quote' | 'code' | 'image' | 'table' | 'todo_list' | 'skill_chain' | 'redline';
   content?: string;
   chart?: {
     type: string;
@@ -57,6 +57,13 @@ export interface DocumentSection {
   todos?: TodoItem[];
   /** For skill_chain sections */
   skill_chain?: SkillChainStep[];
+  /** For redline sections — track changes between versions */
+  redline?: {
+    original: string;
+    revised: string;
+    reasoning: string;
+    clause_type?: string;
+  };
   /** Whether this section is draggable context */
   is_context?: boolean;
 }
@@ -497,6 +504,29 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
                     </button>
                   </React.Fragment>
                 ))}
+              </div>
+            )}
+
+            {/* Redline — track changes */}
+            {section.type === 'redline' && section.redline && (
+              <div className="my-2 space-y-2 border rounded-md p-3 bg-muted/10">
+                <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-2">
+                  <span className="inline-block w-2 h-2 rounded-full bg-amber-500" />
+                  Track Changes{section.redline.clause_type && ` — ${section.redline.clause_type}`}
+                </div>
+                <div className="space-y-2">
+                  <div className="text-red-600 dark:text-red-400 line-through text-sm leading-relaxed bg-red-50 dark:bg-red-950/20 rounded px-2 py-1.5">
+                    {section.redline.original}
+                  </div>
+                  <div className="text-emerald-600 dark:text-emerald-400 text-sm leading-relaxed bg-emerald-50 dark:bg-emerald-950/20 rounded px-2 py-1.5">
+                    {section.redline.revised}
+                  </div>
+                </div>
+                {section.redline.reasoning && (
+                  <div className="text-[11px] text-muted-foreground italic border-t pt-1.5 mt-1.5">
+                    {section.redline.reasoning}
+                  </div>
+                )}
               </div>
             )}
 

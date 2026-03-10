@@ -99,7 +99,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { addMatrixColumn, addCompanyToMatrix, createCompanyForMatrix } from '@/lib/matrix/matrix-api-service';
+import { addMatrixColumn, addCompanyToMatrix, createCompanyForMatrix, LEGAL_COLUMNS } from '@/lib/matrix/matrix-api-service';
 import {
   formatActionOutput,
   extractExplanation,
@@ -136,7 +136,7 @@ import { exportMatrixToCSV, exportMatrixToXLS, exportToPDF } from '@/lib/matrix/
 import { buildPnlColumns } from '@/lib/matrix/pnl-columns';
 import { useScenarioForkTree } from '@/hooks/useScenarioForkTree';
 
-export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl';
+export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal';
 
 export interface MatrixColumn {
   id: string;
@@ -395,6 +395,12 @@ export function UnifiedMatrix({
         columns: pnlCols,
         rows: skeletonRows,
         metadata: { dataSource: 'pnl', lastUpdated: new Date().toISOString() },
+      };
+    } else if (mode === 'legal') {
+      return {
+        columns: LEGAL_COLUMNS,
+        rows: [],
+        metadata: { dataSource: 'legal', lastUpdated: new Date().toISOString() },
       };
     } else {
       // query mode - minimal default
@@ -4842,6 +4848,46 @@ export function UnifiedMatrix({
             onRequestUploadDocument={onRequestUploadDocument}
             actionInProgressRef={actionInProgressRef}
             onStartEditingCell={handleStartEditingCell}
+            onAddLineItem={async (parentRowId, section) => {
+              // Prompt for subcategory name, write $0 row to fpa_actuals, refresh grid
+              const name = window.prompt(`Add line item under ${parentRowId.replace(/_/g, ' ').toUpperCase()}:\n\nEnter name (e.g. "Hosting", "SaaS", "Salaries"):`);
+              if (!name?.trim()) return;
+              const subcategory = name.trim().toLowerCase().replace(/\s+/g, '_');
+
+              // Find a company_id from the current grid data
+              const currentData = matrixData || getDefaultMatrixData(mode, fundId);
+              const companyRow = currentData.rows.find(r => r.companyId);
+              const companyId = companyRow?.companyId;
+              if (!companyId) {
+                console.warn('[P&L] No company_id found for subcategory creation');
+                return;
+              }
+
+              // Current month as the period
+              const now = new Date();
+              const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+              try {
+                await fetch('/api/fpa/pnl', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    company_id: companyId,
+                    fund_id: fundId || null,
+                    category: parentRowId,
+                    subcategory,
+                    period,
+                    amount: 0,
+                    source: 'subcategory_create',
+                  }),
+                });
+                console.log(`[P&L] Created subcategory ${parentRowId}/${subcategory}`);
+                // Refresh grid to pick up new row from PnlBuilder
+                refreshSuggestions?.();
+              } catch (err) {
+                console.error('[P&L] Failed to create subcategory:', err);
+              }
+            }}
             onWorkflowStart={(rowId, columnId, formula) => {
               // Set the cell value to the workflow formula, then trigger edit
               const currentData = matrixData || getDefaultMatrixData(mode, fundId);
@@ -5078,15 +5124,63 @@ export function UnifiedMatrix({
                 setEditValue(cell?.formula || '=');
               }}
               onLinkDocument={async (rowId, columnId) => {
-                // Handle document linking
                 const currentData = matrixData || getDefaultMatrixData(mode, fundId);
                 const row = currentData.rows.find(r => r.id === rowId);
-                if (row?.companyId && fundId) {
-                  const { uploadDocumentInCell } = await import('@/lib/matrix/matrix-api-service');
-                  // This would typically open a file picker dialog
-                  // For now, we'll just log it
-                  console.log('Link document for', rowId, columnId);
-                }
+                if (!row?.companyId || !fundId) return;
+
+                // Open file picker
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = '.pdf,.docx,.doc,.txt';
+                input.onchange = async (e) => {
+                  const file = (e.target as HTMLInputElement).files?.[0];
+                  if (!file) return;
+
+                  try {
+                    const { uploadDocumentInCell } = await import('@/lib/matrix/matrix-api-service');
+
+                    // Smart doc type + ERP context from P&L row position
+                    const section = (row as any).section || '';
+                    const rowCategory = rowId.split(':')[0];
+                    const rowSubcategory = rowId.includes(':') ? rowId.split(':')[1] : undefined;
+
+                    let documentType = 'contract';
+                    let erpCategoryHint = rowCategory;
+
+                    if (section === 'revenue' || rowCategory === 'revenue' || rowCategory === 'arr' || rowCategory === 'mrr') {
+                      documentType = 'client_agreement';
+                      erpCategoryHint = 'revenue';
+                    } else if (section === 'cogs' || rowCategory === 'cogs') {
+                      documentType = 'vendor_contract';
+                      erpCategoryHint = 'cogs';
+                    } else if (rowCategory.startsWith('opex_')) {
+                      documentType = 'vendor_contract';
+                      erpCategoryHint = rowCategory;
+                    } else if (section === 'opex') {
+                      documentType = 'vendor_contract';
+                      erpCategoryHint = rowCategory || 'opex_ga';
+                    }
+
+                    const result = await uploadDocumentInCell({
+                      file,
+                      companyId: row.companyId,
+                      fundId,
+                      documentType,
+                      erpCategoryHint,
+                      erpSubcategoryHint: rowSubcategory,
+                    });
+
+                    if (result?.documentId) {
+                      console.log(`[P&L] Contract uploaded: ${result.documentId} (${documentType}, ${erpCategoryHint}/${rowSubcategory || '*'}) → processing → P&L bridge`);
+                      setTimeout(() => {
+                        refreshSuggestions?.();
+                      }, 3000);
+                    }
+                  } catch (err) {
+                    console.error('Contract upload failed:', err);
+                  }
+                };
+                input.click();
               }}
             />
           )}

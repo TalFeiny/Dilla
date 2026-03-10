@@ -15,7 +15,7 @@ export interface ModeConfig {
   availableFields: string[];
   showQueryBar: boolean;
   showInsights: boolean;
-  primaryDataSource: 'portfolio' | 'custom' | 'lp' | 'pnl';
+  primaryDataSource: 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal';
 }
 
 export const MODE_CONFIGS: Record<MatrixMode, ModeConfig> = {
@@ -79,6 +79,20 @@ export const MODE_CONFIGS: Record<MatrixMode, ModeConfig> = {
     showQueryBar: false,
     showInsights: false,
     primaryDataSource: 'pnl',
+  },
+  legal: {
+    mode: 'legal',
+    label: 'Legal',
+    description: 'Clause extraction: contracts, term sheets, vendor agreements, IP docs',
+    defaultColumns: ['clauseId', 'title', 'clauseType', 'text', 'party', 'flags', 'obligationDesc', 'obligationDeadline', 'crossRefService', 'crossRefField', 'crossRefValue', 'erpCategory', 'erpSubcategory', 'annualValue', 'monthlyAmount', 'documentName', 'reasoning'],
+    availableFields: [
+      'legal_clauses',
+      'documents',
+      'analytics',
+    ],
+    showQueryBar: false,
+    showInsights: true,
+    primaryDataSource: 'legal',
   },
 };
 

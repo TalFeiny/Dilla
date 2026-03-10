@@ -15,7 +15,7 @@ import { getSupabaseBrowser } from '@/lib/supabase/browser';
 // so it MUST NOT use the service-role server-only client.
 const supabaseBrowser = getSupabaseBrowser();
 
-export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl';
+export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal';
 export type DataSource = 'manual' | 'agent' | 'document' | 'api' | 'formula';
 
 // ============================================================================
@@ -58,6 +58,8 @@ export interface DocumentUploadRequest {
   companyId?: string;
   fundId?: string;
   documentType?: string;
+  erpCategoryHint?: string;
+  erpSubcategoryHint?: string;
 }
 
 /**
@@ -284,6 +286,8 @@ export async function uploadDocumentInCell(request: DocumentUploadRequest): Prom
   if (request.companyId) formData.append('company_id', request.companyId);
   if (request.fundId) formData.append('fund_id', request.fundId);
   if (request.documentType) formData.append('document_type', request.documentType);
+  if (request.erpCategoryHint) formData.append('erp_category_hint', request.erpCategoryHint);
+  if (request.erpSubcategoryHint) formData.append('erp_subcategory_hint', request.erpSubcategoryHint);
 
   const response = await fetch('/api/documents', {
     method: 'POST',
@@ -973,6 +977,13 @@ export const FIELD_SERVICE_MAP: Record<string, FieldServiceMapping> = {
     serviceType: 'service',
     apiEndpoint: '/api/cell-actions/actions/cap_table.ownership/execute',
   },
+  // Legal services
+  legal_clauses: {
+    fieldId: 'legal_clauses',
+    serviceName: 'legal_extraction',
+    serviceType: 'service',
+    apiEndpoint: '/api/agent/legal-brain',
+  },
 };
 
 /**
@@ -993,6 +1004,30 @@ export function registerFieldService(mapping: FieldServiceMapping): void {
  * LP column definitions matching fund_lp_summary view.
  * Shared across fetchLPsForMatrix and default column sets.
  */
+/**
+ * Legal column definitions for legal mode.
+ * Each row = one clause extracted from a legal document.
+ */
+export const LEGAL_COLUMNS: import('@/components/matrix/UnifiedMatrix').MatrixColumn[] = [
+  { id: 'clauseId', name: 'Clause ID', type: 'text', width: 90, editable: false },
+  { id: 'title', name: 'Clause Title', type: 'text', width: 200, editable: false },
+  { id: 'clauseType', name: 'Type', type: 'text', width: 140, editable: false },
+  { id: 'text', name: 'Clause Text', type: 'text', width: 320, editable: false },
+  { id: 'party', name: 'Party', type: 'text', width: 140, editable: false },
+  { id: 'flags', name: 'Flags', type: 'text', width: 160, editable: false },
+  { id: 'obligationDesc', name: 'Obligation', type: 'text', width: 220, editable: false },
+  { id: 'obligationDeadline', name: 'Deadline', type: 'date', width: 110, editable: false },
+  { id: 'crossRefService', name: 'Cross-Ref Service', type: 'text', width: 140, editable: false },
+  { id: 'crossRefField', name: 'Cross-Ref Field', type: 'text', width: 130, editable: false },
+  { id: 'crossRefValue', name: 'Cross-Ref Value', type: 'text', width: 120, editable: false },
+  { id: 'erpCategory', name: 'ERP Category', type: 'text', width: 120, editable: false },
+  { id: 'erpSubcategory', name: 'ERP Subcategory', type: 'text', width: 130, editable: false },
+  { id: 'annualValue', name: 'Annual Value', type: 'currency', width: 120, editable: false },
+  { id: 'monthlyAmount', name: 'Monthly Cost', type: 'currency', width: 110, editable: false },
+  { id: 'documentName', name: 'Source Doc', type: 'text', width: 160, editable: false },
+  { id: 'reasoning', name: 'Reasoning', type: 'text', width: 280, editable: false },
+];
+
 export const LP_COLUMNS: import('@/components/matrix/UnifiedMatrix').MatrixColumn[] = [
   { id: 'lpName', name: 'LP Name', type: 'text', width: 180, editable: true },
   { id: 'lpType', name: 'Type', type: 'text', width: 100, editable: true },
