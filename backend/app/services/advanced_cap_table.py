@@ -35,16 +35,37 @@ class ShareClass(str, Enum):
 @dataclass
 class ShareholderRights:
     """Rights associated with shares"""
+    # Voting & governance
     voting_rights: bool = True
+    board_seats: int = 0
+    protective_provisions: bool = False  # veto rights on M&A, new debt, new shares, etc.
+    # Economic rights
     liquidation_preference: float = 1.0
     participation_rights: bool = False
+    participation_cap: Optional[float] = None  # e.g. 3.0 = capped at 3x, then converts to common
+    cumulative_dividends: bool = False
+    dividend_rate: Optional[float] = None  # annual rate, e.g. 0.08 = 8%
+    # Anti-dilution
+    anti_dilution: Optional[str] = None  # "full_ratchet", "broad_weighted_average", "narrow_weighted_average"
+    # Transfer & follow-on
     pro_rata_rights: bool = False
+    preemptive_rights: bool = False  # right to maintain % in future issuances
+    rofr: bool = False  # right of first refusal on secondary transfers
+    co_sale: bool = False  # co-sale / tag-along on secondary transfers
     drag_along: bool = False
     tag_along: bool = False
-    board_seats: int = 0
+    # Conversion
+    conversion_ratio: float = 1.0  # shares of common per preferred on conversion
+    mandatory_conversion: bool = False  # auto-converts on IPO/qualified financing
+    # Information & exit
     information_rights: bool = False
     registration_rights: bool = False
-    anti_dilution: Optional[str] = None  # "full_ratchet", "weighted_average", None
+    redemption_rights: bool = False  # right to force buyback after X years
+    redemption_date: Optional[str] = None  # earliest redemption date
+    # Enforcement
+    pay_to_play: bool = False  # lose preferred status if skip next round
+    # Founder-specific
+    founder_lockup_months: Optional[int] = None
 
 
 @dataclass
