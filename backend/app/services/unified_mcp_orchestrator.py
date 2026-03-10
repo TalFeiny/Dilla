@@ -270,6 +270,24 @@ except Exception as exc:  # pragma: no cover - defensive import guard
     MAWorkflowService = None  # type: ignore[assignment]
 
 try:
+    from app.services.clause_diff_engine import ClauseDiffEngine
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["ClauseDiffEngine"] = exc
+    ClauseDiffEngine = None  # type: ignore[assignment]
+
+try:
+    from app.services.decision_engine import DecisionEngine
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["DecisionEngine"] = exc
+    DecisionEngine = None  # type: ignore[assignment]
+
+try:
+    from app.services.clause_parameter_registry import ClauseParameterRegistry
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["ClauseParameterRegistry"] = exc
+    ClauseParameterRegistry = None  # type: ignore[assignment]
+
+try:
     from app.services.deck_quality_validator import DeckQualityValidator
 except Exception as exc:  # pragma: no cover - defensive import guard
     NON_CRITICAL_IMPORT_ERRORS["DeckQualityValidator"] = exc
@@ -2658,6 +2676,14 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "query_portfolio",              # portfolio context
     ],
 
+    # --- Legal Intelligence ---
+    "legal_analysis": [
+        "run_skill",                # dispatches to term-sheet-comparator, redline-impact-analyzer, negotiation-analyzer
+        "query_portfolio",          # read company/document context
+        "generate_memo",            # render results as memo
+        "generate_chart",           # waterfall, bar charts for impact
+    ],
+
     # --- Specialized ---
     "fx": [
         "convert_currency",         # single conversion
@@ -3331,6 +3357,11 @@ class UnifiedMCPOrchestrator:
         self.slack_composer = SlackComposer() if SlackComposer else None
         self.far_analysis_service = FARAnalysisService(llm_fn=getattr(self, '_llm_call', None)) if FARAnalysisService else None
 
+        # Legal intelligence services
+        self.clause_diff_engine = ClauseDiffEngine() if ClauseDiffEngine else None
+        self.decision_engine = DecisionEngine() if DecisionEngine else None
+        self.clause_parameter_registry = ClauseParameterRegistry() if ClauseParameterRegistry else None
+
         # Error handler for retry + circuit breaker
         self.error_handler = global_error_handler
 
@@ -3530,7 +3561,24 @@ class UnifiedMCPOrchestrator:
                 "handler": self._execute_deal_comparison,
                 "description": "Multi-company comparison"
             },
-            
+
+            # Legal Intelligence Skills
+            "term-sheet-comparator": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_term_sheet_comparison,
+                "description": "Compare N term sheets clause-by-clause with stakeholder impact"
+            },
+            "redline-impact-analyzer": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_redline_impact,
+                "description": "Quantify financial impact of redline changes to a document"
+            },
+            "negotiation-analyzer": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_negotiation_analysis,
+                "description": "Analyze positions, classify concede/counter/fight, generate counter-proposal"
+            },
+
             # Generation Skills
             "deck-storytelling": {
                 "category": SkillCategory.GENERATION,
@@ -13702,6 +13750,9 @@ Return ONLY the JSON array, no other text."""
                 "excel-generator": "excel-generator",
                 "portfolio-scenario-modeler": "portfolio-scenario-modeler",
                 "company-health-dashboard": "company-health-dashboard",
+                "term-sheet-comparator": "term-sheet-comparator",
+                "redline-impact-analyzer": "redline-impact-analyzer",
+                "negotiation-analyzer": "negotiation-analyzer",
                 **{k: k for k in GRID_ACTION_MAP},  # All grid-run-* skills map to themselves
             }
             for i, step in enumerate(plan_steps):
@@ -17175,6 +17226,125 @@ CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
             logger.error(f"Deal comparison error: {e}")
             return {"error": str(e)}
     
+    # ── Legal Intelligence Handlers ─────────────────────────────────────────
+
+    async def _execute_term_sheet_comparison(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Compare N term sheets clause-by-clause against existing capital structure."""
+        try:
+            if not self.clause_diff_engine or not self.clause_parameter_registry:
+                return {"error": "ClauseDiffEngine or ClauseParameterRegistry not available"}
+
+            company_id = inputs.get("company_id", "unknown")
+            term_sheets = inputs.get("term_sheets", {})
+            existing_docs = inputs.get("existing_docs") or self.shared_data.get("extracted_documents", [])
+            reference_exits = inputs.get("reference_exits")
+
+            if not term_sheets or len(term_sheets) < 1:
+                return {"error": "Provide at least 1 term sheet in term_sheets: {name: [extracted_clauses]}"}
+
+            # Resolve existing capital structure
+            existing_structure = self.clause_parameter_registry.resolve_parameters(
+                company_id, existing_docs
+            )
+
+            result = self.clause_diff_engine.compare_term_sheets(
+                term_sheets=term_sheets,
+                existing_structure=existing_structure,
+                reference_exits=reference_exits,
+            )
+
+            # Serialize dataclass → dict
+            from dataclasses import asdict
+            output = asdict(result)
+
+            # Store in shared_data for memo generation
+            async with self.shared_data_lock:
+                self.shared_data["term_sheet_comparison"] = output
+
+            return {"term_sheet_comparison": output}
+
+        except Exception as e:
+            logger.error(f"[LEGAL] Term sheet comparison failed: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    async def _execute_redline_impact(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Quantify the financial impact of redline changes to a legal document."""
+        try:
+            if not self.clause_diff_engine or not self.clause_parameter_registry:
+                return {"error": "ClauseDiffEngine or ClauseParameterRegistry not available"}
+
+            company_id = inputs.get("company_id", "unknown")
+            original = inputs.get("original")
+            redlined = inputs.get("redlined")
+            existing_docs = inputs.get("existing_docs") or self.shared_data.get("extracted_documents", [])
+            reference_exits = inputs.get("reference_exits")
+
+            if not original or not redlined:
+                return {"error": "Provide both 'original' and 'redlined' document dicts"}
+
+            existing_structure = self.clause_parameter_registry.resolve_parameters(
+                company_id, existing_docs
+            )
+
+            result = self.clause_diff_engine.redline_impact(
+                original=original,
+                redlined=redlined,
+                existing_structure=existing_structure,
+                reference_exits=reference_exits,
+            )
+
+            from dataclasses import asdict
+            output = asdict(result)
+
+            async with self.shared_data_lock:
+                self.shared_data["redline_impact"] = output
+
+            return {"redline_impact": output}
+
+        except Exception as e:
+            logger.error(f"[LEGAL] Redline impact analysis failed: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    async def _execute_negotiation_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze two positions, classify deltas as concede/counter/fight, generate counter-proposal."""
+        try:
+            if not self.decision_engine or not self.clause_parameter_registry:
+                return {"error": "DecisionEngine or ClauseParameterRegistry not available"}
+
+            company_id = inputs.get("company_id", "unknown")
+            our_docs = inputs.get("our_position_docs", [])
+            their_docs = inputs.get("their_position_docs", [])
+            our_objectives = inputs.get("our_objectives", [])
+            reference_exits = inputs.get("reference_exits")
+
+            if not our_docs or not their_docs:
+                return {"error": "Provide 'our_position_docs' and 'their_position_docs' (extracted clause lists)"}
+
+            our_params = self.clause_parameter_registry.resolve_parameters(company_id, our_docs)
+            their_params = self.clause_parameter_registry.resolve_parameters(company_id, their_docs)
+
+            result = self.decision_engine.negotiate(
+                company_id=company_id,
+                our_position=our_params,
+                their_position=their_params,
+                our_objectives=our_objectives,
+                reference_exits=reference_exits,
+            )
+
+            from dataclasses import asdict
+            output = asdict(result)
+
+            async with self.shared_data_lock:
+                self.shared_data["negotiation_analysis"] = output
+
+            return {"negotiation_analysis": output}
+
+        except Exception as e:
+            logger.error(f"[LEGAL] Negotiation analysis failed: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    # ── End Legal Intelligence Handlers ───────────────────────────────────
+
     def _generate_competitive_insights(self, company: Dict[str, Any]) -> List[str]:
         """Generate analyst-grade competitive and strategic insights - PROFESSIONAL TONE"""
         insights = []

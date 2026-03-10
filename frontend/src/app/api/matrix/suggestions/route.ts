@@ -459,6 +459,176 @@ function generateInferredSuggestions(
  * - Rejected suggestions are excluded using rejected_suggestions table (same fund_id).
  * - Accepted suggestions are excluded using accepted_suggestions table so they do not reappear after refresh.
  */
+/**
+ * Legal mode suggestions: reads pending_suggestions with column_id LIKE 'legal:%',
+ * filters out rejected/accepted, maps each clause to the unified suggestion shape.
+ */
+async function handleLegalSuggestions(
+  fundId: string,
+  companyId: string | null,
+): Promise<NextResponse> {
+  if (!supabaseService) {
+    return NextResponse.json({ suggestions: [], insights: [] });
+  }
+
+  // Fetch rejected + accepted sets
+  const [rejectedResult, acceptedResult] = await Promise.all([
+    supabaseService.from('rejected_suggestions').select('suggestion_id').eq('fund_id', fundId),
+    supabaseService.from('accepted_suggestions').select('suggestion_id').eq('fund_id', fundId),
+  ]);
+  const rejectedSet = new Set<string>(
+    (rejectedResult.data ?? []).map((r: { suggestion_id: string }) => r.suggestion_id)
+  );
+  const acceptedSet = new Set<string>(
+    (acceptedResult.data ?? []).map((r: { suggestion_id: string }) => r.suggestion_id)
+  );
+
+  // Fetch pending legal clause suggestions
+  let pendingQuery = supabaseService
+    .from('pending_suggestions')
+    .select('id, company_id, column_id, suggested_value, source_service, reasoning, metadata, created_at')
+    .eq('fund_id', fundId)
+    .like('column_id', 'legal:%')
+    .order('created_at', { ascending: false });
+  if (companyId) pendingQuery = pendingQuery.eq('company_id', companyId);
+
+  const { data: pendingRows, error: pendingError } = await pendingQuery;
+  if (pendingError) {
+    console.warn('[legal-suggestions] pending_suggestions fetch failed:', pendingError.message);
+    return NextResponse.json({ suggestions: [], insights: [] });
+  }
+
+  // Also check document_clauses for already-accepted clause IDs to avoid duplicates
+  let acceptedClauseKeys = new Set<string>();
+  try {
+    let acceptedQuery = supabaseService
+      .from('document_clauses')
+      .select('company_id, clause_id, document_id')
+      .eq('fund_id', fundId);
+    if (companyId) acceptedQuery = acceptedQuery.eq('company_id', companyId);
+    const { data: acceptedClauses } = await acceptedQuery;
+    acceptedClauseKeys = new Set(
+      (acceptedClauses ?? []).map((c: { company_id: string; clause_id: string; document_id: string | null }) =>
+        `${c.company_id}::${c.clause_id}::${c.document_id ?? 'none'}`
+      )
+    );
+  } catch { /* table may not exist yet */ }
+
+  const suggestions: Array<{
+    id: string;
+    rowId: string;
+    columnId: string;
+    suggestedValue: unknown;
+    currentValue: null;
+    reasoning: string;
+    confidence: number;
+    sourceDocumentId?: number;
+    sourceDocumentName: string;
+    extractedMetric: string;
+    changeType: 'new';
+    source: 'service';
+    sourceService?: string;
+  }> = [];
+
+  const insights: Array<{
+    documentId: number;
+    documentName: string;
+    rowId: string;
+    redFlags: string[];
+    implications: string[];
+    achievements: string[];
+    challenges: string[];
+    risks: string[];
+  }> = [];
+
+  // Group red flags by document for insights
+  const docRedFlags = new Map<string, { docName: string; companyId: string; flags: string[] }>();
+
+  for (const row of pendingRows ?? []) {
+    const suggestionId = row.id as string;
+    const columnId = row.column_id as string;
+    const compId = row.company_id as string;
+
+    // Skip rejected/accepted
+    if (rejectedSet.has(suggestionId) || acceptedSet.has(suggestionId)) continue;
+    const sourceAwareKey = `${compId}::${columnId}::service`;
+    if (rejectedSet.has(sourceAwareKey) || acceptedSet.has(sourceAwareKey)) continue;
+
+    // Parse suggested_value
+    let sv: Record<string, unknown> = {};
+    const raw = row.suggested_value;
+    if (typeof raw === 'string') {
+      try { sv = JSON.parse(raw); } catch { sv = {}; }
+    } else if (typeof raw === 'object' && raw !== null) {
+      sv = raw as Record<string, unknown>;
+    }
+
+    const meta = (row.metadata ?? {}) as Record<string, unknown>;
+    const clauseId = (sv.clauseId ?? columnId.replace('legal:', '')) as string;
+    const docId = meta.document_id ? String(meta.document_id) : 'none';
+    const clauseKey = `${compId}::${clauseId}::${docId}`;
+
+    // Skip if already accepted into document_clauses
+    if (acceptedClauseKeys.has(clauseKey)) continue;
+
+    const docName = (sv.documentName ?? meta.document_name ?? row.source_service ?? 'Unknown') as string;
+    const clauseFlags = (Array.isArray(meta.flags) ? meta.flags : (typeof sv.flags === 'string' && sv.flags ? (sv.flags as string).split(', ') : [])) as string[];
+    const clauseType = (sv.clauseType ?? meta.clause_type ?? 'other') as string;
+    const confidence = typeof meta.confidence === 'number' ? meta.confidence : 0.8;
+
+    // Build reasoning with source attribution
+    const reasoning = (sv.reasoning ?? row.reasoning ?? `Extracted from ${docName}`) as string;
+
+    suggestions.push({
+      id: suggestionId,
+      rowId: columnId,  // Use column_id as rowId since legal suggestions create new rows
+      columnId: 'clauseId',
+      suggestedValue: sv,  // Full clause object
+      currentValue: null,
+      reasoning,
+      confidence,
+      sourceDocumentId: meta.document_id as number | undefined,
+      sourceDocumentName: docName,
+      extractedMetric: `${clauseType} clause: ${sv.title ?? clauseId}`,
+      changeType: 'new',
+      source: 'service',
+      sourceService: row.source_service as string | undefined,
+    });
+
+    // Collect red flags for insights
+    const riskFlags = clauseFlags.filter(f =>
+      ['unfavorable', 'above_market', 'non_standard', 'auto_renew_risk', 'missing', 'material'].includes(f)
+    );
+    if (riskFlags.length > 0) {
+      const flagKey = `${docId}::${compId}`;
+      const existing = docRedFlags.get(flagKey);
+      const flagText = `${sv.title ?? clauseId} (${clauseType}): ${riskFlags.join(', ')}${reasoning ? ' — ' + reasoning : ''}`;
+      if (existing) {
+        existing.flags.push(flagText);
+      } else {
+        docRedFlags.set(flagKey, { docName, companyId: compId, flags: [flagText] });
+      }
+    }
+  }
+
+  // Build insights from aggregated red flags
+  for (const [key, { docName, companyId: cId, flags }] of docRedFlags) {
+    const docId = key.split('::')[0];
+    insights.push({
+      documentId: docId !== 'none' ? parseInt(docId, 10) : 0,
+      documentName: docName,
+      rowId: cId,
+      redFlags: flags,
+      implications: [],
+      achievements: [],
+      challenges: [],
+      risks: [],
+    });
+  }
+
+  return NextResponse.json({ suggestions, insights });
+}
+
 export async function GET(request: NextRequest) {
   try {
     if (!supabaseService) {
@@ -477,6 +647,12 @@ export async function GET(request: NextRequest) {
         { error: 'Fund ID is required' },
         { status: 400 }
       );
+    }
+
+    // --- Legal mode: clause-level suggestions from pending_suggestions ---
+    const mode = searchParams.get('mode');
+    if (mode === 'legal') {
+      return await handleLegalSuggestions(fundId, companyId);
     }
 
     // Fetch rejected and accepted suggestion IDs for this fund (tables may not exist before migrations)
@@ -1550,24 +1726,69 @@ export async function POST(request: NextRequest) {
         if (typeof rawSuggested === 'string') {
           try { rawSuggested = JSON.parse(rawSuggested); } catch { /* keep as-is */ }
         }
-        const newValue = typeof rawSuggested === 'object' && rawSuggested !== null && 'value' in rawSuggested
-          ? (rawSuggested as { value: unknown }).value
-          : rawSuggested;
-        const applyResult = await applyCellUpdate({
-          company_id: pendingRow.company_id,
-          column_id: pendingRow.column_id,
-          new_value: newValue,
-          fund_id: fundId,
-          data_source: 'service',
-          metadata: { source_service: pendingRow.source_service },
-        });
-        if (!applyResult.success) {
-          const failResult = applyResult as { success: false; error: string; status: number };
-          console.warn('[suggestions] applyCellUpdate failed (service accept)', { suggestionId, status: failResult.status, error: failResult.error });
-          return NextResponse.json(
-            { success: false, error: failResult.error },
-            { status: failResult.status }
-          );
+
+        // Legal clause suggestions → persist to document_clauses (dedicated table)
+        const isLegalClause = typeof pendingRow.column_id === 'string' && pendingRow.column_id.startsWith('legal:');
+        if (isLegalClause) {
+          const sv = typeof rawSuggested === 'object' && rawSuggested !== null ? rawSuggested as Record<string, unknown> : {};
+          const meta = typeof pendingRow.metadata === 'object' && pendingRow.metadata !== null ? pendingRow.metadata as Record<string, unknown> : {};
+          const clauseRow = {
+            fund_id: fundId,
+            company_id: pendingRow.company_id,
+            document_id: meta.document_id ? String(meta.document_id) : null,
+            document_name: (sv.documentName ?? meta.document_name ?? '') as string,
+            clause_id: (sv.clauseId ?? pendingRow.column_id.replace('legal:', '')) as string,
+            title: (sv.title ?? '') as string,
+            clause_type: (sv.clauseType ?? meta.clause_type ?? 'other') as string,
+            clause_text: (sv.text ?? '') as string,
+            party: (sv.party ?? '') as string,
+            flags: Array.isArray(meta.flags) ? meta.flags : (typeof sv.flags === 'string' && sv.flags ? (sv.flags as string).split(', ') : []),
+            obligation_desc: (sv.obligationDesc ?? '') as string,
+            obligation_deadline: sv.obligationDeadline ? String(sv.obligationDeadline) : null,
+            cross_ref_service: (sv.crossRefService ?? '') as string,
+            cross_ref_field: (sv.crossRefField ?? '') as string,
+            cross_ref_value: (sv.crossRefValue ?? '') as string,
+            erp_category: (sv.erpCategory ?? '') as string,
+            erp_subcategory: (sv.erpSubcategory ?? '') as string,
+            annual_value: typeof sv.annualValue === 'number' ? sv.annualValue : null,
+            monthly_amount: typeof sv.monthlyAmount === 'number' ? sv.monthlyAmount : null,
+            reasoning: (sv.reasoning ?? pendingRow.reasoning ?? '') as string,
+            confidence: typeof meta.confidence === 'number' ? meta.confidence : 0.8,
+            source_service: pendingRow.source_service,
+            suggestion_id: suggestionId,
+            metadata: meta,
+          };
+          const { error: clauseErr } = await supabaseService
+            .from('document_clauses')
+            .upsert(clauseRow, { onConflict: 'fund_id,company_id,clause_id,document_id' });
+          if (clauseErr) {
+            console.error('[suggestions] document_clauses upsert failed:', clauseErr);
+            return NextResponse.json(
+              { success: false, error: 'Failed to persist accepted clause' },
+              { status: 500 }
+            );
+          }
+        } else {
+          // Standard cell-edit: write to company record
+          const newValue = typeof rawSuggested === 'object' && rawSuggested !== null && 'value' in rawSuggested
+            ? (rawSuggested as { value: unknown }).value
+            : rawSuggested;
+          const applyResult = await applyCellUpdate({
+            company_id: pendingRow.company_id,
+            column_id: pendingRow.column_id,
+            new_value: newValue,
+            fund_id: fundId,
+            data_source: 'service',
+            metadata: { source_service: pendingRow.source_service },
+          });
+          if (!applyResult.success) {
+            const failResult = applyResult as { success: false; error: string; status: number };
+            console.warn('[suggestions] applyCellUpdate failed (service accept)', { suggestionId, status: failResult.status, error: failResult.error });
+            return NextResponse.json(
+              { success: false, error: failResult.error },
+              { status: failResult.status }
+            );
+          }
         }
         // Persist to accepted_suggestions so the sparkle doesn't reappear.
         // Record the raw ID + source-aware composite key (companyId::columnId::service)

@@ -899,6 +899,106 @@ TP_CBCR = {
 
 
 # ---------------------------------------------------------------------------
+# Legal Intelligence Templates
+# ---------------------------------------------------------------------------
+
+TERM_SHEET_COMPARISON = {
+    "id": "term_sheet_comparison",
+    "title_pattern": "Term Sheet Comparison — {companies}",
+    "required_data": ["term_sheet_comparison"],
+    "optional_data": ["companies", "cap_table_history"],
+    "sections": [
+        _section("executive_summary", "Executive Summary",
+                 data_keys=["term_sheet_comparison"],
+                 prompt_hint="Which term sheet is best for founders? For existing investors? "
+                            "State the headline: 'Term Sheet A costs 2.3% more dilution but avoids a full-ratchet trigger.'"),
+        _section("clause_deltas", "Clause-by-Clause Comparison", type="metrics",
+                 data_keys=["term_sheet_comparison"],
+                 prompt_hint="Table: Clause | Term Sheet A | Term Sheet B | ... | Impact. "
+                            "Include: liquidation preference, participation, anti-dilution, board seats, "
+                            "protective provisions, drag-along, ROFR, pay-to-play. Show dollar impact at median exit."),
+        _section("stakeholder_impact", "Stakeholder Impact Analysis", type="metrics",
+                 data_keys=["term_sheet_comparison"],
+                 prompt_hint="Table: Stakeholder | Term Sheet A Proceeds | Term Sheet B Proceeds | Delta. "
+                            "Show at 3 exit values (low/mid/high). Highlight where interests diverge."),
+        _section("cost_of_capital", "Effective Cost of Capital", type="chart",
+                 data_keys=["term_sheet_comparison"], chart_type="bar",
+                 prompt_hint="Compare effective annual cost of capital for each term sheet. "
+                            "Include explicit dilution + implicit costs (anti-dilution exposure, participation caps)."),
+        _section("alignment_matrix", "Alignment Matrix",
+                 data_keys=["term_sheet_comparison"],
+                 prompt_hint="Which stakeholders align under each term sheet? Where do interests diverge? "
+                            "Flag exit values where alignment flips."),
+        _section("recommendation", "Recommendation",
+                 data_keys=["term_sheet_comparison"],
+                 prompt_hint="Clear recommendation: which term sheet to accept or counter-propose, "
+                            "with specific clauses to negotiate. Quantify what's at stake."),
+    ],
+}
+
+REDLINE_IMPACT = {
+    "id": "redline_impact",
+    "title_pattern": "Redline Impact Analysis — {companies}",
+    "required_data": ["redline_impact"],
+    "optional_data": ["companies", "cap_table_history"],
+    "sections": [
+        _section("summary", "Redline Summary",
+                 data_keys=["redline_impact"],
+                 prompt_hint="What changed and what does it cost? Lead with the dollar figure. "
+                            "'The redline adds participating preferred — costs founders $X at a $YM exit.'"),
+        _section("clause_changes", "Clause Changes", type="metrics",
+                 data_keys=["redline_impact"],
+                 prompt_hint="Table: Clause | Original | Redlined | Change Type | Dollar Impact. "
+                            "Sort by impact magnitude. Flag cascade effects."),
+        _section("waterfall_impact", "Waterfall Impact", type="chart",
+                 data_keys=["redline_impact"], chart_type="waterfall",
+                 prompt_hint="Show proceeds change per stakeholder at multiple exit values. "
+                            "Highlight where redline shifts breakeven exit."),
+        _section("cascade_effects", "Cascade Effects",
+                 data_keys=["redline_impact"],
+                 prompt_hint="What downstream effects do these changes trigger? "
+                            "Anti-dilution ratchets, most-favored-nation clauses, consent requirements."),
+        _section("recommendation", "Recommendation",
+                 data_keys=["redline_impact"],
+                 prompt_hint="Accept, reject, or counter? If counter, specify exact alternative language and quantify the difference."),
+    ],
+}
+
+NEGOTIATION_ANALYSIS = {
+    "id": "negotiation_analysis",
+    "title_pattern": "Negotiation Analysis — {companies}",
+    "required_data": ["negotiation_analysis"],
+    "optional_data": ["companies", "cap_table_history", "term_sheet_comparison"],
+    "sections": [
+        _section("position_summary", "Position Summary",
+                 data_keys=["negotiation_analysis"],
+                 prompt_hint="Our position vs theirs in 3-4 sentences. What do they want? What do we want? "
+                            "Where's the gap?"),
+        _section("concede_counter_fight", "Concede / Counter / Fight", type="metrics",
+                 data_keys=["negotiation_analysis"],
+                 prompt_hint="Table: Term | Our Value | Their Value | Cost to Us | Value to Them | Classification | Rationale. "
+                            "CONCEDE: cheap for us, valuable to them. FIGHT: expensive for us. COUNTER: negotiable."),
+        _section("their_priorities", "Their Likely Priorities",
+                 data_keys=["negotiation_analysis"],
+                 prompt_hint="Inferred from what they changed. Rank their asks by apparent importance. "
+                            "What are they really optimizing for?"),
+        _section("counter_proposal", "Counter-Proposal",
+                 data_keys=["negotiation_analysis"],
+                 prompt_hint="Specific counter-proposal: Accept these terms, counter with these alternatives, "
+                            "reject these. Show resulting cap table if counter is accepted."),
+        _section("stakeholder_dynamics", "Multi-Stakeholder Dynamics",
+                 data_keys=["negotiation_analysis"],
+                 prompt_hint="Who supports our counter? Which existing investors align with us vs them? "
+                            "Board dynamics, protective provision votes, drag-along implications."),
+        _section("recommendation", "Negotiation Strategy",
+                 data_keys=["negotiation_analysis"],
+                 prompt_hint="Recommended negotiation sequence. What to lead with, what to hold back, "
+                            "what to trade. Quantify the expected outcome vs their opening position."),
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
 # Registry — lookup by ID
 # ---------------------------------------------------------------------------
 MEMO_TEMPLATES: Dict[str, Dict[str, Any]] = {
@@ -946,6 +1046,13 @@ MEMO_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "portfolio_review": PORTFOLIO_REVIEW,
     "portfolio": PORTFOLIO_REVIEW,              # alias
     "fund_review": PORTFOLIO_REVIEW,            # alias
+    # --- Legal Intelligence templates ---
+    "term_sheet_comparison": TERM_SHEET_COMPARISON,
+    "deal_terms_comparison": TERM_SHEET_COMPARISON,   # alias (referenced in legal agent prompt)
+    "redline_impact": REDLINE_IMPACT,
+    "redline": REDLINE_IMPACT,                        # alias
+    "negotiation_analysis": NEGOTIATION_ANALYSIS,
+    "negotiation": NEGOTIATION_ANALYSIS,              # alias
     # --- Transfer Pricing templates ---
     "tp_benchmark": TP_BENCHMARK_REPORT,
     "tp_benchmark_report": TP_BENCHMARK_REPORT, # alias
@@ -1056,6 +1163,21 @@ INTENT_TO_TEMPLATE: Dict[str, str] = {
     "portfolio update": "portfolio_review",
     "how is our portfolio": "portfolio_review",
     "how is the portfolio": "portfolio_review",
+    # --- Legal Intelligence intent mappings ---
+    "term sheet comparison": "term_sheet_comparison",
+    "compare term sheets": "term_sheet_comparison",
+    "term sheet diff": "term_sheet_comparison",
+    "deal terms comparison": "term_sheet_comparison",
+    "compare deal terms": "term_sheet_comparison",
+    "redline impact": "redline_impact",
+    "redline analysis": "redline_impact",
+    "what does this redline cost": "redline_impact",
+    "redline changes": "redline_impact",
+    "negotiation analysis": "negotiation_analysis",
+    "negotiate": "negotiation_analysis",
+    "counter-proposal": "negotiation_analysis",
+    "counter proposal": "negotiation_analysis",
+    "concede or fight": "negotiation_analysis",
     # --- Transfer Pricing intent mappings ---
     "transfer pricing": "tp_benchmark",
     "tp benchmark": "tp_benchmark",

@@ -63,6 +63,7 @@ import {
   ScrollText,
   Zap,
   MoreHorizontal,
+  Scale,
 } from 'lucide-react';
 import { getSupabaseBrowser } from '@/lib/supabase/browser';
 import { cn } from '@/lib/utils';
@@ -780,6 +781,7 @@ export default function MatrixControlPanel() {
     custom: FileText,
     lp: Users,
     pnl: BarChart3,
+    legal: Scale,
   };
 
   const currentModeConfig = getModeConfig(mode);

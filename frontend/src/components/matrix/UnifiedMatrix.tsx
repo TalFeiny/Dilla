@@ -436,6 +436,8 @@ export function UnifiedMatrix({
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [isDraggingCSV, setIsDraggingCSV] = useState(false);
   const [isDraggingDocument, setIsDraggingDocument] = useState(false);
+  const [dragHoverRowId, setDragHoverRowId] = useState<string | null>(null);
+  const prevDragRowRef = useRef<string | null>(null);
   const [showLoadDialog, setShowLoadDialog] = useState(false);
   const [savedConfigs, setSavedConfigs] = useState<any[]>([]);
   const [citations, setCitations] = useState<Citation[]>([]);
@@ -521,7 +523,7 @@ export function UnifiedMatrix({
   const uploadFileInputRef = useRef<HTMLInputElement>(null);
   /** Per-cell status for in-cell display (replaces toast). Key = rowId_columnId. */
   const [cellActionStatus, setCellActionStatus] = useState<import('./CellActionContext').CellActionStatusMap>({});
-  const { suggestions: documentSuggestionsList, insights: documentInsights, loading: suggestionsLoading, error: suggestionsError, refresh: refreshSuggestions } = useDocumentSuggestions(matrixData, fundId);
+  const { suggestions: documentSuggestionsList, insights: documentInsights, loading: suggestionsLoading, error: suggestionsError, refresh: refreshSuggestions } = useDocumentSuggestions(matrixData, fundId, mode, companyId);
   /** Optimistically hide accepted/rejected suggestions so they disappear immediately on click.
    *  Prune stale IDs once the server list no longer contains them (i.e. they were persisted). */
   const [optimisticallyHiddenIds, setOptimisticallyHiddenIds] = useState<Set<string>>(new Set());
@@ -545,6 +547,7 @@ export function UnifiedMatrix({
   const [planStepsState, setPlanStepsState] = useState<PlanStep[]>(planSteps || []);
   const loadPortfolioDataRef = useRef<() => Promise<void>>();
   const loadPnlDataRef = useRef<() => Promise<void>>();
+  const loadLegalDataRef = useRef<() => Promise<void>>();
   const portfolioAbortRef = useRef<AbortController | null>(null);
   const matrixDataRef = useRef<MatrixData | null>(null);
   matrixDataRef.current = matrixData;
@@ -756,6 +759,32 @@ export function UnifiedMatrix({
   /** Shared accept handler: optimistic grid update + suggestion removal for fast UX. */
   const handleSuggestionAccept = useCallback(async (suggestionId: string, payload?: { rowId: string; columnId: string; suggestedValue: unknown; sourceDocumentId?: string | number }) => {
     if (!payload) return;
+
+    // Legal mode: suggestion is a full clause object → accept via API, then reload grid
+    if (mode === 'legal' && payload.suggestedValue && typeof payload.suggestedValue === 'object') {
+      const effectiveFundId = fundId ?? matrixData?.metadata?.fundId;
+      if (!effectiveFundId) { toast.error('Unable to save suggestion'); return; }
+      setOptimisticallyHiddenIds((ids) => new Set([...ids, suggestionId]));
+      editInFlightRef.current++;
+      try {
+        const res = await acceptSuggestionViaApi(suggestionId, effectiveFundId);
+        if (!res.success) {
+          setOptimisticallyHiddenIds((ids) => { const next = new Set(ids); next.delete(suggestionId); return next; });
+          toast.error(res.error ?? 'Failed to accept clause');
+          return;
+        }
+        toast.success('Clause accepted');
+        // Reload legal grid + refresh suggestions
+        setTimeout(async () => {
+          if (loadLegalDataRef.current) await loadLegalDataRef.current();
+          refreshSuggestions().catch(() => {});
+        }, 500);
+      } finally {
+        setTimeout(() => { editInFlightRef.current--; }, 1500);
+      }
+      return;
+    }
+
     const row = matrixData?.rows.find((r) =>
       r.id === payload.rowId ||
       r.companyId === payload.rowId ||
@@ -869,7 +898,7 @@ export function UnifiedMatrix({
         editInFlightRef.current--;
       }, 1500);
     }
-  }, [matrixData, fundId, documentSuggestionsList, refreshSuggestions, onDataChange]);
+  }, [matrixData, fundId, mode, documentSuggestionsList, refreshSuggestions, onDataChange]);
 
   /** Single reject wrapper: optimistic removal so suggestion disappears immediately. */
   const handleSuggestionReject = useCallback(
@@ -1066,6 +1095,8 @@ export function UnifiedMatrix({
       prevDataSourceRef.current = undefined;
       prevColumnIdsRef.current = '';
       setMatrixData(getDefaultMatrixData(mode, fundId));
+    } else if (initialData === null && mode === 'legal' && fundId && loadLegalDataRef.current) {
+      loadLegalDataRef.current();
     }
   }, [initialData, mode, fundId]);
 
@@ -1101,6 +1132,17 @@ export function UnifiedMatrix({
           }
         } catch (err) {
           console.error('[UnifiedMatrix] Error during P&L refresh:', err);
+        }
+      } else if (mode === 'legal' && fundId) {
+        console.log('[UnifiedMatrix] Refresh event received, reloading legal data');
+        try {
+          if (loadLegalDataRef.current) {
+            await loadLegalDataRef.current();
+            console.log('[UnifiedMatrix] Legal data reloaded successfully');
+            onRefresh?.();
+          }
+        } catch (err) {
+          console.error('[UnifiedMatrix] Error during legal refresh:', err);
         }
       }
     };
@@ -1630,6 +1672,63 @@ export function UnifiedMatrix({
     loadPnlDataRef.current = loadPnlData;
   }, [loadPnlData]);
 
+  // Load legal clause data for legal mode
+  const legalAbortRef = useRef<AbortController | null>(null);
+  const loadLegalData = useCallback(async () => {
+    if (editInFlightRef.current > 0) {
+      console.log('[UnifiedMatrix] Skipping loadLegalData - edit/upload in flight');
+      return;
+    }
+
+    legalAbortRef.current?.abort();
+    const controller = new AbortController();
+    legalAbortRef.current = controller;
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams();
+      if (fundId) params.set('fundId', fundId);
+      if (companyId) params.set('companyId', companyId);
+
+      const res = await fetch(`/api/legal/clauses?${params}`, { signal: controller.signal });
+      if (!res.ok) throw new Error(`Legal clauses fetch failed: ${res.status}`);
+      if (controller.signal.aborted) return;
+
+      const data = await res.json();
+      const clauseRows = data.rows ?? [];
+
+      if (clauseRows.length > 0) {
+        const currentData = matrixData ?? getDefaultMatrixData('legal', fundId);
+        const legalData: MatrixData = {
+          columns: currentData.columns,
+          rows: clauseRows.map((row: { id: string; companyId?: string; cells: Record<string, unknown>; confidence?: number; flags?: string[]; isAccepted?: boolean }) => ({
+            id: row.id,
+            companyId: row.companyId,
+            cells: row.cells,
+            depth: 0,
+            isHeader: false,
+            isTotal: false,
+            isComputed: false,
+          })),
+          metadata: data.metadata ?? { dataSource: 'legal', lastUpdated: new Date().toISOString() },
+        };
+        setMatrixData(legalData);
+        onDataChange?.(legalData);
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      console.error('[UnifiedMatrix] Error loading legal data:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load legal data');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [fundId, companyId, matrixData, onDataChange, getDefaultMatrixData]);
+
+  useEffect(() => {
+    loadLegalDataRef.current = loadLegalData;
+  }, [loadLegalData]);
+
   // Load portfolio, LP, or P&L data on mount or when mode/fundId/companyId changes
   useEffect(() => {
     if (skipInternalFetch && mode === 'pnl') return; // Parent owns P&L data fetching
@@ -1639,9 +1738,11 @@ export function UnifiedMatrix({
       loadLPData();
     } else if (mode === 'pnl') {
       loadPnlData();
+    } else if (mode === 'legal' && fundId) {
+      loadLegalData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, fundId, companyId, loadPortfolioData, loadLPData, loadPnlData, skipInternalFetch]);
+  }, [mode, fundId, companyId, loadPortfolioData, loadLPData, loadPnlData, loadLegalData, skipInternalFetch]);
 
   // Parse @CompanyName mentions from query
   const parseCompanyMentions = (queryText: string): string[] => {
@@ -3020,8 +3121,8 @@ export function UnifiedMatrix({
       formData.append('file', file);
       if (companyId) formData.append('company_id', companyId);
       if (fundId) formData.append('fund_id', fundId);
-      // Default to monthly_update so matrix uploads get signal-first extraction (business_updates, operational_metrics)
-      formData.append('document_type', 'monthly_update');
+      // Legal mode uploads contracts for clause extraction; all other modes use monthly_update
+      formData.append('document_type', mode === 'legal' ? 'contract' : 'monthly_update');
 
       setCellActionStatus((prev) => ({ ...prev, [`${canonicalRowId}_${columnId}`]: { state: 'loading', message: `Uploading ${file.name}...` } }));
 
@@ -3100,8 +3201,7 @@ export function UnifiedMatrix({
           }
         }
 
-        setCellActionStatus((prev) => ({ ...prev, [`${canonicalRowId}_${columnId}`]: { state: 'success', message: 'Processing started' } }));
-        setTimeout(() => setCellActionStatus((p) => { const next = { ...p }; delete next[`${canonicalRowId}_${columnId}`]; return next; }), 3000);
+        setCellActionStatus((prev) => ({ ...prev, [`${canonicalRowId}_${columnId}`]: { state: 'loading', message: `Extracting ${file.name}...` } }));
 
         // Then run extraction
         onToolCallLog?.({
@@ -3110,6 +3210,7 @@ export function UnifiedMatrix({
           column_id: columnId,
           status: 'running',
           companyName: row?.companyName,
+          explanation: `Extracting from ${file.name}`,
         });
         const response = await executeAction({
           action_id: 'document.extract',
@@ -3127,16 +3228,24 @@ export function UnifiedMatrix({
           status: response.success ? 'success' : 'error',
           error: response.error,
           companyName: row?.companyName,
+          explanation: response.success ? `Extracted from ${file.name}` : undefined,
         });
         // Don't route through handleCellActionResult — that creates a single blob
         // suggestion for the documents column. The backend already wrote per-metric
         // suggestions via emit_document_suggestions; just refresh to pick them up.
+        const statusKey = `${canonicalRowId}_${columnId}`;
         if (!response.success) {
-          const key = `${canonicalRowId}_${columnId}`;
-          setCellActionStatus((prev) => ({ ...prev, [key]: { state: 'error', message: response.error ?? 'Extraction failed' } }));
-          setTimeout(() => setCellActionStatus((p) => { const next = { ...p }; delete next[key]; return next; }), 6000);
+          setCellActionStatus((prev) => ({ ...prev, [statusKey]: { state: 'error', message: response.error ?? 'Extraction failed' } }));
+          setTimeout(() => setCellActionStatus((p) => { const next = { ...p }; delete next[statusKey]; return next; }), 6000);
+        } else {
+          setCellActionStatus((prev) => ({ ...prev, [statusKey]: { state: 'success', message: `${file.name} extracted` } }));
+          setTimeout(() => setCellActionStatus((p) => { const next = { ...p }; delete next[statusKey]; return next; }), 5000);
         }
         await refreshSuggestions();
+        // Legal mode: reload grid rows from pending_suggestions after clause extraction
+        if (mode === 'legal' && loadLegalDataRef.current) {
+          await loadLegalDataRef.current();
+        }
       } catch (err) {
         console.error('Document upload or extraction failed:', err);
         setCellActionStatus((prev) => ({ ...prev, [`${canonicalRowId}_${columnId}`]: { state: 'error', message: err instanceof Error ? err.message : 'Upload failed' } }));
@@ -4475,9 +4584,32 @@ export function UnifiedMatrix({
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (mode === 'portfolio' && fundId) {
+    if ((mode === 'portfolio' || mode === 'legal' || mode === 'pnl') && fundId) {
       if (e.dataTransfer.types.includes('Files')) setIsDraggingDocument(true);
       else setIsDraggingCSV(true);
+
+      // Highlight the AG Grid row under cursor for drop targeting
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const agRow = el?.closest('.ag-row[row-id]');
+      const rowId = agRow?.getAttribute('row-id') ?? null;
+      if (rowId !== prevDragRowRef.current) {
+        // Remove highlight from previous row
+        if (prevDragRowRef.current) {
+          document.querySelectorAll(`.ag-row[row-id="${prevDragRowRef.current}"]`).forEach(el => {
+            (el as HTMLElement).style.outline = '';
+            (el as HTMLElement).style.outlineOffset = '';
+          });
+        }
+        // Add highlight to new row
+        if (rowId) {
+          document.querySelectorAll(`.ag-row[row-id="${rowId}"]`).forEach(el => {
+            (el as HTMLElement).style.outline = '2px solid hsl(var(--primary))';
+            (el as HTMLElement).style.outlineOffset = '-2px';
+          });
+        }
+        prevDragRowRef.current = rowId;
+        setDragHoverRowId(rowId);
+      }
     }
   }, [mode, fundId]);
 
@@ -4486,6 +4618,15 @@ export function UnifiedMatrix({
     e.stopPropagation();
     setIsDraggingCSV(false);
     setIsDraggingDocument(false);
+    // Clear row highlight
+    if (prevDragRowRef.current) {
+      document.querySelectorAll(`.ag-row[row-id="${prevDragRowRef.current}"]`).forEach(el => {
+        (el as HTMLElement).style.outline = '';
+        (el as HTMLElement).style.outlineOffset = '';
+      });
+      prevDragRowRef.current = null;
+      setDragHoverRowId(null);
+    }
   }, []);
 
   const handleDrop = useCallback(async (e: React.DragEvent) => {
@@ -4493,8 +4634,17 @@ export function UnifiedMatrix({
     e.stopPropagation();
     setIsDraggingCSV(false);
     setIsDraggingDocument(false);
+    // Clear row highlight
+    if (prevDragRowRef.current) {
+      document.querySelectorAll(`.ag-row[row-id="${prevDragRowRef.current}"]`).forEach(el => {
+        (el as HTMLElement).style.outline = '';
+        (el as HTMLElement).style.outlineOffset = '';
+      });
+      prevDragRowRef.current = null;
+      setDragHoverRowId(null);
+    }
 
-    if (mode !== 'portfolio' || !fundId) return;
+    if ((mode !== 'portfolio' && mode !== 'legal' && mode !== 'pnl') || !fundId) return;
 
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
@@ -4505,11 +4655,16 @@ export function UnifiedMatrix({
       f.name.endsWith('.xls')
     );
     if (csvFile) {
+      // PnL mode uses its own CSV upload pipeline (auto-detect orientation → fpa_actuals)
+      if (mode === 'pnl') {
+        handlePnlCsvUpload(csvFile);
+        return;
+      }
       handleFileImport(csvFile);
       return;
     }
 
-    // Document files (PDF, docx, etc.): match to company by filename, then upload
+    // Document files (PDF, docx, etc.): detect target row from cursor position, then upload
     const docFiles = files.filter(f =>
       f.name.endsWith('.pdf') ||
       f.name.endsWith('.docx') ||
@@ -4527,34 +4682,52 @@ export function UnifiedMatrix({
         return;
       }
 
-      for (const file of docFiles) {
-        // Try to match file to a company by name in filename
-        const fileBase = file.name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[_\-]+/g, ' ');
-        let matchedRow = currentData.rows.find(r => {
-          const compName = (r.name ?? r.companyId ?? '').toLowerCase();
-          if (!compName) return false;
-          // Check if company name appears in filename or first token of filename matches
-          const firstToken = fileBase.split(/\s+/)[0];
-          return fileBase.includes(compName) || compName.includes(firstToken) || firstToken.length > 2 && compName.startsWith(firstToken);
-        });
+      // Primary: detect AG Grid row under cursor via DOM (row-id attribute on .ag-row elements)
+      let dropTargetRowId: string | null = null;
+      const dropElement = document.elementFromPoint(e.clientX, e.clientY);
+      if (dropElement) {
+        const agRow = dropElement.closest('.ag-row[row-id]');
+        if (agRow) {
+          dropTargetRowId = agRow.getAttribute('row-id');
+        }
+      }
 
+      // Validate the detected row exists in our data
+      const dropTargetRow = dropTargetRowId
+        ? currentData.rows.find(r => (r.id ?? r.companyId) === dropTargetRowId)
+        : null;
+
+      for (const file of docFiles) {
+        let matchedRow = dropTargetRow;
+
+        // Fallback: fuzzy match filename to company name (handles bulk drops or missed row detection)
+        if (!matchedRow) {
+          const fileBase = file.name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[_\-]+/g, ' ');
+          matchedRow = currentData.rows.find(r => {
+            const compName = (r.name ?? r.companyId ?? '').toLowerCase();
+            if (!compName) return false;
+            // Bidirectional substring match
+            return fileBase.includes(compName) || compName.includes(fileBase.split(/\s+/)[0]);
+          }) ?? null;
+        }
+
+        // Final fallback: single-row grid → safe to default
         if (!matchedRow && currentData.rows.length === 1) {
-          // Only one company — safe to default
           matchedRow = currentData.rows[0];
         }
 
         if (!matchedRow) {
-          toast.error(`Cannot match "${file.name}" to a company`, { description: 'Drag the file onto the specific company row, or rename the file to include the company name.' });
-          console.warn('[UnifiedMatrix] Document drop: no company match for', file.name, 'rows:', currentData.rows.map(r => r.name ?? r.companyId));
+          toast.error(`Cannot match "${file.name}" to a row`, { description: 'Drop the file directly onto the target row.' });
+          console.warn('[UnifiedMatrix] Document drop: no row match for', file.name, { dropTargetRowId, rows: currentData.rows.map(r => r.name ?? r.companyId) });
           continue;
         }
 
         const rowId = matchedRow.id ?? matchedRow.companyId;
-        console.log('[UnifiedMatrix] Document drop: matched', file.name, 'to company', matchedRow.name ?? rowId);
+        console.log('[UnifiedMatrix] Document drop: targeting row', matchedRow.name ?? rowId, dropTargetRow ? '(cursor hit)' : '(fuzzy match)');
         await handleUploadDocumentToCell(rowId!, docCol.id, file);
       }
     }
-  }, [mode, fundId, handleFileImport, handleUploadDocumentToCell, matrixData, getDefaultMatrixData]);
+  }, [mode, fundId, handleFileImport, handlePnlCsvUpload, handleUploadDocumentToCell, matrixData, getDefaultMatrixData]);
 
   // Export compressed context for @ symbol queries
   const exportCompressedContext = async () => {
@@ -4665,8 +4838,8 @@ export function UnifiedMatrix({
                 {showChartViewport ? 'Hide' : 'Show'} chat
               </DropdownMenuItem>
             )}
-            {(mode === 'portfolio' || mode === 'lp' || mode === 'pnl') && (
-              <DropdownMenuItem onClick={() => { mode === 'lp' ? loadLPData() : mode === 'pnl' ? loadPnlData() : loadPortfolioData(); onRefresh?.(); }}>
+            {(mode === 'portfolio' || mode === 'lp' || mode === 'pnl' || mode === 'legal') && (
+              <DropdownMenuItem onClick={() => { mode === 'lp' ? loadLPData() : mode === 'pnl' ? loadPnlData() : mode === 'legal' ? loadLegalData() : loadPortfolioData(); onRefresh?.(); }}>
                 <RefreshCw className="w-4 h-4 mr-2" />
                 Refresh
               </DropdownMenuItem>
@@ -4754,6 +4927,52 @@ export function UnifiedMatrix({
         </DropdownMenu>
       </div>
 
+      {/* ── Matrix Status Bar ─────────────────────────────────────── */}
+      {(() => {
+        const activeTasks = Object.values(cellActionStatus).filter(s => s.state === 'loading');
+        const completedTasks = Object.values(cellActionStatus).filter(s => s.state === 'success');
+        const errorTasks = Object.values(cellActionStatus).filter(s => s.state === 'error');
+        const pendingSuggestionCount = visibleSuggestions.length;
+        const hasActivity = isLoading || activeTasks.length > 0 || pendingSuggestionCount > 0 || errorTasks.length > 0;
+
+        if (!hasActivity) return null;
+
+        return (
+          <div className="flex items-center gap-3 px-3 py-1.5 text-xs bg-muted/40 border rounded-md shrink-0 overflow-x-auto">
+            {isLoading && (
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {mode === 'pnl' ? 'Loading P&L' : mode === 'legal' ? 'Loading clauses' : mode === 'lp' ? 'Loading LPs' : 'Loading portfolio'}...
+              </span>
+            )}
+            {activeTasks.length > 0 && (
+              <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {activeTasks.length === 1 ? activeTasks[0].message : `${activeTasks.length} tasks running`}
+              </span>
+            )}
+            {pendingSuggestionCount > 0 && (
+              <span className="flex items-center gap-1.5 text-blue-600 dark:text-blue-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
+                {pendingSuggestionCount} suggestion{pendingSuggestionCount !== 1 ? 's' : ''} to review
+              </span>
+            )}
+            {errorTasks.length > 0 && (
+              <span className="flex items-center gap-1.5 text-red-600 dark:text-red-400">
+                <AlertTriangle className="h-3 w-3" />
+                {errorTasks.length === 1 ? errorTasks[0].message : `${errorTasks.length} errors`}
+              </span>
+            )}
+            {completedTasks.length > 0 && !activeTasks.length && !isLoading && (
+              <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400">
+                <Check className="h-3 w-3" />
+                {completedTasks.length === 1 ? completedTasks[0].message : `${completedTasks.length} tasks complete`}
+              </span>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Error Message */}
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-center">
@@ -4775,22 +4994,29 @@ export function UnifiedMatrix({
           onDrop={handleDrop}
         >
           {/* Drag overlay: document (PDF, etc.) */}
-          {isDraggingDocument && (
-            <div className="absolute inset-0 z-50 bg-primary/10 border-4 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
-              <div className="bg-white dark:bg-gray-900 rounded-lg p-6 shadow-lg text-center">
-                <Upload className="h-12 w-12 mx-auto mb-4 text-primary" />
-                <p className="text-lg font-semibold">Drop document to upload</p>
-                <p className="text-sm text-muted-foreground mt-2">PDF, DOCX — uploads to this row and runs extraction</p>
+          {isDraggingDocument && (() => {
+            const hoveredRow = dragHoverRowId ? matrixData?.rows?.find(r => (r.id ?? r.companyId) === dragHoverRowId) : null;
+            const targetName = hoveredRow?.name ?? hoveredRow?.companyName ?? null;
+            return (
+              <div className="absolute inset-0 z-50 bg-primary/10 border-4 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
+                <div className="bg-white dark:bg-gray-900 rounded-lg p-6 shadow-lg text-center">
+                  <Upload className="h-12 w-12 mx-auto mb-4 text-primary" />
+                  <p className="text-lg font-semibold">{mode === 'legal' ? 'Drop contract to extract clauses' : mode === 'pnl' ? 'Drop spreadsheet to import P&L data' : 'Drop document to upload'}</p>
+                  <p className="text-sm text-muted-foreground mt-2">{mode === 'legal' ? 'PDF, DOCX — extracts clauses, flags, and obligations' : mode === 'pnl' ? 'CSV, XLSX — auto-detects rows and periods, upserts into actuals' : 'PDF, DOCX — uploads to this row and runs extraction'}</p>
+                  {targetName && (
+                    <p className="text-sm font-medium text-primary mt-3">Target: {targetName}</p>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
           {/* Drag overlay: CSV import */}
           {isDraggingCSV && !isDraggingDocument && (
             <div className="absolute inset-0 z-50 bg-primary/10 border-4 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
               <div className="bg-white dark:bg-gray-900 rounded-lg p-6 shadow-lg text-center">
                 <Upload className="h-12 w-12 mx-auto mb-4 text-primary" />
-                <p className="text-lg font-semibold">Drop CSV file to import</p>
-                <p className="text-sm text-muted-foreground mt-2">Updates existing companies in matrix</p>
+                <p className="text-lg font-semibold">{mode === 'legal' ? 'Drop CSV to import clauses' : mode === 'pnl' ? 'Drop spreadsheet to import P&L data' : 'Drop CSV file to import'}</p>
+                <p className="text-sm text-muted-foreground mt-2">{mode === 'legal' ? 'Imports clause data into the legal grid' : mode === 'pnl' ? 'CSV, XLSX — auto-detects categories and periods' : 'Updates existing companies in matrix'}</p>
               </div>
             </div>
           )}
@@ -4831,7 +5057,7 @@ export function UnifiedMatrix({
               onReject: handleSuggestionReject,
             }}
           >
-          {mode === 'portfolio' && isLoading && !matrixData?.rows?.length ? (
+          {(mode === 'portfolio' || mode === 'legal' || mode === 'pnl') && isLoading && !matrixData?.rows?.length ? (
             <div className="flex-1 min-h-0 flex flex-col p-4 rounded-lg border bg-muted/30" style={{ height: 640, minHeight: 640 }}>
               <SkeletonTable rows={8} columns={12} />
             </div>

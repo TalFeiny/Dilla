@@ -753,6 +753,7 @@ LEGAL_FIELD_TO_COLUMN = {
     "clauseType": "clauseType",
     "text": "text",
     "party": "party",
+    "counterparty": "counterparty",
     "flags": "flags",
     "obligationDesc": "obligationDesc",
     "obligationDeadline": "obligationDeadline",
@@ -871,10 +872,17 @@ def emit_legal_suggestions(
         xrefs = clause.get("cross_references") or []
         primary_xref = xrefs[0] if xrefs else {}
 
-        # Party from obligation or from clause-level context
+        # Party / counterparty from obligation or from document-level parties list
         party = primary_ob.get("party", "")
+        counterparty = ""
         if not party and parties:
             party = parties[0].get("name", "")
+        if len(parties) >= 2:
+            # Second party in the list is the counterparty
+            counterparty = parties[1].get("name", "")
+        elif not counterparty:
+            # Try clause-level counterparty if present
+            counterparty = clause.get("counterparty", "")
 
         # Flags as comma-separated string for the grid
         flags = clause.get("flags") or []
@@ -888,6 +896,7 @@ def emit_legal_suggestions(
             "clauseType": clause.get("clause_type", "other"),
             "text": (clause.get("text") or "")[:500],
             "party": party,
+            "counterparty": counterparty,
             "flags": flags_str,
             "obligationDesc": primary_ob.get("description", ""),
             "obligationDeadline": primary_ob.get("deadline"),

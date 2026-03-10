@@ -128,8 +128,8 @@ export function DocumentSuggestionBadge({
           variant="outline"
           className="ml-1 cursor-pointer bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/20 dark:text-blue-400"
         >
-          <Sparkles className="w-3 h-3 mr-1" />
-          {pendingSuggestions.length} suggestion{pendingSuggestions.length > 1 ? 's' : ''}
+          <span className="w-2 h-2 rounded-full bg-blue-500 mr-1.5 shrink-0" />
+          {pendingSuggestions.length} update{pendingSuggestions.length > 1 ? 's' : ''}
         </Badge>
       </PopoverTrigger>
       <PopoverContent className="w-[420px] max-h-[70vh] overflow-y-auto" align="start">
@@ -445,7 +445,9 @@ function buildRowLookup(rows: MatrixRow[]): Map<string, MatrixRow> {
  */
 export function useDocumentSuggestions(
   matrixData: MatrixData | null,
-  fundId?: string
+  fundId?: string,
+  mode?: string,
+  companyId?: string,
 ): {
   suggestions: DocumentSuggestion[];
   insights: DocumentInsight[];
@@ -501,7 +503,10 @@ export function useDocumentSuggestions(
     setError(null);
 
     try {
-      const response = await fetch(`/api/matrix/suggestions?fundId=${fid}`, { signal: controller.signal });
+      const qs = new URLSearchParams({ fundId: fid });
+      if (mode === 'legal') qs.set('mode', 'legal');
+      if (companyId) qs.set('companyId', companyId);
+      const response = await fetch(`/api/matrix/suggestions?${qs}`, { signal: controller.signal });
       if (!response.ok) throw new Error('Failed to fetch suggestions');
 
       const data = await response.json();
@@ -511,16 +516,25 @@ export function useDocumentSuggestions(
       const mapped: DocumentSuggestion[] = [];
       for (const s of raw) {
         if (s.rowId === 'unknown') continue;
-        const row = lookup.get(s.rowId) ?? null;
-        if (!row) continue;
-        const colId = typeof s.columnId === 'string' ? s.columnId : '';
-        const cell = row.cells?.[colId];
-        mapped.push({
-          ...s,
-          cellId: `${row.id}-${colId}`,
-          rowId: row.id,
-          currentValue: s.currentValue ?? cell?.value ?? null,
-        });
+        if (mode === 'legal') {
+          // Legal suggestions create new rows — no existing row to match against
+          mapped.push({
+            ...s,
+            cellId: `${s.rowId}-${s.columnId}`,
+            currentValue: null,
+          });
+        } else {
+          const row = lookup.get(s.rowId) ?? null;
+          if (!row) continue;
+          const colId = typeof s.columnId === 'string' ? s.columnId : '';
+          const cell = row.cells?.[colId];
+          mapped.push({
+            ...s,
+            cellId: `${row.id}-${colId}`,
+            rowId: row.id,
+            currentValue: s.currentValue ?? cell?.value ?? null,
+          });
+        }
       }
 
       const mappedInsights: DocumentInsight[] = rawInsights.map((i) => ({
@@ -538,7 +552,7 @@ export function useDocumentSuggestions(
       setLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fundId]);
+  }, [fundId, mode, companyId]);
 
   /** Explicit refresh (called after accept/reject). Marks timestamp to suppress the next auto-fetch. */
   const manualRefresh = useCallback(async () => {

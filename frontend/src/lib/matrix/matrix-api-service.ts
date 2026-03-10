@@ -1009,11 +1009,13 @@ export function registerFieldService(mapping: FieldServiceMapping): void {
  * Each row = one clause extracted from a legal document.
  */
 export const LEGAL_COLUMNS: import('@/components/matrix/UnifiedMatrix').MatrixColumn[] = [
+  { id: 'documentName', name: 'Source Doc', type: 'text', width: 160, editable: false },
+  { id: 'party', name: 'Party', type: 'text', width: 140, editable: false },
+  { id: 'counterparty', name: 'Counterparty', type: 'text', width: 140, editable: false },
   { id: 'clauseId', name: 'Clause ID', type: 'text', width: 90, editable: false },
   { id: 'title', name: 'Clause Title', type: 'text', width: 200, editable: false },
   { id: 'clauseType', name: 'Type', type: 'text', width: 140, editable: false },
   { id: 'text', name: 'Clause Text', type: 'text', width: 320, editable: false },
-  { id: 'party', name: 'Party', type: 'text', width: 140, editable: false },
   { id: 'flags', name: 'Flags', type: 'text', width: 160, editable: false },
   { id: 'obligationDesc', name: 'Obligation', type: 'text', width: 220, editable: false },
   { id: 'obligationDeadline', name: 'Deadline', type: 'date', width: 110, editable: false },
@@ -1024,7 +1026,6 @@ export const LEGAL_COLUMNS: import('@/components/matrix/UnifiedMatrix').MatrixCo
   { id: 'erpSubcategory', name: 'ERP Subcategory', type: 'text', width: 130, editable: false },
   { id: 'annualValue', name: 'Annual Value', type: 'currency', width: 120, editable: false },
   { id: 'monthlyAmount', name: 'Monthly Cost', type: 'currency', width: 110, editable: false },
-  { id: 'documentName', name: 'Source Doc', type: 'text', width: 160, editable: false },
   { id: 'reasoning', name: 'Reasoning', type: 'text', width: 280, editable: false },
 ];
 

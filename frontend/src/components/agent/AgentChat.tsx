@@ -703,9 +703,11 @@ export default function AgentChat({
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
 
-      // Route to CFO agent in PnL mode, investment analyst agent otherwise
+      // Route to the right agent brain by mode
       const agentEndpoint = mode === 'pnl'
         ? '/api/agent/cfo-brain'
+        : mode === 'legal'
+        ? '/api/agent/legal-brain'
         : '/api/agent/unified-brain';
 
       const res = await fetch(agentEndpoint, {
@@ -1526,8 +1528,10 @@ export default function AgentChat({
                   <p className="text-muted-foreground text-xs break-words overflow-hidden">
                     {mode === 'pnl' ? (
                       <>Forecast revenue, adjust expenses, run scenarios, or ask about margins and runway</>
+                    ) : mode === 'legal' ? (
+                      <>Upload a contract, review clauses, or ask about terms and obligations</>
                     ) : (
-                      <>Ask a question, run a valuation, or type <kbd className="px-1 py-0.5 rounded bg-muted text-[10px] font-mono">@company</kbd> to analyze</>
+                      <>Run a valuation, model scenarios, or type <kbd className="px-1 py-0.5 rounded bg-muted text-[10px] font-mono">@company</kbd> to analyze</>
                     )}
                   </p>
                 </div>
@@ -2279,7 +2283,7 @@ export default function AgentChat({
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyPress}
-                placeholder={planModeOn ? 'Describe what to plan... (Enter to send)' : mode === 'pnl' ? 'Adjust forecast, ask about P&L... (Enter to send)' : 'Message... (Enter to send)'}
+                placeholder={planModeOn ? 'Describe what to plan... (Enter to send)' : mode === 'pnl' ? 'Adjust forecast, ask about P&L... (Enter to send)' : mode === 'legal' ? 'Ask about a clause, upload a contract... (Enter to send)' : 'Message... (Enter to send)'}
                 className="min-h-[36px] max-h-[120px] resize-none text-sm border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground"
                 disabled={isLoading}
               />
