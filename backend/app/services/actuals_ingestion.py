@@ -46,6 +46,167 @@ for parent_cat, subcats in SUBCATEGORY_TAXONOMY.items():
     for sub in subcats:
         SUBCATEGORY_TO_PARENT[sub] = parent_cat
 
+# ---------------------------------------------------------------------------
+# Business-model-aware taxonomy overrides
+# Extends the base SaaS taxonomy with model-specific subcategories.
+# Uses the same 14 categories already in intelligent_gap_filler.py.
+# ---------------------------------------------------------------------------
+
+BUSINESS_MODEL_TAXONOMY: Dict[str, Dict[str, list]] = {
+    "saas": {},  # base taxonomy IS saas — no overrides needed
+    "ai_saas": {
+        "cogs": ["hosting", "api_inference_costs", "data_costs", "support_salaries", "payment_processing"],
+    },
+    "ai_first": {
+        "cogs": ["api_inference_costs", "data_costs", "hosting", "model_training", "support_salaries"],
+        "opex_rd": ["ml_engineering", "data_engineering", "infra_cloud", "tools_licenses", "research"],
+    },
+    "marketplace": {
+        "cogs": ["payment_processing", "trust_safety", "support_salaries", "hosting"],
+        "opex_sm": ["supply_acquisition", "demand_acquisition", "content_marketing", "sales_salaries", "partnerships"],
+    },
+    "ecommerce": {
+        "cogs": ["inventory", "fulfillment", "shipping_costs", "returns", "payment_processing"],
+        "opex_sm": ["paid_acquisition", "email_marketing", "affiliate", "content_marketing", "retail_ops"],
+    },
+    "services": {
+        "cogs": ["delivery_salaries", "subcontractors", "travel", "tools"],
+        "opex_sm": ["business_development", "proposals", "events", "partnerships"],
+    },
+    "tech_enabled_services": {
+        "cogs": ["delivery_salaries", "subcontractors", "hosting", "tools"],
+        "opex_sm": ["business_development", "content_marketing", "sales_salaries", "partnerships"],
+    },
+    "hardware": {
+        "cogs": ["materials", "manufacturing", "assembly", "quality_control", "logistics"],
+        "opex_rd": ["hardware_engineering", "firmware", "industrial_design", "prototyping", "certifications"],
+    },
+    "deeptech_hardware": {
+        "cogs": ["materials", "manufacturing", "quality_control", "logistics", "calibration"],
+        "opex_rd": ["research", "hardware_engineering", "firmware", "prototyping", "certifications"],
+    },
+    "industrial": {
+        "cogs": ["raw_materials", "manufacturing", "labor", "maintenance", "logistics"],
+        "opex_ga": ["facility_lease", "utilities", "insurance", "admin_salaries", "compliance"],
+        "opex_sm": ["sales_salaries", "distributor_commissions", "trade_shows", "partnerships"],
+    },
+    "manufacturing": {
+        "cogs": ["raw_materials", "direct_labor", "manufacturing_overhead", "quality_control", "logistics"],
+        "opex_ga": ["facility_lease", "utilities", "insurance", "admin_salaries", "finance_legal"],
+    },
+    "materials": {
+        "cogs": ["raw_materials", "processing", "labor", "logistics", "waste_disposal"],
+        "opex_ga": ["facility_lease", "utilities", "compliance", "insurance", "admin_salaries"],
+    },
+    "fintech": {
+        "cogs": ["payment_processing", "compliance_ops", "fraud_prevention", "support_salaries", "banking_partner_fees"],
+        "opex_ga": ["compliance", "finance_legal", "audit", "admin_salaries", "insurance"],
+    },
+    "rollup": {
+        "cogs": ["acquired_entity_cogs", "integration_costs", "support_salaries", "hosting"],
+        "opex_ga": ["integration_ops", "finance_legal", "admin_salaries", "insurance", "office"],
+    },
+    "gtm_software": {
+        "opex_sm": ["paid_acquisition", "sales_salaries", "content_marketing", "events", "channel_partners"],
+    },
+    "full_stack_ai": {
+        "cogs": ["api_inference_costs", "data_costs", "hosting", "model_training", "support_salaries"],
+        "opex_rd": ["ml_engineering", "data_engineering", "infra_cloud", "research", "tools_licenses"],
+    },
+}
+
+# Register all business-model subcategories in SUBCATEGORY_TO_PARENT
+for _model_overrides in BUSINESS_MODEL_TAXONOMY.values():
+    for _cat, _subs in _model_overrides.items():
+        for _sub in _subs:
+            if _sub not in SUBCATEGORY_TO_PARENT:
+                SUBCATEGORY_TO_PARENT[_sub] = _cat
+
+
+def get_taxonomy_for_model(business_model: str = "saas") -> Dict[str, list]:
+    """Merge base SUBCATEGORY_TAXONOMY with business-model-specific overrides."""
+    merged = {k: list(v) for k, v in SUBCATEGORY_TAXONOMY.items()}
+    model_overrides = BUSINESS_MODEL_TAXONOMY.get(business_model.lower(), {})
+    for cat, subs in model_overrides.items():
+        merged[cat] = subs  # model-specific replaces generic
+    return merged
+
+
+def classify_label_to_subcategory(
+    label: str, business_model: str = "saas"
+) -> tuple:
+    """Map a P&L line-item label to (category, subcategory).
+
+    Uses keyword matching against the active taxonomy for the business model.
+    Returns ("", "") if no match found.
+    """
+    normalized = label.lower().strip().replace("-", "_").replace(" ", "_")
+    taxonomy = get_taxonomy_for_model(business_model)
+
+    # Direct subcategory match
+    for cat, subs in taxonomy.items():
+        for sub in subs:
+            if sub in normalized or normalized in sub:
+                return (cat, sub)
+
+    # Keyword-based fallback patterns (business-model-agnostic)
+    _KEYWORD_MAP = {
+        ("revenue", "subscription"): ["subscription", "recurring", "mrr", "arr", "saas"],
+        ("revenue", "professional_services"): ["professional", "consulting", "advisory", "implementation"],
+        ("revenue", "usage_based"): ["usage", "consumption", "metered", "api_calls"],
+        ("revenue", "take_rate"): ["take_rate", "commission", "marketplace_fee", "gmv"],
+        ("revenue", "product_sales"): ["product_sales", "device_sales", "unit_sales"],
+        ("cogs", "hosting"): ["hosting", "aws", "gcp", "azure", "cloud", "servers"],
+        ("cogs", "support_salaries"): ["support", "customer_success", "cs_team"],
+        ("cogs", "payment_processing"): ["stripe", "payment", "processing_fee", "interchange"],
+        ("cogs", "inventory"): ["inventory", "raw_material", "goods", "stock"],
+        ("cogs", "fulfillment"): ["fulfillment", "warehouse", "picking", "packing", "3pl"],
+        ("cogs", "raw_materials"): ["raw_materials", "feedstock", "components", "supplies"],
+        ("cogs", "manufacturing"): ["manufacturing", "production", "assembly_line", "factory"],
+        ("cogs", "labor"): ["direct_labor", "shop_floor", "production_staff", "hourly_labor"],
+        ("cogs", "logistics"): ["logistics", "freight", "shipping", "distribution", "trucking"],
+        ("opex_rd", "engineering_salaries"): ["engineering", "developer", "software_eng", "tech_team"],
+        ("opex_rd", "infra_cloud"): ["infra", "devops", "platform"],
+        ("opex_rd", "tools_licenses"): ["tools", "license", "software_sub", "jira", "github"],
+        ("opex_rd", "hardware_engineering"): ["hardware_eng", "electrical_eng", "mechanical_eng"],
+        ("opex_sm", "paid_acquisition"): ["paid", "ads", "advertising", "google_ads", "meta_ads", "sem", "ppc"],
+        ("opex_sm", "content_marketing"): ["content", "seo", "blog", "social_media"],
+        ("opex_sm", "sales_salaries"): ["sales_team", "sales_salary", "ae_", "sdr_", "bdr_"],
+        ("opex_ga", "finance_legal"): ["legal", "accounting", "audit", "finance_team", "cfo"],
+        ("opex_ga", "office"): ["office", "rent", "utilities", "coworking"],
+        ("opex_ga", "facility_lease"): ["facility", "warehouse_lease", "factory_rent", "plant_lease"],
+        ("opex_ga", "admin_salaries"): ["admin", "hr", "people_ops", "office_manager"],
+        ("opex_ga", "insurance"): ["insurance", "d&o", "e&o", "liability"],
+        ("opex_ga", "compliance"): ["compliance", "regulatory", "licensing"],
+    }
+
+    for (cat, sub), keywords in _KEYWORD_MAP.items():
+        if any(kw in normalized for kw in keywords):
+            return (cat, sub)
+
+    return ("", "")
+
+
+def _resolve_account_code(
+    company_id: str, account_code: str, erp_source: str = "unknown"
+) -> Optional[Dict]:
+    """Resolve ERP account code to category via erp_account_mappings or patterns."""
+    from app.core.supabase_client import get_supabase_client
+
+    sb = get_supabase_client()
+    if not sb:
+        return None
+    try:
+        result = sb.rpc("resolve_category_by_code", {
+            "p_account_code": account_code,
+            "p_erp_source": erp_source,
+        }).execute()
+        if result.data:
+            return {"category": result.data, "subcategory": ""}
+    except Exception as e:
+        logger.debug(f"Account code resolution failed for {account_code}: {e}")
+    return None
+
 
 def ingest_time_series(
     time_series: List[Dict[str, Any]],
@@ -106,6 +267,33 @@ def ingest_time_series(
                 "amount": amount,
                 "source": source,
             })
+
+        # Account code resolution: if entry has erp_account_code but no category, resolve it
+        if not entry.get("category") and entry.get("erp_account_code"):
+            resolved = _resolve_account_code(
+                company_id, entry["erp_account_code"],
+                erp_source=entry.get("erp_source", "unknown"),
+            )
+            if resolved:
+                cat = resolved["category"]
+                amt = entry.get("amount")
+                if cat and amt is not None:
+                    try:
+                        amount = float(amt)
+                    except (ValueError, TypeError):
+                        pass
+                    else:
+                        rows.append({
+                            "company_id": company_id,
+                            "fund_id": fund_id,
+                            "document_id": document_id,
+                            "period": period.isoformat(),
+                            "category": cat,
+                            "subcategory": resolved.get("subcategory", ""),
+                            "hierarchy_path": cat,
+                            "amount": amount,
+                            "source": source,
+                        })
 
         # Subcategory metrics: e.g. entry has "subcategory": "engineering_salaries", "amount": 50000
         # Known taxonomy takes priority; unknown subcategories accepted when caller provides parent_category

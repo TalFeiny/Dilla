@@ -56,6 +56,7 @@ class EnhancedCitationManager:
         citation = {
             'id': len(self.citations),
             'number': citation_number,
+            'citation_number': citation_number,  # compat with CitationManager
             'source': source,
             'date': date,
             'title': title or source,
@@ -238,7 +239,66 @@ class EnhancedCitationManager:
             'unique_sources': len(self.source_map),
             'unique_urls': len(self.url_map),
             'sources_breakdown': {
-                source: len(citations) 
+                source: len(citations)
                 for source, citations in self.source_map.items()
             }
         }
+
+    # ------------------------------------------------------------------
+    # Backwards-compatible API (drop-in for CitationManager)
+    # ------------------------------------------------------------------
+
+    def get_all_citations(self) -> List[Dict[str, Any]]:
+        """Return all citations (compat with CitationManager)."""
+        return self.citations
+
+    def get_citation(self, citation_id: int) -> Optional[Dict]:
+        """Get citation by index (compat with CitationManager)."""
+        if 0 <= citation_id < len(self.citations):
+            return self.citations[citation_id]
+        return None
+
+    def get_citations_by_source(self, source: str) -> List[Dict]:
+        """Get all citations from a specific source."""
+        ids = self.source_map.get(source, [])
+        return [self.citations[i] for i in ids if i < len(self.citations)]
+
+    def format_all_citations(self) -> str:
+        """Format all citations as a bibliography (compat with CitationManager)."""
+        return self.format_bibliography_markdown()
+
+    def get_citations_html(self) -> str:
+        """Return formatted HTML with clickable [N] links (compat with CitationManager)."""
+        return self.format_bibliography_html()
+
+    def get_citations_for_slide(self, slide_id: str) -> List[Dict]:
+        """Return citations for a slide (compat with CitationManager)."""
+        return self.citations
+
+    def merge_citations(self, other_citations: List[Dict], deduplicate: bool = True):
+        """Merge citations from another source with deduplication."""
+        for citation in other_citations:
+            if deduplicate:
+                url = citation.get('url') or citation.get('source')
+                if url and url in self.url_map:
+                    continue
+                content = citation.get('content', '')
+                if content:
+                    content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
+                    if any(c.get('hash') == content_hash for c in self.citations):
+                        continue
+            self.add_citation(
+                source=citation.get('source', 'Unknown'),
+                date=citation.get('date', datetime.now().isoformat()),
+                content=citation.get('content', ''),
+                url=citation.get('url'),
+                title=citation.get('title'),
+                metadata=citation.get('metadata', {}),
+            )
+
+    def format_citation(self, citation_id: int) -> str:
+        """Format a citation for inline use (compat with CitationManager)."""
+        citation = self.get_citation_by_number(citation_id)
+        if citation:
+            return f"[{citation['number']}]"
+        return "[Citation not found]"

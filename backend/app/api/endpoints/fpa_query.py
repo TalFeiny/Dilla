@@ -791,8 +791,19 @@ def _fuzzy_match_category(label: str, threshold: float = 0.65) -> Optional[tuple
     return None
 
 
-def _label_to_subcategory(label: str) -> str:
-    """Normalize a label to snake_case for dynamic subcategory storage."""
+def _label_to_subcategory(label: str, business_model: str = "saas") -> str:
+    """Map a label to a subcategory using business-model-aware taxonomy.
+
+    Tries the classifier first; falls back to snake_case normalization.
+    """
+    try:
+        from app.services.actuals_ingestion import classify_label_to_subcategory
+        _cat, sub = classify_label_to_subcategory(label, business_model)
+        if sub:
+            return sub
+    except Exception:
+        pass
+    # Fallback: normalize to snake_case
     s = label.lower().strip()
     s = re.sub(r"[^a-z0-9\s]", "", s)
     s = re.sub(r"\s+", "_", s).strip("_")
@@ -1046,6 +1057,15 @@ async def upload_actuals_csv(
             if hierarchy_info["strategy"] != "indent":
                 warnings.append(f"Detected ERP hierarchy format: {hierarchy_info['strategy']}")
 
+            # Look up company's business model for taxonomy-aware classification
+            _biz_model = "saas"
+            try:
+                _co = sb.table("companies").select("category").eq("id", company_id).limit(1).execute()
+                if _co.data and _co.data[0].get("category"):
+                    _biz_model = _co.data[0]["category"]
+            except Exception:
+                pass
+
             # =============================================
             # PASS 1: Scan all rows — build category + hierarchy map
             # =============================================
@@ -1135,7 +1155,7 @@ async def upload_actuals_csv(
                         info["category"] = cat
                         info["match_type"] = "regex"
                     elif cat and cat == current_section_parent:
-                        sub_name = _label_to_subcategory(original)
+                        sub_name = _label_to_subcategory(original, _biz_model)
                         if sub_name:
                             info["category"] = cat
                             info["subcategory"] = sub_name
@@ -1152,7 +1172,7 @@ async def upload_actuals_csv(
                             info["match_type"] = f"fuzzy ({fuzzy[1]})"
                             warnings.append(f"Fuzzy-matched '{original}' → {fuzzy[0]} (score: {fuzzy[1]})")
                         elif current_section_parent:
-                            sub_name = _label_to_subcategory(original)
+                            sub_name = _label_to_subcategory(original, _biz_model)
                             if sub_name:
                                 info["category"] = current_section_parent
                                 info["subcategory"] = sub_name

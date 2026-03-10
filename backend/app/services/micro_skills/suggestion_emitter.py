@@ -739,3 +739,346 @@ def build_grid_commands(result: MicroSkillResult, company_name: str) -> List[Dic
         commands.append(cmd)
 
     return commands
+
+
+# ---------------------------------------------------------------------------
+# Legal clause emitter — writes extracted clauses to the legal grid
+# Same pending_suggestions pipeline, same accept/reject/reasoning as financial
+# ---------------------------------------------------------------------------
+
+# Legal field → Frontend legal grid column_id mapping
+LEGAL_FIELD_TO_COLUMN = {
+    "clauseId": "clauseId",
+    "title": "title",
+    "clauseType": "clauseType",
+    "text": "text",
+    "party": "party",
+    "flags": "flags",
+    "obligationDesc": "obligationDesc",
+    "obligationDeadline": "obligationDeadline",
+    "crossRefService": "crossRefService",
+    "crossRefField": "crossRefField",
+    "crossRefValue": "crossRefValue",
+    "erpCategory": "erpCategory",
+    "erpSubcategory": "erpSubcategory",
+    "annualValue": "annualValue",
+    "monthlyAmount": "monthlyAmount",
+    "documentName": "documentName",
+    "reasoning": "reasoning",
+}
+
+
+def _build_clause_reasoning(clause: Dict, value_explanations: Dict, document_name: str) -> str:
+    """Build reasoning chain for a clause: verbatim quote → interpretation → flag/impact.
+
+    Same pattern as financial value_explanations: '"source quote" → why → impact'.
+    """
+    clause_type = clause.get("clause_type", "other")
+
+    # Check if there's a value_explanation for this clause type
+    explanation = value_explanations.get(clause_type) or value_explanations.get(clause.get("id", ""))
+    if explanation:
+        return explanation[:500]
+
+    # Build reasoning from clause data
+    parts = []
+
+    # Verbatim quote (first 150 chars)
+    text = clause.get("text", "")
+    if text:
+        quote = text[:150].strip()
+        if len(text) > 150:
+            quote += "..."
+        parts.append(f'"{quote}"')
+
+    # Interpretation — flags and obligations
+    flags = clause.get("flags", [])
+    if flags:
+        parts.append(f"Flags: {', '.join(flags)}")
+
+    obligations = clause.get("obligations", [])
+    if obligations:
+        ob = obligations[0]
+        desc = ob.get("description", "")
+        if desc:
+            parts.append(f"Obligation: {desc[:100]}")
+
+    # Cross-reference impact
+    xrefs = clause.get("cross_references", [])
+    if xrefs:
+        xr = xrefs[0]
+        parts.append(f"Cross-ref: {xr.get('to_service', '')} → {xr.get('field', '')} = {xr.get('value', '')}")
+
+    if not parts:
+        return f"Extracted from {document_name}: {clause_type} clause"
+
+    return " → ".join(parts)[:500]
+
+
+def emit_legal_suggestions(
+    extracted_data: Dict[str, Any],
+    company_id: str,
+    fund_id: str,
+    document_id: str,
+    document_name: str = "",
+) -> int:
+    """Transform legal extraction into per-clause pending_suggestions rows.
+
+    Called after legal document extraction completes. Each clause becomes one
+    row in pending_suggestions, keyed by (fund_id, company_id, column_id)
+    where column_id encodes the clause ID for uniqueness.
+
+    Uses the same accept/reject/reasoning pipeline as financial suggestions —
+    the frontend shows badges, evidence chains, and source attribution.
+
+    Synchronous — called from run_document_process() in its own thread.
+    """
+    if not extracted_data or not fund_id or not company_id:
+        return 0
+
+    clauses = extracted_data.get("clauses")
+    if not isinstance(clauses, list) or not clauses:
+        logger.info("[LEGAL_EMITTER] No clauses in extraction for doc %s", document_id)
+        return 0
+
+    value_explanations = extracted_data.get("value_explanations") or {}
+    erp = extracted_data.get("erp_attribution") or {}
+    parties = extracted_data.get("parties") or []
+    doc_type = extracted_data.get("document_type") or "contract"
+
+    sb = _get_supabase_client()
+    if not sb:
+        logger.warning("[LEGAL_EMITTER] Supabase unavailable — legal suggestions not persisted")
+        return 0
+
+    rows = []
+    for clause in clauses:
+        if not isinstance(clause, dict):
+            continue
+
+        clause_id = clause.get("id", "")
+        if not clause_id:
+            continue
+
+        # Build the reasoning chain: quote → flags → impact
+        reasoning = _build_clause_reasoning(clause, value_explanations, document_name)
+
+        # Primary obligation (first one if multiple)
+        obligations = clause.get("obligations") or []
+        primary_ob = obligations[0] if obligations else {}
+
+        # Primary cross-reference
+        xrefs = clause.get("cross_references") or []
+        primary_xref = xrefs[0] if xrefs else {}
+
+        # Party from obligation or from clause-level context
+        party = primary_ob.get("party", "")
+        if not party and parties:
+            party = parties[0].get("name", "")
+
+        # Flags as comma-separated string for the grid
+        flags = clause.get("flags") or []
+        flags_str = ", ".join(flags) if flags else ""
+
+        # Build the clause row — one pending_suggestion per clause field
+        # Use a composite column_id: "legal:{clause_id}:{field}" for uniqueness
+        clause_fields = {
+            "clauseId": clause_id,
+            "title": clause.get("title", ""),
+            "clauseType": clause.get("clause_type", "other"),
+            "text": (clause.get("text") or "")[:500],
+            "party": party,
+            "flags": flags_str,
+            "obligationDesc": primary_ob.get("description", ""),
+            "obligationDeadline": primary_ob.get("deadline"),
+            "crossRefService": primary_xref.get("to_service", ""),
+            "crossRefField": primary_xref.get("field", ""),
+            "crossRefValue": str(primary_xref.get("value", "")) if primary_xref.get("value") is not None else "",
+            "erpCategory": erp.get("category", ""),
+            "erpSubcategory": erp.get("subcategory", ""),
+            "annualValue": erp.get("annual_value"),
+            "monthlyAmount": erp.get("monthly_amount"),
+            "documentName": document_name or f"doc:{document_id}",
+            "reasoning": reasoning,
+        }
+
+        # Confidence based on flags — flagged clauses get higher confidence
+        # so they surface first in the suggestion UI
+        confidence = 0.80
+        if any(f in flags for f in ("unfavorable", "above_market", "non_standard", "auto_renew_risk", "missing")):
+            confidence = 0.92
+        elif any(f in flags for f in ("material", "favorable")):
+            confidence = 0.85
+
+        # Each clause → one row keyed by legal:{clauseId} so each clause
+        # is a distinct suggestion the user can accept/reject individually
+        column_id = f"legal:{clause_id}"
+
+        rows.append({
+            "fund_id": fund_id,
+            "company_id": company_id,
+            "column_id": column_id,
+            "suggested_value": clause_fields,
+            "source_service": f"document:{document_id}",
+            "reasoning": reasoning,
+            "metadata": {
+                "confidence": confidence,
+                "document_id": document_id,
+                "document_name": document_name,
+                "document_type": doc_type,
+                "source_type": "legal_extraction",
+                "clause_type": clause.get("clause_type", "other"),
+                "flags": flags,
+                "parent_clause_id": clause.get("parent_id"),
+                "children_clause_ids": clause.get("children", []),
+                "all_obligations": obligations,
+                "all_cross_references": xrefs,
+            },
+        })
+
+    if not rows:
+        logger.info("[LEGAL_EMITTER] No valid clause rows for doc %s", document_id)
+        return 0
+
+    try:
+        sb.table("pending_suggestions").upsert(
+            rows,
+            on_conflict="fund_id,company_id,column_id",
+        ).execute()
+        logger.info(f"[LEGAL_EMITTER] Persisted {len(rows)} clause suggestions for doc {document_id}")
+        return len(rows)
+    except Exception as e:
+        logger.warning(f"[LEGAL_EMITTER] Clause upsert failed for {document_id}: {e}")
+        # Fall back to individual upserts
+        written = 0
+        for row in rows:
+            try:
+                sb.table("pending_suggestions").upsert(
+                    row,
+                    on_conflict="fund_id,company_id,column_id",
+                ).execute()
+                written += 1
+            except Exception as e2:
+                logger.warning(f"[LEGAL_EMITTER] Write failed for {document_id}.{row['column_id']}: {e2}")
+        return written
+
+
+# ---------------------------------------------------------------------------
+# Cap table suggestion emitter
+# ---------------------------------------------------------------------------
+
+
+def emit_cap_table_suggestions(
+    cap_table_result: Dict[str, Any],
+    company_id: str,
+    fund_id: str,
+    document_id: str,
+    document_name: str = "",
+) -> int:
+    """
+    Transform cap table bridge output into per-shareholder pending_suggestions rows.
+
+    Each shareholder entry becomes one row keyed as cap_table:{shareholder_id}:{share_class}.
+    Same accept/reject pipeline as legal suggestions.
+
+    Synchronous — called from document processing.
+    Returns count of suggestions written.
+    """
+    if not cap_table_result or not fund_id or not company_id:
+        return 0
+
+    entries = cap_table_result.get("share_entries")
+    if not isinstance(entries, list) or not entries:
+        logger.info("[CAP_TABLE_EMITTER] No share entries for doc %s", document_id)
+        return 0
+
+    sb = _get_supabase_client()
+    if not sb:
+        logger.warning("[CAP_TABLE_EMITTER] Supabase unavailable")
+        return 0
+
+    rows = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+
+        holder_id = entry.get("shareholder_id", "")
+        share_class = entry.get("share_class", "unknown")
+        if not holder_id:
+            continue
+
+        column_id = f"cap_table:{holder_id}:{share_class}"
+
+        rights = entry.get("rights", {})
+        vesting = entry.get("vesting", {})
+
+        suggested_value = {
+            "shareholder": entry.get("shareholder_name", ""),
+            "shareClass": share_class,
+            "numShares": entry.get("num_shares"),
+            "pricePer": entry.get("price_per_share"),
+            "investment": None,
+            "liquidationPref": f"{rights.get('liquidation_preference', 1.0)}x {'participating' if rights.get('participation_rights') else 'non-participating'}",
+            "antiDilution": rights.get("anti_dilution", "none"),
+            "boardSeats": rights.get("board_seats", 0),
+            "vesting": f"{vesting.get('total_months', 48)}mo / {vesting.get('cliff_months', 12)}mo cliff" if vesting else "",
+            "proRata": rights.get("pro_rata_rights", False),
+            "sourceDocument": document_name or document_id,
+        }
+
+        # Calculate investment if we have shares and price
+        try:
+            shares = float(entry.get("num_shares", 0))
+            price = float(entry.get("price_per_share", 0))
+            if shares and price:
+                suggested_value["investment"] = shares * price
+        except (ValueError, TypeError):
+            pass
+
+        reasoning = (
+            f"{entry.get('shareholder_name', 'Unknown')} — "
+            f"{share_class} — "
+            f"from {document_name or document_id}"
+        )
+
+        rows.append({
+            "fund_id": fund_id,
+            "company_id": company_id,
+            "column_id": column_id,
+            "suggested_value": suggested_value,
+            "source_service": f"document:{document_id}",
+            "reasoning": reasoning[:500],
+            "metadata": {
+                "confidence": 0.85,
+                "document_id": document_id,
+                "document_name": document_name,
+                "source_type": "cap_table_extraction",
+                "shareholder_id": holder_id,
+                "share_class": share_class,
+            },
+        })
+
+    if not rows:
+        logger.info("[CAP_TABLE_EMITTER] No valid rows for doc %s", document_id)
+        return 0
+
+    try:
+        sb.table("pending_suggestions").upsert(
+            rows,
+            on_conflict="fund_id,company_id,column_id",
+        ).execute()
+        logger.info(f"[CAP_TABLE_EMITTER] Persisted {len(rows)} cap table suggestions for doc {document_id}")
+        return len(rows)
+    except Exception as e:
+        logger.warning(f"[CAP_TABLE_EMITTER] Upsert failed for {document_id}: {e}")
+        written = 0
+        for row in rows:
+            try:
+                sb.table("pending_suggestions").upsert(
+                    row,
+                    on_conflict="fund_id,company_id,column_id",
+                ).execute()
+                written += 1
+            except Exception as e2:
+                logger.warning(f"[CAP_TABLE_EMITTER] Write failed for {document_id}.{row['column_id']}: {e2}")
+        return written

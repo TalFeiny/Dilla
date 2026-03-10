@@ -129,6 +129,61 @@ class LightweightMemoService:
         return available, missing_required, missing_optional
 
     # ------------------------------------------------------------------
+    # Template variable auto-fill (contract drafting)
+    # ------------------------------------------------------------------
+
+    def _autofill_template(self, template: Dict[str, Any], available_data: Dict[str, Any]) -> None:
+        """Replace {{variable}} placeholders in template with actual company data.
+
+        Mutates the template dict in place — prompt_hints and preamble get concrete values
+        so the LLM sees real company names, dates, and jurisdictions instead of placeholders.
+        """
+        company_ctx = available_data.get("company_context", {})
+        if not company_ctx:
+            companies = available_data.get("companies", [])
+            if companies:
+                c = companies[0]
+                company_ctx = {
+                    "company_name": c.get("company", c.get("name", "")),
+                    "jurisdiction": c.get("jurisdiction", ""),
+                    "company_address": c.get("address", ""),
+                }
+
+        variables = {
+            "company_name": company_ctx.get("company_name") or "[COMPANY NAME]",
+            "counterparty_name": company_ctx.get("counterparty_name") or "[COUNTERPARTY]",
+            "employee_name": company_ctx.get("employee_name") or "[EMPLOYEE NAME]",
+            "effective_date": company_ctx.get("effective_date") or datetime.now().strftime("%B %d, %Y"),
+            "jurisdiction": company_ctx.get("jurisdiction") or template.get("governing_law_default", "Delaware"),
+            "term_months": str(company_ctx.get("term_months", 24)),
+            "company_address": company_ctx.get("company_address") or "[ADDRESS]",
+            "counterparty_address": company_ctx.get("counterparty_address") or "[ADDRESS]",
+            "position_title": company_ctx.get("position_title") or "[POSITION TITLE]",
+            "base_salary": company_ctx.get("base_salary") or "[BASE SALARY]",
+            "reporting_to": company_ctx.get("reporting_to") or "[REPORTING MANAGER]",
+            "probation_months": str(company_ctx.get("probation_months", 6)),
+            "notice_period_months": str(company_ctx.get("notice_period_months", 3)),
+            "contract_term_months": str(company_ctx.get("contract_term_months", 12)),
+            "service_description": company_ctx.get("service_description") or "[DESCRIPTION OF SERVICES]",
+            "document_title": company_ctx.get("document_title") or "[DOCUMENT]",
+        }
+
+        def _replace_vars(text: str) -> str:
+            for var, val in variables.items():
+                text = text.replace(f"{{{{{var}}}}}", val)
+            return text
+
+        if template.get("preamble"):
+            template["preamble"] = _replace_vars(template["preamble"])
+
+        for section in template.get("sections", []):
+            if section.get("prompt_hint"):
+                section["prompt_hint"] = _replace_vars(section["prompt_hint"])
+
+        if template.get("title_pattern"):
+            template["title_pattern"] = _replace_vars(template["title_pattern"])
+
+    # ------------------------------------------------------------------
     # Shot 2: Generate all narrative sections in one LLM call
     # ------------------------------------------------------------------
 
@@ -148,15 +203,19 @@ class LightweightMemoService:
         # Build the data context (truncated to fit in one call)
         data_summary = self._summarize_data(available_data)
 
-        # Build section prompts
+        # Build section prompts — include "clause" type for contract templates
         section_prompts = []
         narrative_keys = []
         for s in sections:
-            if s["type"] in ("narrative", "metrics"):
+            if s["type"] in ("narrative", "metrics", "clause"):
                 narrative_keys.append(s["key"])
+                hint = s.get("prompt_hint", "")
+                if s["type"] == "clause":
+                    clause_meta = f"[Clause type: {s.get('clause_type', 'general')} | Risk: {s.get('risk_level', 'medium')}]"
+                    hint = f"{clause_meta}\n{hint}"
                 section_prompts.append(
                     f"### {s['heading']}\n"
-                    f"Instructions: {s['prompt_hint']}\n"
+                    f"Instructions: {hint}\n"
                     f"Data keys available: {', '.join(s['data_keys']) or 'general context'}"
                 )
 
@@ -182,40 +241,80 @@ class LightweightMemoService:
         num_companies = len(companies)
         is_portfolio = num_companies > 3
 
-        system_prompt = (
-            "You are a senior investment analyst at a top-tier venture capital fund. "
-            "Write with authority and precision — this memo drives multi-million dollar decisions. "
-            f"{fund_size_str}"
-            f"{company_str}"
-            "\n\nYOU ARE WRITING A PROFESSIONAL MEMO, NOT A MARKDOWN DOCUMENT.\n"
-            "Write the way Goldman Sachs, McKinsey, or a top VC fund writes investment memos: "
-            "clean prose, structured tables, clear section flow. Think printed PDF, not a README.\n"
-            "\nFORMATTING — CRITICAL:\n"
-            "- DO NOT use ** or * for bold/italic. Ever. No exceptions.\n"
-            "- DO NOT use ### sub-headings inside sections. Each section already has its heading.\n"
-            "- Write plain prose. Emphasize through word choice and sentence structure.\n"
-            "- Numbers inline naturally: $14.8M ARR, 2.3x revenue multiple, 47% gross margin.\n"
-            "- Cite sources in parentheses: '$14.8M ARR (company-reported)' or '$5M ARR (est. Series A benchmark)'.\n"
-            "- Use bullet points (- item) only for short lists of 3-5 actionable items like key risks or next steps.\n"
-            "- Use markdown tables (| col | col |) when comparing structured data across companies or scenarios. "
-            "Tables are great — just keep them clean with no bold/italic markup inside cells.\n"
-            "\nCONTENT:\n"
-            f"{'- PORTFOLIO (' + str(num_companies) + ' companies): Lead with the big picture — stage distribution, sector themes, total deployed. Compare and contrast, never describe companies in isolation. Group by theme or performance tier.' if is_portfolio else '- DEEP DIVE: 2-4 dense paragraphs per section (150-400 words). Weave numbers into flowing prose with context.'}\n"
-            "- Lead each section with the single most important finding. No preamble, no filler.\n"
-            "- End each section with a clear takeaway or recommended action.\n"
-            "- Never skip a company for sparse data. State what is known, estimate what is not, flag confidence.\n"
-            "- Fields marked [ESTIMATED] must be presented as estimates, never as facts.\n"
-            "- Calculate derived metrics: revenue multiples, capital efficiency, implied burn.\n"
-            "- Every claim must trace to the data. Count before you claim.\n"
-            "- Work with what you have. Sparse data means analyze harder, not less.\n"
-            "- When data is missing, infer using stage benchmarks and say why.\n"
-            "- For recommendations: state conviction (High/Medium/Low) and check size.\n"
-            "\nSECTION STRUCTURE:\n"
-            "- Separate each section with its exact ## heading as shown below.\n"
-            "- The headings split your output — they MUST match exactly.\n"
-            "- Do NOT use ---SECTION_BREAK--- delimiters.\n"
-            "- Within each section: prose paragraphs, tables where data warrants, bullet lists for actions only."
-        )
+        # Check if this is a contract template — use legal system prompt
+        is_contract = template.get("contract_type") is not None
+
+        if is_contract:
+            contract_type = template.get("contract_type", "agreement")
+            governing_law = template.get("governing_law_default", "Delaware")
+            preamble_text = template.get("preamble", "")
+            preamble_ctx = f"\nPREAMBLE (already filled — reference this context):\n{preamble_text}\n" if preamble_text else ""
+
+            system_prompt = (
+                "You are a senior corporate attorney at a top-tier law firm (Wachtell, Skadden, or equivalent). "
+                f"Draft precise, enforceable legal clauses for a {contract_type.replace('_', ' ')}. "
+                f"Jurisdiction: {governing_law}."
+                f"{preamble_ctx}"
+                "\n\nYOU ARE DRAFTING A REAL CONTRACT, NOT A SUMMARY.\n"
+                "Write the way elite law firms draft agreements: precise defined terms, "
+                "clear obligations, enforceable language. Think signed legal document, not a memo.\n"
+                "\nCRITICAL RULES:\n"
+                "- Write actual contract language — numbered clauses, defined terms, operative provisions.\n"
+                "- DO NOT use ** or * for bold/italic. Write plain legal prose.\n"
+                "- DO NOT use ### sub-headings. Each section already has its heading.\n"
+                "- Use defined terms consistently: capitalize and define in quotes on first use "
+                '(e.g., the "Receiving Party").\n'
+                "- Include section cross-references where appropriate (e.g., 'as defined in Section 1').\n"
+                "- Every obligation must specify WHICH PARTY bears it.\n"
+                "- Include specific time periods, notice requirements, and thresholds — "
+                "never leave these vague.\n"
+                "- Where the user must fill in specifics, use [SPECIFY] as placeholder.\n"
+                "- Cite market standards where relevant: [Standard: Delaware law requires...] or "
+                "[Standard: typical for Series A SHAs].\n"
+                "- For contract review templates: when providing negotiation redlines, use this exact format:\n"
+                "  ORIGINAL: [verbatim current language]\n"
+                "  REVISED: [your recommended revision]\n"
+                "  REASONING: [why — cite market standard, risk, or commercial impact]\n"
+                "\nSECTION STRUCTURE:\n"
+                "- Separate each section with its exact ## heading as shown below.\n"
+                "- The headings split your output — they MUST match exactly.\n"
+                "- Within each section: contract clauses with sub-numbering (a), (b), (c) as appropriate."
+            )
+        else:
+            system_prompt = (
+                "You are a senior investment analyst at a top-tier venture capital fund. "
+                "Write with authority and precision — this memo drives multi-million dollar decisions. "
+                f"{fund_size_str}"
+                f"{company_str}"
+                "\n\nYOU ARE WRITING A PROFESSIONAL MEMO, NOT A MARKDOWN DOCUMENT.\n"
+                "Write the way Goldman Sachs, McKinsey, or a top VC fund writes investment memos: "
+                "clean prose, structured tables, clear section flow. Think printed PDF, not a README.\n"
+                "\nFORMATTING — CRITICAL:\n"
+                "- DO NOT use ** or * for bold/italic. Ever. No exceptions.\n"
+                "- DO NOT use ### sub-headings inside sections. Each section already has its heading.\n"
+                "- Write plain prose. Emphasize through word choice and sentence structure.\n"
+                "- Numbers inline naturally: $14.8M ARR, 2.3x revenue multiple, 47% gross margin.\n"
+                "- Cite sources inline: '$14.8M ARR (company-reported)' or '$5M ARR (est. Series A benchmark)' or '$4.2M ARR (TechCrunch)'. Always cite the source of every key number.\n"
+                "- Use bullet points (- item) only for short lists of 3-5 actionable items like key risks or next steps.\n"
+                "- Use markdown tables (| col | col |) when comparing structured data across companies or scenarios. "
+                "Tables are great — just keep them clean with no bold/italic markup inside cells.\n"
+                "\nCONTENT:\n"
+                f"{'- PORTFOLIO (' + str(num_companies) + ' companies): Lead with the big picture — stage distribution, sector themes, total deployed. Compare and contrast, never describe companies in isolation. Group by theme or performance tier.' if is_portfolio else '- DEEP DIVE: 2-4 dense paragraphs per section (150-400 words). Weave numbers into flowing prose with context.'}\n"
+                "- Lead each section with the single most important finding. No preamble, no filler.\n"
+                "- End each section with a clear takeaway or recommended action.\n"
+                "- Never skip a company for sparse data. State what is known, estimate what is not, flag confidence.\n"
+                "- Fields marked [ESTIMATED] must be presented as estimates, never as facts.\n"
+                "- Calculate derived metrics: revenue multiples, capital efficiency, implied burn.\n"
+                "- Every claim must trace to the data. Count before you claim.\n"
+                "- Work with what you have. Sparse data means analyze harder, not less.\n"
+                "- When data is missing, infer using stage benchmarks and say why.\n"
+                "- For recommendations: state conviction (High/Medium/Low) and check size.\n"
+                "\nSECTION STRUCTURE:\n"
+                "- Separate each section with its exact ## heading as shown below.\n"
+                "- The headings split your output — they MUST match exactly.\n"
+                "- Do NOT use ---SECTION_BREAK--- delimiters.\n"
+                "- Within each section: prose paragraphs, tables where data warrants, bullet lists for actions only."
+            )
 
         user_prompt = (
             f"User request: {prompt}\n\n"
@@ -346,6 +445,31 @@ class LightweightMemoService:
                     else:
                         memo_sections.append({"type": "paragraph", "content": narrative})
 
+            elif sec_type == "clause":
+                # Contract clause — same as narrative but with clause metadata as citation
+                narrative = narratives.get(key, "")
+                if narrative:
+                    parsed = self._parse_markdown_to_sections(narrative)
+                    if parsed:
+                        memo_sections.extend(parsed)
+                    else:
+                        memo_sections.append({"type": "paragraph", "content": narrative})
+                    # Attach clause metadata as citation badge on last section
+                    clause_type = section_def.get("clause_type", "")
+                    risk_level = section_def.get("risk_level", "medium")
+                    if clause_type and memo_sections:
+                        if "citations" not in memo_sections[-1]:
+                            memo_sections[-1]["citations"] = []
+                        memo_sections[-1]["citations"].append({
+                            "type": "reasoning",
+                            "title": f"Clause: {clause_type.replace('_', ' ').title()} | Risk: {risk_level}",
+                        })
+                else:
+                    memo_sections.append({
+                        "type": "paragraph",
+                        "content": f"[Draft clause: {section_def.get('clause_type', 'general')}]",
+                    })
+
             elif sec_type == "context":
                 # Plan memo context snapshot — machine-readable JSON
                 context_data = self._build_context_snapshot(available_data)
@@ -370,6 +494,10 @@ class LightweightMemoService:
                         memo_sections.append(_fallback)
                     logger.debug(f"[MEMO] Empty narrative for section {key} — used fallback: {bool(_fallback)}")
 
+        # Post-process: convert ORIGINAL/REVISED/REASONING markers to redline sections
+        if template.get("contract_type") == "review":
+            memo_sections = self._convert_negotiations_to_redlines(memo_sections)
+
         return {
             "format": "docs",
             "title": title,
@@ -391,6 +519,60 @@ class LightweightMemoService:
                 "template_sections": [s["key"] for s in template["sections"]],
             },
         }
+
+    # ------------------------------------------------------------------
+    # Contract redline conversion
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _convert_negotiations_to_redlines(
+        sections: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Convert ORIGINAL/REVISED/REASONING markers from LLM output to redline sections.
+
+        The contract review template instructs the LLM to output negotiation points
+        in this format:
+            ORIGINAL: [verbatim current language]
+            REVISED: [recommended revision]
+            REASONING: [why this change matters]
+
+        This method scans paragraph sections for these markers and converts them
+        to {type: "redline", redline: {original, revised, reasoning}} sections
+        that the MemoEditor renders with strikethrough/green styling.
+        """
+        import re
+
+        result = []
+        for s in sections:
+            if s.get("type") != "paragraph" or not s.get("content"):
+                result.append(s)
+                continue
+
+            content = s["content"]
+            # Check for redline markers
+            orig_match = re.search(
+                r"ORIGINAL:\s*(.+?)(?=\s*REVISED:|$)", content, re.DOTALL
+            )
+            rev_match = re.search(
+                r"REVISED:\s*(.+?)(?=\s*REASONING:|$)", content, re.DOTALL
+            )
+            reason_match = re.search(
+                r"REASONING:\s*(.+?)$", content, re.DOTALL
+            )
+
+            if orig_match and rev_match:
+                result.append({
+                    "type": "redline",
+                    "redline": {
+                        "original": orig_match.group(1).strip(),
+                        "revised": rev_match.group(1).strip(),
+                        "reasoning": reason_match.group(1).strip() if reason_match else "",
+                    },
+                })
+            else:
+                result.append(s)
+
+        return result
 
     # ------------------------------------------------------------------
     # Shot 4 (optional): Polish pass
@@ -526,6 +708,12 @@ class LightweightMemoService:
         template_id = self.detect_memo_type(prompt, memo_type)
         available_data, missing_req, missing_opt = self.audit_data(template_id)
 
+        # Auto-fill template variables for contract templates
+        import copy
+        template = copy.deepcopy(MEMO_TEMPLATES[template_id])
+        if template.get("template_variables"):
+            self._autofill_template(template, available_data)
+
         # Estimation fallback: ensure every company has revenue, valuation, growth
         companies = available_data.get("companies", [])
         if companies:
@@ -583,10 +771,23 @@ class LightweightMemoService:
         # Shot 3: Assemble — inject charts/tables from Python services (no LLM)
         result = self.assemble_memo(template_id, prompt, narratives, available_data, prebuilt_charts)
 
+        # Post-process: inject inline [N] citation markers and build bibliography
+        result = self._inject_inline_citations(result, available_data)
+
         # Attach citations from shared_data so frontend can render Sources section
         citations = self.shared_data.get("citations", [])
         if citations:
-            result["citations"] = citations
+            # Merge with any citations generated by inline processing
+            existing = result.get("citations", [])
+            if existing:
+                # Deduplicate by URL
+                existing_urls = {c.get("url") for c in existing if c.get("url")}
+                for c in citations:
+                    if c.get("url") not in existing_urls:
+                        existing.append(c)
+                result["citations"] = existing
+            else:
+                result["citations"] = citations
 
         # Attach company data for document viewer sidebar
         if companies:
@@ -598,6 +799,130 @@ class LightweightMemoService:
             result["cap_table_history"] = cap_table
 
         return result
+
+    # ------------------------------------------------------------------
+    # Inline citation post-processing
+    # ------------------------------------------------------------------
+
+    def _inject_inline_citations(
+        self,
+        result: Dict[str, Any],
+        available_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Replace inline source references with numbered [N] markers.
+
+        Scans paragraph/list sections for patterns like:
+          - (company-reported), (TechCrunch, 2024), (est. benchmark)
+          - Tavily/Firecrawl source URLs already in shared_data
+        Creates a numbered bibliography appended as a dedicated section.
+        """
+        import re
+
+        try:
+            from app.services.enhanced_citation_manager import EnhancedCitationManager
+        except ImportError:
+            return result  # Enhanced manager not available — skip
+
+        cm = EnhancedCitationManager()
+
+        # Pre-populate from shared_data citations (Tavily search results, docs, etc.)
+        existing_citations = self.shared_data.get("citations", [])
+        for c in existing_citations:
+            cm.add_citation(
+                source=c.get("source", c.get("title", "Unknown")),
+                date=c.get("date", ""),
+                content=c.get("content", ""),
+                url=c.get("url"),
+                title=c.get("title"),
+                metadata=c.get("metadata", {}),
+            )
+
+        # Also pull per-company sources
+        for company in available_data.get("companies", []):
+            for src in company.get("sources", []) + company.get("tavily_sources", []):
+                if isinstance(src, dict) and src.get("url"):
+                    cm.add_citation(
+                        source=src.get("title", src.get("url", "")),
+                        date=src.get("date", ""),
+                        content=src.get("snippet", src.get("content", "")),
+                        url=src.get("url"),
+                        title=src.get("title"),
+                    )
+
+        # Patterns for inline source references the LLM generates
+        # (source-type) or (Source Name, YYYY)
+        _INLINE_PATTERN = re.compile(
+            r'\(('
+            r'company[- ]reported'
+            r'|est\.?\s+[^)]{3,40}'
+            r'|[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*(?:,\s*\d{4})?'
+            r'|source:\s*[^)]{3,60}'
+            r'|per\s+[^)]{3,40}'
+            r')\)',
+            re.IGNORECASE,
+        )
+
+        sections = result.get("sections", [])
+        for section in sections:
+            if section.get("type") not in ("paragraph", "list"):
+                continue
+
+            if section.get("type") == "paragraph" and section.get("content"):
+                text = section["content"]
+                new_text = self._replace_inline_refs(text, cm, _INLINE_PATTERN)
+                section["content"] = new_text
+
+            elif section.get("type") == "list" and section.get("items"):
+                new_items = []
+                for item in section["items"]:
+                    if isinstance(item, str):
+                        new_items.append(self._replace_inline_refs(item, cm, _INLINE_PATTERN))
+                    else:
+                        new_items.append(item)
+                section["items"] = new_items
+
+        # Add bibliography section if we have citations
+        all_cites = cm.get_all_citations()
+        if all_cites:
+            result["sections"].append({"type": "heading2", "content": "Sources"})
+            bib_items = []
+            for c in sorted(all_cites, key=lambda x: x.get("number", 0)):
+                num = c.get("number", c.get("citation_number", ""))
+                title = c.get("title", c.get("source", ""))
+                url = c.get("url", "")
+                if url and url.startswith("http"):
+                    bib_items.append(f"[{num}] [{title}]({url})")
+                else:
+                    bib_items.append(f"[{num}] {title}")
+            result["sections"].append({"type": "list", "items": bib_items})
+
+            # Also attach structured citations for frontend CitationDisplay
+            result["citations"] = all_cites
+
+        return result
+
+    @staticmethod
+    def _replace_inline_refs(text: str, cm, pattern) -> str:
+        """Replace (source reference) with [N] citation markers."""
+        import re
+
+        def _replace(match):
+            source_text = match.group(1).strip()
+            # Try to find existing citation by source name
+            existing = cm.get_citations_by_source(source_text)
+            if existing:
+                num = existing[0].get("number", existing[0].get("citation_number", "?"))
+                return f"[{num}]"
+
+            # Create new citation
+            num, marker = cm.add_citation(
+                source=source_text,
+                date="",
+                content=f"Referenced as: {source_text}",
+            )
+            return marker
+
+        return pattern.sub(_replace, text)
 
     # ------------------------------------------------------------------
     # Helpers

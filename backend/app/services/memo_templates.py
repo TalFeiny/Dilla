@@ -1075,3 +1075,8 @@ INTENT_TO_TEMPLATE: Dict[str, str] = {
     "country-by-country": "tp_cbcr",
     "cbc report": "tp_cbcr",
 }
+
+# --- Contract drafting templates (Phase 4) ---
+from app.services.contract_templates import CONTRACT_TEMPLATES, CONTRACT_INTENT_KEYWORDS
+MEMO_TEMPLATES.update(CONTRACT_TEMPLATES)
+INTENT_TO_TEMPLATE.update(CONTRACT_INTENT_KEYWORDS)

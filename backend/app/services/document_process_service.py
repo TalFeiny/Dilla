@@ -44,6 +44,308 @@ except ImportError:
         "Run: pip install pytesseract pdf2image  (and install Tesseract + Poppler system deps)"
     )
 
+# ---------------------------------------------------------------------------
+# Legal document extraction schemas — clause-level with parent-child hierarchy
+# ---------------------------------------------------------------------------
+
+# Document types that route to legal extraction
+LEGAL_DOC_TYPES = {
+    "contract", "vendor_contract", "services_agreement", "ip_agreement",
+    "term_sheet", "side_letter", "sha", "lpa", "board_consent",
+    "employment_agreement", "employment_contract", "nda", "license_agreement", "lease",
+    "amendment", "sow", "msa",
+    # Commercial contracts (bridge to P&L via contract_pnl_bridge)
+    "client_agreement", "client_contract",
+    "service_agreement", "product_agreement",
+    "software_license",
+    # Intercompany (bridge to TP engine via contract_pnl_bridge)
+    "intercompany_agreement", "management_agreement",
+}
+
+# Base schema — every legal doc gets this
+LEGAL_BASE_SCHEMA = {
+    "document_type": "string (contract | vendor_contract | services_agreement | ip_agreement | term_sheet | side_letter | sha | lpa | board_consent | employment_agreement | nda | license_agreement | lease | amendment | sow | msa)",
+    "parties": "array of objects: [{name: string, role: string (e.g. 'vendor', 'client', 'licensor', 'investor', 'company')}]",
+    "effective_date": "string ISO date or null",
+    "expiration_date": "string ISO date or null",
+    "governing_law": "string or null (jurisdiction)",
+    "parent_document_id": "string or null (ID of parent doc this modifies/implements)",
+    "supersedes": "string or null (ID of doc this replaces)",
+    "modifies_clauses": "array of strings (clause IDs in parent doc that this modifies)",
+    "document_lineage": "array of strings (ancestor document IDs, root first)",
+    "summary": "string (2-3 sentence overview)",
+    "clauses": "array of objects — EXTRACT EVERY MATERIAL CLAUSE as: [{"
+        "id: string (hierarchical e.g. '4', '4.1', '4.1.a'), "
+        "parent_id: string or null (parent clause id, null for top-level), "
+        "children: array of strings (child clause ids), "
+        "title: string (clause heading), "
+        "text: string (verbatim clause text, first 500 chars), "
+        "clause_type: string (e.g. 'liquidation_preference', 'anti_dilution', 'termination', "
+            "'auto_renewal', 'indemnification', 'ip_assignment', 'non_compete', 'confidentiality', "
+            "'payment_terms', 'liability_cap', 'minimum_commitment', 'data_processing', "
+            "'change_of_control', 'most_favored_nation', 'pro_rata', 'board_seat', "
+            "'drag_along', 'tag_along', 'exclusivity', 'warranty', 'sla', 'force_majeure'), "
+        "flags: array of strings (e.g. 'above_market', 'non_standard', 'material', 'favorable', 'unfavorable', 'missing', 'auto_renew_risk'), "
+        "obligations: array of objects [{party: string, description: string, deadline: string or null, recurring: boolean}], "
+        "cross_references: array of objects [{"
+            "to_service: string (cap_table | liquidation_waterfall | anti_dilution | pnl | cash_flow), "
+            "to_entity: string or null (e.g. 'series_a_preferred'), "
+            "field: string (e.g. 'liquidation_pref_multiple'), "
+            "value: any, "
+            "relationship: string (defines | modifies | constrains | overrides)"
+        "}]"
+    "}]",
+    "erp_attribution": {
+        "category": "string or null (revenue | cogs | opex_rd | opex_sm | opex_ga — from ERP taxonomy)",
+        "subcategory": "string or null (e.g. 'hosting', 'tools_licenses', 'finance_legal', 'contractor', 'insurance')",
+        "hierarchy_path": "string or null (e.g. 'cogs/hosting', 'opex_ga/finance_legal')",
+        "annual_value": "number or null (total annual contract value, USD)",
+        "payment_frequency": "string or null (monthly | quarterly | annual | one_time)",
+        "monthly_amount": "number or null (derived or explicit monthly cost)",
+        "committed_periods": "array of strings or null (ISO month periods this hits, e.g. ['2026-01', '2026-02'])",
+        "variable_component": {
+            "estimated_monthly": "number or null",
+            "unit": "string or null (e.g. 'API calls', 'seats', 'hours')",
+            "rate": "number or null (per-unit rate)",
+        },
+    },
+    "red_flags": "array of strings (unfavorable terms, missing protections, unusual provisions)",
+    "key_dates": "array of objects [{event: string, date: string ISO, auto_action: string or null (e.g. 'auto_renew', 'terminate')}]",
+    "value_explanations": "object: { [field_key]: string } — '\"verbatim quote\" → interpretation → impact'. e.g. liquidation_pref: '\"2x non-participating\" → Series A gets 2x before common → reduces common payout by ~$4M at $20M exit'",
+}
+
+# Term sheet extension — investment deal terms
+TERM_SHEET_SCHEMA = {
+    **LEGAL_BASE_SCHEMA,
+    "valuation_pre_money": "number or null (USD)",
+    "valuation_post_money": "number or null (USD)",
+    "investment_amount": "number or null (USD)",
+    "round": "string or null (e.g. 'Series A', 'Seed')",
+    "liquidation_preference": "string or null (e.g. '1x non-participating', '2x participating')",
+    "anti_dilution": "string or null (e.g. 'broad-based weighted average', 'full ratchet')",
+    "board_seats": "number or null",
+    "board_composition": "string or null",
+    "pro_rata_rights": "boolean or null",
+    "protective_provisions": "array of strings",
+    "drag_along_threshold": "string or null (e.g. '75% of preferred')",
+    "option_pool": "number or null (percentage, e.g. 0.10 for 10%)",
+    "vesting_schedule": "string or null",
+    "dividends": "string or null",
+}
+
+# Vendor/services contract extension — ERP-heavy
+VENDOR_CONTRACT_SCHEMA = {
+    **LEGAL_BASE_SCHEMA,
+    "vendor_name": "string or null",
+    "service_description": "string (what is being provided)",
+    "contract_term_months": "number or null",
+    "auto_renewal": "boolean or null",
+    "renewal_notice_days": "number or null (days before expiry to give notice)",
+    "termination_for_convenience": "boolean or null",
+    "termination_notice_days": "number or null",
+    "sla_uptime": "string or null (e.g. '99.9%')",
+    "sla_penalties": "string or null",
+    "data_handling": "string or null (processing, storage, transfer restrictions)",
+    "liability_cap": "string or null (e.g. '12 months of fees')",
+    "insurance_requirements": "string or null",
+}
+
+# IP/Tech agreement extension
+IP_AGREEMENT_SCHEMA = {
+    **LEGAL_BASE_SCHEMA,
+    "ip_type": "string or null (patent | copyright | trade_secret | trademark | software)",
+    "ownership": "string (work_for_hire | licensed | assigned | joint)",
+    "license_type": "string or null (exclusive | non_exclusive | sublicensable)",
+    "license_territory": "string or null",
+    "license_term": "string or null",
+    "royalty_terms": "string or null",
+    "source_code_escrow": "boolean or null",
+    "reverse_engineering_allowed": "boolean or null",
+    "improvements_ownership": "string or null (licensor | licensee | joint)",
+}
+
+# Map doc types to their specific schema
+LEGAL_SCHEMA_MAP = {
+    "term_sheet": TERM_SHEET_SCHEMA,
+    "vendor_contract": VENDOR_CONTRACT_SCHEMA,
+    "services_agreement": VENDOR_CONTRACT_SCHEMA,
+    "msa": VENDOR_CONTRACT_SCHEMA,
+    "sow": VENDOR_CONTRACT_SCHEMA,
+    "lease": VENDOR_CONTRACT_SCHEMA,
+    "ip_agreement": IP_AGREEMENT_SCHEMA,
+    "license_agreement": IP_AGREEMENT_SCHEMA,
+    "nda": LEGAL_BASE_SCHEMA,
+    "employment_agreement": LEGAL_BASE_SCHEMA,
+    "employment_contract": LEGAL_BASE_SCHEMA,
+    "client_agreement": VENDOR_CONTRACT_SCHEMA,
+    "client_contract": VENDOR_CONTRACT_SCHEMA,
+    "service_agreement": VENDOR_CONTRACT_SCHEMA,
+    "product_agreement": VENDOR_CONTRACT_SCHEMA,
+    "software_license": IP_AGREEMENT_SCHEMA,
+    "side_letter": LEGAL_BASE_SCHEMA,
+    "sha": TERM_SHEET_SCHEMA,
+    "lpa": LEGAL_BASE_SCHEMA,
+    "board_consent": LEGAL_BASE_SCHEMA,
+    "amendment": LEGAL_BASE_SCHEMA,
+    "contract": LEGAL_BASE_SCHEMA,
+}
+
+
+def _get_legal_schema(document_type: str) -> dict:
+    """Return the appropriate legal extraction schema for a document type."""
+    return LEGAL_SCHEMA_MAP.get(document_type, LEGAL_BASE_SCHEMA)
+
+
+def _empty_legal_extraction() -> dict:
+    """Return an empty legal extraction result."""
+    return {
+        "document_type": None,
+        "parties": [],
+        "effective_date": None,
+        "expiration_date": None,
+        "governing_law": None,
+        "parent_document_id": None,
+        "supersedes": None,
+        "modifies_clauses": [],
+        "document_lineage": [],
+        "summary": "",
+        "clauses": [],
+        "erp_attribution": {
+            "category": None,
+            "subcategory": None,
+            "hierarchy_path": None,
+            "annual_value": None,
+            "payment_frequency": None,
+            "monthly_amount": None,
+            "committed_periods": None,
+            "variable_component": None,
+        },
+        "red_flags": [],
+        "key_dates": [],
+        "value_explanations": {},
+    }
+
+
+def _normalize_legal_extraction(d: dict) -> dict:
+    """Normalize legal extraction — ensure clause hierarchy is well-formed."""
+    out = dict(d)
+    # Ensure top-level fields exist
+    out.setdefault("document_type", None)
+    out.setdefault("parties", [])
+    out.setdefault("effective_date", None)
+    out.setdefault("expiration_date", None)
+    out.setdefault("governing_law", None)
+    out.setdefault("parent_document_id", None)
+    out.setdefault("supersedes", None)
+    out.setdefault("modifies_clauses", [])
+    out.setdefault("document_lineage", [])
+    out.setdefault("summary", "")
+    out.setdefault("red_flags", [])
+    out.setdefault("key_dates", [])
+    out.setdefault("value_explanations", {})
+
+    # Normalize clauses — ensure parent_id/children consistency
+    clauses = out.get("clauses")
+    if not isinstance(clauses, list):
+        out["clauses"] = []
+    else:
+        clause_ids = {c.get("id") for c in clauses if isinstance(c, dict) and c.get("id")}
+        for clause in clauses:
+            if not isinstance(clause, dict):
+                continue
+            clause.setdefault("id", "")
+            clause.setdefault("parent_id", None)
+            clause.setdefault("children", [])
+            clause.setdefault("title", "")
+            clause.setdefault("text", "")
+            clause.setdefault("clause_type", "other")
+            clause.setdefault("flags", [])
+            clause.setdefault("obligations", [])
+            clause.setdefault("cross_references", [])
+            # Validate parent_id references a real clause
+            if clause["parent_id"] and clause["parent_id"] not in clause_ids:
+                clause["parent_id"] = None
+            # Validate children references
+            clause["children"] = [c for c in clause["children"] if c in clause_ids]
+
+    # Normalize erp_attribution
+    erp = out.get("erp_attribution")
+    if not isinstance(erp, dict):
+        out["erp_attribution"] = _empty_legal_extraction()["erp_attribution"]
+    else:
+        erp.setdefault("category", None)
+        erp.setdefault("subcategory", None)
+        erp.setdefault("hierarchy_path", None)
+        erp.setdefault("annual_value", None)
+        erp.setdefault("payment_frequency", None)
+        erp.setdefault("monthly_amount", None)
+        erp.setdefault("committed_periods", None)
+        erp.setdefault("variable_component", None)
+        # Ensure numeric fields are numeric
+        for nk in ("annual_value", "monthly_amount"):
+            erp[nk] = _ensure_numeric(erp.get(nk))
+        # Auto-derive hierarchy_path
+        if erp.get("category") and erp.get("subcategory") and not erp.get("hierarchy_path"):
+            erp["hierarchy_path"] = f"{erp['category']}/{erp['subcategory']}"
+
+    # Ensure red_flags is list of strings
+    out["red_flags"] = [x for x in (out.get("red_flags") or []) if isinstance(x, str)]
+    # Ensure value_explanations is dict
+    if not isinstance(out.get("value_explanations"), dict):
+        out["value_explanations"] = {}
+
+    return out
+
+
+def _legal_extraction_prompt(text: str, document_type: str, schema_desc: str, **kwargs) -> tuple:
+    """Build system + user prompts for legal document clause extraction."""
+    system_prompt = (
+        "You are a legal analyst AI specializing in contract clause extraction. "
+        "You extract EVERY material clause from legal documents into a structured hierarchy. "
+        "You identify parent-child relationships between clauses (Section 4 → 4.1 → 4.1(a)). "
+        "You flag non-standard, above-market, or unfavorable terms. "
+        "You identify cross-references to financial services (cap table, P&L, cash flow). "
+        "You map ALL commercial contracts to ERP categories (revenue AND cost). "
+        "Return ONLY valid JSON matching the schema. No markdown. No explanation."
+    )
+    user_prompt = (
+        f"Extract all clauses and structured data from this {document_type} document.\n\n"
+        f"Target JSON schema:\n{schema_desc}\n\n"
+        "IMPORTANT:\n"
+        "- Extract EVERY material clause with hierarchical IDs (e.g. '1', '1.1', '1.1.a')\n"
+        "- Set parent_id for child clauses (e.g. '1.1' has parent_id '1')\n"
+        "- Set children arrays (e.g. '1' has children ['1.1', '1.2'])\n"
+        "- Flag non-standard terms: above_market, unfavorable, auto_renew_risk, missing\n"
+        "- For ALL commercial contracts, ALWAYS populate erp_attribution with category + subcategory:\n"
+        "  * Client/customer/revenue contracts → category: 'revenue', subcategory: e.g. 'saas_recurring', 'consulting', 'licensing', 'product_sales', 'subscriptions'\n"
+        "  * Vendor contracts, MSAs, SOWs → category: 'cogs' or 'opex_rd'/'opex_sm'/'opex_ga', subcategory from service type\n"
+        "  * Leases (office, facility) → category: 'opex_ga' (office/admin) or 'cogs' (production facility), subcategory: 'rent', 'equipment_lease'\n"
+        "  * IP/software licenses → category: 'cogs' (core product dependency), 'opex_rd' (dev tools), or 'opex_ga' (business tools), subcategory from software/IP type\n"
+        "  * Employment/compensation contracts → category: 'opex_rd' (engineering/product), 'opex_sm' (sales/marketing), 'opex_ga' (admin/finance/legal/HR), subcategory: 'salaries', 'compensation', 'benefits'\n"
+        "  * Service agreements → category based on department served, subcategory from service description\n"
+        "  * Physical product/supply agreements → category: 'cogs', subcategory: 'materials', 'supplies', 'inventory'\n"
+        "- For investment docs: identify cross-references to cap_table, liquidation_waterfall, anti_dilution\n"
+        "- Include obligations with party, description, deadline, recurring\n"
+        "- Extract verbatim clause text (first 500 chars)\n"
+    )
+    # Inject ERP context hint if provided (from P&L row context)
+    erp_category_hint = kwargs.get("erp_category_hint")
+    erp_subcategory_hint = kwargs.get("erp_subcategory_hint")
+    if erp_category_hint:
+        user_prompt += (
+            f"\nHINT: This document was uploaded to the '{erp_category_hint}' section of the P&L."
+        )
+        if erp_subcategory_hint:
+            user_prompt += f" Target subcategory: '{erp_subcategory_hint}'."
+        user_prompt += " Use this as guidance for erp_attribution.category and subcategory.\n"
+
+    user_prompt += (
+        f"\nDocument text:\n---\n{text[:120000]}\n---\n\n"
+        "Return only the JSON object, no markdown or explanation."
+    )
+    return system_prompt, user_prompt
+
+
 # Document extraction JSON schema (fields we ask the model to return) – used for other doc types
 # Note: memos, updates, board decks, board transcripts use signal/memo schemas below
 # Flat schema for pitch_deck, other — market_size only in investment_memo
@@ -667,10 +969,16 @@ async def _extract_document_structured_async(
     text: str,
     document_type: str,
     memo_context: Optional[str] = None,
+    erp_category_hint: Optional[str] = None,
+    erp_subcategory_hint: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Call model_router with a prompt and JSON schema to extract structured data from document text.
-    Branches by document_type: monthly_update/board_deck use signal schema; investment_memo uses memo schema; else flat.
+    Branches by document_type:
+    - legal doc types → legal clause extraction schema
+    - monthly_update/board_deck → signal schema
+    - investment_memo → memo schema
+    - else → flat
     Returns a dict suitable for extracted_data (normalized so financial_metrics and period_date exist where applicable).
     """
     from app.services.model_router import ModelRouter, ModelCapability
@@ -683,7 +991,17 @@ async def _extract_document_structured_async(
     router = ModelRouter()
     doc_type = (document_type or "other").strip().lower()
 
-    if doc_type == "investment_memo":
+    if doc_type in LEGAL_DOC_TYPES:
+        # Legal document — clause extraction with parent-child hierarchy
+        legal_schema = _get_legal_schema(doc_type)
+        schema_desc = json.dumps(legal_schema, indent=2)
+        system_prompt, user_prompt = _legal_extraction_prompt(
+            text, doc_type, schema_desc,
+            erp_category_hint=erp_category_hint,
+            erp_subcategory_hint=erp_subcategory_hint,
+        )
+        empty = _empty_legal_extraction()
+    elif doc_type == "investment_memo":
         schema_desc = json.dumps(INVESTMENT_MEMO_SCHEMA, indent=2)
         system_prompt, user_prompt = _memo_prompt(text, schema_desc)
         empty = _empty_memo_extraction()
@@ -700,12 +1018,15 @@ async def _extract_document_structured_async(
         system_prompt, user_prompt = _signal_first_prompt(text, document_type, schema_desc, memo_context)
         empty = _empty_signal_extraction()
 
+    # Legal docs get more tokens — clause extraction is verbose
+    max_tok = 8192 if doc_type in LEGAL_DOC_TYPES else 4096
+
     try:
         result = await router.get_completion(
             prompt=user_prompt,
             system_prompt=system_prompt,
             capability=ModelCapability.STRUCTURED,
-            max_tokens=4096,
+            max_tokens=max_tok,
             temperature=0.2,
             json_mode=True,
             caller_context="document_process_service.extract_structured",
@@ -716,11 +1037,16 @@ async def _extract_document_structured_async(
 
         parsed = _extract_json_object(raw)
         if isinstance(parsed, dict):
+            # Legal docs return their own shape — skip financial normalization
+            if doc_type in LEGAL_DOC_TYPES:
+                return _normalize_legal_extraction(parsed)
             return _normalize_extraction(parsed, document_type=document_type)
         return empty
     except Exception as e:
         logger.exception("extract_document_structured failed: %s", e)
-        if doc_type == "investment_memo":
+        if doc_type in LEGAL_DOC_TYPES:
+            out = _empty_legal_extraction()
+        elif doc_type == "investment_memo":
             out = _empty_memo_extraction()
         else:
             out = _empty_signal_extraction()
@@ -1120,6 +1446,8 @@ def run_document_process(
     document_repo: DocumentMetadataRepo,
     company_id: Optional[str] = None,
     fund_id: Optional[str] = None,
+    erp_category_hint: Optional[str] = None,
+    erp_subcategory_hint: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Download document from storage, extract text, run structured extraction in-process,
@@ -1248,7 +1576,9 @@ def run_document_process(
         # asyncio.run() is cheaper, avoids resource leaks, and handles cleanup properly.
         extracted_data = asyncio.run(
             _extract_document_structured_async(
-                raw_text, document_type or "other", memo_context=memo_context
+                raw_text, document_type or "other", memo_context=memo_context,
+                erp_category_hint=erp_category_hint,
+                erp_subcategory_hint=erp_subcategory_hint,
             )
         )
 
@@ -1319,6 +1649,64 @@ def run_document_process(
             except Exception as e:
                 logger.warning("Failed to emit document suggestions for %s: %s", document_id, e, exc_info=True)
 
+        # Legal docs: emit clause-level suggestions to the legal grid
+        if company_id and fund_id and extracted_data and (document_type or "").strip().lower() in LEGAL_DOC_TYPES:
+            try:
+                from app.services.micro_skills.suggestion_emitter import emit_legal_suggestions
+                n = emit_legal_suggestions(
+                    extracted_data=extracted_data,
+                    company_id=company_id,
+                    fund_id=fund_id,
+                    document_id=document_id,
+                    document_name=Path(storage_path).stem,
+                )
+                if n:
+                    logger.info("Emitted %d legal clause suggestions from document %s", n, document_id)
+            except Exception as e:
+                logger.warning("Failed to emit legal suggestions for %s: %s", document_id, e, exc_info=True)
+
+        # Commercial contracts: bridge ERP attribution → fpa_actuals (P&L line items)
+        doc_type_lower_bridge = (document_type or "").strip().lower()
+        if company_id and extracted_data and extracted_data.get("erp_attribution"):
+            from app.services.contract_pnl_bridge import COMMERCIAL_DOC_TYPES, INTERCOMPANY_DOC_TYPES
+            if doc_type_lower_bridge in COMMERCIAL_DOC_TYPES or doc_type_lower_bridge in LEGAL_DOC_TYPES:
+                try:
+                    from app.services.contract_pnl_bridge import bridge_contract_to_pnl
+                    pnl_result = bridge_contract_to_pnl(
+                        extracted_data=extracted_data,
+                        company_id=company_id,
+                        fund_id=fund_id,
+                        document_id=document_id,
+                        document_type=doc_type_lower_bridge,
+                        document_name=Path(storage_path).stem,
+                    )
+                    if pnl_result.get("success"):
+                        logger.info(
+                            "[DOC_PNL_BRIDGE] Wrote %d P&L rows for doc %s (%s)",
+                            pnl_result["rows_written"], document_id,
+                            pnl_result.get("details", {}).get("hierarchy_path", ""),
+                        )
+                except Exception as e:
+                    logger.warning("[DOC_PNL_BRIDGE] Failed for %s: %s", document_id, e, exc_info=True)
+
+            # Intercompany agreements → TP engine suggestions
+            if doc_type_lower_bridge in INTERCOMPANY_DOC_TYPES:
+                try:
+                    from app.services.contract_pnl_bridge import bridge_contract_to_tp
+                    tp_result = bridge_contract_to_tp(
+                        extracted_data=extracted_data,
+                        company_id=company_id,
+                        document_id=document_id,
+                        document_name=Path(storage_path).stem,
+                    )
+                    if tp_result.get("success"):
+                        logger.info(
+                            "[DOC_TP_BRIDGE] Created IC suggestion for doc %s (%s)",
+                            document_id, tp_result.get("transaction_type"),
+                        )
+                except Exception as e:
+                    logger.warning("[DOC_TP_BRIDGE] Failed for %s: %s", document_id, e, exc_info=True)
+
         # Persist time-series actuals if present
         if company_id and extracted_data and extracted_data.get("time_series"):
             try:
@@ -1340,7 +1728,40 @@ def run_document_process(
                 document_id, company_id, fund_id,
             )
 
-        # Auto-trigger cap table calculation when funding data is extracted
+        # Path A: Document-derived cap table (SHA, term_sheet, side_letter with cap table xrefs)
+        cap_table_doc_types = {"sha", "term_sheet", "side_letter", "option_agreement", "spa", "convertible_note", "safe"}
+        doc_type_lower = (document_type or "").strip().lower()
+        if company_id and fund_id and extracted_data and doc_type_lower in cap_table_doc_types:
+            has_cap_table_xrefs = any(
+                xr.get("to_service") == "cap_table"
+                for clause in (extracted_data.get("clauses") or [])
+                if isinstance(clause, dict)
+                for xr in (clause.get("cross_references") or [])
+                if isinstance(xr, dict)
+            )
+            if has_cap_table_xrefs:
+                try:
+                    from app.services.legal_cap_table_bridge import LegalCapTableBridge
+                    bridge = LegalCapTableBridge()
+                    bridge_result = bridge.build_from_documents(company_id, fund_id, document_id)
+                    if bridge_result.get("success"):
+                        logger.info("[DOC_CAP_TABLE] Built document-derived cap table for company %s from document %s", company_id, document_id)
+                        # Emit shareholder-level suggestions for the cap table grid
+                        try:
+                            from app.services.micro_skills.suggestion_emitter import emit_cap_table_suggestions
+                            emit_cap_table_suggestions(
+                                cap_table_result=bridge_result,
+                                company_id=company_id,
+                                fund_id=fund_id,
+                                document_id=document_id,
+                                document_name=Path(storage_path).stem,
+                            )
+                        except Exception as e_emit:
+                            logger.warning("[DOC_CAP_TABLE] Cap table suggestion emission failed: %s", e_emit)
+                except Exception as e:
+                    logger.warning("[DOC_CAP_TABLE] Document-derived cap table failed for %s: %s", document_id, e, exc_info=True)
+
+        # Path B: Synthetic cap table from funding signals (fallback)
         if company_id and fund_id and extracted_data:
             has_funding_signal = (
                 extracted_data.get("stage")

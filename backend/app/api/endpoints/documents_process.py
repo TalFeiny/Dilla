@@ -44,6 +44,8 @@ class DocumentProcessRequest(BaseModel):
     document_type: Optional[str] = Field("other", description="Document type for extraction")
     company_id: Optional[str] = Field(None, description="Optional company to link after processing")
     fund_id: Optional[str] = Field(None, description="Optional fund to link after processing")
+    erp_category_hint: Optional[str] = Field(None, description="ERP category hint from P&L context")
+    erp_subcategory_hint: Optional[str] = Field(None, description="ERP subcategory hint from P&L context")
 
 
 class DocumentProcessResponse(BaseModel):
@@ -109,6 +111,8 @@ async def process_document(body: DocumentProcessRequest):
             document_repo=document_repo,
             company_id=body.company_id,
             fund_id=body.fund_id,
+            erp_category_hint=body.erp_category_hint,
+            erp_subcategory_hint=body.erp_subcategory_hint,
         )
         return DocumentProcessResponse(
             success=out.get("success", False),
@@ -133,6 +137,8 @@ class DocumentBatchDocItem(BaseModel):
     document_type: Optional[str] = Field("other", description="Document type for extraction")
     company_id: Optional[str] = Field(None, description="Optional company to link after processing")
     fund_id: Optional[str] = Field(None, description="Optional fund to link after processing")
+    erp_category_hint: Optional[str] = Field(None, description="ERP category hint from P&L context (revenue, cogs, opex_rd, etc.)")
+    erp_subcategory_hint: Optional[str] = Field(None, description="ERP subcategory hint from P&L context")
 
 
 class DocumentBatchProcessRequest(BaseModel):
@@ -178,6 +184,8 @@ async def process_batch(body: DocumentBatchProcessRequest):
                         document_repo=document_repo,
                         company_id=doc.company_id,
                         fund_id=doc.fund_id,
+                        erp_category_hint=doc.erp_category_hint,
+                        erp_subcategory_hint=doc.erp_subcategory_hint,
                     ),
                     timeout=DOCUMENT_PROCESS_TIMEOUT,
                 )
@@ -236,6 +244,8 @@ async def process_batch_stream(body: DocumentBatchProcessRequest):
                             document_repo=document_repo,
                             company_id=doc.company_id,
                             fund_id=doc.fund_id,
+                            erp_category_hint=doc.erp_category_hint,
+                            erp_subcategory_hint=doc.erp_subcategory_hint,
                         ),
                         timeout=DOCUMENT_PROCESS_TIMEOUT,
                     )
