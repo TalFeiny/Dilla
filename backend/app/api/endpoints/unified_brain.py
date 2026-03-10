@@ -425,6 +425,18 @@ async def process_unified_stream(request: UnifiedRequest, raw_request: Request):
                 event_type = event.get("type", "unknown")
                 if event_type == "progress":
                     yield _json.dumps({"type": "progress", "stage": event.get("stage"), "message": event.get("message"), "plan_steps": event.get("plan_steps")}) + "\n"
+                elif event_type == "token":
+                    # Conversational path: LLM text token
+                    yield _json.dumps({"type": "token", "content": event.get("content", "")}) + "\n"
+                elif event_type == "tool_call":
+                    # Conversational path: model is calling a tool
+                    yield _json.dumps({"type": "tool_call", "tool": event.get("tool"), "inputs": clean_for_json(event.get("inputs", {})), "tool_call_id": event.get("tool_call_id")}) + "\n"
+                elif event_type == "tool_result":
+                    # Conversational path: tool execution result
+                    result_data = event.get("result", {})
+                    if result_data:
+                        result_data = clean_for_json(result_data)
+                    yield _json.dumps({"type": "tool_result", "tool": event.get("tool"), "tool_call_id": event.get("tool_call_id"), "result": result_data}) + "\n"
                 elif event_type == "memo_section":
                     yield _json.dumps({"type": "memo_section", "section": clean_for_json(event.get("section", {}))}) + "\n"
                 elif event_type == "chart_data":
@@ -434,7 +446,7 @@ async def process_unified_stream(request: UnifiedRequest, raw_request: Request):
                     result = event.get("result", {})
                     if result:
                         result = convert_numpy_to_native(result)
-                    cleaned = clean_for_json({"type": "complete", "success": True, "result": result})
+                    cleaned = clean_for_json({"type": "complete", "success": True, "result": result, "metadata": clean_for_json(event.get("metadata", {}))})
                     yield _json.dumps(cleaned) + "\n"
                 elif event_type == "error":
                     yield _json.dumps({"type": "error", "error": event.get("error")}) + "\n"

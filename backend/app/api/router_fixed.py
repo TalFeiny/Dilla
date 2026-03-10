@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from app.api.endpoints.unified_brain import router as unified_brain_router
 from app.api.endpoints.cfo_brain import router as cfo_brain_router
 from app.api.endpoints.legal_brain import router as legal_brain_router
+from app.api.endpoints.redline import router as redline_router
 from app.api.endpoints.deck_export import router as deck_export_router
 from app.api.endpoints.cell_actions import router as cell_actions_router
 from app.api.endpoints.matrix_charts import router as matrix_charts_router
@@ -57,6 +58,7 @@ api_router = APIRouter()
 api_router.include_router(unified_brain_router, tags=["unified"])
 api_router.include_router(cfo_brain_router, tags=["cfo"])
 api_router.include_router(legal_brain_router, tags=["legal"])
+api_router.include_router(redline_router, tags=["legal"])
 api_router.include_router(deck_export_router, tags=["export"])
 api_router.include_router(cell_actions_router, tags=["cell-actions"])
 api_router.include_router(matrix_charts_router, tags=["matrix-charts"])

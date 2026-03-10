@@ -507,7 +507,7 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
               </div>
             )}
 
-            {/* Redline — track changes */}
+            {/* Redline — interactive track changes */}
             {section.type === 'redline' && section.redline && (
               <div className="my-2 space-y-2 border rounded-md p-3 bg-muted/10">
                 <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-2">
@@ -518,13 +518,91 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
                   <div className="text-red-600 dark:text-red-400 line-through text-sm leading-relaxed bg-red-50 dark:bg-red-950/20 rounded px-2 py-1.5">
                     {section.redline.original}
                   </div>
-                  <div className="text-emerald-600 dark:text-emerald-400 text-sm leading-relaxed bg-emerald-50 dark:bg-emerald-950/20 rounded px-2 py-1.5">
-                    {section.redline.revised}
-                  </div>
+                  {readOnly ? (
+                    <div className="text-emerald-600 dark:text-emerald-400 text-sm leading-relaxed bg-emerald-50 dark:bg-emerald-950/20 rounded px-2 py-1.5">
+                      {section.redline.revised}
+                    </div>
+                  ) : (
+                    <textarea
+                      className="w-full text-emerald-600 dark:text-emerald-400 text-sm leading-relaxed bg-emerald-50 dark:bg-emerald-950/20 rounded px-2 py-1.5 border border-emerald-200 dark:border-emerald-800 focus:ring-1 focus:ring-emerald-500 resize-none"
+                      defaultValue={section.redline.revised}
+                      rows={Math.max(2, (section.redline.revised?.split('\n').length || 1))}
+                      onChange={(e) => {
+                        // Debounced redline impact calculation
+                        const newVal = e.target.value;
+                        if ((window as any).__redlineTimer) clearTimeout((window as any).__redlineTimer);
+                        (window as any).__redlineTimer = setTimeout(async () => {
+                          try {
+                            const res = await fetch('/api/legal/redline-impact', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                company_id: (section as any).company_id || '',
+                                clause_type: section.redline?.clause_type || '',
+                                original_value: section.redline?.original,
+                                new_value: newVal,
+                                stage: (section as any).stage,
+                              }),
+                            });
+                            if (res.ok) {
+                              const impact = await res.json();
+                              const impactEl = document.getElementById(`redline-impact-${idx}`);
+                              if (impactEl && impact.impact?.summary) {
+                                impactEl.textContent = impact.impact.summary;
+                                impactEl.classList.remove('hidden');
+                              }
+                              const benchEl = document.getElementById(`redline-bench-${idx}`);
+                              if (benchEl && impact.benchmark?.comparison) {
+                                benchEl.textContent = impact.benchmark.comparison;
+                                benchEl.classList.remove('hidden');
+                              }
+                            }
+                          } catch { /* ignore fetch errors */ }
+                        }, 500);
+                      }}
+                    />
+                  )}
                 </div>
+                {/* Live impact display */}
+                <div id={`redline-impact-${idx}`} className="hidden text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20 rounded px-2 py-1 font-medium" />
+                {/* Benchmark comparison */}
+                <div id={`redline-bench-${idx}`} className="hidden text-[11px] text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/20 rounded px-2 py-1" />
                 {section.redline.reasoning && (
                   <div className="text-[11px] text-muted-foreground italic border-t pt-1.5 mt-1.5">
                     {section.redline.reasoning}
+                  </div>
+                )}
+                {/* Accept / Reject buttons */}
+                {!readOnly && (
+                  <div className="flex gap-2 pt-1 border-t mt-1.5">
+                    <button
+                      className="text-[11px] px-2.5 py-1 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-800/60 transition-colors font-medium"
+                      onClick={async () => {
+                        try {
+                          await fetch('/api/legal/redline-accept', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              company_id: (section as any).company_id || '',
+                              document_id: (section as any).document_id || '',
+                              clause_id: (section as any).clause_id || '',
+                              clause_type: section.redline?.clause_type || '',
+                              new_value: section.redline?.revised,
+                            }),
+                          });
+                          // Visual feedback
+                          removeSection(idx);
+                        } catch { /* ignore */ }
+                      }}
+                    >
+                      Accept
+                    </button>
+                    <button
+                      className="text-[11px] px-2.5 py-1 rounded bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-800/60 transition-colors font-medium"
+                      onClick={() => removeSection(idx)}
+                    >
+                      Reject
+                    </button>
                   </div>
                 )}
               </div>

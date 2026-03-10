@@ -338,12 +338,13 @@ except Exception as exc:  # pragma: no cover - defensive import guard
 
 MODEL_ROUTER_IMPORT_ERROR: Optional[Exception] = None
 try:
-    from app.services.model_router import ModelRouter, ModelCapability, get_model_router
+    from app.services.model_router import ModelRouter, ModelCapability, get_model_router, ToolAdapter
 except Exception as import_error:
     MODEL_ROUTER_IMPORT_ERROR = import_error
     ModelRouter = None  # type: ignore[assignment]
     get_model_router = None  # type: ignore[assignment]
-    
+    ToolAdapter = None  # type: ignore[assignment]
+
     class ModelCapability(Enum):
         """Fallback enum so module load succeeds when ModelRouter import fails"""
         ANALYSIS = "analysis"
@@ -2050,6 +2051,50 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="expensive",
         timeout_ms=60_000,
     ),
+    # ------------------------------------------------------------------
+    # Contract ↔ P&L attribution & scenario tools
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="contract_pnl_attribution",
+        description="Show which contracts drive each P&L line — revenue and cost side. 'What's the P&L impact of contract X?'",
+        handler="_tool_contract_pnl_attribution",
+        input_schema={
+            "company_id": "str",
+            "fund_id": "str?",
+            "category": "str?",
+            "period_start": "str?",
+            "period_end": "str?",
+        },
+        cost_tier="free",
+    ),
+    AgentTool(
+        name="contract_lifecycle_query",
+        description="Query contracts by lifecycle: expiration, renewal, break clauses. Revenue and cost contracts. 'What contracts expire in Q2?'",
+        handler="_tool_contract_lifecycle",
+        input_schema={
+            "company_id": "str",
+            "fund_id": "str?",
+            "expiring_before": "str?",
+            "expiring_after": "str?",
+            "auto_renewal_only": "bool?",
+            "side": "str? (revenue|cost)",
+            "clause_type": "str?",
+        },
+        cost_tier="free",
+    ),
+    AgentTool(
+        name="model_contract_changes",
+        description="Model P&L impact of contract changes: cancel, renegotiate price, terminate early. Works for any contract type — sales, vendor, employment, commission, lease, SaaS.",
+        handler="_tool_model_contract_changes",
+        input_schema={
+            "company_id": "str",
+            "changes": "list[{document_id: str, action: str (exclude|modify_price|terminate_early), factor: float?, effective: str?}]",
+            "scenario_name": "str?",
+            "branch_id": "str?",
+        },
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
 ]
 
 # Quick lookup by name (includes ALL tools — agent-visible + internal)
@@ -3382,10 +3427,19 @@ class UnifiedMCPOrchestrator:
         
         # Shared data store for skill communication
         self.shared_data = {}
-        
+
         # Synchronization locks for thread-safe data updates
         self.shared_data_lock = asyncio.Lock()
         self.citation_lock = asyncio.Lock()
+
+        # ── Conversational agent state ─────────────────────────────────
+        # Conversation history persists across turns within a session.
+        # Each entry: {"role": "user"|"assistant", "content": str|list}
+        self._conversation_history: List[Dict[str, Any]] = []
+        # Max conversation turns to keep (sliding window)
+        self._max_history_turns = 20
+        # Feature flag: set True to use the new conversational path
+        self._use_conversational_path = True
 
         self._is_ready = True
         _update_readiness_state(True, None)
@@ -3443,62 +3497,361 @@ class UnifiedMCPOrchestrator:
             fund_line += f", Year {fund_year}"
 
         return (
-            f"You are an investment analyst agent for a {fund_line} "
-            f"(${check_min / 1e6:.0f}–${check_max / 1e6:.0f}M checks, target {target_ownership}% entry ownership, 1/3 reserves for follow-on). "
-            "Reason from evidence to decision — never from question to summary.\n\n"
-            "RULES:\n"
-            "- DATA FIRST: if revenue, ARR, or valuation is missing, fetch it before writing. Never write with gaps.\n"
-            "- Lead with the number or fact that changes the decision. No preamble.\n"
-            "- Mark inferred data: 'ARR ~$8M (inferred from headcount + stage, 70% confidence)'.\n"
-            "- NEVER say 'no data available' — present estimates with ranges and confidence.\n"
-            "- Every financial comparison gets a chart. Every multi-company comparison gets a table.\n"
+            f"You are a senior investment analyst for a {fund_line} "
+            f"(${check_min / 1e6:.0f}–${check_max / 1e6:.0f}M checks, target {target_ownership}% entry ownership, 1/3 reserves for follow-on).\n\n"
+
+            "## HOW YOU TALK\n"
+            "You're direct, sharp, and genuinely helpful. Not formal. Not corporate. Not a report generator.\n"
+            "- Lead with the number or fact that changes the decision. No preamble, no throat-clearing.\n"
+            "- Match depth to the question. 'What's our burn?' gets one sentence. 'Model 3 exit scenarios' gets the full treatment.\n"
+            "- If a request is ambiguous or could go multiple ways, ask ONE clarifying question before executing. Don't guess and dump.\n"
+            "- Share findings as you go. After each tool call, give the headline. Don't go silent then deliver a wall of text.\n"
+            "- If you discover something unexpected mid-analysis, flag it: 'COGS jumped 35% in Q4 — want me to dig into that or keep going?'\n"
+            "- When the user steers you ('dig into costs', 'now forecast that'), follow their lead. Don't restart from scratch.\n"
             "- Cite sources inline: 'ARR $8M ([TechCrunch Jan 2025](url))'. Not as a footer list.\n\n"
-            "TOOLS:\n"
+
+            "## HOW YOU GUIDE\n"
+            "Users often don't know what to ask. Help them discover what matters.\n"
+            "- If the user seems unsure, suggest 2-3 specific actions based on what you know about their data.\n"
+            "- After delivering results, suggest the natural next question: 'Now that you see the P&L, want me to check which contracts are driving that COGS spike?'\n"
+            "- Be proactive about signals: if runway is critical, a covenant is near breach, or unit economics are broken — say so without being asked.\n"
+            "- When you have nothing useful to add, say so briefly. Don't pad.\n\n"
+
+            "## DEPTH MATCHING\n"
+            "- QUICK (sentence answer): status checks, single metrics, confirmations. 0-1 tool calls. <2s.\n"
+            "- TASK (do the thing): fetch data, run analysis, update grid. Brief plan, execute, share as you go. 10-30s.\n"
+            "- DEEP (full analysis): multi-step investigation, formal deliverables. Outline approach first, then step by step.\n"
+            "Match the response to the ask. A quick question that gets a 16-slide deck is a failure.\n\n"
+
+            "## TOOLS\n"
+            "You have tools organized by what they do. Use what's needed — cross categories when the analysis warrants it.\n"
             "- Data: company-data-fetcher, market-sourcer, competitive-intelligence, search-extract-combo, sparse-grid-enricher\n"
             "- Valuation: valuation-engine (DCF/comps/cost/milestone), pwerm-calculator, waterfall-calculator, cap-table-generator, exit-modeler, round-modeler, followon-strategy, debt-converter\n"
             "- Analysis: scenario-generator, financial-analyzer, deal-comparer, team-comparison, monte-carlo-simulator, sensitivity-analyzer, time-series-forecaster, revenue-projector\n"
             "- Portfolio: portfolio-analyzer, fund-metrics-calculator, bulk-valuation, fund-analyzer, followon-deep-dive\n"
-            "- Grid: bulk_write_grid — batch write cells to the P&L grid (forecasts, actuals, metrics). nl-matrix-controller — show/hide columns, filter, sort\n"
+            "- Grid: bulk_write_grid (batch write cells), nl-matrix-controller (show/hide columns, filter, sort)\n"
             "- Memos (memo-writer, memo_type=...): ic_memo, followon, followon_deep_dive, lp_report, lp_quarterly_enhanced, gp_strategy, "
             "comparison, competitive_landscape, diligence_memo, market_dynamics, team_comparison, ownership_analysis, "
             "portfolio_construction, pipeline_review, fund_analysis, bespoke_lp, comparable_analysis, company_list, citation_report\n"
-            "- Charts (chart-generator): probability_cloud (return distribution p10–p90), waterfall (exit proceeds/NAV), "
-            "bar_comparison, scatter_multiples (multiple vs growth), cap_table_sankey, revenue_forecast, "
-            "dpi_sankey, bull_bear_base, radar_comparison (team scoring)\n"
+            "- Charts (chart-generator): probability_cloud, waterfall, bar_comparison, scatter_multiples, cap_table_sankey, revenue_forecast, "
+            "dpi_sankey, bull_bear_base, radar_comparison\n"
             "- Deck: deck-storytelling (16–18 slide investment presentation)\n\n"
-            "MEMO RULE: For formal deliverables (IC memo, LP report, comparison) — fetch data → run valuations → generate cap table THEN call memo-writer. "
-            "Use write_to_memo only for exploratory inline analysis.\n"
-            "CHART RULE: Charts are analytical tools. State what the chart reveals before rendering it.\n"
-            "FORMAT INTELLIGENCE:\n"
-            "- Financial comparisons → always include a chart (bar_comparison, scatter_multiples, or waterfall). Not optional.\n"
-            "- Time series data (revenue, burn, runway over months) → line or area chart.\n"
-            "- Multi-company analysis → chart + table. Chart for the pattern, table for the details.\n"
-            "- Scenario outputs → bull_bear_base or probability_cloud chart.\n"
-            "- Show your work as you go. Share key findings between tool calls, not just at the end.\n"
-            "- If the analysis reveals something unexpected, call it out before continuing.\n"
-            "SOURCING RULE: When asked to find, source, or build a list of companies/acquirers/leads/investors/LPs:\n"
-            "  1. Call generate_rubric(thesis=<user's request>) — returns weights, filters, intent, entity_type, search_context, extraction_hint.\n"
-            "  2. Call source_companies(filters=rubric.filters, custom_weights=rubric.weights, "
-            "discover_web=true, thesis=<user's request>, min_web_threshold=5, persist_results=true).\n"
-            "  3. The rubric auto-classifies intent (dealflow/acquirer/gtm_leads/lp_investor/service_provider/talent) "
-            "and adapts search queries, entity extraction, and scoring accordingly.\n"
-            "  4. For sourcing, prefer source_companies with discover_web=true over build_company_list.\n\n"
-            "DATA ACCURACY RULES — non-negotiable:\n"
-            "1. COUNT before you claim. If you state '72% of companies lack X', you must have counted every row. Get the exact number right.\n"
-            "2. NEVER dismiss available data. If 7 of 32 companies have sector data, analyze those 7 sectors — don't say 'most companies lack sector data' and move on.\n"
-            "3. Work with what you have, not what you wish you had. Sparse data means you analyze HARDER, not less. "
-            "A portfolio with 7 classified and 25 unclassified companies has a REAL sector distribution for those 7 — report it.\n"
-            "4. Distinguish data gaps from data absence. 'No sector reported' for a company is a gap to flag. "
-            "But if the data DOES contain sectors, stages, or financials for some companies, those are FACTS — use them.\n"
-            "5. No blanket disclaimers. NEVER write 'insufficient data to assess' when the data contains relevant fields. "
-            "State exactly what the data shows and exactly what's missing.\n"
-            "6. Every quantitative claim must be traceable to the data provided. If you say '31 of 32 companies are valued at $80M', verify it by checking the table.\n"
-            "7. When data is missing, INFER AND EXPLAIN. Use stage benchmarks, comparable companies, industry medians, and first-principles reasoning. "
-            "Say what you'd estimate and why — 'Based on Series A SaaS benchmarks, likely $3-8M ARR' is infinitely more useful than 'data not available'.\n"
-            "8. Your job is to MAXIMIZE INSIGHT from every scrap of data. An analyst who says 'not enough data' gets fired. "
-            "An analyst who says 'here's what the 7 data points tell us, here's what I'd estimate for the other 25, and here's my confidence level' gets promoted.\n\n"
+
+            "## FORMAT RULES\n"
+            "- Financial comparisons → always include a chart. Not optional.\n"
+            "- Time series → line or area chart.\n"
+            "- Multi-company → chart + table. Chart for the pattern, table for the details.\n"
+            "- Formal deliverables (IC memo, LP report) → fetch data → run valuations → generate cap table THEN call memo-writer.\n"
+            "- Charts are analytical tools. State what the chart reveals before rendering it.\n"
+            "- For sourcing: call generate_rubric first, then source_companies with discover_web=true.\n\n"
+
+            "## DATA ACCURACY — non-negotiable\n"
+            "1. COUNT before you claim. Get exact numbers right.\n"
+            "2. NEVER dismiss available data. 7 of 32 companies have sector data? Analyze those 7.\n"
+            "3. Work with what you have. Sparse data = analyze HARDER, not less.\n"
+            "4. No blanket disclaimers. Never write 'insufficient data' when data exists.\n"
+            "5. When data is missing, INFER AND EXPLAIN with stage benchmarks, comps, and confidence levels.\n"
+            "6. Mark inferred data: 'ARR ~$8M (inferred from headcount + stage, 70% confidence)'.\n"
+            "7. Every quantitative claim must be traceable. Verify before stating.\n"
+            "8. Maximize insight from every scrap of data.\n\n"
             f"{task_instruction}"
         )
+
+    # ── Conversational agent methods ─────────────────────────────────
+    # These power the new conversational path (Phase 1 of AGENT_CONVERSATIONAL_FIX).
+    # The model gets system prompt + fingerprint + tools + history, and
+    # decides on its own whether to talk or call tools.
+
+    def _build_tool_definitions(self) -> List[Dict[str, Any]]:
+        """Convert AGENT_VISIBLE_TOOLS to canonical tool-use definitions.
+
+        Canonical format (Anthropic style):
+        {"name": str, "description": str, "input_schema": {JSON Schema}}
+
+        ToolAdapter converts from here to OpenAI/Google/etc as needed.
+        """
+        if not ToolAdapter:
+            return []
+
+        defs = []
+        for tool in AGENT_VISIBLE_TOOLS:
+            schema = ToolAdapter.informal_to_json_schema(tool.input_schema or {})
+            defs.append({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": schema,
+            })
+        return defs
+
+    def _build_conversational_prompt(self, context: Optional[Dict[str, Any]] = None) -> str:
+        """Build a unified conversational system prompt.
+
+        Combines persona, behavioral rules, dynamic fund context,
+        SessionState fingerprint, and domain module based on grid mode.
+        """
+        fund_ctx = self.shared_data.get("fund_context", {})
+        fund_size = fund_ctx.get("fund_size", fund_ctx.get("fundSize", DEFAULT_FUND_SIZE))
+        strategy = fund_ctx.get("strategy", DEFAULT_FUND_STRATEGY)
+        remaining = fund_ctx.get("remaining_capital", fund_ctx.get("remainingCapital"))
+        fund_year = fund_ctx.get("fund_year", fund_ctx.get("fundYear", DEFAULT_FUND_YEAR))
+        check_min = fund_ctx.get("check_size_min", 5_000_000)
+        check_max = fund_ctx.get("check_size_max", 20_000_000)
+        target_ownership = fund_ctx.get("target_ownership_pct", 10)
+
+        size_str = f"${fund_size / 1e6:.0f}M" if fund_size else f"${DEFAULT_FUND_SIZE / 1e6:.0f}M"
+        fund_line = f"{size_str} {strategy} fund"
+        if remaining:
+            fund_line += f", ${remaining / 1e6:.0f}M remaining"
+        if fund_year:
+            fund_line += f", Year {fund_year}"
+
+        # ── Base persona ──
+        prompt = (
+            f"You are a senior CFO/investment analyst for a {fund_line} "
+            f"(${check_min / 1e6:.0f}-${check_max / 1e6:.0f}M checks, target {target_ownership}% entry ownership).\n\n"
+
+            "## HOW YOU TALK\n"
+            "You're direct, sharp, and genuinely helpful. Not formal. Not a report generator.\n"
+            "- Match depth to the question. 'Hey' gets 'hey'. 'Model 3 scenarios' gets the full treatment.\n"
+            "- If something is ambiguous, ask ONE clarifying question. Don't guess and dump.\n"
+            "- Share findings as you go. After each tool call, give the headline.\n"
+            "- When iterating ('what about 50M'), reuse context. Don't restart.\n"
+            "- Cite sources inline when available.\n"
+            "- If you have nothing useful to add, be brief.\n\n"
+
+            "## WHEN YOU USE TOOLS\n"
+            "- Use tools when the conversation calls for real work: fetching data, running models, generating documents.\n"
+            "- DON'T use tools for chat, clarifications, follow-up questions, or greetings.\n"
+            "- For complex multi-step work, outline your plan first, then execute.\n"
+            "- When you call a tool, explain what you're doing and why.\n\n"
+
+            "## DATA ACCURACY\n"
+            "1. COUNT before you claim. Get exact numbers right.\n"
+            "2. NEVER dismiss available data. Work with what you have.\n"
+            "3. When data is missing, infer with benchmarks and state confidence.\n"
+            "4. Every quantitative claim must be traceable.\n\n"
+        )
+
+        # ── Domain module (based on grid mode) ──
+        grid_mode = self.shared_data.get("grid_mode", "portfolio")
+        override = self.shared_data.get("system_prompt_override")
+        if override:
+            prompt += f"## DOMAIN CONTEXT\n{override}\n\n"
+        elif grid_mode == "pnl":
+            prompt += (
+                "## DOMAIN: CFO / FP&A\n"
+                "You're acting as an opinionated CFO. Focus on P&L drivers, burn rate, "
+                "runway, unit economics, and financial health. Use FPA tools for forecasting.\n\n"
+            )
+        elif grid_mode == "legal":
+            prompt += (
+                "## DOMAIN: General Counsel\n"
+                "You're acting as an experienced GC. Focus on term sheet analysis, "
+                "clause comparison, governance, and legal risk assessment.\n\n"
+            )
+        else:
+            prompt += (
+                "## DOMAIN: Investment Analysis\n"
+                "Focus on valuations, cap tables, deal analysis, portfolio construction, "
+                "and investment decision-making.\n\n"
+            )
+
+        # ── Dynamic context: SessionState fingerprint ──
+        _session_state = SessionState(self.shared_data) if SessionState else None
+        if _session_state:
+            fingerprint = _session_state.fingerprint()
+            if fingerprint:
+                prompt += f"## CURRENT SESSION STATE\n{fingerprint}\n\n"
+
+        # ── Session corrections (user feedback) ──
+        corrections = self.shared_data.get("session_corrections", [])
+        if corrections:
+            corrections_text = "\n".join(f"- {c}" for c in corrections[-5:])
+            prompt += f"## USER CORRECTIONS THIS SESSION\n{corrections_text}\n\n"
+
+        # ── Conversation rules ──
+        prompt += (
+            "## CONVERSATION RULES\n"
+            "- You have access to previous results from this session (see SESSION STATE above).\n"
+            "- If the user refers to 'the cap table' or 'those results', check your context.\n"
+            "- Don't re-fetch data you already have unless asked to refresh.\n"
+            "- When iterating, reuse existing context and only re-run with new params.\n"
+        )
+
+        return prompt
+
+    async def _conversational_turn(
+        self,
+        prompt: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Single conversational turn with tool-use loop.
+
+        This is the new primary path. The model sees:
+        - System prompt (persona + tools + fingerprint)
+        - Conversation history
+        - Current message
+        - Available tools
+
+        The model either responds with text (done) or calls tools
+        (execute → feed results → let model continue). Standard
+        tool-use loop, nothing custom.
+        """
+        system_prompt = self._build_conversational_prompt(context)
+        tools = self._build_tool_definitions()
+
+        # Build messages: history + current user message
+        messages = list(self._conversation_history)
+        messages.append({"role": "user", "content": prompt})
+
+        max_tool_rounds = 10  # Safety limit
+        all_text_parts: List[str] = []
+        tool_calls_made: List[Dict[str, Any]] = []
+
+        for round_num in range(max_tool_rounds):
+            yield {
+                "type": "progress",
+                "stage": "thinking" if round_num == 0 else "tool_execution",
+                "message": "Thinking..." if round_num == 0 else f"Processing tool results (round {round_num})",
+            }
+
+            try:
+                result = await self.model_router.get_completion_with_tools(
+                    messages=messages,
+                    system_prompt=system_prompt,
+                    tools=tools,
+                    max_tokens=4096,
+                    temperature=0.7,
+                    caller_context="conversational_turn",
+                )
+            except Exception as e:
+                logger.error(f"[CONVERSATIONAL] LLM call failed round {round_num}: {e}")
+                yield {"type": "error", "error": str(e)}
+                return
+
+            text_parts = result.get("text_parts", [])
+            tool_calls = result.get("tool_calls", [])
+            stop_reason = result.get("stop_reason", "end_turn")
+
+            # Collect text output
+            if text_parts:
+                for text in text_parts:
+                    all_text_parts.append(text)
+                    yield {"type": "token", "content": text}
+
+            # If no tool calls, we're done
+            if not tool_calls or stop_reason != "tool_use":
+                break
+
+            # ── Execute tool calls ──
+            # Build the assistant message for history (text + tool_use blocks)
+            assistant_content: List[Dict[str, Any]] = []
+            for text in text_parts:
+                assistant_content.append({"type": "text", "text": text})
+            for tc in tool_calls:
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": tc["id"],
+                    "name": tc["name"],
+                    "input": tc["input"],
+                })
+            messages.append({"role": "assistant", "content": assistant_content})
+
+            # Execute each tool and collect results
+            tool_result_blocks: List[Dict[str, Any]] = []
+            for tc in tool_calls:
+                tool_name = tc["name"]
+                tool_input = tc["input"]
+                tool_id = tc["id"]
+
+                yield {
+                    "type": "tool_call",
+                    "tool": tool_name,
+                    "inputs": tool_input,
+                    "tool_call_id": tool_id,
+                }
+
+                try:
+                    tool_output = await self._execute_tool(tool_name, tool_input)
+
+                    # Mark session state dirty so fingerprint rebuilds
+                    if SessionState:
+                        _ss = SessionState(self.shared_data)
+                        _ss.mark_dirty()
+
+                    # Serialize tool output for the model
+                    output_str = json.dumps(tool_output, default=str)[:8000]
+
+                    tool_result_blocks.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": output_str,
+                    })
+
+                    tool_calls_made.append({
+                        "tool": tool_name,
+                        "input": tool_input,
+                        "output_preview": output_str[:200],
+                    })
+
+                    yield {
+                        "type": "tool_result",
+                        "tool": tool_name,
+                        "tool_call_id": tool_id,
+                        "result": tool_output,
+                    }
+
+                except Exception as e:
+                    logger.error(f"[CONVERSATIONAL] Tool {tool_name} failed: {e}")
+                    tool_result_blocks.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": f"Error: {str(e)}",
+                        "is_error": True,
+                    })
+                    yield {
+                        "type": "tool_result",
+                        "tool": tool_name,
+                        "tool_call_id": tool_id,
+                        "result": {"error": str(e)},
+                    }
+
+            # Feed tool results back as user message
+            messages.append({"role": "user", "content": tool_result_blocks})
+
+        # ── Done: build final response ──
+        full_text = "\n".join(all_text_parts)
+
+        # Update conversation history
+        self._conversation_history.append({"role": "user", "content": prompt})
+        self._conversation_history.append({"role": "assistant", "content": full_text})
+
+        # Trim history to sliding window
+        if len(self._conversation_history) > self._max_history_turns * 2:
+            self._conversation_history = self._conversation_history[-(self._max_history_turns * 2):]
+
+        # Also persist in shared_data for cross-request recovery
+        async with self.shared_data_lock:
+            self.shared_data["_conversation_history"] = self._conversation_history
+
+        # Build the complete result
+        yield {
+            "type": "complete",
+            "result": {
+                "content": full_text,
+                "reply": full_text,
+                "format": "analysis",
+                "type": "analysis",
+                "tool_calls": tool_calls_made,
+            },
+            "success": True,
+            "metadata": {
+                "path": "conversational",
+                "tool_calls_count": len(tool_calls_made),
+                "tools_used": [tc["tool"] for tc in tool_calls_made],
+                "budget": self.model_router.end_budget() or {},
+            },
+        }
 
     def _initialize_skill_registry(self) -> Dict[str, Dict[str, Any]]:
         """Initialize the skill registry with 36+ skills"""
@@ -12409,12 +12762,14 @@ State:
 {_results_display}
 {_goals_status}{intent_guidance}{plan_guidance}{correction_guidance}{_tool_history}{_scoreboard_text}
 Pick the next action. Think step by step:
-1. What did the user ask for?
-2. What has already been done? (check TOOLS ALREADY CALLED + SCOREBOARD)
-3. What's still missing?
-4. If everything is done, say done.
+1. What did the user ask for? Is it clear, or could it go multiple ways?
+2. If ambiguous and iteration 0, consider asking a clarifying question instead of guessing.
+3. What has already been done? (check TOOLS ALREADY CALLED + SCOREBOARD)
+4. What's still missing?
+5. If everything is done, say done.
 
 RULES:
+- If the request is ambiguous or could go 2+ directions, use clarify to ask ONE focused question. Don't guess.
 - Use available data. Do NOT re-fetch what you already have.
 - Run independent calls in parallel via call_tools.
 - NEVER repeat a tool call — check TOOLS ALREADY CALLED.
@@ -12422,7 +12777,8 @@ RULES:
 - Work with incomplete data. Do NOT loop chasing every missing field.
 - Say done when: the user's request is answered AND results are persisted (memo/grid).
 
-RESPOND WITH EXACTLY ONE JSON OBJECT:
+RESPOND WITH EXACTLY ONE JSON OBJECT — pick one:
+{{"action":"clarify","question":"one focused question","options":["option A","option B"],"reasoning":"why I need this before proceeding"}}
 {{"action":"call_tool","tool":"name","input":{{...}},"reasoning":"why"}}
 {{"action":"call_tools","tools":[{{"tool":"name","input":{{...}}}}],"reasoning":"why"}}
 {{"action":"done","reasoning":"why this is complete"}}"""
@@ -12454,6 +12810,28 @@ RESPOND WITH EXACTLY ONE JSON OBJECT:
                 else:
                     logger.warning(f"[AGENT] Reason returned non-JSON (iter {i}), ending loop.\nRaw text: {route_text[:500]}")
                     action = {"action": "done"}
+
+            # ── CLARIFY: Agent wants to ask the user a question before proceeding ──
+            if action.get("action") == "clarify":
+                clarify_question = action.get("question", "Could you clarify what you need?")
+                clarify_options = action.get("options", [])
+                clarify_reasoning = action.get("reasoning", "")
+                logger.info(f"[AGENT] Clarification requested (iter {i}): {clarify_question}")
+                yield {
+                    "type": "clarification_needed",
+                    "question": clarify_question,
+                    "options": clarify_options,
+                    "reasoning": clarify_reasoning,
+                }
+                # Store in shared_data so the next request can see what was asked
+                self.shared_data["pending_clarification"] = {
+                    "question": clarify_question,
+                    "options": clarify_options,
+                    "iteration": i,
+                    "tool_results_so_far": len(tool_results),
+                }
+                # Break the loop — frontend will re-send with the user's answer
+                break
 
             if action.get("action") == "done":
                 # ── STRUCTURAL: Can't be "done" if you haven't started ──
@@ -13179,17 +13557,37 @@ ABSOLUTE RULES:
             if not self.session:
                 self.session = aiohttp.ClientSession()
             
-            # Clear ALL caches at the start of each request — no stale data
-            # Companies are re-fetched by the agent loop tools; preserving them
-            # across requests caused stale search results to leak into new queries.
+            # Selective cache cleanup — persist session state across turns
+            # so the fingerprint and conversation context survive.
+            # CLEAR per turn: stale caches that shouldn't leak across queries
             self._tavily_cache.clear()
             self._company_cache.clear()
-            self.shared_data.clear()
-            logger.info("[REQUEST_START] Cleared all caches and shared data for new request")
+            # PERSIST across turns (the fingerprint reads from these):
+            #   companies, cap_table_history, scenario_analysis, revenue_projections,
+            #   exit_modeling, followon_strategy, memo_artifacts, fund_context,
+            #   fund_metrics, session_corrections, agent_context
+            # REFRESH each turn: matrix_context (frontend sends fresh copy)
+            _persist_keys = {
+                "companies", "cap_table_history", "scenario_analysis",
+                "revenue_projections", "exit_modeling", "followon_strategy",
+                "memo_artifacts", "fund_context", "fund_metrics",
+                "session_corrections", "agent_context", "grid_mode",
+                "system_prompt_override", "classification",
+                "_conversation_history",
+            }
+            _stale = [k for k in list(self.shared_data.keys()) if k not in _persist_keys]
+            for k in _stale:
+                del self.shared_data[k]
+            logger.info(f"[REQUEST_START] Selective cleanup: removed {len(_stale)} stale keys, "
+                        f"preserved {len([k for k in self.shared_data if k in _persist_keys])} session keys")
+
+            # Restore conversation history from shared_data if we lost it (e.g. new instance)
+            if not self._conversation_history and self.shared_data.get("_conversation_history"):
+                self._conversation_history = self.shared_data["_conversation_history"]
 
             # Start per-request budget tracking
             budget = self.model_router.start_budget(max_cost=2.0, max_tokens=500_000)
-            
+
             # Store context in shared_data if provided
             if context:
                 async with self.shared_data_lock:
@@ -13239,13 +13637,24 @@ ABSOLUTE RULES:
                         self.shared_data['fund_context'].update(fund_params)
                         logger.info(f"[CONTEXT] Extracted fund params from prompt: {fund_params}")
             
+            # ── NEW CONVERSATIONAL PATH ──────────────────────────────────
+            # When enabled, bypass the classify → dispatch → agent loop chain.
+            # The model gets system prompt + fingerprint + tools + history
+            # and decides on its own whether to talk or call tools.
+            if self._use_conversational_path:
+                logger.info("[CONVERSATIONAL] Using conversational path (feature flag ON)")
+                async for event in self._conversational_turn(prompt, context):
+                    yield event
+                return
+            # ── END CONVERSATIONAL PATH ─────────────────────────────────
+
             # Extract entities from prompt
             yield {
                 "type": "progress",
                 "stage": "initialization",
                 "message": "Analyzing request and extracting entities"
             }
-            
+
             entities = await self._extract_entities(prompt)
             
             # Phase 1: Merge context.companies (all @mentions from frontend) into entities
@@ -13580,6 +13989,40 @@ ABSOLUTE RULES:
             # Build analysis manifest for state persistence across requests
             from app.services.session_state import SessionState as _SS
             _manifest = _SS(self.shared_data).analysis_manifest()
+
+            # Persist session memo for context continuity across sessions
+            _session_memo_data = None
+            if hasattr(self, '_session_memo') and self._session_memo:
+                try:
+                    _session_memo_data = self._session_memo.to_dict() if hasattr(self._session_memo, 'to_dict') else None
+                except Exception:
+                    pass
+            elif self.shared_data.get("session_memo"):
+                _session_memo_data = self.shared_data["session_memo"]
+
+            if _session_memo_data:
+                _company_id = self.shared_data.get("company_id") or self.shared_data.get("companyId")
+                _fund_id = self.shared_data.get("fund_id") or self.shared_data.get("fundId")
+                _user_id = self.shared_data.get("user_id", "")
+                try:
+                    from app.core.supabase_client import get_supabase_client
+                    _sb = get_supabase_client()
+                    if _sb and _company_id:
+                        _sb.table("session_handoffs").insert({
+                            "company_id": _company_id,
+                            "fund_id": _fund_id,
+                            "user_id": _user_id,
+                            "handoff_data": {
+                                "summary": formatted_result.get("reply", "")[:500] if isinstance(formatted_result, dict) else "",
+                                "tools_used": [node.skill for node in skill_chain],
+                                "prompt": prompt[:200],
+                            },
+                            "session_memo": _session_memo_data,
+                            "context_tokens_used": budget_summary.get("total_tokens"),
+                        }).execute()
+                        logger.info("[SESSION_HANDOFF] Persisted session context for continuity")
+                except Exception as _he:
+                    logger.debug(f"[SESSION_HANDOFF] Failed to persist: {_he}")
 
             # Yield single complete result
             yield {
@@ -38703,6 +39146,172 @@ Return your analysis with inline citations for ALL factual claims.
             "needed_fields": fields,
             "fund_id": fund_id,
         })
+
+    # ── Contract ↔ P&L attribution & scenario tools ─────────────────
+
+    async def _tool_contract_pnl_attribution(self, inputs: dict) -> dict:
+        """Show which contracts drive each P&L line — revenue and cost side."""
+        try:
+            from app.services.contract_pnl_bridge import query_contract_attribution
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            return query_contract_attribution(
+                company_id=company_id,
+                fund_id=inputs.get("fund_id"),
+                category=inputs.get("category"),
+                period_start=inputs.get("period_start"),
+                period_end=inputs.get("period_end"),
+            )
+        except Exception as e:
+            logger.error(f"[TOOL] contract_pnl_attribution failed: {e}")
+            return {"error": f"Contract P&L attribution failed: {e}"}
+
+    async def _tool_contract_lifecycle(self, inputs: dict) -> dict:
+        """Query contracts by lifecycle: expiration, renewal, break clauses."""
+        try:
+            from app.services.contract_pnl_bridge import query_contract_lifecycle
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            return query_contract_lifecycle(
+                company_id=company_id,
+                fund_id=inputs.get("fund_id"),
+                expiring_before=inputs.get("expiring_before"),
+                expiring_after=inputs.get("expiring_after"),
+                auto_renewal_only=bool(inputs.get("auto_renewal_only")),
+                side=inputs.get("side"),
+                clause_type=inputs.get("clause_type"),
+            )
+        except Exception as e:
+            logger.error(f"[TOOL] contract_lifecycle failed: {e}")
+            return {"error": f"Contract lifecycle query failed: {e}"}
+
+    async def _tool_model_contract_changes(self, inputs: dict) -> dict:
+        """Model P&L impact of contract changes — cancel, renegotiate, terminate.
+
+        Works for any contract type: sales, vendor, employment, commission,
+        lease, SaaS, IP license, consulting, insurance, etc.
+        """
+        try:
+            from app.services.scenario_branch_service import ScenarioBranchService
+            from app.services.pnl_builder import PnlBuilder
+            from app.core.supabase_client import get_supabase_client
+
+            company_id = inputs.get("company_id")
+            changes = inputs.get("changes", [])
+            if not company_id:
+                return {"error": "company_id is required"}
+            if not changes:
+                return {"error": "changes list is required"}
+
+            svc = ScenarioBranchService()
+
+            # Convert contract changes to PnlBuilder params
+            pnl_params = svc._contract_changes_to_pnl_params(changes, company_id)
+
+            # Build before P&L (no contract changes)
+            builder_before = PnlBuilder(company_id)
+            actuals_before, periods = builder_before._pull_actuals(None, None)
+
+            # Build after P&L (with contract changes)
+            builder_after = PnlBuilder(company_id)
+            actuals_after, _ = builder_after._pull_actuals(
+                None, None,
+                excluded_sources=pnl_params.get("excluded_sources"),
+                source_multipliers=pnl_params.get("source_multipliers"),
+                terminated_sources=pnl_params.get("terminated_sources"),
+            )
+
+            # Compute delta by category for the last period
+            last = periods[-1] if periods else None
+            delta_summary = {}
+            if last:
+                cats_seen = set()
+                for key in set(list(actuals_before.keys()) + list(actuals_after.keys())):
+                    root = key.split("/")[0].split(":")[0]
+                    cats_seen.add(root)
+                    before_val = actuals_before.get(key, {}).get(last, 0)
+                    after_val = actuals_after.get(key, {}).get(last, 0)
+                    if before_val != after_val:
+                        delta_summary[key] = {
+                            "before": round(before_val, 2),
+                            "after": round(after_val, 2),
+                            "delta": round(after_val - before_val, 2),
+                        }
+
+            # Optionally create/update a scenario branch
+            branch_id = inputs.get("branch_id")
+            scenario_name = inputs.get("scenario_name", "Contract changes scenario")
+            branch_result = None
+
+            if branch_id or scenario_name:
+                sb = get_supabase_client()
+                if sb:
+                    if branch_id:
+                        # Update existing branch assumptions
+                        existing = sb.table("scenario_branches").select("assumptions").eq("id", branch_id).execute()
+                        if existing.data:
+                            import json as _json
+                            current = existing.data[0].get("assumptions", {})
+                            if isinstance(current, str):
+                                try:
+                                    current = _json.loads(current)
+                                except (ValueError, TypeError):
+                                    current = {}
+                            current["contract_changes"] = changes
+                            sb.table("scenario_branches").update(
+                                {"assumptions": current}
+                            ).eq("id", branch_id).execute()
+                            branch_result = {"branch_id": branch_id, "updated": True}
+                    else:
+                        # Create new scenario branch
+                        new_branch = {
+                            "company_id": company_id,
+                            "name": scenario_name,
+                            "assumptions": {"contract_changes": changes},
+                        }
+                        insert_result = sb.table("scenario_branches").insert(new_branch).execute()
+                        if insert_result.data:
+                            branch_result = {
+                                "branch_id": insert_result.data[0]["id"],
+                                "created": True,
+                            }
+
+            result = {
+                "changes_applied": changes,
+                "period": last,
+                "delta_summary": delta_summary,
+            }
+            if branch_result:
+                result["scenario_branch"] = branch_result
+
+            # Compute total impact
+            total_revenue_delta = sum(
+                d["delta"] for k, d in delta_summary.items()
+                if k.split("/")[0].split(":")[0] == "revenue"
+            )
+            total_cost_delta = sum(
+                d["delta"] for k, d in delta_summary.items()
+                if k.split("/")[0].split(":")[0] in ("cogs", "opex_rd", "opex_sm", "opex_ga")
+            )
+            result["impact_summary"] = {
+                "monthly_revenue_delta": round(total_revenue_delta, 2),
+                "monthly_cost_delta": round(total_cost_delta, 2),
+                "monthly_net_delta": round(total_revenue_delta - total_cost_delta, 2),
+                "annual_revenue_delta": round(total_revenue_delta * 12, 2),
+                "annual_cost_delta": round(total_cost_delta * 12, 2),
+                "annual_net_delta": round((total_revenue_delta - total_cost_delta) * 12, 2),
+            }
+
+            return result
+        except Exception as e:
+            logger.error(f"[TOOL] model_contract_changes failed: {e}")
+            return {"error": f"Contract change modeling failed: {e}"}
 
     async def __aenter__(self):
         """Async context manager entry - ensures Tavily session is properly initialized"""

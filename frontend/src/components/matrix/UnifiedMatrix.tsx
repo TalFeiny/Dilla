@@ -80,7 +80,6 @@ import dynamic from 'next/dynamic';
 import { MemoEditor, type DocumentSection } from '@/components/memo/MemoEditor';
 
 const TableauLevelCharts = dynamic(() => import('@/components/charts/TableauLevelCharts'), { ssr: false });
-import { SkeletonTable } from '@/components/ui/skeleton';
 import { CellActionProvider } from './CellActionContext';
 import { SuggestionsProvider } from './SuggestionsContext';
 import { useDocumentSuggestions } from './DocumentSuggestions';
@@ -4933,18 +4932,12 @@ export function UnifiedMatrix({
         const completedTasks = Object.values(cellActionStatus).filter(s => s.state === 'success');
         const errorTasks = Object.values(cellActionStatus).filter(s => s.state === 'error');
         const pendingSuggestionCount = visibleSuggestions.length;
-        const hasActivity = isLoading || activeTasks.length > 0 || pendingSuggestionCount > 0 || errorTasks.length > 0;
+        const hasActivity = activeTasks.length > 0 || pendingSuggestionCount > 0 || errorTasks.length > 0;
 
         if (!hasActivity) return null;
 
         return (
           <div className="flex items-center gap-3 px-3 py-1.5 text-xs bg-muted/40 border rounded-md shrink-0 overflow-x-auto">
-            {isLoading && (
-              <span className="flex items-center gap-1.5 text-muted-foreground">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                {mode === 'pnl' ? 'Loading P&L' : mode === 'legal' ? 'Loading clauses' : mode === 'lp' ? 'Loading LPs' : 'Loading portfolio'}...
-              </span>
-            )}
             {activeTasks.length > 0 && (
               <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
                 <Loader2 className="h-3 w-3 animate-spin" />
@@ -4963,7 +4956,7 @@ export function UnifiedMatrix({
                 {errorTasks.length === 1 ? errorTasks[0].message : `${errorTasks.length} errors`}
               </span>
             )}
-            {completedTasks.length > 0 && !activeTasks.length && !isLoading && (
+            {completedTasks.length > 0 && !activeTasks.length && (
               <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400">
                 <Check className="h-3 w-3" />
                 {completedTasks.length === 1 ? completedTasks[0].message : `${completedTasks.length} tasks complete`}
@@ -5057,11 +5050,6 @@ export function UnifiedMatrix({
               onReject: handleSuggestionReject,
             }}
           >
-          {(mode === 'portfolio' || mode === 'legal' || mode === 'pnl') && isLoading && !matrixData?.rows?.length ? (
-            <div className="flex-1 min-h-0 flex flex-col p-4 rounded-lg border bg-muted/30" style={{ height: 640, minHeight: 640 }}>
-              <SkeletonTable rows={8} columns={12} />
-            </div>
-          ) : (
           <AGGridMatrix
             matrixData={currentMatrixData}
             mode={mode}
@@ -5409,7 +5397,6 @@ export function UnifiedMatrix({
                 input.click();
               }}
             />
-          )}
           </SuggestionsProvider>
           </CellActionProvider>
         </div>

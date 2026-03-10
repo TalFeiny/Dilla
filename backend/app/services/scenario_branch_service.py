@@ -147,6 +147,10 @@ class ScenarioBranchService:
             if "legal_overrides" in raw:
                 merged.setdefault("legal_overrides", {}).update(raw["legal_overrides"])
 
+            # Contract changes — concatenate (child can add more changes)
+            if "contract_changes" in raw:
+                merged.setdefault("contract_changes", []).extend(raw["contract_changes"])
+
         return merged
 
     # ------------------------------------------------------------------
@@ -195,8 +199,19 @@ class ScenarioBranchService:
             base_data, months=forecast_months, start_period=start_period,
         )
 
+        # Pre-compute contract change params for P&L builder if applicable
+        contract_changes = merged.get("contract_changes", [])
+        contract_pnl_params = self._contract_changes_to_pnl_params(
+            contract_changes, company_id
+        ) if contract_changes else {}
+
         if fork_idx == 0:
             branch_data = self._apply_overrides(base_data, merged)
+            # If contract changes exist, re-seed from modified actuals
+            if contract_pnl_params:
+                branch_data = self._reseed_with_contract_changes(
+                    branch_data, company_id, contract_pnl_params
+                )
             branch_forecast = self._cfp.build_monthly_cash_flow_model(
                 branch_data,
                 months=forecast_months,
@@ -216,6 +231,10 @@ class ScenarioBranchService:
             fork_state = base_forecast[fork_idx - 1]
             branched_data = self._snapshot_to_data(fork_state, base_data)
             branched_data = self._apply_overrides(branched_data, merged)
+            if contract_pnl_params:
+                branched_data = self._reseed_with_contract_changes(
+                    branched_data, company_id, contract_pnl_params
+                )
 
             branch_start = self._offset_period(start_period, fork_idx)
             branch_segment = self._cfp.build_monthly_cash_flow_model(
@@ -245,6 +264,12 @@ class ScenarioBranchService:
             "source_map": source_map,
             "fork_month_index": fork_idx,
         }
+
+        # Contract change summary if applicable
+        if contract_changes:
+            result["contract_changes_applied"] = contract_changes
+            if contract_pnl_params:
+                result["contract_pnl_params"] = contract_pnl_params
 
         # Legal branch overrides — resolve legal params if available
         legal_overrides = merged.get("legal_overrides")
@@ -1126,6 +1151,97 @@ class ScenarioBranchService:
                 )
 
         return forecast
+
+    # ------------------------------------------------------------------
+    # Contract changes → P&L scenario params
+    # ------------------------------------------------------------------
+
+    def _contract_changes_to_pnl_params(
+        self,
+        changes: List[Dict[str, Any]],
+        company_id: str,
+    ) -> Dict[str, Any]:
+        """Convert contract_changes list into params for PnlBuilder._pull_actuals().
+
+        Supports actions:
+            exclude       — remove all fpa_actuals for this contract
+            modify_price  — multiply amounts by factor (e.g. 0.8 = 20% cut, 1.15 = 15% increase)
+            terminate_early — zero out rows after effective date
+            extend        — (future: generate new period rows beyond expiration)
+
+        Returns: {excluded_sources, source_multipliers, terminated_sources}
+        """
+        excluded: List[str] = []
+        multipliers: Dict[str, float] = {}
+        terminated: Dict[str, str] = {}
+
+        for change in changes:
+            doc_id = change.get("document_id", "")
+            source = f"document:{doc_id}"
+            action = change.get("action", "")
+
+            if action == "exclude":
+                excluded.append(source)
+            elif action == "modify_price":
+                factor = change.get("factor", 1.0)
+                multipliers[source] = factor
+            elif action == "terminate_early":
+                effective = change.get("effective", "")[:7]
+                if effective:
+                    terminated[source] = effective
+
+        return {
+            "excluded_sources": excluded or None,
+            "source_multipliers": multipliers or None,
+            "terminated_sources": terminated or None,
+        }
+
+    def _reseed_with_contract_changes(
+        self,
+        base_data: Dict[str, Any],
+        company_id: str,
+        contract_pnl_params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Re-compute seed data from modified actuals after contract changes.
+
+        Uses PnlBuilder._pull_actuals() with contract filters to get modified
+        totals, then adjusts the base_data (revenue, burn_rate, etc.) accordingly.
+        """
+        from app.services.pnl_builder import PnlBuilder
+
+        builder = PnlBuilder(company_id)
+        modified_actuals, periods = builder._pull_actuals(
+            start=None, end=None,
+            excluded_sources=contract_pnl_params.get("excluded_sources"),
+            source_multipliers=contract_pnl_params.get("source_multipliers"),
+            terminated_sources=contract_pnl_params.get("terminated_sources"),
+        )
+
+        if not periods:
+            return base_data
+
+        # Recompute totals from the last period of modified actuals
+        last = periods[-1]
+        data = {**base_data}
+
+        rev_total = 0.0
+        cost_total = 0.0
+        for key, vals in modified_actuals.items():
+            if last not in vals:
+                continue
+            root = key.split("/")[0].split(":")[0]
+            if root == "revenue":
+                rev_total += vals[last]
+            elif root in ("cogs", "opex_rd", "opex_sm", "opex_ga"):
+                cost_total += vals[last]
+
+        # Adjust base data with modified totals (annualize monthly figures)
+        if rev_total > 0:
+            data["revenue"] = rev_total * 12
+        if cost_total > 0:
+            data["burn_rate"] = cost_total
+
+        return data
 
     # ------------------------------------------------------------------
     # Private: projection helpers

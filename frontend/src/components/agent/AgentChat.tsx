@@ -775,6 +775,24 @@ export default function AgentChat({
                 if (onMemoUpdates) {
                   onMemoUpdates({ action: 'append', sections: [{ type: 'chart', chart: event.chart }] });
                 }
+              } else if (event.type === 'clarification_needed') {
+                // Agent wants to ask the user a question before proceeding
+                const clarifyMsg: Message = {
+                  id: `clarify-${Date.now()}`,
+                  role: 'assistant',
+                  content: event.question || 'Could you clarify?',
+                  timestamp: new Date(),
+                  clarification: {
+                    question: event.question,
+                    options: event.options || [],
+                    reasoning: event.reasoning,
+                  },
+                };
+                setMessages(prev => [...prev, clarifyMsg]);
+                setIsStreaming(false);
+                setStreamingStage(null);
+                setStreamingSteps([]);
+                return; // Exit stream processing — wait for user to pick an option
               } else if (event.type === 'complete') {
                 data = event;
               } else if (event.type === 'error') {
@@ -2043,6 +2061,24 @@ export default function AgentChat({
                           </div>
                         )}
                         
+                        {/* Clarification Options */}
+                        {message.role === 'assistant' && (message as any).clarification && (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {((message as any).clarification.options || []).map((opt: string, optIdx: number) => (
+                              <button
+                                key={optIdx}
+                                className="px-3 py-1.5 text-sm rounded-lg border border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-800/50 transition-colors"
+                                onClick={() => {
+                                  const clarifyAnswer = `${(message as any).clarification.question} → ${opt}`;
+                                  handleSend(clarifyAnswer);
+                                }}
+                              >
+                                {opt}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
                         {/* RL Feedback Component */}
                         {message.role === 'assistant' && !message.processing && (
                           <AgentFeedback

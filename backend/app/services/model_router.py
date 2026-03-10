@@ -151,6 +151,329 @@ class RequestBudget:
         }
 
 
+# ── Provider-Agnostic Tool Adapter ───────────────────────────────────
+# Converts between canonical tool format and provider-specific formats.
+# Canonical format follows Anthropic's schema (most explicit):
+#   {"name": str, "description": str, "input_schema": {JSON Schema}}
+# Each provider adapter converts definitions AND parses responses.
+
+
+class ToolAdapter:
+    """Convert tool definitions + responses between providers."""
+
+    # ── Informal schema → JSON Schema ────────────────────────────────
+    # AGENT_TOOLS use shorthand like {"query": "str", "filters": "dict?"}
+    # This converts to proper JSON Schema for provider APIs.
+
+    _TYPE_MAP = {
+        "str": {"type": "string"},
+        "string": {"type": "string"},
+        "int": {"type": "integer"},
+        "float": {"type": "number"},
+        "number": {"type": "number"},
+        "bool": {"type": "boolean"},
+        "boolean": {"type": "boolean"},
+        "dict": {"type": "object"},
+        "object": {"type": "object"},
+        "any": {},
+        "list": {"type": "array"},
+    }
+
+    @classmethod
+    def informal_to_json_schema(cls, informal: dict) -> dict:
+        """Convert informal input_schema to JSON Schema.
+
+        Example: {"query": "str", "filters": "dict?", "columns": "list[str]?"}
+        → {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "filters": {"type": "object"},
+                "columns": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["query"]
+          }
+        """
+        properties = {}
+        required = []
+
+        for name, type_hint in informal.items():
+            hint = str(type_hint).strip()
+            optional = hint.endswith("?")
+            if optional:
+                hint = hint[:-1].strip()
+
+            prop = cls._parse_type_hint(hint)
+            properties[name] = prop
+
+            if not optional:
+                required.append(name)
+
+        schema: dict = {"type": "object", "properties": properties}
+        if required:
+            schema["required"] = required
+        return schema
+
+    @classmethod
+    def _parse_type_hint(cls, hint: str) -> dict:
+        """Parse a single type hint like 'str', 'list[str]', 'list[dict]'."""
+        # Handle list[X] pattern
+        if hint.startswith("list[") and hint.endswith("]"):
+            inner = hint[5:-1].strip()
+            inner_schema = cls._parse_type_hint(inner)
+            return {"type": "array", "items": inner_schema}
+        # Handle list without inner type
+        if hint == "list":
+            return {"type": "array"}
+        # Handle complex dict/object descriptions (just map to object)
+        if hint.startswith("{") or hint.startswith("list[{"):
+            return {"type": "array", "items": {"type": "object"}}
+        # Direct type lookup
+        return dict(cls._TYPE_MAP.get(hint.lower(), {}))
+
+    # ── Definitions: Canonical → Provider ────────────────────────────
+
+    @staticmethod
+    def to_anthropic(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Canonical → Anthropic format (already canonical, pass through)."""
+        return tools
+
+    @staticmethod
+    def to_openai(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Canonical → OpenAI function-calling format.
+
+        Anthropic: {"name", "description", "input_schema": {JSON Schema}}
+        OpenAI:    {"type": "function", "function": {"name", "description", "parameters": {JSON Schema}}}
+        """
+        out = []
+        for tool in tools:
+            out.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+                },
+            })
+        return out
+
+    @staticmethod
+    def to_google(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Canonical → Google Gemini function_declarations format.
+
+        Google: [{"function_declarations": [{"name", "description", "parameters": {JSON Schema}}]}]
+        """
+        declarations = []
+        for tool in tools:
+            schema = dict(tool.get("input_schema", {"type": "object", "properties": {}}))
+            # Google doesn't support 'additionalProperties' in function declarations
+            schema.pop("additionalProperties", None)
+            declarations.append({
+                "name": tool["name"],
+                "description": tool.get("description", ""),
+                "parameters": schema,
+            })
+        return [{"function_declarations": declarations}]
+
+    @staticmethod
+    def to_openai_compatible(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Canonical → OpenAI-compatible format (Groq, Together, DeepSeek, etc.)."""
+        return ToolAdapter.to_openai(tools)
+
+    # ── Response Parsing: Provider → Canonical ───────────────────────
+    # Canonical response:
+    # {
+    #   "text_parts": [str, ...],
+    #   "tool_calls": [{"id": str, "name": str, "input": dict}, ...],
+    #   "stop_reason": "end_turn" | "tool_use",
+    #   "usage": {"input_tokens": int, "output_tokens": int},
+    # }
+
+    @staticmethod
+    def parse_anthropic_response(response) -> Dict[str, Any]:
+        """Parse Anthropic Messages API response → canonical."""
+        text_parts = []
+        tool_calls = []
+        for block in response.content:
+            btype = getattr(block, "type", None)
+            if btype == "text":
+                text_parts.append(block.text)
+            elif btype == "tool_use":
+                tool_calls.append({
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                })
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        if hasattr(response, "usage") and response.usage:
+            usage["input_tokens"] = getattr(response.usage, "input_tokens", 0)
+            usage["output_tokens"] = getattr(response.usage, "output_tokens", 0)
+        return {
+            "text_parts": text_parts,
+            "tool_calls": tool_calls,
+            "stop_reason": "tool_use" if tool_calls else "end_turn",
+            "usage": usage,
+        }
+
+    @staticmethod
+    def parse_openai_response(response) -> Dict[str, Any]:
+        """Parse OpenAI chat completion response → canonical."""
+        message = response.choices[0].message
+        text_parts = [message.content] if message.content else []
+        tool_calls = []
+        if message.tool_calls:
+            for tc in message.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                tool_calls.append({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "input": args,
+                })
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        if hasattr(response, "usage") and response.usage:
+            usage["input_tokens"] = getattr(response.usage, "prompt_tokens", 0) or 0
+            usage["output_tokens"] = getattr(response.usage, "completion_tokens", 0) or 0
+        return {
+            "text_parts": text_parts,
+            "tool_calls": tool_calls,
+            "stop_reason": "tool_use" if tool_calls else "end_turn",
+            "usage": usage,
+        }
+
+    @staticmethod
+    def parse_google_response(response) -> Dict[str, Any]:
+        """Parse Google Gemini response → canonical."""
+        text_parts = []
+        tool_calls = []
+        for part in response.parts:
+            if hasattr(part, "text") and part.text:
+                text_parts.append(part.text)
+            elif hasattr(part, "function_call") and part.function_call:
+                fc = part.function_call
+                tool_calls.append({
+                    "id": f"google_{fc.name}_{id(fc)}",
+                    "name": fc.name,
+                    "input": dict(fc.args) if fc.args else {},
+                })
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            usage["input_tokens"] = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
+            usage["output_tokens"] = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
+        return {
+            "text_parts": text_parts,
+            "tool_calls": tool_calls,
+            "stop_reason": "tool_use" if tool_calls else "end_turn",
+            "usage": usage,
+        }
+
+    # ── Tool Results: Format for each provider ───────────────────────
+
+    @staticmethod
+    def format_tool_results_anthropic(
+        tool_results: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Format tool results as Anthropic user message.
+
+        Input: [{"id": str, "result": str, "is_error": bool}, ...]
+        Output: {"role": "user", "content": [{"type": "tool_result", ...}, ...]}
+        """
+        content = []
+        for tr in tool_results:
+            block: Dict[str, Any] = {
+                "type": "tool_result",
+                "tool_use_id": tr["id"],
+                "content": tr["result"],
+            }
+            if tr.get("is_error"):
+                block["is_error"] = True
+            content.append(block)
+        return {"role": "user", "content": content}
+
+    @staticmethod
+    def format_tool_results_openai(
+        tool_results: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Format tool results as OpenAI tool messages.
+
+        Input: [{"id": str, "result": str, "is_error": bool}, ...]
+        Output: [{"role": "tool", "tool_call_id": str, "content": str}, ...]
+        """
+        return [
+            {
+                "role": "tool",
+                "tool_call_id": tr["id"],
+                "content": tr["result"],
+            }
+            for tr in tool_results
+        ]
+
+    @staticmethod
+    def format_tool_results_google(
+        tool_results: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Format tool results for Google Gemini.
+
+        Returns a Part with function_response for each result.
+        """
+        parts = []
+        for tr in tool_results:
+            try:
+                result_data = json.loads(tr["result"]) if isinstance(tr["result"], str) else tr["result"]
+            except (json.JSONDecodeError, TypeError):
+                result_data = {"result": tr["result"]}
+            parts.append({
+                "function_response": {
+                    "name": tr.get("name", "unknown"),
+                    "response": result_data,
+                }
+            })
+        return parts
+
+    # ── Assistant message reconstruction ─────────────────────────────
+    # After tool execution, we need to add the assistant's message back
+    # to the conversation in the provider's format.
+
+    @staticmethod
+    def format_assistant_message_anthropic(parsed: Dict[str, Any]) -> Dict[str, Any]:
+        """Reconstruct Anthropic assistant message from canonical parsed response."""
+        content = []
+        for text in parsed["text_parts"]:
+            content.append({"type": "text", "text": text})
+        for tc in parsed["tool_calls"]:
+            content.append({
+                "type": "tool_use",
+                "id": tc["id"],
+                "name": tc["name"],
+                "input": tc["input"],
+            })
+        return {"role": "assistant", "content": content}
+
+    @staticmethod
+    def format_assistant_message_openai(parsed: Dict[str, Any]) -> Dict[str, Any]:
+        """Reconstruct OpenAI assistant message from canonical parsed response."""
+        msg: Dict[str, Any] = {"role": "assistant"}
+        if parsed["text_parts"]:
+            msg["content"] = "\n".join(parsed["text_parts"])
+        else:
+            msg["content"] = None
+        if parsed["tool_calls"]:
+            msg["tool_calls"] = [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tc["name"],
+                        "arguments": json.dumps(tc["input"]),
+                    },
+                }
+                for tc in parsed["tool_calls"]
+            ]
+        return msg
+
+
 class ModelRouter:
     """
     Routes requests to different models with fallback support
@@ -872,7 +1195,194 @@ class ModelRouter:
             elif status_code:
                 raise Exception(f"Anthropic API error (HTTP {status_code}): {error_msg}")
             raise Exception(f"Anthropic API error: {error_msg}")
-    
+
+    # ── Tool-use conversational API ─────────────────────────────────────
+    async def get_completion_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        system_prompt: str,
+        tools: List[Dict[str, Any]],
+        tool_executor,
+        model: str = "claude-sonnet-4-6",
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        max_tool_rounds: int = 15,
+        on_tool_start=None,
+        on_tool_end=None,
+    ) -> Dict[str, Any]:
+        """Conversational completion with native Anthropic tool-use.
+
+        Runs the standard tool-use loop: send messages → if model returns
+        tool_use blocks, execute them via *tool_executor*, append tool_result,
+        and call the model again.  Repeats until the model responds with
+        pure text or *max_tool_rounds* is reached.
+
+        Args:
+            messages: Conversation history (user/assistant messages).
+            system_prompt: System instructions.
+            tools: Tool definitions in Anthropic format
+                   [{"name": ..., "description": ..., "input_schema": {...}}].
+            tool_executor: ``async (name, input) -> dict`` that runs a tool.
+            model: Anthropic model ID.
+            max_tokens: Max tokens per model call.
+            temperature: Sampling temperature.
+            max_tool_rounds: Safety cap on tool-use iterations.
+            on_tool_start: Optional ``async (tool_name, tool_input) -> None``.
+            on_tool_end: Optional ``async (tool_name, result) -> None``.
+
+        Returns:
+            {"response": str, "tool_calls": [...], "model": str,
+             "cost": float, "input_tokens": int, "output_tokens": int}
+        """
+        await self._init_clients_if_needed()
+        if not self.anthropic_client:
+            raise ValueError("Anthropic client not initialized — tool-use requires Anthropic")
+
+        # Budget check
+        if self._active_budget and self._active_budget.exhausted:
+            raise Exception(
+                f"Request budget exhausted (${self._active_budget.total_cost:.2f}/"
+                f"${self._active_budget.max_cost:.2f})"
+            )
+
+        all_tool_calls: List[Dict[str, Any]] = []
+        total_input = 0
+        total_output = 0
+        total_cost = 0.0
+        working_messages = list(messages)  # Don't mutate caller's list
+
+        for round_idx in range(max_tool_rounds):
+            logger.info(f"[TOOL_USE] Round {round_idx + 1}/{max_tool_rounds} — "
+                        f"{len(working_messages)} messages, {len(tools)} tools")
+
+            try:
+                response = await asyncio.wait_for(
+                    self.anthropic_client.messages.create(
+                        model=model,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        system=system_prompt,
+                        messages=working_messages,
+                        tools=tools,
+                    ),
+                    timeout=90,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[TOOL_USE] Anthropic call timed out")
+                raise Exception("Anthropic tool-use call timed out after 90s")
+
+            # Track usage
+            usage = getattr(response, "usage", None)
+            inp = getattr(usage, "input_tokens", 0) if usage else 0
+            out = getattr(usage, "output_tokens", 0) if usage else 0
+            total_input += inp
+            total_output += out
+            round_cost = self._calculate_cost_by_model(model, inp, out)
+            total_cost += round_cost
+
+            if self._active_budget:
+                self._active_budget.record(inp, out, round_cost, model)
+
+            # Parse content blocks
+            text_parts: List[str] = []
+            tool_use_blocks: List[Any] = []
+            for block in response.content:
+                if getattr(block, "type", None) == "text":
+                    text_parts.append(block.text)
+                elif getattr(block, "type", None) == "tool_use":
+                    tool_use_blocks.append(block)
+
+            # If no tool calls → we're done
+            if not tool_use_blocks:
+                final_text = "\n".join(text_parts)
+                logger.info(f"[TOOL_USE] Complete after {round_idx + 1} rounds, "
+                            f"{len(all_tool_calls)} tool calls, ${total_cost:.4f}")
+                return {
+                    "response": final_text,
+                    "tool_calls": all_tool_calls,
+                    "model": model,
+                    "cost": total_cost,
+                    "input_tokens": total_input,
+                    "output_tokens": total_output,
+                }
+
+            # Append the assistant message (with both text + tool_use blocks)
+            working_messages.append({"role": "assistant", "content": response.content})
+
+            # Execute each tool call and collect results
+            tool_results_content = []
+            for tb in tool_use_blocks:
+                tool_name = tb.name
+                tool_input = tb.input
+                tool_id = tb.id
+                logger.info(f"[TOOL_USE] Calling {tool_name}({json.dumps(tool_input)[:200]})")
+
+                if on_tool_start:
+                    await on_tool_start(tool_name, tool_input)
+
+                try:
+                    result = await asyncio.wait_for(
+                        tool_executor(tool_name, tool_input),
+                        timeout=120,
+                    )
+                    result_str = json.dumps(result) if not isinstance(result, str) else result
+                    is_error = False
+                except Exception as e:
+                    logger.warning(f"[TOOL_USE] Tool {tool_name} failed: {e}")
+                    result_str = f"Error: {str(e)}"
+                    is_error = True
+
+                all_tool_calls.append({
+                    "tool": tool_name,
+                    "input": tool_input,
+                    "output": result_str[:2000],
+                    "error": is_error,
+                })
+
+                if on_tool_end:
+                    await on_tool_end(tool_name, result_str[:500])
+
+                tool_results_content.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": result_str[:8000],
+                    **({"is_error": True} if is_error else {}),
+                })
+
+            # Append tool results as user message (Anthropic format)
+            working_messages.append({"role": "user", "content": tool_results_content})
+
+            # Budget check between rounds
+            if self._active_budget and self._active_budget.exhausted:
+                logger.warning("[TOOL_USE] Budget exhausted mid-loop, returning partial")
+                return {
+                    "response": "\n".join(text_parts) or "Budget exhausted — partial results above.",
+                    "tool_calls": all_tool_calls,
+                    "model": model,
+                    "cost": total_cost,
+                    "input_tokens": total_input,
+                    "output_tokens": total_output,
+                }
+
+        # Reached max rounds
+        logger.warning(f"[TOOL_USE] Hit max {max_tool_rounds} rounds")
+        return {
+            "response": "\n".join(text_parts) if text_parts else "Reached maximum tool-use rounds.",
+            "tool_calls": all_tool_calls,
+            "model": model,
+            "cost": total_cost,
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+        }
+
+    def _calculate_cost_by_model(self, model: str, input_tokens: int, output_tokens: int) -> float:
+        """Calculate cost given a model name directly."""
+        for name, config in self.model_configs.items():
+            if config.get("model") == model or name == model:
+                return self._calculate_cost(config, input_tokens, output_tokens)
+        # Fallback: Sonnet pricing
+        return (input_tokens * 3.0 / 1_000_000) + (output_tokens * 15.0 / 1_000_000)
+
     async def _call_openai(self, model: str, prompt: str, system: Optional[str], max_tokens: int, temp: float, json_mode: bool = False) -> str:
         """Call OpenAI API with optional JSON mode for structured output and proper error handling"""
         if not self.openai_client:
@@ -1449,6 +1959,386 @@ class ModelRouter:
     @property
     def budget(self) -> Optional[RequestBudget]:
         return self._active_budget
+
+    # ------------------------------------------------------------------
+    # Tool-Use Completion (Conversational Agent Path)
+    # ------------------------------------------------------------------
+
+    # ── Provider-agnostic tool-use completion ────────────────────────
+    # Uses ToolAdapter for format conversion so ANY provider can do tool-use.
+
+    async def get_completion_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        system_prompt: str,
+        tools: List[Dict[str, Any]],
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        caller_context: Optional[str] = None,
+        preferred_models: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Provider-agnostic LLM call with tool-use support.
+
+        Accepts canonical tool definitions (Anthropic format) and messages.
+        ToolAdapter converts to/from each provider's format automatically.
+
+        The caller (orchestrator) handles the tool execution loop:
+        call → execute tools → feed tool_results → call again → ...
+
+        Returns canonical format:
+            {
+                "text_parts": [str, ...],
+                "tool_calls": [{"id": str, "name": str, "input": dict}, ...],
+                "stop_reason": "end_turn" | "tool_use",
+                "model": str,
+                "usage": {"input_tokens": int, "output_tokens": int},
+                "cost": float,
+                "latency": float,
+                "provider": str,
+            }
+        """
+        if self._active_budget and self._active_budget.exhausted:
+            raise Exception(
+                f"Request budget exhausted (${self._active_budget.total_cost:.2f} / "
+                f"${self._active_budget.max_cost:.2f})."
+            )
+
+        await self._init_clients_if_needed()
+
+        if not preferred_models and caller_context:
+            preferred_models = self.preferred_models_for_task(caller_context)
+
+        if not preferred_models:
+            preferred_models = ["claude-sonnet-4-6", "claude-haiku-4-5"]
+
+        models = self._get_model_order(ModelCapability.ANALYSIS, preferred_models)
+
+        context_info = f" (called by: {caller_context})" if caller_context else ""
+        logger.info(f"[MODEL_ROUTER] get_completion_with_tools{context_info} tools={len(tools)}")
+
+        # Provider dispatch table
+        _PROVIDER_CALLERS = {
+            ModelProvider.ANTHROPIC: self._call_anthropic_with_tools,
+            ModelProvider.OPENAI: self._call_openai_with_tools,
+            ModelProvider.GOOGLE: self._call_google_with_tools,
+            ModelProvider.GROQ: self._call_openai_compatible_with_tools,
+            ModelProvider.TOGETHER: self._call_openai_compatible_with_tools,
+        }
+
+        last_error = None
+        for idx, model_name in enumerate(models):
+            model_config = self.model_configs.get(model_name)
+            if not model_config:
+                continue
+
+            provider = model_config["provider"]
+            if provider not in _PROVIDER_CALLERS:
+                continue
+
+            if not self._is_model_ready(model_name):
+                continue
+
+            is_last = idx == len(models) - 1
+            if self._is_circuit_broken(model_name) and not is_last:
+                continue
+            elif self._is_circuit_broken(model_name) and is_last:
+                self.reset_circuit_breakers(model_name)
+
+            await self._wait_for_slot(model_name)
+            try:
+                start_time = time.time()
+                await self._apply_rate_limit(model_name)
+
+                caller_fn = _PROVIDER_CALLERS[provider]
+                result = await asyncio.wait_for(
+                    caller_fn(
+                        model=model_config["model"],
+                        messages=messages,
+                        system_prompt=system_prompt,
+                        tools=tools,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    ),
+                    timeout=120,
+                )
+
+                latency = time.time() - start_time
+                input_tokens = result["usage"].get("input_tokens", 0)
+                output_tokens = result["usage"].get("output_tokens", 0)
+                cost = self._calculate_cost(model_config, input_tokens, output_tokens)
+
+                self.error_counts[model_name] = 0
+
+                if self._active_budget:
+                    self._active_budget.record(input_tokens, output_tokens, cost, model_name)
+
+                logger.info(
+                    f"[MODEL_ROUTER] tool-use SUCCESS {model_name} ({provider.value}) "
+                    f"latency={latency:.2f}s cost=${cost:.4f} "
+                    f"in={input_tokens} out={output_tokens} "
+                    f"stop={result['stop_reason']}"
+                )
+
+                result["model"] = model_name
+                result["cost"] = cost
+                result["latency"] = latency
+                result["provider"] = provider.value
+                return result
+
+            except asyncio.TimeoutError:
+                logger.warning(f"[MODEL_ROUTER] {model_name} tool-use timed out")
+                last_error = TimeoutError(f"{model_name} timed out")
+            except Exception as e:
+                logger.error(f"[MODEL_ROUTER] {model_name} tool-use error: {e}")
+                last_error = e
+                self._increment_error_count(model_name)
+            finally:
+                self._release_slot(model_name)
+
+        raise Exception(f"All tool-use models failed{context_info}") from last_error
+
+    # ── Per-provider tool-use callers ─────────────────────────────────
+    # Each returns canonical format:
+    # {"text_parts": [...], "tool_calls": [...], "stop_reason": str, "usage": dict}
+
+    async def _call_anthropic_with_tools(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        system_prompt: str,
+        tools: List[Dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+    ) -> Dict[str, Any]:
+        """Call Anthropic Messages API with tool-use definitions."""
+        if not self.anthropic_client:
+            raise ValueError("Anthropic client not initialized")
+
+        response = await self.anthropic_client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_prompt,
+            messages=messages,
+            tools=ToolAdapter.to_anthropic(tools),
+        )
+
+        return ToolAdapter.parse_anthropic_response(response)
+
+    async def _call_openai_with_tools(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        system_prompt: str,
+        tools: List[Dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+    ) -> Dict[str, Any]:
+        """Call OpenAI Chat Completions API with function calling."""
+        if not self.openai_client:
+            raise ValueError("OpenAI client not initialized")
+
+        # Build OpenAI message array (system + conversation)
+        oai_messages = [{"role": "system", "content": system_prompt}]
+
+        for msg in messages:
+            role = msg["role"]
+            content = msg.get("content")
+
+            if role == "user" and isinstance(content, list):
+                # Anthropic-format tool_result blocks → OpenAI tool messages
+                tool_results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+                if tool_results:
+                    for tr in tool_results:
+                        oai_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tr["tool_use_id"],
+                            "content": tr.get("content", ""),
+                        })
+                else:
+                    # Regular content blocks
+                    text = " ".join(
+                        b["text"] if isinstance(b, dict) and "text" in b else str(b)
+                        for b in content
+                    )
+                    oai_messages.append({"role": "user", "content": text})
+            elif role == "assistant" and isinstance(content, list):
+                # Reconstruct OpenAI assistant message from canonical blocks
+                text_parts = []
+                tool_calls = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(block["text"])
+                        elif block.get("type") == "tool_use":
+                            tool_calls.append({
+                                "id": block["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": block["name"],
+                                    "arguments": json.dumps(block["input"]),
+                                },
+                            })
+                assistant_msg: Dict[str, Any] = {"role": "assistant"}
+                assistant_msg["content"] = "\n".join(text_parts) if text_parts else None
+                if tool_calls:
+                    assistant_msg["tool_calls"] = tool_calls
+                oai_messages.append(assistant_msg)
+            else:
+                oai_messages.append({"role": role, "content": content})
+
+        # Build kwargs
+        model_lower = model.lower()
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "messages": oai_messages,
+            "tools": ToolAdapter.to_openai(tools),
+        }
+
+        no_custom_temp_models = ("gpt-5-mini", "o1", "o3")
+        if not any(identifier in model_lower for identifier in no_custom_temp_models):
+            kwargs["temperature"] = temperature
+
+        modern_token_param_models = ("gpt-5", "gpt-4o", "o1")
+        if any(identifier in model_lower for identifier in modern_token_param_models):
+            kwargs["max_completion_tokens"] = max_tokens
+        else:
+            kwargs["max_tokens"] = max_tokens
+
+        response = await self.openai_client.chat.completions.create(**kwargs)
+        return ToolAdapter.parse_openai_response(response)
+
+    async def _call_google_with_tools(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        system_prompt: str,
+        tools: List[Dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+    ) -> Dict[str, Any]:
+        """Call Google Gemini with function calling."""
+        if not self._genai_module:
+            raise ValueError("Google Generative AI not initialized")
+
+        genai = self._genai_module
+        gemini_model = genai.GenerativeModel(
+            model_name=model,
+            system_instruction=system_prompt,
+            tools=ToolAdapter.to_google(tools),
+        )
+
+        # Convert messages to Gemini content format
+        gemini_contents = []
+        for msg in messages:
+            role = msg["role"]
+            content = msg.get("content")
+            gemini_role = "model" if role == "assistant" else "user"
+
+            if role == "user" and isinstance(content, list):
+                # Check for tool_result blocks
+                tool_results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+                if tool_results:
+                    parts = ToolAdapter.format_tool_results_google([
+                        {"name": tr.get("name", "tool"), "result": tr.get("content", "")}
+                        for tr in tool_results
+                    ])
+                    gemini_contents.append({"role": "user", "parts": parts})
+                    continue
+
+            if isinstance(content, list):
+                text = " ".join(
+                    b["text"] if isinstance(b, dict) and "text" in b else str(b)
+                    for b in content
+                )
+            elif isinstance(content, str):
+                text = content
+            else:
+                text = str(content) if content else ""
+
+            gemini_contents.append({"role": gemini_role, "parts": [{"text": text}]})
+
+        response = await asyncio.to_thread(
+            gemini_model.generate_content,
+            gemini_contents,
+            generation_config={"max_output_tokens": max_tokens, "temperature": temperature},
+        )
+
+        return ToolAdapter.parse_google_response(response)
+
+    async def _call_openai_compatible_with_tools(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        system_prompt: str,
+        tools: List[Dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+    ) -> Dict[str, Any]:
+        """Call OpenAI-compatible APIs (Groq, Together, etc.) with function calling."""
+        # Use groq client for groq models, otherwise fall back to openai-compatible
+        client = None
+        model_lower = model.lower()
+        if self.groq_client and ("mixtral" in model_lower or "llama" in model_lower or "groq" in model_lower):
+            client = self.groq_client
+        elif self.openai_client:
+            client = self.openai_client
+
+        if not client:
+            raise ValueError("No OpenAI-compatible client available")
+
+        oai_messages = [{"role": "system", "content": system_prompt}]
+        for msg in messages:
+            role = msg["role"]
+            content = msg.get("content")
+            if role == "user" and isinstance(content, list):
+                tool_results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+                if tool_results:
+                    for tr in tool_results:
+                        oai_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tr["tool_use_id"],
+                            "content": tr.get("content", ""),
+                        })
+                else:
+                    text = " ".join(
+                        b["text"] if isinstance(b, dict) and "text" in b else str(b)
+                        for b in content
+                    )
+                    oai_messages.append({"role": "user", "content": text})
+            elif role == "assistant" and isinstance(content, list):
+                text_parts = []
+                tool_calls = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(block["text"])
+                        elif block.get("type") == "tool_use":
+                            tool_calls.append({
+                                "id": block["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": block["name"],
+                                    "arguments": json.dumps(block["input"]),
+                                },
+                            })
+                assistant_msg: Dict[str, Any] = {"role": "assistant"}
+                assistant_msg["content"] = "\n".join(text_parts) if text_parts else None
+                if tool_calls:
+                    assistant_msg["tool_calls"] = tool_calls
+                oai_messages.append(assistant_msg)
+            else:
+                oai_messages.append({"role": role, "content": content})
+
+        response = await client.chat.completions.create(
+            model=model,
+            messages=oai_messages,
+            tools=ToolAdapter.to_openai_compatible(tools),
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+        return ToolAdapter.parse_openai_response(response)
 
     async def close(self):
         """Close any open sessions"""

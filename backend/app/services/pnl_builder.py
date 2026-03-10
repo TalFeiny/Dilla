@@ -161,13 +161,24 @@ class PnlBuilder:
     # ------------------------------------------------------------------
 
     def _pull_actuals(
-        self, start: Optional[str], end: Optional[str]
+        self,
+        start: Optional[str],
+        end: Optional[str],
+        excluded_sources: Optional[List[str]] = None,
+        source_multipliers: Optional[Dict[str, float]] = None,
+        terminated_sources: Optional[Dict[str, str]] = None,
+        entity_id: Optional[str] = None,
     ) -> Tuple[Dict[str, Dict[str, float]], List[str]]:
         """
         Returns:
             actuals_by_key_period: {"revenue": {"2025-01": 500000, ...}, ...}
                 Keys are "category" or "category:subcategory"
             periods: sorted list of period strings
+
+        Contract scenario params (used by scenario engine):
+            excluded_sources: list of source strings to zero out (e.g. ["document:abc"])
+            source_multipliers: {source: factor} to scale amounts (e.g. 0.8 = 20% reduction)
+            terminated_sources: {source: "YYYY-MM"} to zero out after that period
         """
         from app.core.supabase_client import get_supabase_client
 
@@ -176,11 +187,17 @@ class PnlBuilder:
             logger.warning("Supabase client unavailable — cannot fetch actuals")
             return {}, []
 
+        # Need source column when contract filtering is active
+        has_contract_filters = excluded_sources or source_multipliers or terminated_sources
+        select_cols = "period, category, subcategory, hierarchy_path, amount, source" if has_contract_filters else "period, category, subcategory, amount"
+
         query = (
             sb.table("fpa_actuals")
-            .select("period, category, subcategory, amount")
+            .select(select_cols)
             .eq("company_id", self.company_id)
         )
+        if entity_id:
+            query = query.eq("entity_id", entity_id)
         if start:
             query = query.gte("period", f"{start}-01")
         if end:
@@ -194,12 +211,26 @@ class PnlBuilder:
         actuals: Dict[str, Dict[str, float]] = {}
         periods_set: set = set()
 
+        excluded = set(excluded_sources or [])
+        multipliers = source_multipliers or {}
+        terminated = terminated_sources or {}
+
         for row in result.data:
             period = row["period"][:7]
             cat = row["category"]
             sub = row.get("subcategory")
             hp = row.get("hierarchy_path", "")
             amount = float(row["amount"])
+            source = row.get("source", "")
+
+            # Apply contract-level scenario modifications
+            if has_contract_filters and source:
+                if source in excluded:
+                    continue
+                if source in terminated and period > terminated[source]:
+                    continue
+                if source in multipliers:
+                    amount = amount * multipliers[source]
 
             # Use hierarchy_path as key when it encodes >2 levels
             if hp and hp.count("/") > 1:
@@ -210,7 +241,9 @@ class PnlBuilder:
                 key = cat
 
             periods_set.add(period)
-            actuals.setdefault(key, {})[period] = amount
+            actuals.setdefault(key, {})[period] = (
+                actuals.get(key, {}).get(period, 0) + amount
+            )
 
         periods = sorted(periods_set)
         return actuals, periods
@@ -938,3 +971,43 @@ class PnlBuilder:
         if gp is not None and opex is not None:
             return gp - opex
         return None
+
+    # ------------------------------------------------------------------
+    # Group consolidation entry point
+    # ------------------------------------------------------------------
+
+    async def build_group_pnl(
+        self,
+        parent_entity_id: str,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build consolidated group P&L with IC elimination.
+
+        Delegates to ConsolidationEngine, returns result formatted for the matrix.
+        """
+        from app.services.consolidation_engine import ConsolidationEngine
+
+        engine = ConsolidationEngine(self.company_id, self.fund_id)
+        result = await engine.consolidate_pnl(
+            parent_entity_id, period_start, period_end,
+        )
+
+        return {
+            "consolidated": dict(result.consolidated),
+            "eliminations": [
+                {
+                    "category": e.category,
+                    "subcategory": e.subcategory,
+                    "period": e.period,
+                    "amount": e.amount,
+                    "description": e.description,
+                }
+                for e in result.eliminations
+            ],
+            "entities_consolidated": result.entities_consolidated,
+            "entities_equity_method": result.entities_equity_method,
+            "minority_interest": result.minority_interest,
+            "periods": result.periods,
+            "audit": result.audit,
+        }

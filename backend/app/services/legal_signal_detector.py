@@ -83,6 +83,7 @@ def detect_legal_signals(
     signals.extend(_detect_governance_shifts(params, financial_state))
     signals.extend(_detect_exposure_alerts(params, cascade_graph))
     signals.extend(_detect_cost_of_capital_signals(params, financial_state))
+    signals.extend(_detect_benchmark_deviations(params, financial_state))
     signals.extend(_detect_missing_protections(params, financial_state))
     signals.extend(_detect_expiry_deadlines(params, as_of))
     signals.extend(_detect_indemnity_signals(params, as_of))
@@ -524,6 +525,108 @@ def _detect_cost_of_capital_signals(
                     "source_clause": param.source_clause_id,
                 },
             ))
+
+    return signals
+
+
+def _detect_benchmark_deviations(
+    params: ResolvedParameterSet,
+    state: Any,
+) -> List[StrategicSignal]:
+    """Data-driven detection of above/below-market clauses using benchmark dataset."""
+    signals: List[StrategicSignal] = []
+
+    stage = getattr(state, "stage", None) if state else None
+    if not stage:
+        return signals
+
+    try:
+        from app.services.clause_benchmark_service import benchmark_clause
+
+        # Benchmark key numeric clause types
+        benchmarkable = [
+            "liquidation_preference", "conversion_discount", "warrant_coverage",
+            "dividend_rate", "drag_along_threshold", "option_pool_pct",
+            "valuation_cap_multiple", "round_dilution",
+        ]
+        for clause_type in benchmarkable:
+            clause_params = params.get_all(clause_type)
+            for param in clause_params:
+                if param.value is None or not isinstance(param.value, (int, float)):
+                    continue
+
+                result = benchmark_clause(clause_type, param.value, stage)
+
+                if result.is_above_market:
+                    signals.append(StrategicSignal(
+                        signal_type="anomaly",
+                        metric=f"{clause_type}_above_market",
+                        description=(
+                            f"{clause_type.replace('_', ' ').title()} on {param.applies_to}: "
+                            f"{result.comparison} ({param.section_reference})"
+                        ),
+                        severity="medium" if result.percentile and result.percentile < 0.90 else "high",
+                        current_value=param.value,
+                        data={
+                            "applies_to": param.applies_to,
+                            "value": param.value,
+                            "percentile": result.percentile,
+                            "market_range": result.market_range,
+                            "is_above_market": True,
+                            "source_clause": param.source_clause_id,
+                        },
+                    ))
+                elif result.is_below_market:
+                    signals.append(StrategicSignal(
+                        signal_type="anomaly",
+                        metric=f"{clause_type}_below_market",
+                        description=(
+                            f"{clause_type.replace('_', ' ').title()} on {param.applies_to}: "
+                            f"{result.comparison} ({param.section_reference})"
+                        ),
+                        severity="low",
+                        current_value=param.value,
+                        data={
+                            "applies_to": param.applies_to,
+                            "value": param.value,
+                            "percentile": result.percentile,
+                            "market_range": result.market_range,
+                            "is_below_market": True,
+                            "source_clause": param.source_clause_id,
+                        },
+                    ))
+
+        # Benchmark categorical clause types
+        categorical = [
+            "anti_dilution_method", "participation_rights", "pro_rata_rights",
+            "protective_provisions", "tag_along", "rofr", "redemption_rights",
+            "pay_to_play", "registration_rights",
+        ]
+        for clause_type in categorical:
+            clause_params = params.get_all(clause_type)
+            for param in clause_params:
+                if param.value is None:
+                    continue
+                result = benchmark_clause(clause_type, param.value, stage)
+                if not result.is_standard:
+                    signals.append(StrategicSignal(
+                        signal_type="anomaly",
+                        metric=f"{clause_type}_non_standard",
+                        description=(
+                            f"{clause_type.replace('_', ' ').title()} on {param.applies_to}: "
+                            f"{result.comparison} ({param.section_reference})"
+                        ),
+                        severity="medium",
+                        current_value=param.value,
+                        data={
+                            "applies_to": param.applies_to,
+                            "value": param.value,
+                            "pct_deals_standard": result.pct_deals_with_standard,
+                            "source_clause": param.source_clause_id,
+                        },
+                    ))
+    except ImportError:
+        pass  # benchmark service not available, skip
 
     return signals
 
