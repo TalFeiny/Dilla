@@ -12,10 +12,28 @@ Handles:
 """
 
 import logging
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LegalBranchOverride:
+    """Legal parameter changes for a scenario branch.
+
+    Represents "what if we accept these terms" — clause parameter
+    overrides that get layered onto the company's base legal structure.
+    """
+    param_overrides: Dict[str, Any] = field(default_factory=dict)
+    # param_type:applies_to → new value
+    new_documents: List[str] = field(default_factory=list)
+    # document IDs layered in (term sheet, amendment)
+    removed_documents: List[str] = field(default_factory=list)
+    # documents superseded
+    description: str = ""
+    # "Accept Investor X term sheet as-is"
 
 DEFAULT_COST_PER_HEAD_MONTHLY = 15_000
 
@@ -83,6 +101,7 @@ class ScenarioBranchService:
         opex_adjustments: merge at sub-key level.
         growth_overrides_by_month: merge (child month wins).
         one_time_costs: concatenate.
+        legal_overrides: merge using DOC_PRIORITY logic (child beats parent).
         """
         import json as _json
 
@@ -123,6 +142,10 @@ class ScenarioBranchService:
 
             if "one_time_costs" in raw:
                 merged.setdefault("one_time_costs", []).extend(raw["one_time_costs"])
+
+            # Legal overrides — child legal overrides beat parent
+            if "legal_overrides" in raw:
+                merged.setdefault("legal_overrides", {}).update(raw["legal_overrides"])
 
         return merged
 
@@ -211,7 +234,7 @@ class ScenarioBranchService:
             branch_forecast = parent_segment + branch_segment
             source_map = ["parent"] * fork_idx + ["branch"] * len(branch_segment)
 
-        return {
+        result = {
             "branch_id": branch_id,
             "name": leaf.get("name", ""),
             "probability": leaf.get("probability"),
@@ -222,6 +245,15 @@ class ScenarioBranchService:
             "source_map": source_map,
             "fork_month_index": fork_idx,
         }
+
+        # Legal branch overrides — resolve legal params if available
+        legal_overrides = merged.get("legal_overrides")
+        if legal_overrides:
+            result["legal"] = self._resolve_legal_branch(
+                company_id, legal_overrides, branch_forecast
+            )
+
+        return result
 
     # ------------------------------------------------------------------
     # Multi-branch comparison
@@ -272,7 +304,10 @@ class ScenarioBranchService:
         ev_forecast = self._compute_expected_value(comparisons)
         charts = self._build_multi_branch_charts(comparisons)
 
-        return {
+        # Legal diff: if any branches have legal overrides, run clause diff
+        legal_diffs = self._compute_legal_diffs(comparisons, company_id)
+
+        result = {
             "company_id": company_id,
             "forecast_months": forecast_months,
             "start_period": start_period,
@@ -280,6 +315,11 @@ class ScenarioBranchService:
             "expected_value": ev_forecast,
             "charts": charts,
         }
+
+        if legal_diffs:
+            result["legal_diffs"] = legal_diffs
+
+        return result
 
     # ------------------------------------------------------------------
     # Recursive delete
@@ -671,6 +711,288 @@ class ScenarioBranchService:
             "Series C": 400_000_000, "Series D": 800_000_000,
         }
         return stage_vals.get(stage, 20_000_000)
+
+    # ------------------------------------------------------------------
+    # Legal branch resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_legal_branch(
+        self,
+        company_id: str,
+        legal_overrides: Dict[str, Any],
+        branch_forecast: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Resolve legal parameters for a branch, run cascade + legal signals.
+
+        1. Load extracted docs for the company
+        2. Resolve clause parameters with branch overrides applied
+        3. Build cascade graph
+        4. Detect legal signals against the branch forecast
+        5. Identify constraints
+        """
+        from app.services.clause_parameter_registry import (
+            ClauseParameterRegistry,
+        )
+        from app.services.cascade_engine import CascadeGraph
+        from app.services.legal_signal_detector import detect_legal_signals
+
+        # Load extracted documents
+        extracted_docs = self._load_legal_documents(company_id)
+
+        registry = ClauseParameterRegistry()
+        branch_params = registry.resolve_with_overrides(
+            company_id, extracted_docs, legal_overrides
+        )
+
+        # Build cascade graph from branch params
+        cascade = CascadeGraph()
+        cascade.build_from_clauses(branch_params)
+
+        # Build a lightweight state object for signal detection
+        financial_state = self._forecast_to_signal_state(branch_forecast)
+
+        # Detect legal signals specific to this branch
+        signals = detect_legal_signals(branch_params, financial_state, cascade)
+
+        # Identify constraints
+        constraints = cascade.identify_constraints()
+
+        return {
+            "params": {
+                "count": len(branch_params.parameters),
+                "conflicts": len(branch_params.conflicts),
+                "gaps": branch_params.gaps,
+                "instruments": [
+                    {
+                        "id": i.instrument_id,
+                        "type": i.instrument_type,
+                        "holder": i.holder,
+                    }
+                    for i in branch_params.instruments
+                ],
+            },
+            "signals": [
+                {
+                    "type": s.signal_type,
+                    "metric": s.metric,
+                    "description": s.description,
+                    "severity": s.severity,
+                    "data": s.data,
+                }
+                for s in signals
+            ],
+            "constraints": [
+                {
+                    "description": c.description,
+                    "constraint_type": c.constraint_type,
+                    "source_clause": c.source_clause.source_clause_id
+                    if c.source_clause else None,
+                    "source_ref": c.source_clause.section_reference
+                    if c.source_clause else None,
+                }
+                for c in constraints
+            ],
+            "cascade_node_count": len(cascade.nodes),
+            "cascade_edge_count": len(cascade.edges),
+        }
+
+    def _load_legal_documents(self, company_id: str) -> List[Dict[str, Any]]:
+        """Load all processed documents with legal clause data for a company."""
+        from app.core.supabase_client import get_supabase_client
+
+        sb = get_supabase_client()
+        if not sb:
+            return []
+
+        legal_doc_types = [
+            "sha", "term_sheet", "side_letter", "spa",
+            "option_agreement", "warrant_agreement",
+            "convertible_note", "safe", "loan_agreement",
+            "credit_facility", "venture_debt",
+            "articles_of_association", "amendment",
+            "subscription_agreement", "guarantee",
+            "indemnity_agreement", "escrow_agreement",
+            "management_agreement", "ip_agreement",
+            "services_agreement",
+        ]
+
+        try:
+            resp = (
+                sb.table("processed_documents")
+                .select("id, document_type, extracted_data, created_at")
+                .eq("company_id", company_id)
+                .in_("document_type", legal_doc_types)
+                .order("created_at", desc=False)
+                .execute()
+            )
+            docs = resp.data or []
+
+            # Flatten extracted_data into top-level dict for the registry
+            result = []
+            for doc in docs:
+                extracted = doc.get("extracted_data", {})
+                if isinstance(extracted, str):
+                    import json as _json
+                    try:
+                        extracted = _json.loads(extracted)
+                    except (ValueError, TypeError):
+                        continue
+                if not isinstance(extracted, dict):
+                    continue
+                entry = {
+                    "id": doc["id"],
+                    "document_type": doc.get("document_type", ""),
+                    **extracted,
+                }
+                result.append(entry)
+
+            return result
+
+        except Exception as e:
+            logger.warning(
+                "Failed to load legal docs for %s: %s", company_id, e
+            )
+            return []
+
+    def _forecast_to_signal_state(
+        self, forecast: List[Dict[str, Any]]
+    ) -> Any:
+        """Build a lightweight state object from forecast for signal detection."""
+        if not forecast:
+            return None
+
+        last = forecast[-1]
+
+        class _BranchState:
+            pass
+
+        state = _BranchState()
+        state.runway_months = last.get("runway_months")
+        state.revenue = last.get("revenue", 0)
+        state.ebitda = last.get("ebitda", 0)
+        state.cash_balance = last.get("cash_balance", 0)
+        state.free_cash_flow = last.get("free_cash_flow", 0)
+
+        # Estimate DSCR from forecast if debt service is present
+        debt_service = last.get("debt_service_monthly", 0)
+        if debt_service and debt_service > 0:
+            state.dscr = last.get("ebitda", 0) / (debt_service * 12) if debt_service else None
+        else:
+            state.dscr = None
+
+        state.leverage_ratio = None
+
+        # Trajectory estimation from forecast trend
+        if len(forecast) >= 3:
+            recent_ebitda = [m.get("ebitda", 0) for m in forecast[-3:]]
+            if recent_ebitda[-1] < recent_ebitda[0]:
+                state.burn_trajectory = "accelerating"
+            elif recent_ebitda[-1] > recent_ebitda[0]:
+                state.burn_trajectory = "improving"
+            else:
+                state.burn_trajectory = "stable"
+        else:
+            state.burn_trajectory = "stable"
+
+        state.stage = None
+        state.kpis = {}
+        state.drivers = {}
+
+        return state
+
+    def _compute_legal_diffs(
+        self,
+        comparisons: List[Dict[str, Any]],
+        company_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        If branches carry legal overrides, diff their resolved params
+        against the base structure and against each other.
+
+        Returns clause-diff results showing per-stakeholder dollar impact
+        at multiple exit values.
+        """
+        legal_branches = [
+            c for c in comparisons
+            if c.get("branch_id") and c.get("legal")
+        ]
+        if not legal_branches:
+            return None
+
+        try:
+            from app.services.clause_parameter_registry import (
+                ClauseParameterRegistry,
+            )
+            from app.services.clause_diff_engine import ClauseDiffEngine
+
+            extracted_docs = self._load_legal_documents(company_id)
+            registry = ClauseParameterRegistry()
+            diff_engine = ClauseDiffEngine()
+
+            # Resolve base params (no overrides)
+            base_params = registry.resolve_parameters(company_id, extracted_docs)
+
+            # Resolve each legal branch's params
+            branch_params = {}
+            for comp in legal_branches:
+                bid = comp["branch_id"]
+                overrides = comp.get("assumptions", {}).get("legal_overrides", {})
+                branch_params[bid] = registry.resolve_with_overrides(
+                    company_id, extracted_docs, overrides
+                )
+
+            # Diff: base vs each branch
+            diffs: Dict[str, Any] = {"base_vs_branch": {}, "pairwise": {}}
+
+            for bid, params in branch_params.items():
+                name = next(
+                    (c["name"] for c in legal_branches if c["branch_id"] == bid),
+                    bid,
+                )
+                result = diff_engine.diff(base_params, params)
+                diffs["base_vs_branch"][name] = {
+                    "delta_count": len(result.deltas),
+                    "summary": result.summary,
+                    "cost_of_capital": result.cost_of_capital_comparison,
+                    "stakeholder_impacts": {
+                        k: {
+                            "ownership_delta": v.ownership_delta,
+                            "alignment_shift": v.alignment_shift,
+                            "rights_gained": v.new_rights_gained,
+                            "rights_lost": v.rights_lost,
+                        }
+                        for k, v in result.stakeholder_impacts.items()
+                    },
+                    "constraint_changes": result.net_impact.constraint_changes,
+                }
+
+            # Pairwise diffs between legal branches
+            branch_list = list(branch_params.items())
+            for i in range(len(branch_list)):
+                for j in range(i + 1, len(branch_list)):
+                    bid_a, params_a = branch_list[i]
+                    bid_b, params_b = branch_list[j]
+                    name_a = next(
+                        (c["name"] for c in legal_branches if c["branch_id"] == bid_a),
+                        bid_a,
+                    )
+                    name_b = next(
+                        (c["name"] for c in legal_branches if c["branch_id"] == bid_b),
+                        bid_b,
+                    )
+                    result = diff_engine.diff(params_a, params_b)
+                    diffs["pairwise"][f"{name_a} vs {name_b}"] = {
+                        "delta_count": len(result.deltas),
+                        "summary": result.summary,
+                        "alignment_matrix": result.alignment_matrix,
+                    }
+
+            return diffs
+
+        except Exception as e:
+            logger.warning("Legal diff failed: %s", e)
+            return None
 
     # ------------------------------------------------------------------
     # Private: override application

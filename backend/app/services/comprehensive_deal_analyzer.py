@@ -14,7 +14,10 @@ from app.services.intelligent_gap_filler import IntelligentGapFiller
 from app.services.advanced_cap_table import CapTableCalculator, ShareEntry, ShareClass
 from app.services.company_scoring_visualizer import CompanyScoringVisualizer
 from app.services.ownership_return_analyzer import OwnershipReturnAnalyzer
-from app.services.citation_manager import CitationManager
+try:
+    from app.services.enhanced_citation_manager import EnhancedCitationManager as CitationManager
+except ImportError:
+    from app.services.citation_manager import CitationManager
 
 logger = logging.getLogger(__name__)
 

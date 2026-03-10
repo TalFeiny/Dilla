@@ -557,6 +557,40 @@ class CashFlowPlanningService:
                 "runway_months": round(max(0, runway_months), 1),
             })
 
+        # ── Subcategory decomposition ────────────────────────────────
+        # If we have actuals-based subcategory proportions, decompose parent
+        # opex/cogs totals into line-item detail for each forecast month.
+        _company_id = company_data.get("company_id")
+        if _company_id:
+            try:
+                from app.services.actuals_ingestion import get_subcategory_proportions
+
+                _proportions_cache: Dict[str, Dict[str, float]] = {}
+                for cat in ("opex_rd", "opex_sm", "opex_ga", "cogs"):
+                    props = get_subcategory_proportions(_company_id, cat)
+                    if props:
+                        _proportions_cache[cat] = props
+
+                if _proportions_cache:
+                    cat_to_field = {
+                        "opex_rd": "rd_spend", "opex_sm": "sm_spend",
+                        "opex_ga": "ga_spend", "cogs": "cogs",
+                    }
+                    for row in results:
+                        subcategories = {}
+                        for cat, props in _proportions_cache.items():
+                            field = cat_to_field.get(cat, cat)
+                            cat_total = row.get(field, 0)
+                            if cat_total:
+                                subcategories[cat] = {
+                                    sub: round(cat_total * pct, 2)
+                                    for sub, pct in props.items()
+                                }
+                        if subcategories:
+                            row["subcategories"] = subcategories
+            except Exception as e:
+                logger.debug("Subcategory decomposition skipped: %s", e)
+
         # ── Seasonality overlay ──────────────────────────────────────
         # Apply detected seasonal patterns to adjust revenue forecasts.
         # Only applies when: (a) we have a company_id, (b) enough actuals

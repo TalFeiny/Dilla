@@ -278,11 +278,18 @@ def _get_tax_rate(state: Any) -> float:
 # Signal Detection — from actual KPI/actuals data
 # ---------------------------------------------------------------------------
 
-def detect_signals(state: Any) -> List[StrategicSignal]:
+def detect_signals(
+    state: Any,
+    legal_params: Optional[Any] = None,
+) -> List[StrategicSignal]:
     """Detect strategic signals from actual company data.
 
     No hardcoded thresholds — signals are relative to the company's
     own trajectory and data.
+
+    If legal_params (ResolvedParameterSet) is provided, also detects
+    legal signals from clause analysis — covenant proximity, conversion
+    triggers, governance shifts, exposure alerts, cost of capital, etc.
     """
     signals: List[StrategicSignal] = []
 
@@ -390,6 +397,18 @@ def detect_signals(state: Any) -> List[StrategicSignal]:
                         data={"previous": prev, "pct_change": pct_change},
                     ))
 
+    # --- Legal signals from clause analysis ---
+    if legal_params:
+        try:
+            from app.services.cascade_engine import CascadeGraph
+            from app.services.legal_signal_detector import detect_legal_signals
+
+            cascade = CascadeGraph()
+            cascade.build_from_clauses(legal_params)
+            signals.extend(detect_legal_signals(legal_params, state, cascade))
+        except Exception as e:
+            logger.warning("Legal signal detection failed: %s", e)
+
     return signals
 
 
@@ -482,7 +501,7 @@ class StrategicIntelligenceService:
         else:
             situation_assessment = _build_fallback_assessment(state, signals)
 
-        return StrategicAnalysis(
+        analysis = StrategicAnalysis(
             situation_assessment=situation_assessment,
             signals=signals,
             impact_chains=impact_chains,
@@ -490,6 +509,17 @@ class StrategicIntelligenceService:
             wacc=wacc,
             open_questions=open_questions,
         )
+
+        # Emit strategic signals as grid suggestions so the CFO brain
+        # pushes proactively to the frontend instead of just returning chat text.
+        try:
+            await self._emit_signal_suggestions(
+                analysis, company_id, company_data,
+            )
+        except Exception as e:
+            logger.warning("Failed to emit strategic suggestions: %s", e)
+
+        return analysis
 
     async def proactive_check(
         self,
@@ -537,6 +567,156 @@ class StrategicIntelligenceService:
             signals=high_signals,
             severity="high" if any(s.severity == "high" for s in high_signals) else "medium",
         )
+
+    # ------------------------------------------------------------------
+    # Strategic → Suggestion emission
+    # ------------------------------------------------------------------
+
+    async def _emit_signal_suggestions(
+        self,
+        analysis: StrategicAnalysis,
+        company_id: str,
+        company_data: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Emit strategic signals + recommendations as pending_suggestions.
+
+        Maps signal metrics to grid columns so the CFO brain proactively
+        pushes actionable items to the frontend grid.
+        """
+        from app.services.micro_skills import MicroSkillResult, CitationSource
+        from app.services.micro_skills.suggestion_emitter import emit_batch
+
+        # Resolve fund_id from company_data or skip if unavailable
+        fund_id = ""
+        if company_data and isinstance(company_data, dict):
+            fund_id = company_data.get("fund_id", "")
+        if not fund_id:
+            # Try to load from DB
+            try:
+                from app.core.database import get_supabase_service
+                svc = get_supabase_service()
+                if svc:
+                    sb = svc.get_client()
+                    row = sb.table("companies").select("fund_id").eq("id", company_id).limit(1).execute()
+                    if row.data:
+                        fund_id = row.data[0].get("fund_id", "")
+            except Exception:
+                pass
+        if not fund_id or not company_id:
+            logger.debug("Cannot emit strategic suggestions: missing fund_id or company_id")
+            return 0
+
+        results: list[MicroSkillResult] = []
+
+        # 1. Convert each signal into a suggestion targeting the relevant metric
+        _SIGNAL_METRIC_TO_FIELD = {
+            "runway_months": "runway_months",
+            "revenue_growth": "growth_rate",
+            "burn_rate": "burn_rate",
+            "gross_margin": "gross_margin",
+            "cash_balance": "cash_balance",
+            "ltv_cac_ratio": "ltv_cac_ratio",
+        }
+
+        for signal in analysis.signals:
+            field_name = _SIGNAL_METRIC_TO_FIELD.get(signal.metric)
+            if not field_name or signal.current_value is None:
+                continue
+
+            # Build reasoning from signal + impact chains
+            reasoning_parts = [signal.description]
+            related_chains = [
+                c for c in analysis.impact_chains
+                if c.get("trigger") == signal.metric
+            ]
+            for chain in related_chains[:2]:
+                if chain.get("summary"):
+                    reasoning_parts.append(f"Impact: {chain['summary']}")
+
+            results.append(MicroSkillResult(
+                field_updates={field_name: signal.current_value},
+                confidence=0.85 if signal.severity == "high" else 0.65,
+                reasoning=" | ".join(reasoning_parts),
+                source=f"strategic_signal:{signal.signal_type}",
+                metadata={
+                    "signal_type": signal.signal_type,
+                    "severity": signal.severity,
+                    "threshold": signal.threshold,
+                    "is_strategic_alert": True,
+                },
+            ))
+
+        # 2. Convert recommendations into suggestions where they map to fields
+        _REC_ACTION_KEYWORDS_TO_FIELD = {
+            "runway": "runway_months",
+            "burn": "burn_rate",
+            "revenue": "growth_rate",
+            "margin": "gross_margin",
+            "headcount": "team_size",
+            "hire": "team_size",
+            "fundraise": "total_funding",
+            "valuation": "valuation",
+        }
+
+        for rec in analysis.recommendations[:4]:
+            action = rec.get("action", "").lower()
+            reasoning = rec.get("reasoning", "")
+            impact = rec.get("quantified_impact", "")
+            priority = rec.get("priority", "medium")
+
+            # Find best matching field
+            matched_field = None
+            for keyword, field_name in _REC_ACTION_KEYWORDS_TO_FIELD.items():
+                if keyword in action:
+                    matched_field = field_name
+                    break
+
+            if not matched_field:
+                continue
+
+            rec_reasoning = f"CFO Recommendation: {rec.get('action', '')}. {reasoning}"
+            if impact:
+                rec_reasoning += f" Expected impact: {impact}"
+
+            results.append(MicroSkillResult(
+                field_updates={},  # No value override — this is advisory
+                suggestions=[{
+                    "type": "strategic_recommendation",
+                    "action": rec.get("action"),
+                    "reasoning": rec_reasoning,
+                    "priority": priority,
+                    "timing": rec.get("timing"),
+                    "tradeoffs": rec.get("tradeoffs"),
+                    "field": matched_field,
+                }],
+                confidence=0.80 if priority == "high" else 0.60,
+                reasoning=rec_reasoning[:500],
+                source="strategic_recommendation",
+                metadata={
+                    "is_strategic_recommendation": True,
+                    "priority": priority,
+                },
+            ))
+
+        if not results:
+            return 0
+
+        company_name = ""
+        if company_data and isinstance(company_data, dict):
+            company_name = company_data.get("company", company_data.get("name", ""))
+
+        count = await emit_batch(
+            results=results,
+            company_id=company_id,
+            fund_id=fund_id,
+            company_name=company_name,
+        )
+        logger.info(
+            "Emitted %d strategic suggestions for %s (%d signals, %d recommendations)",
+            count, company_name or company_id,
+            len(analysis.signals), len(analysis.recommendations),
+        )
+        return count
 
     # ------------------------------------------------------------------
     # LLM integration

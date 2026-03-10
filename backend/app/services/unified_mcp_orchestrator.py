@@ -80,10 +80,13 @@ except Exception as exc:  # pragma: no cover - defensive import guard
     CapTableCalculator = None  # type: ignore[assignment]
 
 try:
-    from app.services.citation_manager import CitationManager
-except Exception as exc:  # pragma: no cover - defensive import guard
-    CRITICAL_IMPORT_ERRORS["CitationManager"] = exc
-    CitationManager = None  # type: ignore[assignment]
+    from app.services.enhanced_citation_manager import EnhancedCitationManager as CitationManager
+except Exception:
+    try:
+        from app.services.citation_manager import CitationManager
+    except Exception as exc:  # pragma: no cover - defensive import guard
+        CRITICAL_IMPORT_ERRORS["CitationManager"] = exc
+        CitationManager = None  # type: ignore[assignment]
 
 try:
     from app.services.ownership_return_analyzer import OwnershipReturnAnalyzer, InvestmentType
@@ -162,6 +165,48 @@ try:
 except Exception as exc:  # pragma: no cover - defensive import guard
     NON_CRITICAL_IMPORT_ERRORS["NLScenarioComposer"] = exc
     NLScenarioComposer = None  # type: ignore[assignment]
+
+try:
+    from app.services.driver_impact_service import DriverImpactService
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["DriverImpactService"] = exc
+    DriverImpactService = None  # type: ignore[assignment]
+
+try:
+    from app.services.company_health_scorer import CompanyHealthScorer
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["CompanyHealthScorer"] = exc
+    CompanyHealthScorer = None  # type: ignore[assignment]
+
+try:
+    from app.services.seasonality_engine import SeasonalityEngine
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["SeasonalityEngine"] = exc
+    SeasonalityEngine = None  # type: ignore[assignment]
+
+try:
+    from app.services.computed_metrics import ComputedMetrics
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["ComputedMetrics"] = exc
+    ComputedMetrics = None  # type: ignore[assignment]
+
+try:
+    from app.services.email_composer import EmailComposer
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["EmailComposer"] = exc
+    EmailComposer = None  # type: ignore[assignment]
+
+try:
+    from app.services.slack_composer import SlackComposer
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["SlackComposer"] = exc
+    SlackComposer = None  # type: ignore[assignment]
+
+try:
+    from app.services.far_analysis_service import FARAnalysisService
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["FARAnalysisService"] = exc
+    FARAnalysisService = None  # type: ignore[assignment]
 
 try:
     from app.services.company_history_analysis_service import CompanyHistoryAnalysisService
@@ -638,7 +683,7 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="bulk_write_grid",
-        description="Batch write cells to the P&L/FPA grid. Use for forecasts, actuals, or any multi-cell update.",
+        description="Batch write cells to grid (6+ cells). Returns grid_commands.",
         handler="_execute_bulk_write_grid",
         input_schema={
             "cells": "list[{company_id: str, category: str, period: str, amount: float}]",
@@ -702,6 +747,14 @@ AGENT_TOOLS: list[AgentTool] = [
         description="Generate memo/report from data already in shared_data. Types: ic_memo, followon, lp_report, gp_strategy, comparison, bespoke_lp, fund_analysis, ownership_analysis, plan_memo. Auto-detects type from prompt if not specified.",
         handler="_tool_generate_memo",
         input_schema={"memo_type": "str?", "prompt": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="draft_contract",
+        description="Draft a legal contract from template. Types: nda, employment, sha, vendor, service_agreement, contract_review. Auto-fills with company data from DB. For contract_review, include document_clauses in shared_data first.",
+        handler="_tool_draft_contract",
+        input_schema={"contract_type": "str", "company_name": "str?", "counterparty_name": "str?", "jurisdiction": "str?", "additional_context": "str?"},
         cost_tier="expensive",
         timeout_ms=90_000,
     ),
@@ -1455,7 +1508,7 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="fpa_forecast",
-        description="Generate forecast from actuals. Methods: growth_rate (default), regression, driver_based, seasonal, budget_pct. Auto-selects best method if not specified. Auto-saves to DB.",
+        description="Generate forecast from actuals. Auto-selects method. Saves to DB.",
         handler="_tool_fpa_forecast",
         input_schema={"company_id": "str", "months": "int?", "method": "str?", "monthly_overrides": "dict?", "drivers": "dict?", "activate": "bool?", "name": "str?"},
         cost_tier="cheap",
@@ -1471,7 +1524,7 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="fpa_scenario_create",
-        description="Create a scenario branch with assumption overrides (growth, burn, headcount, opex, funding). Use fork_period (YYYY-MM) to control when the branch diverges from the base case.",
+        description="Create scenario branch with assumption overrides. Returns forecast.",
         handler="_tool_fpa_scenario_create",
         input_schema={
             "company_id": "str",
@@ -1669,6 +1722,247 @@ AGENT_TOOLS: list[AgentTool] = [
         input_schema={"company_id": "str", "branch_id": "str?", "drivers": "dict?"},
         cost_tier="cheap",
         timeout_ms=10_000,
+    ),
+
+    # --- Driver Impact Analysis tools (explainability layer) ---
+    AgentTool(
+        name="fpa_correlate_actuals",
+        description=(
+            "Compute Pearson or Spearman correlation between two actuals time series "
+            "(e.g. revenue vs headcount, burn_rate vs growth_rate). "
+            "Returns r, p-value, significance, interpretation, and data points. "
+            "Requires at least 6 overlapping monthly periods."
+        ),
+        handler="_tool_fpa_correlate_actuals",
+        input_schema={
+            "company_id": "str",
+            "metric_a": "str",
+            "metric_b": "str",
+            "method": "str?",
+        },
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="fpa_driver_impact_ranking",
+        description=(
+            "Sensitivity analysis: perturbs each driver ±10% through the scenario engine "
+            "and ranks by impact on a target metric (revenue, ebitda, cash_balance, "
+            "runway_months, etc.). Returns tornado-chart-ready ranked driver list. "
+            "Use to answer 'what levers matter most for runway?' or 'which drivers "
+            "have the biggest impact on EBITDA?'"
+        ),
+        handler="_tool_fpa_driver_impact_ranking",
+        input_schema={
+            "company_id": "str",
+            "target_metric": "str",
+            "branch_id": "str?",
+            "perturbation": "float?",
+            "forecast_months": "int?",
+        },
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="fpa_explain_ripple_path",
+        description=(
+            "Trace the causal chain from a driver to a target metric through the "
+            "driver DAG. Pure graph traversal — no computation. "
+            "Returns annotated chain like 'headcount_change → burn_rate → "
+            "cash_balance → runway_months' with metadata at each hop."
+        ),
+        handler="_tool_fpa_explain_ripple_path",
+        input_schema={
+            "driver_id": "str",
+            "target_metric": "str?",
+        },
+        cost_tier="free",
+        timeout_ms=5_000,
+    ),
+    AgentTool(
+        name="fpa_explain_reverse_path",
+        description=(
+            "Backward lookup: find ALL drivers that can affect a given metric. "
+            "Answers 'what moves runway_months?' or 'what affects implied_valuation?' "
+            "Returns every driver and cross-domain node that feeds into the target."
+        ),
+        handler="_tool_fpa_explain_reverse_path",
+        input_schema={
+            "target_metric": "str",
+        },
+        cost_tier="free",
+        timeout_ms=5_000,
+    ),
+    AgentTool(
+        name="fpa_trace_strategic_impact",
+        description=(
+            "Cross-silo BFS with quantified impact chains. Traces how a change "
+            "(e.g. revenue_growth -3%) cascades across FPA, investment, and strategy "
+            "domains: revenue_growth → implied_valuation → dilution → founder_ownership. "
+            "Returns ranked chains with dollar/percentage deltas at each hop. "
+            "Use for 'what happens across the business if growth drops 3%?'"
+        ),
+        handler="_tool_fpa_trace_strategic_impact",
+        input_schema={
+            "company_id": "str",
+            "trigger": "str",
+            "delta": "float",
+            "max_depth": "int?",
+            "branch_id": "str?",
+        },
+        cost_tier="expensive",
+        timeout_ms=45_000,
+    ),
+
+    # --- Company Health & Portfolio Analytics ---
+    AgentTool(
+        name="company_health_score",
+        description=(
+            "Compute a rich analytical profile for a portfolio company: growth trajectory "
+            "with decay projections, burn & runway estimation, funding trajectory prediction, "
+            "valuation context, benchmark comparisons (ARR, growth, burn vs stage peers), "
+            "and factual signals (runway alerts, down round risk, stale pricing). "
+            "Use to answer 'how is this company doing?' or 'flag concerns in the portfolio.'"
+        ),
+        handler="_tool_company_health_score",
+        input_schema={"company_id": "str"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="company_return_metrics",
+        description=(
+            "Compute per-company return metrics: MOIC, IRR (Newton-Raphson on dated cash flows), "
+            "holding period, unrealized gain, cost basis per %. Requires fund investment data. "
+            "Use to answer 'what's our return on this company?' or 'IRR on our portfolio.'"
+        ),
+        handler="_tool_company_return_metrics",
+        input_schema={"company_id": "str"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="portfolio_health_analysis",
+        description=(
+            "Run health scoring + return metrics across ALL companies in the portfolio. "
+            "Returns per-company analytics, per-company returns (where investment data exists), "
+            "and fund-level aggregates: total invested, total NAV, portfolio MOIC, weighted IRR."
+        ),
+        handler="_tool_portfolio_health_analysis",
+        input_schema={},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+
+    # --- Seasonality Detection & Application ---
+    AgentTool(
+        name="fpa_detect_seasonality",
+        description=(
+            "Detect seasonal patterns from actual company data. Pulls 12-36 months of actuals, "
+            "detrends via moving average, computes month-of-year seasonal factors (multiplicative). "
+            "Returns 12 monthly factors, pattern strength, confidence, and source period count. "
+            "Use before forecasting to check if revenue has seasonal patterns."
+        ),
+        handler="_tool_fpa_detect_seasonality",
+        input_schema={"company_id": "str", "metric": "str?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="fpa_apply_seasonality",
+        description=(
+            "Apply detected seasonal factors to an existing forecast. Adjusts revenue by monthly "
+            "factors and cascades through COGS, gross profit, EBITDA, FCF, cash balance, runway. "
+            "Must run fpa_detect_seasonality first (or provide industry default). "
+            "Use after fpa_forecast to add seasonal adjustment."
+        ),
+        handler="_tool_fpa_apply_seasonality",
+        input_schema={"company_id": "str", "metric": "str?", "industry": "str?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+
+    # --- Computed Metrics (Unit Economics) ---
+    AgentTool(
+        name="fpa_computed_metrics",
+        description=(
+            "Compute all unit economics and SaaS metrics from actuals + driver overrides: "
+            "LTV, LTV:CAC ratio, magic number, CAC payback (months), rule of 40, "
+            "net/gross burn rate, runway, revenue per employee, ARR per customer. "
+            "Every metric includes a derivation string showing the exact formula and inputs. "
+            "Use to answer 'what are the unit economics?' or 'is the business healthy?'"
+        ),
+        handler="_tool_fpa_computed_metrics",
+        input_schema={"company_id": "str", "driver_overrides": "dict?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+
+    # --- Email & Slack Dispatch ---
+    AgentTool(
+        name="send_email",
+        description=(
+            "Send an email with the current analysis/memo/deck as content. "
+            "Converts memo sections to formatted HTML, attaches deck PDFs and chart PNGs. "
+            "Use when the user says 'email this to...' or 'send this analysis to...'"
+        ),
+        handler="_tool_send_email",
+        input_schema={"to": "str", "subject": "str", "from": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="send_slack",
+        description=(
+            "Send the current analysis/memo/deck to a Slack channel as Block Kit message. "
+            "Converts output to Slack-compatible blocks with formatting. "
+            "Use when the user says 'post to Slack' or 'share on Slack.'"
+        ),
+        handler="_tool_send_slack",
+        input_schema={"channel": "str", "thread_ts": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+
+    # --- FAR Analysis (Transfer Pricing) ---
+    AgentTool(
+        name="tp_far_analysis",
+        description=(
+            "Run multi-pass Functions/Assets/Risks profiling for a transfer pricing entity. "
+            "OECD-aligned methodology with DEMPE overlay for intangibles. "
+            "Pass 1: Extract economic activities from financials + IC transactions. "
+            "Pass 2: Structured FAR classification with significance scoring. "
+            "Pass 3: Group context positioning. Saves to DB."
+        ),
+        handler="_tool_tp_far_analysis",
+        input_schema={"entity_id": "str"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="tp_far_group",
+        description=(
+            "Run FAR analysis on ALL entities under a portfolio company. "
+            "Profiles each entity's functions, assets, risks, DEMPE involvement, "
+            "and position in the group value chain."
+        ),
+        handler="_tool_tp_far_group",
+        input_schema={"company_id": "str"},
+        cost_tier="expensive",
+        timeout_ms=180_000,
+    ),
+    AgentTool(
+        name="tp_far_compare",
+        description=(
+            "Compare two FAR profiles for functional comparability (OECD factor #2). "
+            "Significance-weighted scoring: high-significance shared functions dominate. "
+            "Returns 0-10 score, function/asset/risk similarity, characterization match, "
+            "DEMPE compatibility, and narrative explanation."
+        ),
+        handler="_tool_tp_far_compare",
+        input_schema={"entity_id_a": "str", "entity_id_b": "str", "deep": "bool?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
     ),
 
     # --- Transfer Pricing tools ---
@@ -1912,6 +2206,10 @@ TOOL_WIRING: dict[str, dict] = {
     # any keys the real tools fail to populate.
     "generate_memo": {
         "requires": ["companies", "valuations", "cap_table_history", "scenario_analysis"],
+        "produces": ["memo_artifacts"],
+    },
+    "draft_contract": {
+        "requires": ["companies"],
         "produces": ["memo_artifacts"],
     },
     "generate_deck": {
@@ -2389,6 +2687,112 @@ INTENT_TOOLS: dict[str, list[str]] = {
     ],
 }
 
+# ── Mode-aware intent guidance ────────────────────────────────────────────────
+# Keyed by (intent, grid_mode) with (intent, '*') wildcard fallback.
+# Each value is 3-7 lines of workflow guidance injected into the route prompt.
+INTENT_GUIDANCE = {
+    # ── PNL Mode ──────────────────────────────────────────────
+    ("general", "pnl"): (
+        "MODE: P&L grid. You are the CFO.\n"
+        "READ: call fpa_pnl (waterfall view) or fpa_actuals (raw data) to see the grid.\n"
+        "WRITE: fpa_cell_edit (1-5 cells), bulk_write_grid (6+ cells) → fpa_actuals table.\n"
+        "FORECAST: fpa_forecast → fpa_apply_forecast to write results to grid.\n"
+        "SCENARIO: fpa_scenario_create to branch, fpa_scenario_compare to compare.\n"
+        "CHART: generate_chart with type cashflow, revenue_forecast, stacked_bar, bull_bear_base, fpa_stress_test.\n"
+        "NEVER use suggest_grid_edit or pending_suggestions — those are portfolio-only.\n"
+        "Respond conversationally. Memos only when explicitly asked."
+    ),
+    ("forecast", "pnl"): (
+        "FORECAST WORKFLOW:\n"
+        "1. fpa_actuals → read current data (targeted read, like reading a file)\n"
+        "2. fpa_forecast(company_id, method='growth_rate') → generates forecast, auto-saves\n"
+        "3. fpa_apply_forecast → writes forecast lines to fpa_actuals with source='forecast_applied'\n"
+        "4. generate_chart(type='revenue_forecast') → visualize the forecast\n"
+        "5. Chat: state the key insight. 'Revenue trending to $X by Q4. Growth decelerating from Y% to Z%.'\n"
+        "Do NOT dump forecast tables in chat. The grid IS the output."
+    ),
+    ("scenario", "pnl"): (
+        "SCENARIO WORKFLOW:\n"
+        "1. fpa_actuals → read base case\n"
+        "2. fpa_scenario_create(name, assumptions={growth: 0.15, burn_multiplier: 1.2}, fork_period='YYYY-MM')\n"
+        "3. Create 2-3 branches (bear/base/bull) with different assumptions\n"
+        "4. fpa_scenario_compare(branch_ids=[...]) → side-by-side with probability-weighted EV\n"
+        "5. generate_chart(type='bull_bear_base') → visualize scenarios\n"
+        "Chat: 'Base case: $X runway. Bear case cuts it to Y months. Recommend Z.'"
+    ),
+    ("grid_edit", "pnl"): (
+        "WRITE PATH: P&L grid → fpa_actuals table.\n"
+        "- 1-5 cells: fpa_cell_edit(company_id, period, category, amount)\n"
+        "- 6+ cells: bulk_write_grid(cells=[{company_id, category, period, amount}])\n"
+        "- NEVER use suggest_grid_edit — that's portfolio-only.\n"
+        "After writing, grid refreshes automatically via pnl_refresh signal."
+    ),
+    ("kpi", "pnl"): (
+        "KPI WORKFLOW:\n"
+        "1. fpa_kpi_dashboard(company_id) → computes KPIs with time series\n"
+        "2. generate_chart(type='bar_comparison' or 'heatmap') → visualize\n"
+        "Chat: lead with the KPI that matters most. 'Gross margin dropped to X%. CAC up Y%.'"
+    ),
+
+    # ── Portfolio Mode ────────────────────────────────────────
+    ("general", "portfolio"): (
+        "MODE: Portfolio grid.\n"
+        "READ: query_portfolio to see companies + metrics in the grid.\n"
+        "WRITE: suggest_grid_edit (single cell) or bulk_write_grid (batch) → accept/reject queue.\n"
+        "NEW COMPANY: add_company_to_matrix after research.\n"
+        "RESEARCH: fetch_company_data for deep dives, then push numbers to grid.\n"
+        "MEMO: only for deep analysis (IC memo, comparison). NOT for quick answers."
+    ),
+    ("enrichment", "portfolio"): (
+        "ENRICHMENT WORKFLOW:\n"
+        "1. query_portfolio → see what's missing\n"
+        "2. enrich_sparse_grid or resolve_data_gaps for batch fill\n"
+        "3. Results go through suggest_grid_edit → accept/reject queue\n"
+        "4. Supplement with web_search if DB data insufficient"
+    ),
+    ("valuation", "*"): (
+        "VALUATION WORKFLOW:\n"
+        "1. Read company data from grid or fetch_company_data\n"
+        "2. run_valuation (auto-selects DCF/comps/cost/milestone)\n"
+        "3. generate_chart(type='waterfall' or 'bar_comparison')\n"
+        "4. Write valuation back to grid via suggest_grid_edit or bulk_write_grid"
+    ),
+
+    # ── Sourcing Mode ─────────────────────────────────────────
+    ("sourcing", "*"): (
+        "SOURCING WORKFLOW:\n"
+        "1. generate_rubric(thesis=<user request>) → intent-aware weights + filters\n"
+        "2. source_companies(filters=rubric.filters, custom_weights=rubric.weights, discover_web=true, thesis=<request>)\n"
+        "3. Results scored and ranked. Top matches:\n"
+        "4. add_company_to_matrix for each qualified company → WRITE TO GRID\n"
+        "5. generate_chart(type='scatter_multiples' or 'heatmap') → visualize pipeline\n"
+        "Do NOT just list companies in chat. ADD THEM TO THE GRID."
+    ),
+
+    # ── Cross-mode ────────────────────────────────────────────
+    ("memo", "*"): (
+        "MEMO: fetch data FIRST. Never generate empty memos.\n"
+        "generate_memo(memo_type=...) → structured analysis with charts.\n"
+        "Chat: 1-2 sentence summary pointing to memo."
+    ),
+    ("strategy", "*"): (
+        "STRATEGY: Cross-domain CFO reasoning.\n"
+        "1. Gather: fpa_actuals + query_portfolio + fpa_kpi_dashboard\n"
+        "2. strategic_analysis → deep reasoning\n"
+        "3. generate_chart + generate_memo for structured output"
+    ),
+}
+
+
+def get_guidance_for_intent(intent: str, grid_mode: str = "portfolio") -> str:
+    """Lookup workflow guidance by (intent, grid_mode) with fallback chain."""
+    return (
+        INTENT_GUIDANCE.get((intent, grid_mode))
+        or INTENT_GUIDANCE.get((intent, '*'))
+        or INTENT_GUIDANCE.get(('general', grid_mode))
+        or ''
+    )
+
 
 def get_tools_for_intent(intent: str) -> list[AgentTool]:
     """Return agent-visible tools for a classified intent.
@@ -2801,6 +3205,9 @@ PLAN_TEMPLATES: Dict[str, List[str]] = {
     "followon_analysis": ["resolve_data_gaps", "run_valuation", "cap_table_evolution", "run_followon_strategy", "run_round_modeling", "run_projection", "generate_memo"],
     "enrichment_first": ["resolve_data_gaps", "suggest_grid_edit", "generate_memo"],
     "company_list_dynamic": ["build_company_list", "resolve_data_gaps", "run_valuation", "generate_memo", "generate_chart"],
+    # Contract drafting
+    "contract_drafting": ["query_portfolio", "draft_contract"],
+    "contract_review": ["query_portfolio", "draft_contract"],
 }
 
 
@@ -2917,6 +3324,12 @@ class UnifiedMCPOrchestrator:
         self.ma_service = MAWorkflowService() if MAWorkflowService else None
         self.compliance_service = EnhancedComplianceService() if EnhancedComplianceService else None
         self.financial_calculator = FinancialCalculator() if FinancialCalculator else None
+        self.driver_impact_service = DriverImpactService() if DriverImpactService else None
+        self.company_health_scorer = CompanyHealthScorer() if CompanyHealthScorer else None
+        self.seasonality_engine = SeasonalityEngine() if SeasonalityEngine else None
+        self.email_composer = EmailComposer() if EmailComposer else None
+        self.slack_composer = SlackComposer() if SlackComposer else None
+        self.far_analysis_service = FARAnalysisService(llm_fn=getattr(self, '_llm_call', None)) if FARAnalysisService else None
 
         # Error handler for retry + circuit breaker
         self.error_handler = global_error_handler
@@ -3025,6 +3438,13 @@ class UnifiedMCPOrchestrator:
             "MEMO RULE: For formal deliverables (IC memo, LP report, comparison) — fetch data → run valuations → generate cap table THEN call memo-writer. "
             "Use write_to_memo only for exploratory inline analysis.\n"
             "CHART RULE: Charts are analytical tools. State what the chart reveals before rendering it.\n"
+            "FORMAT INTELLIGENCE:\n"
+            "- Financial comparisons → always include a chart (bar_comparison, scatter_multiples, or waterfall). Not optional.\n"
+            "- Time series data (revenue, burn, runway over months) → line or area chart.\n"
+            "- Multi-company analysis → chart + table. Chart for the pattern, table for the details.\n"
+            "- Scenario outputs → bull_bear_base or probability_cloud chart.\n"
+            "- Show your work as you go. Share key findings between tool calls, not just at the end.\n"
+            "- If the analysis reveals something unexpected, call it out before continuing.\n"
             "SOURCING RULE: When asked to find, source, or build a list of companies/acquirers/leads/investors/LPs:\n"
             "  1. Call generate_rubric(thesis=<user's request>) — returns weights, filters, intent, entity_type, search_context, extraction_hint.\n"
             "  2. Call source_companies(filters=rubric.filters, custom_weights=rubric.weights, "
@@ -3765,7 +4185,8 @@ JUST THE JSON:"""
 
     async def _classify_intent(self, prompt: str, entities: Optional[Dict[str, Any]] = None,
                                 context: Optional[Dict[str, Any]] = None,
-                                grid_fingerprint: str = "") -> QueryClassification:
+                                grid_fingerprint: str = "",
+                                grid_mode: str = "portfolio") -> QueryClassification:
         """LLM-based intent classification with minimal keyword fast-paths.
 
         Returns a QueryClassification with free-form intent (NOT a rigid enum).
@@ -3872,6 +4293,7 @@ JUST THE JSON:"""
             state_context = grid_fingerprint or "STATE: no grid fingerprint available"
 
             classify_prompt = f"""Classify this investment query. Return JSON only.
+The user is viewing the {grid_mode} grid.
 
 Query: {prompt}
 Companies mentioned: {company_names or "none"}
@@ -8505,6 +8927,9 @@ Return JSON with ONLY these fields (use null if unknown):
         "fpa_forecast", "fpa_variance", "fpa_rolling_forecast",
         "run_cash_flow_model", "cap_table_evolution", "round_modeling",
         "exit_modeling", "macro_event_analysis", "fpa_pnl",
+        "fpa_driver_impact_ranking", "fpa_trace_strategic_impact",
+        "fpa_correlate_actuals", "company_health_score",
+        "fpa_computed_metrics", "fpa_apply_seasonality",
     }
 
     async def _strategic_post_hook(
@@ -8543,6 +8968,51 @@ Return JSON with ONLY these fields (use null if unknown):
                         for s in ctx.signals
                     ],
                 }
+                # Emit high-severity signals as grid suggestions
+                # so the proactive CFO brain pushes to the frontend
+                try:
+                    from app.services.micro_skills import MicroSkillResult
+                    from app.services.micro_skills.suggestion_emitter import emit_batch
+
+                    fund_id = (
+                        (self.shared_data.get("fund_context") or {}).get("fund_id")
+                        or (self.shared_data.get("matrix_context") or {}).get("fundId")
+                        or ""
+                    )
+                    if fund_id and company_id:
+                        _METRIC_TO_FIELD = {
+                            "runway_months": "runway_months",
+                            "revenue_growth": "growth_rate",
+                            "burn_rate": "burn_rate",
+                            "gross_margin": "gross_margin",
+                            "cash_balance": "cash_balance",
+                        }
+                        signal_results = []
+                        for s in ctx.signals:
+                            field_name = _METRIC_TO_FIELD.get(s.metric)
+                            if field_name and s.current_value is not None:
+                                signal_results.append(MicroSkillResult(
+                                    field_updates={field_name: s.current_value},
+                                    confidence=0.85 if s.severity == "high" else 0.65,
+                                    reasoning=f"[Proactive CFO] {s.description}",
+                                    source=f"strategic_proactive:{tool_name}",
+                                    metadata={
+                                        "is_strategic_alert": True,
+                                        "severity": s.severity,
+                                        "triggered_by": tool_name,
+                                    },
+                                ))
+                        if signal_results:
+                            count = await emit_batch(
+                                results=signal_results,
+                                company_id=company_id,
+                                fund_id=fund_id,
+                                company_name="",
+                            )
+                            logger.info(f"[STRATEGIC_HOOK] Emitted {count} proactive suggestions for {company_id}")
+                except Exception as emit_err:
+                    logger.debug(f"[STRATEGIC_HOOK] suggestion emission failed (non-fatal): {emit_err}")
+
         except Exception as e:
             logger.debug(f"[STRATEGIC_HOOK] proactive check failed (non-fatal): {e}")
 
@@ -8572,6 +9042,738 @@ Return JSON with ONLY these fields (use null if unknown):
         except Exception as e:
             logger.error(f"[TOOL] fpa_monte_carlo failed: {e}")
             return {"error": f"Monte Carlo simulation failed: {e}"}
+
+    # ── Driver Impact Analysis tool handlers ─────────────────────────
+
+    async def _tool_fpa_correlate_actuals(self, inputs: dict) -> dict:
+        """Compute correlation between two actuals time series."""
+        try:
+            svc = self.driver_impact_service
+            if not svc:
+                from app.services.driver_impact_service import DriverImpactService
+                svc = DriverImpactService()
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            metric_a = inputs.get("metric_a")
+            metric_b = inputs.get("metric_b")
+            if not metric_a or not metric_b:
+                return {"error": "metric_a and metric_b are required"}
+
+            result = await svc.correlate_actuals(
+                company_id=company_id,
+                metric_a=metric_a,
+                metric_b=metric_b,
+                method=inputs.get("method", "pearson"),
+            )
+
+            # Emit chart if we have enough data
+            if result.get("status") == "ok" and result.get("data_points"):
+                points = result["data_points"]
+                result["chart_data"] = {
+                    "type": "scatter",
+                    "title": f"Correlation: {metric_a} vs {metric_b}",
+                    "xAxis": [p[metric_a] for p in points],
+                    "yAxis": [p[metric_b] for p in points],
+                    "series": [
+                        {
+                            "name": f"{metric_a} vs {metric_b}",
+                            "data": [[p[metric_a], p[metric_b]] for p in points],
+                        }
+                    ],
+                    "subtitle": result.get("interpretation", ""),
+                }
+
+            return result
+        except Exception as e:
+            logger.error(f"[TOOL] fpa_correlate_actuals failed: {e}")
+            return {"error": f"Correlation analysis failed: {e}"}
+
+    async def _tool_fpa_driver_impact_ranking(self, inputs: dict) -> dict:
+        """Perturbation-based sensitivity: rank drivers by impact on target metric."""
+        try:
+            svc = self.driver_impact_service
+            if not svc:
+                from app.services.driver_impact_service import DriverImpactService
+                svc = DriverImpactService()
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            target_metric = inputs.get("target_metric")
+            if not target_metric:
+                return {"error": "target_metric is required (e.g. 'runway_months', 'ebitda', 'cash_balance')"}
+
+            result = await svc.driver_impact_ranking(
+                company_id=company_id,
+                target_metric=target_metric,
+                branch_id=inputs.get("branch_id"),
+                perturbation=inputs.get("perturbation", 0.10),
+                forecast_months=inputs.get("forecast_months", 12),
+            )
+
+            # Emit tornado chart data if we have rankings
+            if result.get("status") == "ok" and result.get("rankings"):
+                rankings = result["rankings"]
+                result["chart_data"] = {
+                    "type": "bar",
+                    "title": f"Driver Sensitivity: Impact on {target_metric.replace('_', ' ').title()}",
+                    "xAxis": [r["driver_label"] for r in rankings[:10]],
+                    "series": [
+                        {
+                            "name": f"Impact on {target_metric}",
+                            "data": [r["max_delta"] for r in rankings[:10]],
+                            "color": "#6366f1",
+                        }
+                    ],
+                    "subtitle": f"±{result.get('perturbation', '10%')} perturbation, {result.get('forecast_months', 12)}mo horizon",
+                }
+
+            return result
+        except Exception as e:
+            logger.error(f"[TOOL] fpa_driver_impact_ranking failed: {e}")
+            return {"error": f"Driver impact ranking failed: {e}"}
+
+    async def _tool_fpa_explain_ripple_path(self, inputs: dict) -> dict:
+        """Trace causal chain from driver to target through ripple DAG."""
+        try:
+            svc = self.driver_impact_service
+            if not svc:
+                from app.services.driver_impact_service import DriverImpactService
+                svc = DriverImpactService()
+
+            driver_id = inputs.get("driver_id")
+            if not driver_id:
+                return {"error": "driver_id is required"}
+
+            return svc.explain_ripple_path(
+                driver_id=driver_id,
+                target_metric=inputs.get("target_metric"),
+            )
+        except Exception as e:
+            logger.error(f"[TOOL] fpa_explain_ripple_path failed: {e}")
+            return {"error": f"Ripple path explanation failed: {e}"}
+
+    async def _tool_fpa_explain_reverse_path(self, inputs: dict) -> dict:
+        """Backward lookup: find all drivers that affect a given metric."""
+        try:
+            svc = self.driver_impact_service
+            if not svc:
+                from app.services.driver_impact_service import DriverImpactService
+                svc = DriverImpactService()
+
+            target_metric = inputs.get("target_metric")
+            if not target_metric:
+                return {"error": "target_metric is required"}
+
+            return svc.explain_reverse_path(target_metric=target_metric)
+        except Exception as e:
+            logger.error(f"[TOOL] fpa_explain_reverse_path failed: {e}")
+            return {"error": f"Reverse path explanation failed: {e}"}
+
+    async def _tool_fpa_trace_strategic_impact(self, inputs: dict) -> dict:
+        """Cross-silo BFS with quantified impact chains."""
+        try:
+            svc = self.driver_impact_service
+            if not svc:
+                from app.services.driver_impact_service import DriverImpactService
+                svc = DriverImpactService()
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            trigger = inputs.get("trigger")
+            delta = inputs.get("delta")
+            if not trigger or delta is None:
+                return {"error": "trigger (driver/metric name) and delta (change amount) are required"}
+
+            # Build unified state for quantified impact estimation
+            from app.services.unified_financial_state import build_unified_state
+            state = await build_unified_state(
+                company_id=company_id,
+                branch_id=inputs.get("branch_id"),
+                company_data=self.shared_data.get("company_data"),
+            )
+
+            result = svc.trace_strategic_impact(
+                state=state,
+                trigger=trigger,
+                delta=float(delta),
+                max_depth=inputs.get("max_depth", 5),
+            )
+
+            # Emit chain visualization if we have chains
+            if result.get("status") == "ok" and result.get("chains"):
+                chains = result["chains"]
+                # Build a summary for the top 5 chains
+                result["chain_summary"] = [
+                    {
+                        "narrative": c["narrative"],
+                        "depth": c["depth"],
+                        "terminal_impact": c["terminal_delta"],
+                    }
+                    for c in chains[:5]
+                ]
+
+            return result
+        except Exception as e:
+            logger.error(f"[TOOL] fpa_trace_strategic_impact failed: {e}")
+            return {"error": f"Strategic impact trace failed: {e}"}
+
+    # ── Company Health & Portfolio Analytics tool handlers ─────────
+
+    async def _tool_company_health_score(self, inputs: dict) -> dict:
+        """Compute rich analytical profile for a portfolio company."""
+        try:
+            svc = self.company_health_scorer
+            if not svc:
+                from app.services.company_health_scorer import CompanyHealthScorer
+                svc = CompanyHealthScorer()
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            # Build company dict from grid snapshot + shared data
+            company_data = self._resolve_company_data(company_id)
+            if not company_data:
+                return {"error": f"No data found for company {company_id}"}
+
+            analytics = svc.analyze_company(company_data)
+
+            return {
+                "company_id": analytics.company_id,
+                "company_name": analytics.company_name,
+                "stage": analytics.stage,
+                "growth": {
+                    "current_arr": analytics.current_arr,
+                    "arr_source": analytics.arr_source,
+                    "growth_rate": analytics.growth_rate,
+                    "growth_trend": analytics.growth_trend,
+                    "projected_arr_12mo": analytics.projected_arr_12mo,
+                    "projected_arr_24mo": analytics.projected_arr_24mo,
+                    "projected_arr_36mo": analytics.projected_arr_36mo,
+                },
+                "burn_runway": {
+                    "estimated_monthly_burn": analytics.estimated_monthly_burn,
+                    "estimated_cash_remaining": analytics.estimated_cash_remaining,
+                    "estimated_runway_months": analytics.estimated_runway_months,
+                    "burn_as_pct_of_arr": analytics.burn_as_pct_of_arr,
+                },
+                "funding": {
+                    "last_round_valuation": analytics.last_round_valuation,
+                    "last_round_amount": analytics.last_round_amount,
+                    "months_since_last_round": analytics.months_since_last_round,
+                    "avg_step_up_multiple": analytics.avg_step_up_multiple,
+                    "predicted_next_round_months": analytics.predicted_next_round_months,
+                    "predicted_next_round_stage": analytics.predicted_next_round_stage,
+                    "predicted_next_raise_amount": analytics.predicted_next_raise_amount,
+                },
+                "valuation": {
+                    "implied_current_valuation": analytics.implied_current_valuation,
+                    "valuation_direction": analytics.valuation_direction,
+                    "current_revenue_multiple": analytics.current_revenue_multiple,
+                    "stage_benchmark_multiple": analytics.stage_benchmark_multiple,
+                    "fair_value_basis": analytics.fair_value_basis,
+                },
+                "vs_benchmark": analytics.vs_benchmark,
+                "signals": analytics.signals,
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] company_health_score failed: {e}")
+            return {"error": f"Company health scoring failed: {e}"}
+
+    async def _tool_company_return_metrics(self, inputs: dict) -> dict:
+        """Compute per-company return metrics (MOIC, IRR)."""
+        try:
+            svc = self.company_health_scorer
+            if not svc:
+                from app.services.company_health_scorer import CompanyHealthScorer
+                svc = CompanyHealthScorer()
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            company_data = self._resolve_company_data(company_id)
+            if not company_data:
+                return {"error": f"No data found for company {company_id}"}
+
+            # Extract fund investment from grid or shared data
+            fund_investment = self._resolve_fund_investment(company_id)
+            if not fund_investment or not fund_investment.get("amount"):
+                return {"error": f"No fund investment data found for {company_id}. Need amount, date, ownership_pct."}
+
+            analytics = svc.analyze_company(company_data, fund_investment)
+            returns = svc.compute_return_metrics(company_data, fund_investment, analytics)
+
+            return {
+                "company_id": returns.company_id,
+                "company_name": returns.company_name,
+                "invested": returns.invested,
+                "ownership_pct": returns.ownership_pct,
+                "current_nav": returns.current_nav,
+                "moic": round(returns.moic, 2),
+                "irr": round(returns.irr * 100, 1),  # as percentage
+                "irr_decimal": round(returns.irr, 4),
+                "holding_period_years": round(returns.holding_period_years, 1),
+                "unrealized_gain": returns.unrealized_gain,
+                "cost_basis_per_pct": round(returns.cost_basis_per_pct, 2),
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] company_return_metrics failed: {e}")
+            return {"error": f"Return metrics computation failed: {e}"}
+
+    async def _tool_portfolio_health_analysis(self, inputs: dict) -> dict:
+        """Run health + returns across all portfolio companies."""
+        try:
+            svc = self.company_health_scorer
+            if not svc:
+                from app.services.company_health_scorer import CompanyHealthScorer
+                svc = CompanyHealthScorer()
+
+            # Get all companies from grid snapshot
+            grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
+            rows = grid.get("rows", []) if isinstance(grid, dict) else grid
+            if not rows:
+                return {"error": "No portfolio data in grid. Upload or add companies first."}
+
+            companies = []
+            fund_investments = {}
+            for row in rows:
+                cdata = self._row_to_company_dict(row)
+                if cdata.get("name"):
+                    companies.append(cdata)
+                    inv = self._resolve_fund_investment(cdata.get("id", cdata["name"]))
+                    if inv and inv.get("amount"):
+                        fund_investments[cdata.get("id", cdata["name"])] = inv
+
+            result = svc.analyze_portfolio(companies, fund_investments)
+
+            # Serialize analytics
+            analytics_out = {}
+            for cid, a in result.get("company_analytics", {}).items():
+                analytics_out[cid] = {
+                    "name": a.company_name,
+                    "stage": a.stage,
+                    "arr": a.current_arr,
+                    "growth_rate": a.growth_rate,
+                    "growth_trend": a.growth_trend,
+                    "runway_months": a.estimated_runway_months,
+                    "valuation": a.implied_current_valuation,
+                    "valuation_direction": a.valuation_direction,
+                    "signals": a.signals,
+                }
+
+            returns_out = {}
+            for cid, r in result.get("company_returns", {}).items():
+                returns_out[cid] = {
+                    "name": r.company_name,
+                    "invested": r.invested,
+                    "nav": r.current_nav,
+                    "moic": round(r.moic, 2),
+                    "irr_pct": round(r.irr * 100, 1),
+                    "gain": r.unrealized_gain,
+                }
+
+            return {
+                "company_analytics": analytics_out,
+                "company_returns": returns_out,
+                "fund_summary": result.get("fund_summary", {}),
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] portfolio_health_analysis failed: {e}")
+            return {"error": f"Portfolio health analysis failed: {e}"}
+
+    def _resolve_company_data(self, company_id: str) -> dict:
+        """Resolve company data from grid snapshot + shared data."""
+        grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
+        rows = grid.get("rows", []) if isinstance(grid, dict) else grid
+        for row in rows:
+            rid = row.get("rowId", "")
+            rname = row.get("companyName", "")
+            if rid == company_id or rname.lower() == company_id.lower():
+                return self._row_to_company_dict(row)
+        # Check shared_data companies
+        for c in self.shared_data.get("companies", []):
+            if (c.get("company", "") or c.get("name", "")).lower() == company_id.lower():
+                return c
+        return {}
+
+    def _row_to_company_dict(self, row: dict) -> dict:
+        """Convert a grid row to the dict format CompanyHealthScorer expects."""
+        cells = row.get("cells", {})
+        return {
+            "id": row.get("rowId", ""),
+            "name": self._extract_str(cells, "name", "companyName") or row.get("companyName", ""),
+            "stage": self._extract_str(cells, "fundingStage", "stage") or "",
+            "arr": self._extract_numeric(cells, "arr", "revenue"),
+            "revenue": self._extract_numeric(cells, "arr", "revenue"),
+            "growth_rate": self._extract_numeric(cells, "growthRate", "growth_rate"),
+            "valuation": self._extract_numeric(cells, "valuation", "currentValuation"),
+            "total_funding": self._extract_numeric(cells, "totalFunding", "total_funding"),
+            "burn_rate": self._extract_numeric(cells, "burnRate", "burn_rate"),
+            "geography": self._extract_str(cells, "geography", "headquarters") or "",
+            "funding_rounds": [],
+        }
+
+    def _resolve_fund_investment(self, company_id: str) -> dict:
+        """Resolve fund investment data from grid or shared data."""
+        grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
+        rows = grid.get("rows", []) if isinstance(grid, dict) else grid
+        for row in rows:
+            rid = row.get("rowId", "")
+            rname = row.get("companyName", "")
+            if rid == company_id or rname.lower() == company_id.lower():
+                cells = row.get("cells", {})
+                amount = self._extract_numeric(cells, "investedAmount", "checkSize", "invested")
+                ownership = self._extract_numeric(cells, "ownershipPct", "ownership")
+                inv_date = self._extract_str(cells, "investmentDate", "date")
+                if amount:
+                    return {"amount": amount, "ownership_pct": ownership or 0, "date": inv_date or ""}
+        return {}
+
+    # ── Seasonality tool handlers ──────────────────────────────────
+
+    async def _tool_fpa_detect_seasonality(self, inputs: dict) -> dict:
+        """Detect seasonal patterns from actuals data."""
+        try:
+            svc = self.seasonality_engine
+            if not svc:
+                from app.services.seasonality_engine import SeasonalityEngine
+                svc = SeasonalityEngine()
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            metric = inputs.get("metric", "revenue")
+            pattern = svc.detect_pattern(company_id=company_id, metric=metric)
+
+            if not pattern:
+                return {
+                    "status": "no_pattern",
+                    "metric": metric,
+                    "message": f"No significant seasonal pattern detected for {metric}. "
+                               f"Need 12+ months of actuals with max/min ratio > 1.1.",
+                }
+
+            # Build chart showing seasonal factors
+            month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+            chart_data = {
+                "type": "bar",
+                "title": f"Seasonal Factors: {metric.title()}",
+                "xAxis": month_names,
+                "series": [{
+                    "name": "Seasonal Factor",
+                    "data": [round(pattern.monthly_factors.get(m, 1.0), 3) for m in range(1, 13)],
+                    "color": "#6366f1",
+                }],
+                "subtitle": f"Strength: {pattern.strength:.0%}, Confidence: {pattern.confidence:.0%}",
+            }
+
+            return {
+                "status": "ok",
+                "metric": metric,
+                "monthly_factors": pattern.monthly_factors,
+                "strength": pattern.strength,
+                "confidence": pattern.confidence,
+                "pattern_type": pattern.pattern_type,
+                "source_periods": pattern.source_periods,
+                "chart_data": chart_data,
+                "peak_month": month_names[max(pattern.monthly_factors, key=pattern.monthly_factors.get) - 1],
+                "trough_month": month_names[min(pattern.monthly_factors, key=pattern.monthly_factors.get) - 1],
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] fpa_detect_seasonality failed: {e}")
+            return {"error": f"Seasonality detection failed: {e}"}
+
+    async def _tool_fpa_apply_seasonality(self, inputs: dict) -> dict:
+        """Apply seasonal factors to an existing forecast."""
+        try:
+            svc = self.seasonality_engine
+            if not svc:
+                from app.services.seasonality_engine import SeasonalityEngine
+                svc = SeasonalityEngine()
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            metric = inputs.get("metric", "revenue")
+
+            # Get existing forecast from shared data
+            forecast = None
+            for key in ("fpa_forecast_result", "fpa_cash_flow_result"):
+                cached = self.shared_data.get(key, {})
+                if cached.get("company_id") == company_id and cached.get("forecast"):
+                    forecast = cached["forecast"]
+                    break
+
+            if not forecast:
+                return {"error": "No forecast found in session. Run fpa_forecast or fpa_cash_flow first."}
+
+            # Detect or use industry default
+            industry = inputs.get("industry")
+            if industry:
+                pattern = svc.get_industry_default(industry)
+                if not pattern:
+                    return {"error": f"No industry default for '{industry}'. Available: b2b_saas, ecommerce, enterprise, services."}
+            else:
+                pattern = svc.detect_pattern(company_id=company_id, metric=metric)
+                if not pattern:
+                    return {
+                        "status": "no_pattern",
+                        "message": "No seasonal pattern detected. Use industry= param for industry defaults.",
+                    }
+
+            # Apply to forecast (modifies in place and returns)
+            import copy
+            adjusted_forecast = copy.deepcopy(forecast)
+            svc.apply_seasonal_factors(adjusted_forecast, pattern, metric_key=metric)
+
+            # Store adjusted forecast
+            async with self.shared_data_lock:
+                self.shared_data["fpa_seasonal_forecast"] = {
+                    "company_id": company_id,
+                    "forecast": adjusted_forecast,
+                    "pattern": {
+                        "monthly_factors": pattern.monthly_factors,
+                        "strength": pattern.strength,
+                        "type": pattern.pattern_type,
+                    },
+                }
+
+            return {
+                "status": "ok",
+                "company_id": company_id,
+                "metric_adjusted": metric,
+                "pattern_type": pattern.pattern_type,
+                "pattern_strength": pattern.strength,
+                "forecast": adjusted_forecast,
+                "message": f"Applied {pattern.pattern_type} seasonal factors (strength={pattern.strength:.0%}) to {metric}.",
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] fpa_apply_seasonality failed: {e}")
+            return {"error": f"Seasonality application failed: {e}"}
+
+    # ── Computed Metrics tool handler ──────────────────────────────
+
+    async def _tool_fpa_computed_metrics(self, inputs: dict) -> dict:
+        """Compute all unit economics and SaaS metrics."""
+        try:
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            # Get seed data from actuals
+            from app.services.actuals_ingestion import seed_forecast_from_actuals
+            seed_data = seed_forecast_from_actuals(company_id)
+            if not seed_data or seed_data.get("revenue", 0) <= 0:
+                return {"error": f"No actuals data for {company_id}. Upload financials first."}
+
+            driver_overrides = inputs.get("driver_overrides", {})
+
+            from app.services.computed_metrics import ComputedMetrics
+            result = ComputedMetrics.compute_all(seed_data, driver_overrides)
+
+            # Extract derivations for explainability
+            derivations = result.pop("_derivations", {})
+
+            return {
+                "status": "ok",
+                "company_id": company_id,
+                "metrics": result,
+                "derivations": derivations,
+                "data_quality": seed_data.get("_data_quality", {}),
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] fpa_computed_metrics failed: {e}")
+            return {"error": f"Computed metrics failed: {e}"}
+
+    # ── Email & Slack dispatch tool handlers ───────────────────────
+
+    async def _tool_send_email(self, inputs: dict) -> dict:
+        """Send current analysis/memo as an email."""
+        try:
+            svc = self.email_composer
+            if not svc:
+                from app.services.email_composer import EmailComposer
+                svc = EmailComposer()
+
+            to_address = inputs.get("to")
+            if not to_address:
+                return {"error": "to (email address) is required"}
+
+            subject = inputs.get("subject", "Dilla AI Analysis")
+            from_address = inputs.get("from", "ai@dilla.ai")
+
+            # Build result from current session state
+            orchestrator_result = {}
+            memo_sections = self.shared_data.get("memo_sections", [])
+            if memo_sections:
+                orchestrator_result = {"format": "docs", "sections": memo_sections, "title": subject}
+            else:
+                # Fallback: use last tool result
+                for key in ("fpa_forecast_result", "fpa_cash_flow_result", "valuation_result"):
+                    if self.shared_data.get(key):
+                        orchestrator_result = {"format": "analysis", "data": self.shared_data[key]}
+                        break
+
+            if not orchestrator_result:
+                return {"error": "No analysis/memo content to send. Run an analysis first."}
+
+            payload = svc.compose_from_orchestrator_result(
+                result=orchestrator_result,
+                to_address=to_address,
+                from_address=from_address,
+                subject=subject,
+            )
+
+            from app.services.email_composer import send_email
+            send_result = await send_email(payload)
+            return send_result
+        except Exception as e:
+            logger.error(f"[TOOL] send_email failed: {e}")
+            return {"error": f"Email send failed: {e}"}
+
+    async def _tool_send_slack(self, inputs: dict) -> dict:
+        """Send current analysis/memo to Slack."""
+        try:
+            svc = self.slack_composer
+            if not svc:
+                from app.services.slack_composer import SlackComposer
+                svc = SlackComposer()
+
+            channel = inputs.get("channel")
+            if not channel:
+                return {"error": "channel (Slack channel ID) is required"}
+
+            # Build result from current session state
+            orchestrator_result = {}
+            memo_sections = self.shared_data.get("memo_sections", [])
+            if memo_sections:
+                orchestrator_result = {"format": "docs", "sections": memo_sections}
+            else:
+                for key in ("fpa_forecast_result", "fpa_cash_flow_result", "valuation_result"):
+                    if self.shared_data.get(key):
+                        orchestrator_result = {"format": "analysis", "data": self.shared_data[key]}
+                        break
+
+            if not orchestrator_result:
+                return {"error": "No analysis/memo content to send. Run an analysis first."}
+
+            blocks = svc.compose_from_orchestrator_result(
+                result=orchestrator_result,
+                query=self.shared_data.get("last_query", ""),
+            )
+
+            # Find bot token from tenant
+            from app.services.slack_composer import send_slack_message, SLACK_TENANT_REGISTRY
+            # Try to find any registered token
+            token = None
+            for _tid, config in SLACK_TENANT_REGISTRY.items():
+                token = config.get("bot_token")
+                if token:
+                    break
+
+            if not token:
+                return {
+                    "error": "No Slack bot token configured. Install the Dilla Slack app first.",
+                    "blocks_preview": blocks[:3],  # Return blocks for debugging
+                }
+
+            send_result = await send_slack_message(
+                token=token,
+                channel=channel,
+                blocks=blocks,
+                thread_ts=inputs.get("thread_ts"),
+            )
+            return send_result
+        except Exception as e:
+            logger.error(f"[TOOL] send_slack failed: {e}")
+            return {"error": f"Slack send failed: {e}"}
+
+    # ── FAR Analysis tool handlers ─────────────────────────────────
+
+    async def _tool_tp_far_analysis(self, inputs: dict) -> dict:
+        """Run multi-pass FAR profiling for a TP entity."""
+        try:
+            svc = self.far_analysis_service
+            if not svc:
+                from app.services.far_analysis_service import FARAnalysisService
+                svc = FARAnalysisService(llm_fn=getattr(self, '_llm_call', None))
+
+            entity_id = inputs.get("entity_id")
+            if not entity_id:
+                return {"error": "entity_id is required"}
+
+            result = await svc.infer_far_profile(entity_id)
+            return result
+        except ValueError as e:
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"[TOOL] tp_far_analysis failed: {e}")
+            return {"error": f"FAR analysis failed: {e}"}
+
+    async def _tool_tp_far_group(self, inputs: dict) -> dict:
+        """Run FAR analysis on all entities under a company."""
+        try:
+            svc = self.far_analysis_service
+            if not svc:
+                from app.services.far_analysis_service import FARAnalysisService
+                svc = FARAnalysisService(llm_fn=getattr(self, '_llm_call', None))
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            results = await svc.infer_group_profiles(company_id)
+            return {
+                "company_id": company_id,
+                "entities_analyzed": len(results),
+                "profiles": results,
+            }
+        except Exception as e:
+            logger.error(f"[TOOL] tp_far_group failed: {e}")
+            return {"error": f"Group FAR analysis failed: {e}"}
+
+    async def _tool_tp_far_compare(self, inputs: dict) -> dict:
+        """Compare two FAR profiles for functional comparability."""
+        try:
+            svc = self.far_analysis_service
+            if not svc:
+                from app.services.far_analysis_service import FARAnalysisService
+                svc = FARAnalysisService(llm_fn=getattr(self, '_llm_call', None))
+
+            entity_id_a = inputs.get("entity_id_a")
+            entity_id_b = inputs.get("entity_id_b")
+            if not entity_id_a or not entity_id_b:
+                return {"error": "entity_id_a and entity_id_b are required"}
+
+            profile_a = await svc.get_profile(entity_id_a)
+            profile_b = await svc.get_profile(entity_id_b)
+
+            if not profile_a:
+                return {"error": f"No FAR profile found for entity {entity_id_a}. Run tp_far_analysis first."}
+            if not profile_b:
+                return {"error": f"No FAR profile found for entity {entity_id_b}. Run tp_far_analysis first."}
+
+            deep = inputs.get("deep", False)
+            if deep:
+                result = await svc.compare_far_profiles_deep(profile_a, profile_b)
+            else:
+                result = svc.compare_far_profiles(profile_a, profile_b)
+
+            return result
+        except Exception as e:
+            logger.error(f"[TOOL] tp_far_compare failed: {e}")
+            return {"error": f"FAR comparison failed: {e}"}
 
     # ── Transfer Pricing tool handlers ──────────────────────────────
 
@@ -8881,6 +10083,52 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             return result
         except Exception as e:
             logger.warning(f"[TOOL] generate_memo failed: {e}")
+            return {"error": str(e), "format": "docs", "sections": []}
+
+    async def _tool_draft_contract(self, inputs: dict) -> dict:
+        """Draft a legal contract using the memo pipeline with contract templates.
+
+        Builds company_context from inputs + DB data, then delegates to the
+        standard memo generation pipeline which picks up the contract template.
+        """
+        try:
+            contract_type = inputs.get("contract_type", "nda")
+
+            # Build company_context from inputs + shared_data
+            companies = self.shared_data.get("companies", [])
+            company_ctx = {
+                "company_name": inputs.get("company_name") or (
+                    companies[0].get("company", companies[0].get("name", "")) if companies else "[COMPANY NAME]"
+                ),
+                "counterparty_name": inputs.get("counterparty_name") or "[COUNTERPARTY]",
+                "jurisdiction": inputs.get("jurisdiction") or "Delaware",
+                "effective_date": datetime.now().strftime("%B %d, %Y"),
+            }
+
+            # Enrich from first company in shared_data if available
+            if companies:
+                c = companies[0]
+                company_ctx.setdefault("company_address", c.get("address", ""))
+                company_ctx.setdefault("valuation", c.get("valuation"))
+                company_ctx.setdefault("stage", c.get("stage"))
+
+            self.shared_data["company_context"] = company_ctx
+
+            # Delegate to standard memo generation
+            prompt = inputs.get("additional_context", f"Draft a {contract_type.replace('_', ' ')} contract")
+            result = await self._execute_memo_generation({
+                "memo_type": contract_type,
+                "prompt": prompt,
+            })
+
+            if result.get("sections"):
+                result["memo_sections"] = result["sections"]
+            if not result.get("citations"):
+                result["citations"] = self.shared_data.get("citations", [])
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] draft_contract failed: {e}")
             return {"error": str(e), "format": "docs", "sections": []}
 
     async def _tool_run_skill(self, inputs: dict) -> dict:
@@ -10035,6 +11283,16 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             "Document/memo generation with real data.",
         ),
         (
+            "contract_drafting",
+            ["draft an nda", "draft nda", "draft contract", "draft agreement",
+             "employment agreement", "employment contract", "service agreement",
+             "vendor agreement", "shareholders agreement", "sha template",
+             "review contract", "redline", "negotiate contract",
+             "non-disclosure", "master service agreement", "msa"],
+            "query_portfolio → draft_contract → synthesize",
+            "Draft or review a legal contract with auto-filled company data.",
+        ),
+        (
             "company_research",
             ["research @", "look up @", "find @", "what is @",
              "search for @", "fetch @", "get data on @"],
@@ -10897,40 +12155,21 @@ Rules:
                 portfolio_intel = self._build_portfolio_intelligence()
                 sd_summary = portfolio_intel if portfolio_intel else "STATE: empty — no companies in grid or shared_data"
 
-            # Build intent guidance from classification — persist through ALL iterations
-            # so the LLM always knows what it should be doing + grid state
+            # Build mode-aware intent guidance from classification
+            grid_mode = self.shared_data.get('grid_mode', 'portfolio')
             intent_guidance = ""
-            if True:  # No iteration gate — always inject intent + fingerprint
-                if classification and classification.suggested_chain:
-                    chain_str = " → ".join(classification.suggested_chain)
-                    intent_guidance = (
-                        f"\nINTENT: {classification.intent} (confidence: {classification.confidence:.0%})\n"
-                        f"SUGGESTED CHAIN: {chain_str}\n"
-                        f"NEEDS PORTFOLIO DATA: {classification.needs_portfolio}\n"
-                        f"NEEDS EXTERNAL LOOKUP: {classification.needs_external}\n"
-                        f"Use this as guidance — adapt based on results.\n"
-                    )
-                    # Inject sourcing-specific guidance when intent is sourcing-related
-                    _sourcing_intents = {"sourcing", "dealflow", "market", "company_search", "list_building"}
-                    if classification.intent in _sourcing_intents:
-                        intent_guidance += (
-                            "\nSOURCING WORKFLOW: "
-                            "1) Call generate_rubric(thesis=<user request>) to get intent-aware weights + filters. "
-                            "2) Call source_companies(filters=rubric.filters, custom_weights=rubric.weights, "
-                            "discover_web=true, thesis=<user request>, min_web_threshold=5) to search DB + web. "
-                            "The rubric auto-classifies intent (acquirer/gtm_leads/lp_investor/dealflow/etc.) "
-                            "and adapts queries, extraction, and scoring. No need to call build_company_list separately.\n"
-                        )
-                else:
-                    # Legacy fallback
-                    intent = self._classify_query_intent(prompt)
-                    if intent:
-                        intent_guidance = (
-                            f"\nDETECTED INTENT: {intent['intent']}\n"
-                            f"SUGGESTED CHAIN: {intent['chain']}\n"
-                            f"CONTEXT: {intent['description']}\n"
-                            f"Follow this chain unless the results so far indicate a different path.\n"
-                        )
+            if classification and classification.suggested_chain:
+                chain_str = " → ".join(classification.suggested_chain)
+                mode_guidance = get_guidance_for_intent(classification.intent, grid_mode)
+                intent_guidance = (
+                    f"\nINTENT: {classification.intent} (confidence: {classification.confidence:.0%})\n"
+                    f"SUGGESTED CHAIN: {chain_str}\n"
+                    f"{mode_guidance}\n"
+                )
+            else:
+                mode_guidance = get_guidance_for_intent("general", grid_mode)
+                if mode_guidance:
+                    intent_guidance = f"\n{mode_guidance}\n"
 
             # If we have a SessionPlan, use dependency-aware guidance
             plan_guidance = ""
@@ -11089,6 +12328,28 @@ Rules:
                     f"- Charts: {chart_count}\n"
                 )
 
+            _mode_rules = {
+                "pnl": (
+                    "- READ the grid first (fpa_pnl or fpa_actuals) before acting.\n"
+                    "- WRITE to grid, not to memo. The grid IS your workspace.\n"
+                    "- Chat response: the key number + what it means. 1-3 sentences.\n"
+                    "- Memo ONLY when user explicitly asks for one.\n"
+                    "- ALWAYS generate a chart when showing trends, forecasts, or comparisons."
+                ),
+                "portfolio": (
+                    "- READ the grid (query_portfolio) before enriching or analyzing.\n"
+                    "- WRITE suggestions to grid (suggest_grid_edit / bulk_write_grid).\n"
+                    "- Generate memo for deep analysis. Chat for quick answers.\n"
+                    "- After sourcing/research, push results to the grid — don't just describe them."
+                ),
+                "lp": (
+                    "- LP view is READ-ONLY. Read via query_portfolio + calculate_fund_metrics.\n"
+                    "- To change LP metrics, update underlying company/fund data.\n"
+                    "- Chat: answer with the metric. Memo for LP reports."
+                ),
+            }
+            _rules_text = _mode_rules.get(grid_mode, _mode_rules["portfolio"])
+
             route_prompt = f"""Task: {prompt}
 
 Available tools:
@@ -11109,9 +12370,8 @@ RULES:
 - Use available data. Do NOT re-fetch what you already have.
 - Run independent calls in parallel via call_tools.
 - NEVER repeat a tool call — check TOOLS ALREADY CALLED.
-- After fetching data, write results: generate_memo for analysis, bulk_write_grid for grid values.
+{_rules_text}
 - Work with incomplete data. Do NOT loop chasing every missing field.
-- If fetches happened but no memo written yet, call generate_memo NOW.
 - Say done when: the user's request is answered AND results are persisted (memo/grid).
 
 RESPOND WITH EXACTLY ONE JSON OBJECT:
@@ -11345,6 +12605,7 @@ RESPOND WITH EXACTLY ONE JSON OBJECT:
                         grid_commands.extend(t_result["grid_commands"])
                     if "chart_config" in t_result:
                         charts.append(t_result["chart_config"])
+                        yield {"type": "chart_data", "chart": t_result["chart_config"]}
                     if "suggestion" in t_result:
                         suggestions.append(t_result["suggestion"])
                     if "todo" in t_result:
@@ -11890,6 +13151,9 @@ ABSOLUTE RULES:
                     if matrix_ctx:
                         self.shared_data['matrix_context'] = matrix_ctx
                         logger.info(f"[MATRIX_CONTEXT] Stored {len(matrix_ctx.get('rowIds', []) or matrix_ctx.get('companyNames', []))} rows")
+                    # Grid mode for mode-aware routing (PNL / portfolio / LP)
+                    grid_mode = (context.get('gridMode') or context.get('grid_mode') or 'portfolio').lower()
+                    self.shared_data['grid_mode'] = grid_mode
                     # Agent context for conversation continuity
                     agent_ctx = context.get('agent_context')
                     if agent_ctx:
@@ -12023,7 +13287,8 @@ ABSOLUTE RULES:
 
             # --- Phase 2: LLM-based intent classification (with grid context) ---
             classification = await self._classify_intent(
-                prompt, entities=entities, context=context, grid_fingerprint=grid_fingerprint
+                prompt, entities=entities, context=context, grid_fingerprint=grid_fingerprint,
+                grid_mode=self.shared_data.get('grid_mode', 'portfolio')
             )
             logger.info(
                 f"[ORCHESTRATOR] Classification: complexity={classification.complexity}, "

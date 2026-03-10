@@ -19,11 +19,15 @@ from app.services.document_query_service import (
 )
 
 try:
-    from app.services.citation_manager import CitationManager
+    from app.services.enhanced_citation_manager import EnhancedCitationManager as CitationManager
     CITATION_MANAGER_AVAILABLE = True
 except ImportError:
-    CITATION_MANAGER_AVAILABLE = False
-    logger.warning("CitationManager not available")
+    try:
+        from app.services.citation_manager import CitationManager
+        CITATION_MANAGER_AVAILABLE = True
+    except ImportError:
+        CITATION_MANAGER_AVAILABLE = False
+        logger.warning("CitationManager not available")
 
 try:
     from app.services.model_router import get_model_router, ModelCapability
