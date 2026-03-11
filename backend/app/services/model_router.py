@@ -1882,6 +1882,18 @@ class ModelRouter:
         "memo_generation":                    ModelTier.PREMIUM,
         "agent_loop_synthesize":              ModelTier.PREMIUM,
         "agent_loop_synthesize_brief":        ModelTier.PREMIUM,
+
+        # ── Conversational cadence routing ────────────────────────────
+        "conversational_phatic":              ModelTier.TRIVIAL,
+        "conversational_status":              ModelTier.CHEAP,
+        "conversational_retrieval":           ModelTier.QUALITY,
+        "conversational_iteration":           ModelTier.CHEAP,
+        "conversational_analysis":            ModelTier.QUALITY,
+        "conversational_steering":            ModelTier.CHEAP,
+        "conversational_synthesis":           ModelTier.PREMIUM,
+        "conversation_summarize":             ModelTier.TRIVIAL,
+        "conversation_crystallize":            ModelTier.CHEAP,
+        "conversation_handoff":               ModelTier.TRIVIAL,
     }
 
     # Preferred model fallback chains per tier

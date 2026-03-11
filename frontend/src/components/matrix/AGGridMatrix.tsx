@@ -751,7 +751,7 @@ export function AGGridMatrix({
     resizable: true,
     sortable: true,
     filter: false, // Remove filter icon from headers
-    editable: false, // Never use AG Grid built-in editing — all edits go through CellDropdownRenderer wrapper
+    editable: false, // Default off; columns opt-in via col.editable (line ~529)
     cellStyle: getCellStyle as any,
   }), [getCellStyle]);
 

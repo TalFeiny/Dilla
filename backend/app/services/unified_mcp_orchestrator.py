@@ -1566,6 +1566,19 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=30_000,
     ),
     AgentTool(
+        name="fpa_scenario_update",
+        description="Update an existing scenario branch's driver assumptions and re-execute forecast with cascade. Use to iteratively adjust branches.",
+        handler="_tool_fpa_scenario_update",
+        input_schema={
+            "branch_id": "str",
+            "company_id": "str",
+            "drivers": "dict",
+            "forecast_months": "int?",
+        },
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
         name="fpa_scenario_compare",
         description="Side-by-side scenario branch comparison with deltas, probability-weighted EV, and multi-branch charts.",
         handler="_tool_fpa_scenario_compare",
@@ -2564,6 +2577,10 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "run_scenario",             # primary action
         "run_scenario_tree",        # branching scenario trees
         "run_bull_bear_base",       # bull/bear/base scenarios
+        "fpa_scenario_create",      # create scenario branch with driver overrides
+        "fpa_scenario_update",      # iteratively adjust branch drivers and re-cascade
+        "fpa_scenario_compare",     # side-by-side branch comparison
+        "fpa_scenario_tree",        # view full branch tree
         "strategic_analysis",       # cross-domain strategic reasoning
         "analyse_macro_event",      # dynamic LLM-reasoned macro event analysis
         "apply_macro_shock",        # quick preset macro shock (legacy)
@@ -2588,6 +2605,9 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "fpa_cell_edit",            # edit a single P&L cell
         "fpa_apply_forecast",       # write forecast values into fpa_actuals
         "fpa_upload_actuals",       # bulk ingest actuals
+        "fpa_scenario_create",      # create scenario branch with driver overrides
+        "fpa_scenario_update",      # iteratively adjust branch drivers and re-cascade
+        "fpa_scenario_compare",     # side-by-side branch comparison
         "bulk_write_grid",          # batch write forecast values to grid
         "strategic_analysis",       # cross-domain strategic reasoning
         "run_bull_bear_base",       # bull/bear/base scenario modeling
@@ -2919,6 +2939,45 @@ _validate_intent_tools()
 
 
 # ---------------------------------------------------------------------------
+# Conversational cadence — turn classification, phase tracking, history mgmt
+# ---------------------------------------------------------------------------
+
+class TurnType(Enum):
+    """What kind of conversational turn is this?"""
+    PHATIC = "phatic"           # greetings, confirmations, social
+    STATUS = "status"           # single metric lookup
+    RETRIEVAL = "retrieval"     # fetch and present data
+    ITERATION = "iteration"    # tweak previous work
+    ANALYSIS = "analysis"       # multi-tool investigation
+    STEERING = "steering"       # modify scope/format of prev work
+    SYNTHESIS = "synthesis"     # write deliverable from gathered data
+
+
+class ConversationPhase(Enum):
+    """Where are we in the conversational arc?"""
+    EXPLORING = "exploring"     # orienting, asking questions, brainstorming
+    CONVERGING = "converging"   # narrowing down, comparing, refining scope
+    EXECUTING = "executing"     # "do it" — running tools, building output
+    REVIEWING = "reviewing"     # examining results, iterating on output
+
+
+# Token budgets per turn type — None means inherit from previous turn
+TURN_BUDGETS: Dict[TurnType, Optional[int]] = {
+    TurnType.PHATIC:     128,
+    TurnType.STATUS:     512,
+    TurnType.RETRIEVAL:  1024,
+    TurnType.ITERATION:  None,   # inherit previous budget
+    TurnType.ANALYSIS:   2048,
+    TurnType.STEERING:   None,   # inherit previous budget
+    TurnType.SYNTHESIS:  4096,
+}
+
+# How many recent turns to keep verbatim before summarizing older ones
+_HISTORY_HOT_WINDOW = 6   # 3 user + 3 assistant turns kept verbatim
+_HISTORY_SUMMARY_TRIGGER = 12  # start summarizing after this many messages
+
+
+# ---------------------------------------------------------------------------
 # Phase 2: Flexible intent classification & plan-based chaining
 # ---------------------------------------------------------------------------
 
@@ -2967,6 +3026,61 @@ class Artifact:
     data: Dict[str, Any] = field(default_factory=dict)
     target: Optional[str] = None  # "memo", "grid", "chat", "docs_panel"
     requires_approval: bool = False
+
+
+class OutputRegistry:
+    """Tracks what the agent has produced this session so it can reference,
+    refine, and build on its own outputs.  ~60 lines, lives in shared_data."""
+
+    def __init__(self) -> None:
+        self.outputs: List[Dict[str, Any]] = []
+
+    def record(self, kind: str, tool: str, summary: str, data: Optional[Dict[str, Any]] = None) -> None:
+        """Record a produced output.  kind = memo|chart|grid_edit|scenario|valuation|cap_table"""
+        self.outputs.append({
+            "id": len(self.outputs),
+            "kind": kind,
+            "tool": tool,
+            "summary": summary,
+            "timestamp": datetime.utcnow().isoformat(),
+            "data_keys": list((data or {}).keys()),
+        })
+
+    def record_from_result(self, tool: str, result: Dict[str, Any]) -> None:
+        """Auto-detect output type from tool result and record it."""
+        if "memo_sections" in result:
+            titles = [s.get("title", "untitled") for s in result["memo_sections"][:3]]
+            self.record("memo", tool, f"Memo with sections: {', '.join(titles)}", result)
+        if result.get("chart_data") or result.get("charts") or result.get("chart_config"):
+            charts = result.get("chart_data") or result.get("charts") or [result.get("chart_config")]
+            if isinstance(charts, list):
+                for c in charts:
+                    chart_type = c.get("type", c.get("chart_type", "chart")) if isinstance(c, dict) else "chart"
+                    self.record("chart", tool, f"Chart: {chart_type}", c if isinstance(c, dict) else {})
+        if result.get("grid_command") or result.get("grid_commands"):
+            cmds = result.get("grid_commands") or [result.get("grid_command")]
+            self.record("grid_edit", tool, f"{len(cmds)} grid edit(s)", result)
+        if result.get("valuation"):
+            self.record("valuation", tool, "Valuation output", result)
+        if result.get("cap_tables"):
+            self.record("cap_table", tool, "Cap table generated", result)
+        if result.get("scenario_analysis"):
+            self.record("scenario", tool, "Scenario analysis", result)
+
+    def prompt_block(self) -> str:
+        """Format outputs for injection into REASON prompt."""
+        if not self.outputs:
+            return ""
+        lines = ["SESSION OUTPUTS (you produced these — you can reference, refine, or build on them):"]
+        for o in self.outputs:
+            lines.append(f"  [{o['id']}] {o['kind']}: {o['summary']} (via {o['tool']})")
+        return "\n".join(lines) + "\n"
+
+    def has_any(self) -> bool:
+        return bool(self.outputs)
+
+    def count_by_kind(self, kind: str) -> int:
+        return sum(1 for o in self.outputs if o["kind"] == kind)
 
 
 @dataclass
@@ -3441,6 +3555,15 @@ class UnifiedMCPOrchestrator:
         # Feature flag: set True to use the new conversational path
         self._use_conversational_path = True
 
+        # ── Conversational cadence state ──────────────────────────────
+        self._prev_turn_type: Optional[TurnType] = None
+        self._prev_turn_budget: int = 2048
+        self._prev_tool_calls: List[Dict[str, Any]] = []
+        self._turn_type_history: List[TurnType] = []  # last N turn types for phase detection
+        self._conversation_phase: ConversationPhase = ConversationPhase.EXPLORING
+        self._history_summary: Optional[str] = None  # compressed summary of old turns
+        self._last_crystal: Optional[Dict[str, Any]] = None  # last crystallization result for steering
+
         self._is_ready = True
         _update_readiness_state(True, None)
         logger.info("[ORCHESTRATOR_INIT] ✅ UnifiedMCPOrchestrator ready")
@@ -3557,6 +3680,451 @@ class UnifiedMCPOrchestrator:
             f"{task_instruction}"
         )
 
+    # ── Conversational cadence ──────────────────────────────────────
+    # Turn classification, phase detection, and history summarization.
+    # Pure heuristic — no LLM call. Runs on every conversational turn.
+
+    # ── Pre-compiled regex for turn classification (module-level perf) ──
+    _RE_PHATIC = re.compile(
+        r"^("
+        # Greetings
+        r"hi\b|hello\b|hey\b|yo\b|sup\b|howdy|good morning|good afternoon|"
+        r"good evening|gm\b|morning\b|afternoon\b|evening\b|"
+        # Thanks / appreciation
+        r"thanks|thank you|cheers|appreciate it|ty\b|thx\b|ta\b|"
+        r"much appreciated|that helps|helpful|"
+        # Acknowledgements
+        r"ok\b|okay\b|k\b|kk\b|cool\b|great\b|nice\b|perfect\b|"
+        r"awesome\b|sweet\b|lovely\b|brilliant\b|solid\b|fair enough|"
+        r"right\b|alright\b|aight\b|noted\b|"
+        # Confirmations
+        r"sure\b|yep\b|yup\b|yeah\b|ya\b|yes\b|yea\b|mhm\b|uh huh|"
+        r"got it|sounds good|makes sense|understood|roger|copy that|"
+        r"i see|ah ok|oh ok|ah got it|oh got it|oh right|ah right|"
+        # Negatives (standalone, not redirecting)
+        r"no\b|nope\b|nah\b|not really|no worries|all good|no problem|"
+        # Sign-offs
+        r"bye\b|goodbye|see you|later\b|talk soon|ttyl|catch you later"
+        r")",
+        re.IGNORECASE,
+    )
+
+    _RE_STATUS = re.compile(
+        r"^("
+        r"what'?s\b|how much\b|how many\b|what is\b|what are\b|"
+        r"what was\b|what were\b|how'?s\b|"
+        r"where'?s\b|where is\b|where are\b|"
+        r"when did\b|when was\b|when is\b|"
+        r"who is\b|who'?s\b|"
+        # Direct metric asks
+        r"give me the\b|tell me the\b|show me the\b|"
+        r"current\b|latest\b|"
+        # Number-seeking
+        r"how big\b|how long\b|how old\b|how far\b"
+        r")",
+        re.IGNORECASE,
+    )
+
+    def _classify_turn(self, prompt: str) -> TurnType:
+        """Classify what kind of conversational turn this is.
+
+        Pure pattern matching — fast, no LLM. Reads conversational cadence
+        by combining (message content, previous turn type, whether tools
+        ran last turn, message length) to understand what the user actually
+        wants — not just what words they used.
+
+        The order of checks matters: context-dependent checks (post-tool
+        refinements, pushback) run first because they override keyword
+        matching. A user saying "try 50M" after a valuation run is
+        ITERATION, not a generic request.
+        """
+        lower = prompt.lower().strip()
+        prev_had_tools = bool(self._prev_tool_calls)
+        words = lower.split()
+        msg_len = len(words)
+
+        # ── 1. Post-tool refinements (context-dependent, highest priority) ──
+        # After a tool-heavy turn, short messages are almost always
+        # refining what was just produced, not starting something new.
+        # Broaden: prev turn type is a strong classification signal
+        _recent_work = prev_had_tools or self._prev_turn_type in (
+            TurnType.ANALYSIS, TurnType.SYNTHESIS, TurnType.RETRIEVAL,
+        )
+        if _recent_work and msg_len < 20:
+
+            # Iteration: tweaking values, parameters, or approach
+            _iteration_phrases = (
+                # Direct tweaks
+                "what about", "what if", "how about", "instead",
+                "try", "change", "make it", "set it to", "use",
+                "swap", "replace", "switch to", "redo", "rerun",
+                "do it again", "run it again", "one more time",
+                # Adjusting numbers
+                "bump", "lower", "raise", "increase", "decrease",
+                "double", "halve", "cut", "add", "remove",
+                "more", "fewer", "bigger", "smaller",
+                # Hypotheticals
+                "assuming", "if we", "if i", "suppose", "say",
+                "let's say", "imagine", "pretend",
+                # Re-scoping entities
+                "the other", "that one", "this one", "those",
+                "for series", "with series", "at series",
+                "for q", "in q1", "in q2", "in q3", "in q4",
+            )
+            if any(p in lower for p in _iteration_phrases):
+                return TurnType.ITERATION
+
+            # Steering: narrowing, broadening, or redirecting scope/format
+            _steering_phrases = (
+                # Scope narrowing
+                "just", "only", "skip", "focus on", "without",
+                "drop", "ignore", "exclude", "leave out", "cut out",
+                "narrow", "limit to", "restrict to", "include only",
+                "specifically", "in particular",
+                # Scope broadening
+                "also include", "add in", "expand", "broaden",
+                "what else", "anything else", "and also",
+                # Format steering
+                "shorter", "longer", "simpler", "more detail",
+                "less detail", "more concise", "bullet points",
+                "as a table", "as a chart", "break it down",
+                "break that down", "can you break", "elaborate",
+                "high level", "top level", "tldr", "tl;dr",
+                "the gist", "bottom line", "net net",
+                "in plain english", "dumb it down", "eli5",
+            )
+            if any(p in lower for p in _steering_phrases):
+                return TurnType.STEERING
+
+        # ── 2. Pushback / interjection (can happen anytime) ──
+        # User is correcting, redirecting, or disagreeing. These are
+        # conversational pivots — the system should stay cheap and responsive.
+        _pushback_starters = (
+            "no,", "no ", "nah", "nope", "not that", "wrong",
+            "actually", "actually,", "i meant", "i mean",
+            "that's not", "thats not", "that isn't", "that isnt",
+            "wait", "wait,", "hold on", "hang on", "hold up",
+            "stop", "pause", "back up", "go back",
+            "not what i", "not what we", "i didn't",
+            "different", "the other", "other way",
+            "i was thinking", "i was asking", "what i meant",
+            "let me rephrase", "let me clarify", "to clarify",
+            "sorry i meant", "sorry, i meant",
+            "no no", "nonono", "hmm no", "eh no",
+            "that feels", "feels off", "feels wrong",
+            "not quite", "not exactly", "close but",
+        )
+        if any(lower.startswith(s) for s in _pushback_starters):
+            return TurnType.STEERING if prev_had_tools else TurnType.ITERATION
+
+        # ── 3. Phatic: social glue, not actionable ──
+        # Short acknowledgements, greetings, sign-offs. The key signal
+        # is *brevity + no substance*. "cool" is phatic, "cool now
+        # model it out" is execution.
+        if msg_len <= 5 and self._RE_PHATIC.match(lower):
+            return TurnType.PHATIC
+
+        # ── 4. Execution triggers: "stop talking, go do it" ──
+        # Phase transition from exploring/converging → executing.
+        # These are the signals that the user is done hashing out
+        # the idea and wants the system to commit.
+        _execution_phrases = (
+            # Direct commands
+            "do it", "go ahead", "go for it", "let's do it",
+            "let's go", "run it", "execute", "proceed",
+            "ship it", "make it happen", "pull the trigger",
+            "kick it off", "fire it up", "get it done",
+            "ok do it", "yeah do it", "yep do it", "sure do it",
+            "ok go", "yeah go", "alright go", "cool go",
+            # Imperative starters (with substance following)
+            "build", "generate", "create", "compute", "calculate",
+            "model", "forecast", "project", "estimate", "value",
+            "run the", "do the", "perform the", "start the",
+            # Approval after discussion
+            "looks good", "that works", "go with that",
+            "go with this", "go with option", "let's go with",
+            "i like that", "love it", "perfect let's",
+            "ok let's", "alright let's", "yeah let's",
+            "sounds right", "that's right", "exactly",
+            "green light", "approved", "sign off",
+            "lock it in", "finalize", "confirm",
+        )
+        if any(p in lower for p in _execution_phrases):
+            if self._conversation_phase == ConversationPhase.CONVERGING:
+                return TurnType.SYNTHESIS
+            return TurnType.ANALYSIS
+
+        # ── 5. Synthesis: deliverable / output language ──
+        # User wants a produced artifact — memo, report, summary, etc.
+        _synthesis_phrases = (
+            # Document types
+            "write", "draft", "prepare", "compose", "author",
+            "memo", "report", "brief", "deck", "presentation",
+            "document", "narrative", "writeup", "write-up",
+            "executive summary", "one-pager", "one pager",
+            "tearsheet", "tear sheet", "fact sheet",
+            # Summarization
+            "summarize", "summarise", "sum up", "recap",
+            "pull together", "put together", "compile",
+            "consolidate", "synthesize", "synthesise",
+            # Communication
+            "send to", "email", "share with", "forward to",
+            "package", "bundle", "export",
+            # Formal output
+            "final version", "clean version", "polished",
+            "ready to send", "ready to share", "for the board",
+            "for the lp", "for the partners", "for the team",
+            "investor update", "lp update", "board update",
+        )
+        if any(p in lower for p in _synthesis_phrases):
+            return TurnType.SYNTHESIS
+
+        # ── 6. Status: quick fact/metric lookups ──
+        # Short questions seeking a single data point. The key is
+        # brevity — a long question with "what's" is probably analysis.
+        if msg_len < 15 and self._RE_STATUS.match(lower):
+            return TurnType.STATUS
+
+        # Also catch direct metric references without question words
+        _metric_patterns = (
+            r"\b(dpi|tvpi|irr|moic|nav|aum|mrr|arr|burn|runway|"
+            r"revenue|ebitda|margin|ltv|cac|churn|nrr|grr)\b",
+        )
+        if msg_len < 8 and any(re.search(p, lower) for p in _metric_patterns):
+            return TurnType.STATUS
+
+        # ── 7. Analysis signals: complex investigation ──
+        # Multi-faceted questions, comparisons, scenario work.
+        _analysis_phrases = (
+            "compare", "contrast", "versus", " vs ", " vs.",
+            "analyze", "analyse", "assess", "evaluate", "review",
+            "deep dive", "dig into", "drill down", "look into",
+            "investigate", "research", "explore", "examine",
+            "benchmark", "stress test", "sensitivity",
+            "scenario", "upside", "downside", "base case",
+            "bull case", "bear case", "risk",
+            "how does .* compare", "what drives", "why is",
+            "break down the", "walk me through",
+            "implications", "impact of", "effect of",
+            "correlation", "relationship between",
+            "trend", "trajectory", "outlook",
+            "diligence", "due diligence", "dd",
+        )
+        if any(p in lower for p in _analysis_phrases):
+            return TurnType.ANALYSIS
+
+        # ── 8. Retrieval signals: fetch-and-present ──
+        _retrieval_phrases = (
+            "show me", "pull up", "get me", "find", "look up",
+            "fetch", "grab", "bring up", "load", "open",
+            "list", "display", "see the", "view",
+            "check on", "check the", "status of",
+            "where can i find", "do we have", "is there a",
+        )
+        if any(p in lower for p in _retrieval_phrases):
+            return TurnType.RETRIEVAL
+
+        # ── 9. Default: length-based heuristic ──
+        # Short messages with no strong signal → probably looking something up.
+        # Long messages → user is describing something complex.
+        if msg_len < 15:
+            return TurnType.RETRIEVAL
+        return TurnType.ANALYSIS
+
+    def _detect_phase(self) -> ConversationPhase:
+        """Detect conversational phase from recent turn history.
+
+        Looks at the last 5 turn types to infer where the conversation arc is.
+        This drives how the system behaves — e.g., during EXPLORING we keep
+        responses light; during EXECUTING we commit resources.
+        """
+        recent = self._turn_type_history[-5:] if self._turn_type_history else []
+        if not recent:
+            return ConversationPhase.EXPLORING
+
+        # Count turn types in recent window
+        type_counts: Dict[TurnType, int] = {}
+        for t in recent:
+            type_counts[t] = type_counts.get(t, 0) + 1
+
+        has_synthesis = TurnType.SYNTHESIS in type_counts
+        has_analysis = TurnType.ANALYSIS in type_counts
+        iteration_count = type_counts.get(TurnType.ITERATION, 0)
+        steering_count = type_counts.get(TurnType.STEERING, 0)
+        refinement_count = iteration_count + steering_count
+
+        # After synthesis/analysis with refinements = reviewing output
+        if self._prev_tool_calls and refinement_count >= 2:
+            return ConversationPhase.REVIEWING
+
+        # Active synthesis or analysis = executing
+        if has_synthesis or (has_analysis and type_counts.get(TurnType.ANALYSIS, 0) >= 2):
+            return ConversationPhase.EXECUTING
+
+        # Mix of steering + iteration = converging on an approach
+        if refinement_count >= 2:
+            return ConversationPhase.CONVERGING
+
+        # Default: still exploring
+        return ConversationPhase.EXPLORING
+
+    async def _summarize_history(self) -> None:
+        """Compress old conversation turns into a summary.
+
+        Keeps the last _HISTORY_HOT_WINDOW messages verbatim and summarizes
+        everything older into a concise context block. Uses a TRIVIAL-tier
+        model to keep cost minimal. Only triggers when history exceeds
+        _HISTORY_SUMMARY_TRIGGER messages.
+        """
+        total = len(self._conversation_history)
+        if total < _HISTORY_SUMMARY_TRIGGER:
+            return
+
+        # Split into old (to summarize) and hot (to keep verbatim)
+        cold_turns = self._conversation_history[:-_HISTORY_HOT_WINDOW]
+        hot_turns = self._conversation_history[-_HISTORY_HOT_WINDOW:]
+
+        # Build a condensed transcript of cold turns
+        transcript_parts = []
+        for msg in cold_turns:
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                # Tool-use messages: just note what tools were called
+                text_bits = [b.get("text", "") for b in content if b.get("type") == "text"]
+                tool_bits = [b.get("name", "") for b in content if b.get("type") == "tool_use"]
+                summary_line = " ".join(text_bits)
+                if tool_bits:
+                    summary_line += f" [tools: {', '.join(tool_bits)}]"
+                content = summary_line
+            # Truncate long messages for the summarizer
+            if len(content) > 300:
+                content = content[:300] + "..."
+            transcript_parts.append(f"{role}: {content}")
+
+        transcript = "\n".join(transcript_parts)
+
+        try:
+            result = await self.model_router.get_completion(
+                prompt=(
+                    f"Summarize this conversation so far in 3-5 bullet points. "
+                    f"Focus on: what the user wants, key decisions made, data discussed, "
+                    f"and current direction. Be concise.\n\n{transcript}"
+                ),
+                system_prompt="You summarize conversations. Return only bullet points, no preamble.",
+                capability=ModelCapability.FAST,
+                max_tokens=256,
+                temperature=0.0,
+                caller_context="conversation_summarize",
+            )
+            summary_text = result.get("response", "") if isinstance(result, dict) else str(result)
+            if summary_text.strip():
+                self._history_summary = summary_text.strip()
+                # Replace cold turns with nothing — summary goes into system prompt
+                self._conversation_history = hot_turns
+                logger.info(
+                    f"[CADENCE] Summarized {len(cold_turns)} old turns → "
+                    f"{len(summary_text)} chars, keeping {len(hot_turns)} hot"
+                )
+        except Exception as e:
+            logger.warning(f"[CADENCE] History summarization failed: {e}")
+            # Fall back to simple truncation
+            self._conversation_history = self._conversation_history[-(_HISTORY_HOT_WINDOW + 4):]
+
+    async def _crystallize_context(self, trigger_prompt: str) -> Optional[Dict[str, Any]]:
+        """Turn accumulated conversation context into a structured task spec.
+
+        Called when the conversation phase transitions to EXECUTING — the user
+        has been hashing out an idea and now says "do it". This takes the full
+        conversational context (summary + hot window) and extracts:
+        - What the user wants done (concrete goals)
+        - Key parameters/decisions made during the conversation
+        - Entities mentioned (companies, metrics, time periods)
+        - Constraints or preferences expressed
+
+        Returns a task spec dict that can be fed directly to _run_agent_loop,
+        or None if crystallization fails (in which case we fall back to the
+        normal conversational path).
+        """
+        # Build the conversation transcript for the crystallizer
+        transcript_parts = []
+
+        # Include summary of older context if available
+        if self._history_summary:
+            transcript_parts.append(f"[Earlier context summary]\n{self._history_summary}")
+
+        # Include hot window — the recent turns that have the actual decisions
+        for msg in self._conversation_history[-_HISTORY_HOT_WINDOW:]:
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text_bits = [b.get("text", "") for b in content if b.get("type") == "text"]
+                tool_bits = [b.get("name", "") for b in content if b.get("type") == "tool_use"]
+                content = " ".join(text_bits)
+                if tool_bits:
+                    content += f" [tools used: {', '.join(tool_bits)}]"
+            if len(content) > 500:
+                content = content[:500] + "..."
+            transcript_parts.append(f"{role}: {content}")
+
+        # The trigger message itself
+        transcript_parts.append(f"user: {trigger_prompt}")
+        transcript = "\n".join(transcript_parts)
+
+        # Get grid mode for domain awareness
+        grid_mode = self.shared_data.get("grid_mode", "portfolio")
+
+        crystallize_prompt = (
+            f"The user has been discussing a task and is now ready to execute.\n"
+            f"Domain: {grid_mode}\n\n"
+            f"Conversation:\n{transcript}\n\n"
+            f"Extract the task the user wants done. Return JSON:\n"
+            f'{{\n'
+            f'  "task_summary": "One sentence: what the user wants done",\n'
+            f'  "synthesized_prompt": "A clear, specific prompt as if the user wrote it from scratch, '
+            f'incorporating all decisions and parameters from the conversation. '
+            f'This should be self-contained — someone reading it with no context should '
+            f'understand exactly what to do.",\n'
+            f'  "entities": {{"companies": [], "metrics": [], "time_periods": []}},\n'
+            f'  "constraints": ["Any preferences or constraints the user expressed"],\n'
+            f'  "output_format": "memo|chart|table|analysis|reply"\n'
+            f'}}\n\n'
+            f'CRITICAL: The synthesized_prompt must capture the SPECIFIC parameters discussed. '
+            f'Not "analyze the company" but "analyze Ramp revenue growth assuming 40% YoY with '
+            f'Series C at $500M pre". Every number, every entity, every decision.\n\n'
+            f'Return ONLY the JSON object.'
+        )
+
+        try:
+            result = await self.model_router.get_completion(
+                prompt=crystallize_prompt,
+                system_prompt=(
+                    "You crystallize conversations into task specs. "
+                    "Return valid JSON only. Capture every specific parameter discussed."
+                ),
+                capability=ModelCapability.FAST,
+                max_tokens=500,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="conversation_crystallize",
+            )
+            content = result.get("response", "{}") if isinstance(result, dict) else str(result)
+            parsed = json.loads(content)
+
+            # Validate we got the key field
+            if not parsed.get("synthesized_prompt"):
+                logger.warning("[CRYSTALLIZE] No synthesized_prompt in response")
+                return None
+
+            logger.info(
+                f"[CRYSTALLIZE] Extracted task: {parsed.get('task_summary', '?')[:100]}"
+            )
+            return parsed
+
+        except Exception as e:
+            logger.warning(f"[CRYSTALLIZE] Failed: {e}")
+            return None
+
     # ── Conversational agent methods ─────────────────────────────────
     # These power the new conversational path (Phase 1 of AGENT_CONVERSATIONAL_FIX).
     # The model gets system prompt + fingerprint + tools + history, and
@@ -3583,11 +4151,20 @@ class UnifiedMCPOrchestrator:
             })
         return defs
 
-    def _build_conversational_prompt(self, context: Optional[Dict[str, Any]] = None) -> str:
-        """Build a unified conversational system prompt.
+    def _build_conversational_prompt(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+        turn_type: Optional[TurnType] = None,
+        phase: Optional[ConversationPhase] = None,
+    ) -> str:
+        """Build a turn-type-aware conversational system prompt.
 
-        Combines persona, behavioral rules, dynamic fund context,
-        SessionState fingerprint, and domain module based on grid mode.
+        Different turn types get different prompt profiles:
+        - PHATIC → minimal, just respond naturally
+        - STATUS → data-focused, answer with the number
+        - STEERING → adjust scope/format, don't restart
+        - ITERATION → reuse context, vary the parameter
+        - ANALYSIS/RETRIEVAL/SYNTHESIS → full prompt
         """
         fund_ctx = self.shared_data.get("fund_context", {})
         fund_size = fund_ctx.get("fund_size", fund_ctx.get("fundSize", DEFAULT_FUND_SIZE))
@@ -3605,6 +4182,60 @@ class UnifiedMCPOrchestrator:
         if fund_year:
             fund_line += f", Year {fund_year}"
 
+        # ── Helper: session fingerprint for lightweight prompts ──
+        def _fingerprint_block(header: str = "CURRENT DATA") -> str:
+            _ss = SessionState(self.shared_data) if SessionState else None
+            if _ss:
+                fp = _ss.fingerprint()
+                if fp:
+                    return f"\n\n## {header}\n{fp}"
+            return ""
+
+        # ── PHATIC: minimal prompt, just be human ──
+        if turn_type == TurnType.PHATIC:
+            return (
+                f"You are a senior CFO analyst for a {fund_line}. "
+                "Respond naturally and briefly. No analysis, no data dumps. "
+                "Match the user's tone — casual gets casual."
+            )
+
+        # ── STATUS: answer with the number ──
+        if turn_type == TurnType.STATUS:
+            return (
+                f"You are a senior CFO analyst for a {fund_line}.\n\n"
+                "Answer with the specific number or fact requested. Cite the source. "
+                "If you don't have the data in context, say so — don't guess. "
+                "Keep it to 1-2 sentences."
+                f"{_fingerprint_block()}"
+            )
+
+        # ── STEERING: adjust, don't restart ──
+        if turn_type == TurnType.STEERING:
+            return (
+                f"You are a senior CFO analyst for a {fund_line}.\n\n"
+                "The user is adjusting scope, format, or direction of previous output. "
+                "Apply their change to what you produced. Be concise. "
+                "Don't restart from scratch — modify what exists. "
+                "If they want less detail, cut. If more, expand. "
+                "If redirecting, pivot without re-explaining."
+                f"{_fingerprint_block('CURRENT STATE')}"
+            )
+
+        # ── ITERATION: reuse context, vary the parameter ──
+        if turn_type == TurnType.ITERATION:
+            return (
+                f"You are a senior CFO analyst for a {fund_line}.\n\n"
+                "The user is tweaking a parameter from the previous result. "
+                "Reuse ALL existing context — don't re-fetch or restart. "
+                "Only vary the requested parameter. Show the delta: "
+                "what changed and why it matters.\n\n"
+                "## DATA ACCURACY\n"
+                "1. COUNT before you claim. Get exact numbers right.\n"
+                "2. Every quantitative claim must be traceable.\n"
+                f"{_fingerprint_block('CURRENT STATE')}"
+            )
+
+        # ── FULL PATH: ANALYSIS, RETRIEVAL, SYNTHESIS ──
         # ── Base persona ──
         prompt = (
             f"You are a senior CFO/investment analyst for a {fund_line} "
@@ -3675,7 +4306,13 @@ class UnifiedMCPOrchestrator:
             "- You have access to previous results from this session (see SESSION STATE above).\n"
             "- If the user refers to 'the cap table' or 'those results', check your context.\n"
             "- Don't re-fetch data you already have unless asked to refresh.\n"
-            "- When iterating, reuse existing context and only re-run with new params.\n"
+            "- When iterating, reuse existing context and only re-run with new params.\n\n"
+
+            "## AFTER DELIVERING RESULTS\n"
+            "- Suggest 1-2 concrete next steps based on what you found. Not generic — specific to the data.\n"
+            "- If you spotted a signal (runway critical, margin erosion, covenant risk), flag it unprompted.\n"
+            "- Example: 'Burn is 18 months at current rate, but COGS grew 40% QoQ — want me to model that forward?'\n"
+            "- If the analysis is multi-step, tell the user what you'd do next and why.\n"
         )
 
         return prompt
@@ -3685,26 +4322,179 @@ class UnifiedMCPOrchestrator:
         prompt: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Single conversational turn with tool-use loop.
+        """Single conversational turn — thin dispatcher.
 
-        This is the new primary path. The model sees:
-        - System prompt (persona + tools + fingerprint)
-        - Conversation history
-        - Current message
-        - Available tools
-
-        The model either responds with text (done) or calls tools
-        (execute → feed results → let model continue). Standard
-        tool-use loop, nothing custom.
+        Classifies the turn, checks context health, then routes to one
+        of three handler paths:
+        - _fast_reply: PHATIC / STATUS / STEERING — single LLM call, no tools
+        - _crystallize_and_execute: SYNTHESIS in CONVERGING/EXECUTING with 4+ exchanges
+        - _conversational_loop: everything else — standard tool-use loop
         """
-        system_prompt = self._build_conversational_prompt(context)
-        tools = self._build_tool_definitions()
+        # ── 1. Check context health — offer handoff if clogged ──
+        health = self._check_context_health()
+        if health["needs_handoff"]:
+            handoff = await self._generate_session_handoff()
+            if handoff:
+                yield {"type": "session_handoff", "handoff": handoff}
 
-        # Build messages: history + current user message
+        # ── 2. Classify this turn & detect conversation phase ──
+        turn_type = self._classify_turn(prompt)
+        self._turn_type_history.append(turn_type)
+        if len(self._turn_type_history) > 10:
+            self._turn_type_history = self._turn_type_history[-10:]
+        self._conversation_phase = self._detect_phase()
+
+        max_tokens = TURN_BUDGETS[turn_type] or self._prev_turn_budget or 2048
+
+        logger.info(
+            f"[CADENCE] turn={turn_type.value} phase={self._conversation_phase.value} "
+            f"budget={max_tokens} prev_tools={len(self._prev_tool_calls)}"
+        )
+
+        # ── 3. Summarize history if it's getting long ──
+        await self._summarize_history()
+
+        # ── 4. Initialize turn result container ──
+        self._turn_result: Dict[str, Any] = {"full_text": "", "tool_calls_made": []}
+
+        # ── 5. Route to handler ──
+        # Mid-execution steering: user tweaks right after a synthesis run
+        if (
+            turn_type in (TurnType.STEERING, TurnType.ITERATION)
+            and self._prev_turn_type == TurnType.SYNTHESIS
+            and self._last_crystal is not None
+        ):
+            handler = self._steer_execution(prompt, context, turn_type)
+        elif turn_type in (TurnType.PHATIC, TurnType.STATUS, TurnType.STEERING):
+            handler = self._fast_reply(prompt, context, turn_type)
+        elif (
+            turn_type == TurnType.SYNTHESIS
+            and self._conversation_phase in (
+                ConversationPhase.CONVERGING, ConversationPhase.EXECUTING,
+            )
+            and len(self._conversation_history) >= 8  # 4+ exchanges
+        ):
+            handler = self._crystallize_and_execute(prompt, context, turn_type)
+        else:
+            handler = self._conversational_loop(prompt, context, turn_type)
+
+        async for event in handler:
+            yield event
+
+        # ── 6. Common post-turn state update ──
+        tr = self._turn_result
+        full_text = tr["full_text"]
+        tool_calls_made = tr["tool_calls_made"]
+
+        await self._update_turn_state(
+            turn_type, max_tokens, full_text, tool_calls_made, prompt,
+        )
+
+        # ── 7. Yield complete event ──
+        yield {
+            "type": "complete",
+            "result": {
+                "content": full_text,
+                "reply": full_text,
+                "format": "analysis",
+                "type": "analysis",
+                "tool_calls": tool_calls_made,
+            },
+            "success": True,
+            "metadata": {
+                "path": "conversational",
+                "turn_type": turn_type.value,
+                "phase": self._conversation_phase.value,
+                "tool_calls_count": len(tool_calls_made),
+                "tools_used": [tc["tool"] for tc in tool_calls_made],
+                "budget": self.model_router.end_budget() or {},
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Conversational handler paths
+    # ------------------------------------------------------------------
+
+    async def _fast_reply(
+        self,
+        prompt: str,
+        context: Optional[Dict[str, Any]],
+        turn_type: TurnType,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Single LLM call, no tool loop.  For PHATIC / STATUS / STEERING.
+
+        Builds a lightweight, turn-type-aware system prompt and fires one
+        completion.  No tool definitions are sent — the model just talks.
+        """
+        system_prompt = self._build_conversational_prompt(
+            context, turn_type=turn_type, phase=self._conversation_phase,
+        )
+        if self._history_summary:
+            system_prompt += (
+                f"\n\n## EARLIER IN THIS CONVERSATION\n"
+                f"{self._history_summary}\n"
+            )
+
+        max_tokens = TURN_BUDGETS[turn_type] or self._prev_turn_budget or 2048
+
         messages = list(self._conversation_history)
         messages.append({"role": "user", "content": prompt})
 
-        max_tool_rounds = 10  # Safety limit
+        yield {"type": "progress", "stage": "thinking", "message": "Thinking..."}
+
+        try:
+            result = await self.model_router.get_completion_with_tools(
+                messages=messages,
+                system_prompt=system_prompt,
+                tools=[],  # no tools for fast replies
+                max_tokens=max_tokens,
+                temperature=0.7,
+                caller_context=f"conversational_{turn_type.value}",
+            )
+        except Exception as e:
+            logger.error(f"[FAST_REPLY] LLM call failed: {e}")
+            yield {"type": "error", "error": str(e)}
+            self._turn_result = {"full_text": "", "tool_calls_made": []}
+            return
+
+        text_parts = result.get("text_parts", [])
+        for text in text_parts:
+            yield {"type": "token", "content": text}
+
+        self._turn_result = {
+            "full_text": "\n".join(text_parts),
+            "tool_calls_made": [],
+        }
+
+    async def _conversational_loop(
+        self,
+        prompt: str,
+        context: Optional[Dict[str, Any]],
+        turn_type: TurnType,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Standard tool-use loop.  For RETRIEVAL / ITERATION / ANALYSIS.
+
+        Sends the full system prompt + tool definitions and lets the model
+        decide whether to call tools.  Loops up to ``max_tool_rounds``
+        times, feeding tool results back until the model stops.
+        """
+        system_prompt = self._build_conversational_prompt(
+            context, turn_type=turn_type, phase=self._conversation_phase,
+        )
+        if self._history_summary:
+            system_prompt += (
+                f"\n\n## EARLIER IN THIS CONVERSATION\n"
+                f"{self._history_summary}\n"
+            )
+
+        tools = self._build_tool_definitions()
+        max_tokens = TURN_BUDGETS[turn_type] or self._prev_turn_budget or 2048
+        caller_context = f"conversational_{turn_type.value}"
+
+        messages = list(self._conversation_history)
+        messages.append({"role": "user", "content": prompt})
+
+        max_tool_rounds = 10
         all_text_parts: List[str] = []
         tool_calls_made: List[Dict[str, Any]] = []
 
@@ -3712,7 +4502,10 @@ class UnifiedMCPOrchestrator:
             yield {
                 "type": "progress",
                 "stage": "thinking" if round_num == 0 else "tool_execution",
-                "message": "Thinking..." if round_num == 0 else f"Processing tool results (round {round_num})",
+                "message": (
+                    "Thinking..." if round_num == 0
+                    else f"Processing tool results (round {round_num})"
+                ),
             }
 
             try:
@@ -3720,31 +4513,32 @@ class UnifiedMCPOrchestrator:
                     messages=messages,
                     system_prompt=system_prompt,
                     tools=tools,
-                    max_tokens=4096,
+                    max_tokens=max_tokens,
                     temperature=0.7,
-                    caller_context="conversational_turn",
+                    caller_context=caller_context,
                 )
             except Exception as e:
-                logger.error(f"[CONVERSATIONAL] LLM call failed round {round_num}: {e}")
+                logger.error(f"[CONV_LOOP] LLM call failed round {round_num}: {e}")
                 yield {"type": "error", "error": str(e)}
+                self._turn_result = {
+                    "full_text": "\n".join(all_text_parts),
+                    "tool_calls_made": tool_calls_made,
+                }
                 return
 
             text_parts = result.get("text_parts", [])
             tool_calls = result.get("tool_calls", [])
             stop_reason = result.get("stop_reason", "end_turn")
 
-            # Collect text output
             if text_parts:
                 for text in text_parts:
                     all_text_parts.append(text)
                     yield {"type": "token", "content": text}
 
-            # If no tool calls, we're done
             if not tool_calls or stop_reason != "tool_use":
                 break
 
             # ── Execute tool calls ──
-            # Build the assistant message for history (text + tool_use blocks)
             assistant_content: List[Dict[str, Any]] = []
             for text in text_parts:
                 assistant_content.append({"type": "text", "text": text})
@@ -3757,7 +4551,6 @@ class UnifiedMCPOrchestrator:
                 })
             messages.append({"role": "assistant", "content": assistant_content})
 
-            # Execute each tool and collect results
             tool_result_blocks: List[Dict[str, Any]] = []
             for tc in tool_calls:
                 tool_name = tc["name"]
@@ -3774,12 +4567,10 @@ class UnifiedMCPOrchestrator:
                 try:
                     tool_output = await self._execute_tool(tool_name, tool_input)
 
-                    # Mark session state dirty so fingerprint rebuilds
                     if SessionState:
                         _ss = SessionState(self.shared_data)
                         _ss.mark_dirty()
 
-                    # Serialize tool output for the model
                     output_str = json.dumps(tool_output, default=str)[:8000]
 
                     tool_result_blocks.append({
@@ -3787,13 +4578,11 @@ class UnifiedMCPOrchestrator:
                         "tool_use_id": tool_id,
                         "content": output_str,
                     })
-
                     tool_calls_made.append({
                         "tool": tool_name,
                         "input": tool_input,
                         "output_preview": output_str[:200],
                     })
-
                     yield {
                         "type": "tool_result",
                         "tool": tool_name,
@@ -3802,7 +4591,7 @@ class UnifiedMCPOrchestrator:
                     }
 
                 except Exception as e:
-                    logger.error(f"[CONVERSATIONAL] Tool {tool_name} failed: {e}")
+                    logger.error(f"[CONV_LOOP] Tool {tool_name} failed: {e}")
                     tool_result_blocks.append({
                         "type": "tool_result",
                         "tool_use_id": tool_id,
@@ -3816,42 +4605,423 @@ class UnifiedMCPOrchestrator:
                         "result": {"error": str(e)},
                     }
 
-            # Feed tool results back as user message
             messages.append({"role": "user", "content": tool_result_blocks})
 
-        # ── Done: build final response ──
-        full_text = "\n".join(all_text_parts)
+        self._turn_result = {
+            "full_text": "\n".join(all_text_parts),
+            "tool_calls_made": tool_calls_made,
+        }
+
+    async def _crystallize_and_execute(
+        self,
+        prompt: str,
+        context: Optional[Dict[str, Any]],
+        turn_type: TurnType,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Crystallize conversation → plan → hand off to agent loop.
+
+        Used when the conversation has built up enough context (4+ exchanges)
+        and the user triggers a SYNTHESIS turn during CONVERGING / EXECUTING.
+
+        Steps:
+        1. _crystallize_context  → synthesized_prompt + entities
+        2. _generate_cheap_plan  → plan steps
+        3. Yield plan to frontend as progress event
+        4. _run_agent_loop       → execute with plan
+        5. Capture agent loop output into _turn_result
+
+        Falls back to _conversational_loop on crystallization failure.
+        """
+        yield {
+            "type": "progress",
+            "stage": "crystallizing",
+            "message": "Synthesizing conversation context...",
+        }
+
+        crystal = await self._crystallize_context(prompt)
+
+        if not crystal:
+            logger.info(
+                "[CRYSTALLIZE_EXECUTE] Crystallization failed — "
+                "falling back to conversational loop"
+            )
+            async for event in self._conversational_loop(prompt, context, turn_type):
+                yield event
+            return
+
+        synthesized_prompt = crystal["synthesized_prompt"]
+        entities = crystal.get("entities", {})
+
+        # Store for mid-execution steering
+        self._last_crystal = crystal
+
+        logger.info(
+            f"[CRYSTALLIZE_EXECUTE] Crystallized: "
+            f"{crystal.get('task_summary', '?')[:80]}"
+        )
+
+        # ── Generate execution plan ──
+        yield {
+            "type": "progress",
+            "stage": "planning",
+            "message": "Building execution plan...",
+        }
+
+        plan_steps = await self._generate_cheap_plan(
+            synthesized_prompt, classification=None,
+        )
+
+        if plan_steps:
+            yield {
+                "type": "progress",
+                "stage": "plan_ready",
+                "plan_steps": plan_steps,
+            }
+
+        # ── Hand off to agent loop ──
+        full_text_parts: List[str] = []
+        tool_calls_made: List[Dict[str, Any]] = []
+
+        try:
+            async for event in self._run_agent_loop(
+                prompt=synthesized_prompt,
+                context={"plan_steps": plan_steps} if plan_steps else {},
+                approved_plan=True,
+                entities=entities,
+            ):
+                evt_type = event.get("type")
+
+                # Capture text from the agent loop's complete event but
+                # don't yield it — the dispatcher produces its own.
+                if evt_type == "complete":
+                    result = event.get("result", {})
+                    content = result.get("content", "")
+                    if content:
+                        full_text_parts.append(content)
+                    tool_calls_made = result.get("tool_calls", []) or []
+                    # Still forward artifacts / grid_commands / etc via
+                    # a separate event so the frontend picks them up.
+                    forwarded = {
+                        k: v for k, v in result.items()
+                        if k not in ("content", "reply", "tool_calls")
+                        and v is not None
+                    }
+                    if forwarded:
+                        yield {
+                            "type": "progress",
+                            "stage": "agent_artifacts",
+                            "artifacts": forwarded,
+                        }
+                else:
+                    # Forward everything else (progress, tool_call, token, etc.)
+                    yield event
+        except Exception as e:
+            logger.error(f"[CRYSTALLIZE_EXECUTE] Agent loop failed: {e}")
+            # Fall back to conversational loop
+            async for event in self._conversational_loop(prompt, context, turn_type):
+                yield event
+            return
+
+        self._turn_result = {
+            "full_text": "\n".join(full_text_parts),
+            "tool_calls_made": tool_calls_made,
+        }
+
+    async def _steer_execution(
+        self,
+        prompt: str,
+        context: Optional[Dict[str, Any]],
+        turn_type: TurnType,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Re-crystallize with user's modification after a synthesis run.
+
+        Instead of starting from scratch, takes the previous crystal,
+        asks a cheap model to fold in the user's change, and re-runs
+        the crystallize-and-execute path with the updated prompt.
+
+        Falls back to _conversational_loop on failure.
+        """
+        crystal = self._last_crystal
+        if not crystal:
+            # Shouldn't happen — dispatcher checks, but be safe
+            async for event in self._conversational_loop(prompt, context, turn_type):
+                yield event
+            return
+
+        yield {
+            "type": "progress",
+            "stage": "steering",
+            "message": "Adjusting execution plan...",
+        }
+
+        old_prompt = crystal.get("synthesized_prompt", "")
+        old_constraints = crystal.get("constraints", [])
+
+        steer_prompt = (
+            "The user previously requested this task:\n"
+            f'"{old_prompt}"\n\n'
+            f"Constraints: {json.dumps(old_constraints)}\n\n"
+            f'Now the user says: "{prompt}"\n\n'
+            "Produce an updated synthesized_prompt that incorporates "
+            "the user's change. Keep everything from the original that "
+            "wasn't explicitly modified. Return JSON:\n"
+            '{\n'
+            '  "synthesized_prompt": "updated self-contained prompt",\n'
+            '  "change_summary": "what changed in 1 sentence"\n'
+            '}\n\n'
+            "Return ONLY the JSON object."
+        )
+
+        try:
+            result = await self.model_router.get_completion(
+                prompt=steer_prompt,
+                system_prompt=(
+                    "You modify task specs based on user feedback. "
+                    "Return valid JSON only. Preserve all unchanged parameters."
+                ),
+                capability=ModelCapability.FAST,
+                max_tokens=400,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="execution_steering",
+            )
+            content = (
+                result.get("response", "{}")
+                if isinstance(result, dict)
+                else str(result)
+            )
+            parsed = json.loads(content)
+            new_prompt = parsed.get("synthesized_prompt")
+
+            if not new_prompt:
+                raise ValueError("No synthesized_prompt in steering response")
+
+            logger.info(
+                f"[STEER] Change: {parsed.get('change_summary', '?')[:80]} "
+                f"→ re-crystallizing"
+            )
+
+            # Update the crystal and re-run
+            crystal["synthesized_prompt"] = new_prompt
+            crystal.setdefault("constraints", []).append(
+                f"Steered: {parsed.get('change_summary', prompt)}"
+            )
+            self._last_crystal = crystal
+
+            # Re-execute with updated crystal
+            synthesized_prompt = new_prompt
+            entities = crystal.get("entities", {})
+
+            yield {
+                "type": "progress",
+                "stage": "planning",
+                "message": "Rebuilding execution plan with changes...",
+            }
+
+            plan_steps = await self._generate_cheap_plan(
+                synthesized_prompt, classification=None,
+            )
+
+            if plan_steps:
+                yield {
+                    "type": "progress",
+                    "stage": "plan_ready",
+                    "plan_steps": plan_steps,
+                }
+
+            full_text_parts: List[str] = []
+            tool_calls_made: List[Dict[str, Any]] = []
+
+            async for event in self._run_agent_loop(
+                prompt=synthesized_prompt,
+                context={"plan_steps": plan_steps} if plan_steps else {},
+                approved_plan=True,
+                entities=entities,
+            ):
+                evt_type = event.get("type")
+                if evt_type == "complete":
+                    r = event.get("result", {})
+                    c = r.get("content", "")
+                    if c:
+                        full_text_parts.append(c)
+                    tool_calls_made = r.get("tool_calls", []) or []
+                    forwarded = {
+                        k: v for k, v in r.items()
+                        if k not in ("content", "reply", "tool_calls")
+                        and v is not None
+                    }
+                    if forwarded:
+                        yield {
+                            "type": "progress",
+                            "stage": "agent_artifacts",
+                            "artifacts": forwarded,
+                        }
+                else:
+                    yield event
+
+            self._turn_result = {
+                "full_text": "\n".join(full_text_parts),
+                "tool_calls_made": tool_calls_made,
+            }
+
+        except Exception as e:
+            logger.warning(f"[STEER] Steering failed: {e} — falling back")
+            async for event in self._conversational_loop(prompt, context, turn_type):
+                yield event
+
+    # ------------------------------------------------------------------
+    # Shared post-turn bookkeeping
+    # ------------------------------------------------------------------
+
+    async def _update_turn_state(
+        self,
+        turn_type: TurnType,
+        max_tokens: int,
+        full_text: str,
+        tool_calls_made: List[Dict[str, Any]],
+        prompt: str,
+    ) -> None:
+        """Common post-turn state update — cadence vars + history."""
+        self._prev_turn_type = turn_type
+        self._prev_turn_budget = max_tokens
+        self._prev_tool_calls = tool_calls_made
 
         # Update conversation history
         self._conversation_history.append({"role": "user", "content": prompt})
         self._conversation_history.append({"role": "assistant", "content": full_text})
 
-        # Trim history to sliding window
+        # Safety-net trim (summarization is the smart path)
         if len(self._conversation_history) > self._max_history_turns * 2:
-            self._conversation_history = self._conversation_history[-(self._max_history_turns * 2):]
+            self._conversation_history = self._conversation_history[
+                -(self._max_history_turns * 2):
+            ]
 
-        # Also persist in shared_data for cross-request recovery
+        # Persist for cross-request recovery
         async with self.shared_data_lock:
             self.shared_data["_conversation_history"] = self._conversation_history
 
-        # Build the complete result
-        yield {
-            "type": "complete",
-            "result": {
-                "content": full_text,
-                "reply": full_text,
-                "format": "analysis",
-                "type": "analysis",
-                "tool_calls": tool_calls_made,
-            },
-            "success": True,
-            "metadata": {
-                "path": "conversational",
-                "tool_calls_count": len(tool_calls_made),
-                "tools_used": [tc["tool"] for tc in tool_calls_made],
-                "budget": self.model_router.end_budget() or {},
-            },
+    # ------------------------------------------------------------------
+    # Session health & handoff
+    # ------------------------------------------------------------------
+
+    def _check_context_health(self) -> Dict[str, Any]:
+        """Check whether the conversation context is getting clogged.
+
+        Triggers when any of:
+        - turn_count >= 30  (15+ exchanges)
+        - Estimated tokens > 25k
+        - Summary exists AND still growing past 20 turns
+
+        Returns a dict with needs_handoff flag + diagnostics.
+        """
+        turn_count = len(self._conversation_history)
+        has_summary = bool(self._history_summary)
+
+        # Rough token estimate: ~1.3 tokens per char, average across roles
+        estimated_tokens = 0
+        for msg in self._conversation_history:
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    b.get("text", "") for b in content if b.get("type") == "text"
+                )
+            estimated_tokens += int(len(str(content)) * 1.3)
+        if self._history_summary:
+            estimated_tokens += int(len(self._history_summary) * 1.3)
+
+        needs_handoff = (
+            turn_count >= 30
+            or estimated_tokens > 25_000
+            or (has_summary and turn_count > 20)
+        )
+
+        return {
+            "needs_handoff": needs_handoff,
+            "turn_count": turn_count,
+            "estimated_tokens": estimated_tokens,
+            "has_summary": has_summary,
         }
+
+    async def _generate_session_handoff(self) -> Optional[Dict[str, Any]]:
+        """Produce a self-contained handoff payload for the frontend.
+
+        Uses a TRIVIAL-tier model to summarise what's happened, what was
+        decided, key entities, the current direction, and a resume prompt
+        that a fresh session can pick up without losing context.
+
+        Returns None on failure — the caller should just keep going.
+        """
+        # Build transcript for the summariser
+        transcript_parts: List[str] = []
+        if self._history_summary:
+            transcript_parts.append(
+                f"[Summary of older exchanges]\n{self._history_summary}"
+            )
+        for msg in self._conversation_history[-_HISTORY_HOT_WINDOW:]:
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text_bits = [
+                    b.get("text", "") for b in content if b.get("type") == "text"
+                ]
+                content = " ".join(text_bits)
+            if len(content) > 400:
+                content = content[:400] + "..."
+            transcript_parts.append(f"{role}: {content}")
+
+        transcript = "\n".join(transcript_parts)
+
+        handoff_prompt = (
+            "The user has had a long conversation that is reaching context limits.\n"
+            "Produce a handoff payload so a fresh session can resume seamlessly.\n\n"
+            f"Conversation:\n{transcript}\n\n"
+            "Return JSON:\n"
+            '{\n'
+            '  "summary": "1-2 sentence summary of what the user was working on",\n'
+            '  "decisions_made": ["key parameters or choices established"],\n'
+            '  "entities": {"companies": [], "metrics": [], "time_periods": []},\n'
+            '  "current_direction": "what they were headed toward next",\n'
+            '  "resume_prompt": "A self-contained prompt that picks up exactly '
+            'where the conversation left off. Someone reading it cold should '
+            'understand the full context and next step."\n'
+            '}\n\n'
+            "Be specific. Capture every number, entity, and decision.\n"
+            "Return ONLY the JSON object."
+        )
+
+        try:
+            result = await self.model_router.get_completion(
+                prompt=handoff_prompt,
+                system_prompt=(
+                    "You generate session handoff payloads. "
+                    "Return valid JSON only. Be precise and specific."
+                ),
+                capability=ModelCapability.FAST,
+                max_tokens=500,
+                temperature=0.0,
+                json_mode=True,
+                caller_context="session_handoff",
+            )
+            content = (
+                result.get("response", "{}")
+                if isinstance(result, dict)
+                else str(result)
+            )
+            parsed = json.loads(content)
+
+            if not parsed.get("resume_prompt"):
+                logger.warning("[HANDOFF] No resume_prompt in response")
+                return None
+
+            logger.info(
+                f"[HANDOFF] Generated handoff: "
+                f"{parsed.get('summary', '?')[:100]}"
+            )
+            return parsed
+
+        except Exception as e:
+            logger.warning(f"[HANDOFF] Failed to generate session handoff: {e}")
+            return None
 
     def _initialize_skill_registry(self) -> Dict[str, Dict[str, Any]]:
         """Initialize the skill registry with 36+ skills"""
@@ -8807,6 +9977,77 @@ Return JSON with ONLY these fields (use null if unknown):
             logger.warning(f"[TOOL] fpa_scenario_create failed: {e}")
             return {"error": str(e)}
 
+    async def _tool_fpa_scenario_update(self, inputs: dict) -> dict:
+        """Update existing branch assumptions using driver IDs, re-execute forecast."""
+        try:
+            from app.core.supabase_client import get_supabase_client
+            from app.services.scenario_branch_service import ScenarioBranchService
+            from app.services.driver_registry import drivers_to_assumptions
+
+            branch_id = inputs.get("branch_id")
+            company_id = inputs.get("company_id")
+            drivers = inputs.get("drivers", {})
+            if not branch_id or not company_id or not drivers:
+                return {"error": "branch_id, company_id, and drivers are required"}
+
+            sb = get_supabase_client()
+            if not sb:
+                return {"error": "Database unavailable"}
+
+            # Read existing assumptions
+            existing = sb.table("scenario_branches").select("assumptions, name").eq("id", branch_id).execute()
+            if not existing.data:
+                return {"error": f"Branch {branch_id} not found"}
+
+            current = existing.data[0].get("assumptions", {})
+            if isinstance(current, str):
+                import json as _json
+                try:
+                    current = _json.loads(current)
+                except (ValueError, TypeError):
+                    current = {}
+
+            # Convert driver IDs to assumption keys and merge
+            new_assumptions = drivers_to_assumptions(drivers)
+            for k, v in new_assumptions.items():
+                if isinstance(v, dict) and isinstance(current.get(k), dict):
+                    current[k].update(v)
+                else:
+                    current[k] = v
+
+            # Persist updated assumptions
+            sb.table("scenario_branches").update(
+                {"assumptions": current}
+            ).eq("id", branch_id).execute()
+
+            # Re-execute forecast with cascaded drivers
+            svc = ScenarioBranchService()
+            forecast_months = inputs.get("forecast_months", 24)
+            exec_result = svc.execute_branch(branch_id, company_id, forecast_months)
+
+            response = {
+                "branch_id": branch_id,
+                "branch_name": existing.data[0].get("name"),
+                "updated_drivers": list(drivers.keys()),
+                "merged_assumptions": current,
+                "forecast": exec_result.get("forecast"),
+                "base_forecast": exec_result.get("base_forecast"),
+            }
+
+            # Add driver narration if available
+            try:
+                from app.services.driver_narration import narrate_branch
+                narration = narrate_branch(branch_id, company_id)
+                if narration:
+                    response["narration"] = narration
+            except Exception:
+                pass
+
+            return response
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_scenario_update failed: {e}")
+            return {"error": str(e)}
+
     async def _tool_fpa_scenario_tree(self, inputs: dict) -> dict:
         """Get enriched scenario tree with computed metrics."""
         try:
@@ -12317,6 +13558,9 @@ Rules:
         # SessionMemo: compressed findings for context between LLM calls
         session_memo = SessionMemo() if SessionMemo else None
 
+        # OutputRegistry: tracks what the agent has produced so it can reference/refine
+        output_registry = OutputRegistry()
+
         # Recover plan steps from approved plan (sent back by frontend)
         plan_steps_from_approval: List[dict] = []
         session_plan: Optional[SessionPlan] = None
@@ -12362,16 +13606,31 @@ Rules:
         # Build intent-scoped tool catalog — only relevant categories
         _intent = classification.intent if classification else "general"
         _scoped_tools = get_tools_for_intent(_intent)
-        # Include input_schema so the LLM knows exact parameter names
-        def _format_tool_for_catalog(t: AgentTool) -> str:
+
+        # Tiered catalog: first 5 tools get full description + params (primary),
+        # rest get compact name:hint format (secondary). Cuts prompt tokens ~60%.
+        def _format_tool_full(t: AgentTool) -> str:
             schema_parts = []
             for k, v in (t.input_schema or {}).items():
                 optional = "?" in str(v)
                 clean_type = str(v).replace("?", "")
                 schema_parts.append(f"{k}: {clean_type}{' (optional)' if optional else ''}")
-            schema_str = f"  Params: {', '.join(schema_parts)}" if schema_parts else ""
-            return f"- {t.name}: {t.description}{schema_str}"
-        tool_catalog = "\n".join(_format_tool_for_catalog(t) for t in _scoped_tools)
+            schema_str = f"({', '.join(schema_parts)})" if schema_parts else ""
+            return f"- {t.name}{schema_str}: {t.description}"
+
+        def _format_tool_compact(t: AgentTool) -> str:
+            # Just name + first sentence of description
+            desc = t.description.split(".")[0] if t.description else ""
+            return f"  {t.name}: {desc}"
+
+        _PRIMARY_COUNT = 5  # top tools get full format
+        _primary = _scoped_tools[:_PRIMARY_COUNT]
+        _secondary = _scoped_tools[_PRIMARY_COUNT:]
+        tool_catalog_full = "\n".join(_format_tool_full(t) for t in _primary)
+        if _secondary:
+            tool_catalog_full += "\nAlso available:\n" + "\n".join(_format_tool_compact(t) for t in _secondary)
+        # Iteration 1+: just names — agent already knows what they do
+        tool_catalog_names = "Tools: " + ", ".join(t.name for t in _scoped_tools)
 
         ROUTE_MAX_TOKENS = 600
         SYNTH_MAX_TOKENS = 6000
@@ -12538,9 +13797,15 @@ Rules:
             results_summary = self._summarize_tool_results(tool_results) if tool_results else "[]"
 
             # Exclude tools that previously failed in this loop
-            active_catalog = "\n".join(
-                f"- {t.name}: {t.description}" for t in _scoped_tools if t.name not in failed_tools
-            ) if failed_tools else tool_catalog
+            if failed_tools:
+                _live_tools = [t for t in _scoped_tools if t.name not in failed_tools]
+                active_catalog_full = "\n".join(_format_tool_full(t) for t in _live_tools[:_PRIMARY_COUNT])
+                if len(_live_tools) > _PRIMARY_COUNT:
+                    active_catalog_full += "\nAlso available:\n" + "\n".join(_format_tool_compact(t) for t in _live_tools[_PRIMARY_COUNT:])
+                active_catalog_names = "Tools: " + ", ".join(t.name for t in _live_tools)
+            else:
+                active_catalog_full = tool_catalog_full
+                active_catalog_names = tool_catalog_names
 
             # Build dense portfolio state — per-company field checklist with
             # jurisdiction map, sector concentrations, and analysis manifest.
@@ -12751,44 +14016,87 @@ Rules:
             }
             _rules_text = _mode_rules.get(grid_mode, _mode_rules["portfolio"])
 
-            route_prompt = f"""Task: {prompt}
+            # ── Build route_prompt with iteration-aware compression ──
+            _output_block = output_registry.prompt_block()
 
-Available tools:
-{active_catalog}
+            if i == 0:
+                # Full context on first iteration — tiered tool catalog
+                route_prompt = f"""Task: {prompt}
+
+{active_catalog_full}
 
 State:
 {sd_summary}{auto_enrich_guidance}{skip_guidance}
 {_task_state}{_memo_canvas_state}
 {_results_display}
 {_goals_status}{intent_guidance}{plan_guidance}{correction_guidance}{_tool_history}{_scoreboard_text}
-Pick the next action. Think step by step:
-1. What did the user ask for? Is it clear, or could it go multiple ways?
-2. If ambiguous and iteration 0, consider asking a clarifying question instead of guessing.
-3. What has already been done? (check TOOLS ALREADY CALLED + SCOREBOARD)
-4. What's still missing?
-5. If everything is done, say done.
+{_output_block}Think step by step:
+1. What did the user ask for? Clear or ambiguous?
+2. If ambiguous, clarify. Don't guess.
+3. What's already done? (TOOLS CALLED + SCOREBOARD)
+4. What's missing? What sequence of tools gets there?
+5. If complete and persisted, done.
 
 RULES:
-- If the request is ambiguous or could go 2+ directions, use clarify to ask ONE focused question. Don't guess.
-- Use available data. Do NOT re-fetch what you already have.
-- Run independent calls in parallel via call_tools.
-- NEVER repeat a tool call — check TOOLS ALREADY CALLED.
+- Ambiguous → clarify with ONE focused question.
+- Don't re-fetch existing data. Don't repeat tool calls.
+- Independent calls → call_tools (parallel).
 {_rules_text}
-- Work with incomplete data. Do NOT loop chasing every missing field.
-- Say done when: the user's request is answered AND results are persisted (memo/grid).
+- Work with incomplete data. Don't loop chasing every field.
+- Done = user's request answered AND persisted (memo/grid/chart).
+- Checkpoint = you produced something worth reviewing before continuing.
 
-RESPOND WITH EXACTLY ONE JSON OBJECT — pick one:
-{{"action":"clarify","question":"one focused question","options":["option A","option B"],"reasoning":"why I need this before proceeding"}}
+JSON — pick one:
+{{"action":"clarify","question":"...","options":["A","B"],"reasoning":"why"}}
 {{"action":"call_tool","tool":"name","input":{{...}},"reasoning":"why"}}
 {{"action":"call_tools","tools":[{{"tool":"name","input":{{...}}}}],"reasoning":"why"}}
-{{"action":"done","reasoning":"why this is complete"}}"""
+{{"action":"checkpoint","summary":"what you produced so far","next_steps":["what you'd do next"],"reasoning":"why pause here"}}
+{{"action":"done","reasoning":"why complete"}}"""
+            else:
+                # Iterations 1+: names only — agent already knows tool details
+                route_prompt = f"""Task: {prompt}
 
+{active_catalog_names}
+
+Delta since last iteration:
+{_results_display}
+{_scoreboard_text}{_tool_history}
+{_output_block}State:
+{sd_summary}{correction_guidance}
+{_goals_status}
+
+What's next? Don't repeat tools. Don't re-fetch existing data.
+{_rules_text}
+
+JSON — pick one:
+{{"action":"call_tool","tool":"name","input":{{...}},"reasoning":"why"}}
+{{"action":"call_tools","tools":[{{"tool":"name","input":{{...}}}}],"reasoning":"why"}}
+{{"action":"checkpoint","summary":"what produced so far","next_steps":["next"],"reasoning":"why pause"}}
+{{"action":"done","reasoning":"why complete"}}"""
+
+            # ── REASON system prompt: rotated by iteration phase ──
+            # iter 0: full strategic context. iter 1+: compressed delta-only.
+            if i == 0:
+                _reason_system = (
+                    "You are a senior CFO agent that thinks in multi-step sequences. "
+                    "Decompose complex requests into a chain of tool calls. "
+                    "Review each result critically — if incomplete or wrong, adjust before moving on. "
+                    "When you've produced something the user should review before you continue, use checkpoint. "
+                    "Proactively suggest next steps when analysis reveals signals. "
+                    "Return exactly one JSON object."
+                )
+            else:
+                # Iterations 1+: the agent already knows who it is. Just the delta.
+                _reason_system = (
+                    "Continue the analysis. Review what just happened, decide next action. "
+                    "If a result needs refinement, call the tool again with adjusted params. "
+                    "If results are ready for user review, checkpoint. "
+                    "If everything is complete and persisted, done. "
+                    "Return exactly one JSON object."
+                )
             route_response = await self.model_router.get_completion(
                 prompt=route_prompt,
-                system_prompt=self._build_system_prompt(
-                    "You are a tool-calling agent. Read the user's task, check what's been done, "
-                    "pick the next tool(s) or say done. Return exactly one JSON object. No prose."
-                ),
+                system_prompt=_reason_system,
                 capability=ModelCapability.ANALYSIS,
                 max_tokens=ROUTE_MAX_TOKENS,
                 temperature=0.0,
@@ -12831,6 +14139,28 @@ RESPOND WITH EXACTLY ONE JSON OBJECT — pick one:
                     "tool_results_so_far": len(tool_results),
                 }
                 # Break the loop — frontend will re-send with the user's answer
+                break
+
+            # ── CHECKPOINT: Agent produced outputs worth reviewing before continuing ──
+            if action.get("action") == "checkpoint":
+                cp_summary = action.get("summary", "Results ready for review")
+                cp_next_steps = action.get("next_steps", [])
+                cp_reasoning = action.get("reasoning", "")
+                logger.info(f"[AGENT] Checkpoint (iter {i}): {cp_summary}")
+                yield {
+                    "type": "checkpoint",
+                    "summary": cp_summary,
+                    "next_steps": cp_next_steps,
+                    "reasoning": cp_reasoning,
+                    "outputs_so_far": output_registry.outputs,
+                }
+                self.shared_data["pending_checkpoint"] = {
+                    "summary": cp_summary,
+                    "next_steps": cp_next_steps,
+                    "iteration": i,
+                    "tool_results_so_far": len(tool_results),
+                }
+                # Break — frontend can either auto-continue or wait for user input
                 break
 
             if action.get("action") == "done":
@@ -13061,6 +14391,10 @@ RESPOND WITH EXACTLY ONE JSON OBJECT — pick one:
 
                 # Record into PlanContext
                 plan_ctx.record_finding(f"{t_name}_{tr.get('step_id', i)}", self._truncate(json.dumps(t_result), 1500))
+
+                # Track outputs so the agent knows what it produced
+                if isinstance(t_result, dict) and "error" not in t_result:
+                    output_registry.record_from_result(t_name, t_result)
 
                 # Compress tool result into SessionMemo (context anti-rot)
                 if session_memo:

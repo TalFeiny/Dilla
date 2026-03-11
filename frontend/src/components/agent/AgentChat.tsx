@@ -115,6 +115,10 @@ interface Message {
   todoItems?: Array<{ id: string; title: string; description?: string; priority?: string; company?: string; due?: string; done: boolean }>;
   /** Inline memo sections from enrichment/diligence — rendered in chat, not in doc viewer */
   memoSections?: Array<{ type: string; content?: string; items?: string[]; chart?: any }>;
+  /** Clarification request from agent — options for user to pick */
+  clarification?: { question: string; options: string[]; reasoning?: string };
+  /** Checkpoint — agent produced outputs and suggests next steps */
+  checkpoint?: { summary: string; next_steps: string[]; reasoning?: string };
 }
 
 export type ExportFormat = 'csv' | 'xlsx' | 'pdf';
@@ -789,10 +793,28 @@ export default function AgentChat({
                   },
                 };
                 setMessages(prev => [...prev, clarifyMsg]);
-                setIsStreaming(false);
-                setStreamingStage(null);
+                setIsLoading(false);
+                setStreamingStage('');
                 setStreamingSteps([]);
                 return; // Exit stream processing — wait for user to pick an option
+              } else if (event.type === 'checkpoint') {
+                // Agent produced outputs and suggests next steps
+                const checkpointMsg: Message = {
+                  id: `checkpoint-${Date.now()}`,
+                  role: 'assistant',
+                  content: event.summary || 'Results ready for review.',
+                  timestamp: new Date(),
+                  checkpoint: {
+                    summary: event.summary,
+                    next_steps: event.next_steps || [],
+                    reasoning: event.reasoning,
+                  },
+                };
+                setMessages(prev => [...prev, checkpointMsg]);
+                setIsLoading(false);
+                setStreamingStage('');
+                setStreamingSteps([]);
+                return; // Pause — user can click a next step or type their own follow-up
               } else if (event.type === 'complete') {
                 data = event;
               } else if (event.type === 'error') {
@@ -2070,7 +2092,8 @@ export default function AgentChat({
                                 className="px-3 py-1.5 text-sm rounded-lg border border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-800/50 transition-colors"
                                 onClick={() => {
                                   const clarifyAnswer = `${(message as any).clarification.question} → ${opt}`;
-                                  handleSend(clarifyAnswer);
+                                  setInput(clarifyAnswer);
+                                  setTimeout(() => handleSend(), 50);
                                 }}
                               >
                                 {opt}
