@@ -18,6 +18,7 @@ import math
 import os
 import re
 import random
+import time as _time_mod
 
 # Track guarded import errors so the module still loads even if dependencies fail
 # Critical = orchestrator cannot function; Non-critical = gracefully degrade
@@ -642,6 +643,18 @@ class AgentTool:
     input_schema: dict      # JSON-serializable hint for LLM
     cost_tier: str = "free" # "free" (no LLM) | "cheap" | "expensive"
     timeout_ms: int = 30_000
+
+
+@dataclass
+class ExplainedEdit:
+    """Universal redline primitive — every agent edit carries its reasoning."""
+    location: str              # "Acme:burn_rate" or "Section 3, para 2" or "Clause 4.2(a)"
+    old_value: Any             # what was there before (None for insertions)
+    new_value: Any             # what's replacing it (None for deletions)
+    explanation: str           # WHY: "Q4 actuals show 12.3%, not the 15% from Q3 projection"
+    source: str                # WHERE data came from: "fpa_actuals Q4-2025" or "Tavily search"
+    confidence: float = 0.9    # 0.0-1.0
+    impact: str = ""           # optional downstream: "Changes runway from 16mo to 11mo"
 
 
 AGENT_TOOLS: list[AgentTool] = [
@@ -2108,6 +2121,70 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="cheap",
         timeout_ms=45_000,
     ),
+
+    # ------------------------------------------------------------------
+    # Targeted reads — agent pulls specific data instead of context dumps
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="read_cells",
+        description="Read specific cells from the grid. Pull exact metrics for exact rows. Like grep for the grid.",
+        handler="_tool_read_cells",
+        input_schema={
+            "rows": "list[str]?",       # company names or row IDs (omit = all rows)
+            "columns": "list[str]?",     # column names/IDs (omit = all columns)
+            "filters": "dict?",          # {"stage": "Series A", "sector": "fintech"}
+        },
+        cost_tier="free",
+    ),
+    AgentTool(
+        name="search_grid",
+        description="Search grid rows matching a condition. Returns matching rows with cell values. Like find + grep.",
+        handler="_tool_search_grid",
+        input_schema={
+            "condition": "str",          # natural language: "burn rate > 500k" or "runway < 12 months"
+            "columns": "list[str]?",     # which columns to return (default: all)
+            "limit": "int?",             # max rows (default: 10)
+        },
+        cost_tier="free",
+    ),
+    AgentTool(
+        name="read_financials",
+        description="Read financial data for a company: P&L lines, balance sheet items, cash flow. Pulls from parsed accounts, grid cells, or enriched data.",
+        handler="_tool_read_financials",
+        input_schema={
+            "company": "str",
+            "metrics": "list[str]?",     # ["revenue", "burn_rate", "runway", "gross_margin", "ebitda"]
+            "periods": "list[str]?",     # ["Q4-2025", "FY2025"] — omit for latest
+        },
+        cost_tier="free",
+    ),
+
+    # ------------------------------------------------------------------
+    # Explained edits — every change carries why + source + confidence
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="propose_edits",
+        description="Propose changes to grid, memo, legal doc, or forecast. Each edit has old→new, explanation, source, and confidence. Returns edits for user accept/reject.",
+        handler="_tool_propose_edits",
+        input_schema={
+            "target": "str",             # "grid" | "memo" | "legal" | "forecast"
+            "target_id": "str?",         # company_id, document_id, etc.
+            "edits": "list[{location: str, old_value: any, new_value: any, explanation: str, source: str, confidence: float?, impact: str?}]",
+        },
+        cost_tier="free",
+    ),
+
+    # ------------------------------------------------------------------
+    # Metatool — discover tools not currently loaded
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="find_tools",
+        description="Search available tools by keyword. Returns matching tool names, descriptions, and cost tiers. Use when you need a capability but don't know which tool provides it.",
+        handler="_tool_find_tools",
+        input_schema={"query": "str"},
+        cost_tier="free",
+        timeout_ms=1_000,
+    ),
 ]
 
 # Quick lookup by name (includes ALL tools — agent-visible + internal)
@@ -2903,6 +2980,27 @@ def get_tools_for_intent(intent: str) -> list[AgentTool]:
         else:
             logger.warning(f"[INTENT_TOOLS] Tool '{name}' referenced in intent '{intent}' not found in AGENT_VISIBLE_TOOL_MAP — check _INTERNAL_TOOLS or AGENT_TOOLS definition")
     return result
+
+
+
+# Tools always available regardless of response_mode (metatools)
+_ALWAYS_LOADED_TOOLS = {"find_tools"}
+
+
+def filter_tools_by_response_mode(tools: list[AgentTool], response_mode: str) -> list[AgentTool]:
+    """Gate tools by response_mode to reduce prompt noise and prevent over-action.
+
+    - "reply": only metatools (find_tools)
+    - "action": free-tier tools + metatools
+    - "task": full tool set
+    All tools remain callable via _execute_tool() and wiring regardless —
+    this only controls what appears in the agent prompt.
+    """
+    if response_mode == "reply":
+        return [t for t in tools if t.name in _ALWAYS_LOADED_TOOLS]
+    if response_mode == "action":
+        return [t for t in tools if t.cost_tier == "free" or t.name in _ALWAYS_LOADED_TOOLS]
+    return tools  # "task" gets everything
 
 
 # ---------------------------------------------------------------------------
@@ -5896,8 +5994,8 @@ Response mode rules:
   Examples: "forecast 24 months", "analyze portfolio performance", "build a cash flow model"
 
 Classification rules:
-- "simple" = ONLY for single metric lookups that need no tools (e.g. "what is our DPI?")
-- "complex" = EVERYTHING ELSE — any query that needs enrichment, search, valuation, memo, comparison, gap filling, or analysis. When in doubt, classify as complex.
+- "simple" = Greetings, single metric lookups, status checks, clarifications — anything that needs zero tools or just one quick lookup.
+- "complex" = Multi-step analytical work: forecasting, modeling, portfolio analysis, memo/report writing, valuation, comparison across multiple companies.
 - If grid state shows GAPS or missing data and the query relates to those companies, suggest resolve_data_gaps in chain
 - If the user asks about a company and grid shows it's missing data, suggest fetch_company_data → run_valuation
 - If the user asks for a memo/report, suggest resolve_data_gaps → run_valuation → generate_memo
@@ -5907,7 +6005,7 @@ Classification rules:
 
             result = await self.model_router.get_completion(
                 prompt=classify_prompt,
-                system_prompt="Classify investment queries. Return valid JSON only. Bias toward 'complex' — the agent loop has 80+ tools and handles everything better than a single-shot answer.",
+                system_prompt="Classify investment queries. Return valid JSON only. Match response_mode accurately — most messages are 'reply' or 'action'. Only use 'task' for genuinely complex multi-step analytical work. Greetings, questions, status checks, and simple commands are NEVER 'task'.",
                 capability=ModelCapability.FAST,
                 max_tokens=200,
                 temperature=0.0,
@@ -8712,6 +8810,359 @@ Answer using specific company names and numbers from the portfolio grid above.""
     async def _tool_write_memo(self, inputs: dict) -> dict:
         """Return memo sections for the frontend to append. No DB write here."""
         return {"memo_sections": inputs.get("sections", [])}
+
+    # ------------------------------------------------------------------
+    # Targeted reads — agent pulls specific data instead of context dumps
+    # ------------------------------------------------------------------
+
+    async def _tool_read_cells(self, inputs: dict) -> dict:
+        """Read specific cells from the grid. Targeted pull — not a dump."""
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = (
+            grid_snapshot.get("rows", [])
+            if isinstance(grid_snapshot, dict)
+            else grid_snapshot if isinstance(grid_snapshot, list) else []
+        )
+        if not grid_rows:
+            return {"rows": [], "message": "No grid data in context"}
+
+        requested_rows = inputs.get("rows")  # company names or IDs
+        requested_cols = inputs.get("columns")  # column names/IDs
+        filters = inputs.get("filters") or {}
+
+        results = []
+        for row in grid_rows:
+            name = row.get("companyName") or row.get("company_name") or ""
+            row_id = row.get("rowId") or row.get("row_id") or ""
+            cells = row.get("cells") or row.get("cellValues") or {}
+
+            # Filter by requested rows
+            if requested_rows:
+                match = any(
+                    r.lower() in name.lower() or r.lower() == row_id.lower()
+                    for r in requested_rows
+                )
+                if not match:
+                    continue
+
+            # Apply key=value filters
+            skip = False
+            for fk, fv in filters.items():
+                cell_val = None
+                for k, v in cells.items():
+                    if fk.lower() in k.lower():
+                        cell_val = v.get("value", v) if isinstance(v, dict) else v
+                        break
+                if cell_val is None or str(fv).lower() not in str(cell_val).lower():
+                    skip = True
+                    break
+            if skip:
+                continue
+
+            # Extract requested columns only
+            if requested_cols:
+                filtered_cells = {}
+                for col in requested_cols:
+                    col_lower = col.lower()
+                    for k, v in cells.items():
+                        if col_lower in k.lower():
+                            val = v.get("value", v) if isinstance(v, dict) else v
+                            filtered_cells[k] = val
+                            break
+                results.append({"company": name, "cells": filtered_cells})
+            else:
+                # Return all cells but extract values
+                flat = {}
+                for k, v in cells.items():
+                    flat[k] = v.get("value", v) if isinstance(v, dict) else v
+                results.append({"company": name, "cells": flat})
+
+        return {"rows": results, "count": len(results), "grid_mode": self.shared_data.get("grid_mode", "portfolio")}
+
+    async def _tool_search_grid(self, inputs: dict) -> dict:
+        """Search grid rows matching a natural language condition."""
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = (
+            grid_snapshot.get("rows", [])
+            if isinstance(grid_snapshot, dict)
+            else grid_snapshot if isinstance(grid_snapshot, list) else []
+        )
+        if not grid_rows:
+            return {"rows": [], "message": "No grid data in context"}
+
+        condition = inputs.get("condition", "").lower()
+        requested_cols = inputs.get("columns")
+        limit = inputs.get("limit", 10)
+
+        # Parse simple numeric conditions: "burn_rate > 500000", "runway < 12"
+        import re as _re
+        numeric_match = _re.match(r'(\w+)\s*(>|<|>=|<=|==|!=)\s*([\d.]+)', condition)
+
+        results = []
+        for row in grid_rows:
+            name = row.get("companyName") or row.get("company_name") or ""
+            cells = row.get("cells") or row.get("cellValues") or {}
+
+            matched = False
+
+            if numeric_match:
+                field, op, threshold = numeric_match.groups()
+                threshold = float(threshold)
+                # Find the cell
+                for k, v in cells.items():
+                    if field.lower() in k.lower():
+                        val = v.get("value", v) if isinstance(v, dict) else v
+                        try:
+                            num_val = float(val)
+                            if op == ">" and num_val > threshold: matched = True
+                            elif op == "<" and num_val < threshold: matched = True
+                            elif op == ">=" and num_val >= threshold: matched = True
+                            elif op == "<=" and num_val <= threshold: matched = True
+                            elif op == "==" and num_val == threshold: matched = True
+                            elif op == "!=" and num_val != threshold: matched = True
+                        except (TypeError, ValueError):
+                            pass
+                        break
+            else:
+                # Text search across all cell values
+                for k, v in cells.items():
+                    val = v.get("value", v) if isinstance(v, dict) else v
+                    if val and condition in str(val).lower():
+                        matched = True
+                        break
+                # Also match company name
+                if condition in name.lower():
+                    matched = True
+
+            if matched:
+                if requested_cols:
+                    filtered = {}
+                    for col in requested_cols:
+                        for k, v in cells.items():
+                            if col.lower() in k.lower():
+                                filtered[k] = v.get("value", v) if isinstance(v, dict) else v
+                                break
+                    results.append({"company": name, "cells": filtered})
+                else:
+                    flat = {k: (v.get("value", v) if isinstance(v, dict) else v) for k, v in cells.items()}
+                    results.append({"company": name, "cells": flat})
+
+                if len(results) >= limit:
+                    break
+
+        return {"rows": results, "count": len(results), "condition": condition}
+
+    async def _tool_read_financials(self, inputs: dict) -> dict:
+        """Read financial data for a company from all available sources."""
+        company = inputs.get("company", "").strip()
+        if not company:
+            return {"error": "company is required"}
+
+        requested_metrics = inputs.get("metrics") or []
+        requested_periods = inputs.get("periods") or []
+        result: dict = {"company": company, "metrics": {}, "sources": []}
+
+        # 1. Grid cells — fastest source
+        matrix_ctx = self.shared_data.get("matrix_context") or {}
+        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+        grid_rows = (
+            grid_snapshot.get("rows", [])
+            if isinstance(grid_snapshot, dict)
+            else grid_snapshot if isinstance(grid_snapshot, list) else []
+        )
+        for row in grid_rows:
+            name = row.get("companyName") or row.get("company_name") or ""
+            if company.lower() not in name.lower():
+                continue
+            cells = row.get("cells") or row.get("cellValues") or {}
+            for k, v in cells.items():
+                val = v.get("value", v) if isinstance(v, dict) else v
+                if val and val not in ("N/A", "", "Unknown"):
+                    k_lower = k.lower()
+                    if not requested_metrics or any(m.lower() in k_lower for m in requested_metrics):
+                        result["metrics"][k] = val
+            if result["metrics"]:
+                result["sources"].append("grid")
+            break
+
+        # 2. Enriched company data in shared_data
+        for c in self.shared_data.get("companies", []):
+            c_name = (c.get("company") or c.get("name") or "").lower()
+            if company.lower() not in c_name:
+                continue
+            financial_keys = [
+                "revenue", "arr", "burn_rate", "runway", "gross_margin",
+                "ebitda", "net_income", "cash_balance", "total_funding",
+                "valuation", "growth_rate", "revenue_growth_annual_pct",
+                "mrr", "ltv", "cac", "headcount", "arpu",
+            ]
+            for fk in financial_keys:
+                val = c.get(fk)
+                if val is not None and val not in ("N/A", "", "Unknown"):
+                    if not requested_metrics or any(m.lower() in fk for m in requested_metrics):
+                        result["metrics"][fk] = val
+            if "grid" not in result["sources"]:
+                result["sources"].append("enriched_data")
+            else:
+                result["sources"].append("enriched_data")
+            break
+
+        # 3. Parsed accounts (P&L, BS, CF)
+        parsed = self.shared_data.get("parsed_accounts", {})
+        if isinstance(parsed, dict):
+            company_accounts = parsed.get(company) or parsed.get(company.lower())
+            if company_accounts:
+                for period_key, period_data in company_accounts.items():
+                    if requested_periods and not any(p in period_key for p in requested_periods):
+                        continue
+                    if isinstance(period_data, dict):
+                        for line_item, val in period_data.items():
+                            if not requested_metrics or any(m.lower() in line_item.lower() for m in requested_metrics):
+                                result["metrics"][f"{line_item} ({period_key})"] = val
+                result["sources"].append("parsed_accounts")
+
+        if not result["metrics"]:
+            result["message"] = f"No financial data found for '{company}'. Use fetch_company_data or enrich_field to get it first."
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Explained edits — every change carries why + source + confidence
+    # ------------------------------------------------------------------
+
+    async def _tool_propose_edits(self, inputs: dict) -> dict:
+        """Propose changes with explanation. Returns structured edits for accept/reject."""
+        target = inputs.get("target", "grid")  # grid | memo | legal | forecast
+        target_id = inputs.get("target_id")
+        raw_edits = inputs.get("edits", [])
+
+        if not raw_edits:
+            return {"error": "No edits provided"}
+
+        explained_edits = []
+        grid_commands = []
+        memo_sections = []
+
+        for edit in raw_edits:
+            ee = ExplainedEdit(
+                location=edit.get("location", ""),
+                old_value=edit.get("old_value"),
+                new_value=edit.get("new_value"),
+                explanation=edit.get("explanation", ""),
+                source=edit.get("source", "agent"),
+                confidence=edit.get("confidence", 0.9),
+                impact=edit.get("impact", ""),
+            )
+            explained_edits.append(ee)
+
+            # Route to the right output format based on target
+            if target == "grid":
+                # Parse location as "company:column"
+                parts = ee.location.split(":", 1)
+                company_id = parts[0].strip() if parts else ""
+                column_id = parts[1].strip() if len(parts) > 1 else ""
+                grid_commands.append({
+                    "action": "edit",
+                    "rowId": company_id,
+                    "columnId": column_id,
+                    "value": ee.new_value,
+                    "old_value": ee.old_value,
+                    "reasoning": ee.explanation,
+                    "source": ee.source,
+                    "confidence": ee.confidence,
+                    "impact": ee.impact,
+                })
+            elif target == "memo":
+                memo_sections.append({
+                    "type": "edit",
+                    "location": ee.location,
+                    "old_value": ee.old_value,
+                    "new_value": ee.new_value,
+                    "explanation": ee.explanation,
+                    "source": ee.source,
+                    "confidence": ee.confidence,
+                    "impact": ee.impact,
+                })
+
+        # Persist grid edits to pending_suggestions
+        fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+        if target == "grid" and fund_id and grid_commands:
+            try:
+                supabase_url = settings.SUPABASE_URL
+                supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+                if supabase_url and supabase_key:
+                    from supabase import create_client
+                    sb = create_client(supabase_url, supabase_key)
+                    for cmd in grid_commands:
+                        sb.table("pending_suggestions").upsert({
+                            "fund_id": fund_id,
+                            "company_id": cmd["rowId"],
+                            "column_id": cmd["columnId"],
+                            "suggested_value": cmd["value"],
+                            "source_service": "agent.propose_edits",
+                            "reasoning": cmd["reasoning"],
+                            "metadata": {
+                                "tool": "propose_edits",
+                                "old_value": cmd["old_value"],
+                                "source": cmd["source"],
+                                "confidence": cmd["confidence"],
+                                "impact": cmd["impact"],
+                            },
+                        }, on_conflict="fund_id,company_id,column_id").execute()
+            except Exception as e:
+                logger.warning(f"[TOOL] Failed to persist proposed edits: {e}")
+
+        response: dict = {
+            "target": target,
+            "edit_count": len(explained_edits),
+            "edits": [
+                {
+                    "location": e.location,
+                    "old_value": e.old_value,
+                    "new_value": e.new_value,
+                    "explanation": e.explanation,
+                    "source": e.source,
+                    "confidence": e.confidence,
+                    "impact": e.impact,
+                }
+                for e in explained_edits
+            ],
+        }
+        if grid_commands:
+            response["grid_commands"] = grid_commands
+        if memo_sections:
+            response["memo_sections"] = memo_sections
+
+        return response
+
+    async def _tool_find_tools(self, inputs: dict) -> dict:
+        """Search available tools by keyword. Returns matches with descriptions and cost tiers."""
+        query = (inputs.get("query") or "").lower().strip()
+        if not query:
+            return {"error": "Provide a search query", "matches": []}
+
+        keywords = query.split()
+        matches = []
+        for t in AGENT_TOOLS:
+            searchable = f"{t.name} {t.description}".lower()
+            score = sum(1 for kw in keywords if kw in searchable)
+            if score > 0:
+                matches.append({
+                    "name": t.name,
+                    "description": t.description,
+                    "cost_tier": t.cost_tier,
+                    "score": score,
+                })
+
+        matches.sort(key=lambda m: m["score"], reverse=True)
+        top = matches[:10]
+        return {
+            "query": query,
+            "match_count": len(matches),
+            "matches": top,
+        }
 
     # Mapping from fetched company data fields to grid column IDs
     _FIELD_TO_GRID_COLUMN: Dict[str, str] = {
@@ -13605,7 +14056,11 @@ Rules:
 
         # Build intent-scoped tool catalog — only relevant categories
         _intent = classification.intent if classification else "general"
-        _scoped_tools = get_tools_for_intent(_intent)
+        _resp_mode = classification.response_mode if classification else "task"
+        _scoped_tools = filter_tools_by_response_mode(
+            get_tools_for_intent(_intent), _resp_mode
+        )
+        logger.info(f"[AGENT_LOOP] Tool gating: intent={_intent}, response_mode={_resp_mode}, tools={len(_scoped_tools)}")
 
         # Tiered catalog: first 5 tools get full description + params (primary),
         # rest get compact name:hint format (secondary). Cuts prompt tokens ~60%.
@@ -14119,6 +14574,17 @@ JSON — pick one:
                     logger.warning(f"[AGENT] Reason returned non-JSON (iter {i}), ending loop.\nRaw text: {route_text[:500]}")
                     action = {"action": "done"}
 
+            # Stream the agent's reasoning so frontend can show thinking
+            _reasoning = action.get("reasoning", "")
+            if _reasoning:
+                yield {
+                    "type": "thinking",
+                    "iteration": i,
+                    "action": action.get("action", ""),
+                    "reasoning": _reasoning,
+                    "tool": action.get("tool") or (action.get("tools", [{}])[0].get("tool") if action.get("tools") else None),
+                }
+
             # ── CLARIFY: Agent wants to ask the user a question before proceeding ──
             if action.get("action") == "clarify":
                 clarify_question = action.get("question", "Could you clarify what you need?")
@@ -14177,97 +14643,26 @@ JSON — pick one:
                         extracted_names = list(grid_company_names)
 
                 # Safety: can't quit on iteration 0 without calling a single tool.
-                # Use TaskLedger to dispatch ALL pending tasks in parallel.
+                # Let REASON drive — but if it tries to quit before doing
+                # anything, force a read so the agent orients first.
                 if i == 0 and not tool_results:
-                    # ── Memo short-circuit: if we already have company data and
-                    # the request is analytical, jump straight to generate_memo
-                    # instead of re-running the whole data-gathering chain. ──
-                    _chain = classification.suggested_chain if classification and classification.suggested_chain else []
-                    _memo_intents = {
-                        "memo_writing", "memo_generation", "report_writing",
-                        "portfolio_analysis", "company_analysis", "performance_review",
-                        "financing_analysis", "deal_analysis", "comparison",
-                    }
-                    _has_companies = bool(self.shared_data.get("companies"))
-                    _intent = classification.intent if classification else ""
-                    # Also check if the prompt is analytical (multi-company, portfolio-level)
-                    _lower_prompt = prompt.lower()
-                    _is_analytical = any(kw in _lower_prompt for kw in [
-                        "analyz", "performance", "winner", "loser", "financ",
-                        "runway", "burn", "health", "review", "assess", "evaluat",
-                        "compare", "rank", "score", "bridge", "follow-on", "debt",
-                    ])
-                    if (
-                        _has_companies
-                        and (_intent in _memo_intents or _is_analytical or "generate_memo" in (_chain or []))
-                    ):
-                        _memo_type = None
-                        _lower = prompt.lower()
-                        if "followon" in _lower or "follow-on" in _lower or "pro rata" in _lower:
-                            _memo_type = "followon"
-                        elif "lp report" in _lower or "quarterly" in _lower:
-                            _memo_type = "lp_report"
-                        elif "gp" in _lower and ("strategy" in _lower or "update" in _lower):
-                            _memo_type = "gp_strategy"
-                        elif "comparison" in _lower or "compare" in _lower:
-                            _memo_type = "comparison"
-                        _memo_input: Dict[str, Any] = {"prompt": prompt}
-                        if _memo_type:
-                            _memo_input["memo_type"] = _memo_type
+                    if action.get("action") == "done" or not action.get("action"):
+                        # Agent tried to quit without looking. Force a read
+                        # appropriate to the current mode.
+                        _orient_tool = {
+                            "pnl": "fpa_actuals",
+                            "legal": "query_documents",
+                        }.get(grid_mode, "query_grid")
                         action = {
                             "action": "call_tool",
-                            "tool": "generate_memo",
-                            "input": _memo_input,
-                            "reasoning": f"Shared data already has {len(self.shared_data['companies'])} companies — generating memo directly (intent: {_intent})",
+                            "tool": _orient_tool,
+                            "input": {"query": prompt},
+                            "reasoning": "Must orient before acting — reading data first",
                         }
-                        logger.info(
-                            f"[AGENT_LOOP] Memo short-circuit: jumping to generate_memo with "
-                            f"{len(self.shared_data['companies'])} companies"
-                        )
+                        logger.info(f"[AGENT_LOOP] Iter 0 orient override: {_orient_tool}")
                     else:
-                        # Use TaskLedger to fire ALL pending goals in parallel
-                        pending_actions = ledger.next_actions()
-                        if len(pending_actions) > 1:
-                            action = {
-                                "action": "call_tools",
-                                "tools": pending_actions,
-                                "reasoning": f"Executing {len(pending_actions)} pending tasks in parallel",
-                            }
-                            logger.info(f"[AGENT_LOOP] Iter 0 quit blocked — dispatching {len(pending_actions)} ledger tasks in parallel")
-                        elif len(pending_actions) == 1:
-                            action = {
-                                "action": "call_tool",
-                                **pending_actions[0],
-                                "reasoning": "Executing pending task",
-                            }
-                            logger.info(f"[AGENT_LOOP] Iter 0 quit blocked — dispatching 1 ledger task: {pending_actions[0]['tool']}")
-                        else:
-                            # Sourcing fallback: empty grid + sourcing intent → kick off discovery
-                            _sourcing_intents = {"sourcing", "dealflow", "market", "company_search", "list_building"}
-                            _is_sourcing = (
-                                (_intent in _sourcing_intents)
-                                or any(kw in _lower_prompt for kw in [
-                                    "find", "source", "discover", "build a list", "search for",
-                                    "companies in", "startups in", "who are the", "market map",
-                                ])
-                            )
-                            if _is_sourcing and not _has_companies:
-                                action = {
-                                    "action": "call_tools",
-                                    "tools": [
-                                        {"tool": "generate_rubric", "input": {"thesis": prompt}},
-                                    ],
-                                    "reasoning": "Empty grid + sourcing request — generating rubric first, then will source companies",
-                                }
-                                logger.info("[AGENT_LOOP] Iter 0 quit blocked — sourcing kickoff: generate_rubric")
-                            else:
-                                action = {
-                                    "action": "call_tool",
-                                    "tool": "query_portfolio",
-                                    "input": {"query": prompt},
-                                    "reasoning": "Fallback — no pending ledger tasks",
-                                }
-                                logger.info("[AGENT_LOOP] Iter 0 quit blocked — fallback to query_portfolio")
+                        # REASON picked a real tool — let it run.
+                        logger.info(f"[AGENT_LOOP] Iter 0 REASON chose: {action.get('tool', action.get('action'))}")
                 else:
                     break
 
@@ -14308,6 +14703,17 @@ JSON — pick one:
                 "plan_steps": plan_steps,
             }
 
+            # --- Stream tool_start for each tool ---
+            _tool_start_ts = _time_mod.monotonic()
+            for tc in tool_calls:
+                _tool_meta = AGENT_TOOL_MAP.get(tc["tool"])
+                yield {
+                    "type": "tool_start",
+                    "tool": tc["tool"],
+                    "cost_tier": _tool_meta.cost_tier if _tool_meta else "unknown",
+                    "iteration": i,
+                }
+
             # --- ACT (Python service call(s), no LLM) ---
             if len(iter_steps) > 1:
                 # Parallel execution via asyncio.gather
@@ -14323,6 +14729,20 @@ JSON — pick one:
                         session_plan.mark_done(single_step.id, result)
                 iter_results = [{"tool": single_step.tool, "input": single_step.inputs,
                                  "output": result, "step_id": single_step.id}]
+
+            # --- Stream tool_end for each completed tool ---
+            _tool_elapsed_ms = int((_time_mod.monotonic() - _tool_start_ts) * 1000)
+            for tr in iter_results:
+                _t_output = tr.get("output", {})
+                _t_ok = "error" not in _t_output if isinstance(_t_output, dict) else True
+                yield {
+                    "type": "tool_end",
+                    "tool": tr["tool"],
+                    "success": _t_ok,
+                    "duration_ms": _tool_elapsed_ms,
+                    "iteration": i,
+                    "has_data": bool(_t_output) if _t_ok else False,
+                }
 
             # Invalidate fingerprint cache after tool execution
             if state:
@@ -14601,6 +15021,14 @@ JSON — pick one:
                 },
             }
             return
+
+        # Stream synthesis start so frontend knows we're composing the final answer
+        yield {
+            "type": "status",
+            "stage": "synthesizing",
+            "message": f"Composing response from {len(tool_results)} tool result(s)",
+            "tool_count": len(tool_results),
+        }
 
         # Determine if we should use lightweight memo (structured docs) vs raw text
         has_company_data = bool(self.shared_data.get("companies"))
@@ -15099,6 +15527,15 @@ ABSOLUTE RULES:
                     "response_mode": classification.response_mode,
                 }
 
+            # Stream classification event so frontend can show intent/mode immediately
+            yield {
+                "type": "classification",
+                "intent": classification.intent,
+                "response_mode": classification.response_mode,
+                "complexity": classification.complexity,
+                "confidence": classification.confidence,
+            }
+
             # --- Fast path: memo polish (1 cheap LLM call) ---
             if classification.intent == "memo_polish":
                 result = await self._handle_memo_polish(prompt)
@@ -15138,10 +15575,40 @@ ABSOLUTE RULES:
                                      "intent": classification.intent, "response_mode": "reply"},
                     }
                     return
-                # Reply mode but direct dispatch can't handle → fall through to action/task
-                logger.info("[ORCHESTRATOR] Reply mode fallback → upgrading to action mode")
-                classification.response_mode = "action"
-                classification.complexity = "complex"
+                # Reply mode: conversational LLM response — NO agent loop, NO memo
+                logger.info("[ORCHESTRATOR] Reply mode — conversational response (no agent loop)")
+                _grid_mode = self.shared_data.get("grid_mode", "portfolio")
+                _grid_summary = self._build_grid_context_text(max_rows=5, max_cols=6)
+                _prior_memory = self.shared_data.get("agent_context", {}).get("working_memory", [])
+                _memory_ctx = ""
+                if _prior_memory:
+                    _memory_ctx = "\n\nRecent context:\n" + "\n".join(
+                        f"- {m.get('tool', '?')}: {m.get('summary', '')[:200]}" for m in _prior_memory[-5:]
+                    )
+                _conv_result = await self.model_router.get_completion(
+                    prompt=f"User says: {prompt}\n\nGrid mode: {_grid_mode}\n{_grid_summary}{_memory_ctx}",
+                    system_prompt=(
+                        "You are a CFO agent. Respond conversationally in 1-3 sentences. "
+                        "Be warm but concise. If the user greets you, greet back and briefly mention "
+                        "what you can help with (depends on grid mode: portfolio analysis, P&L forecasting, "
+                        "legal contract review, LP reporting). Never generate a memo or structured report. "
+                        "Never say 'based on my analysis'. Just talk like a helpful colleague."
+                    ),
+                    capability=ModelCapability.FAST,
+                    max_tokens=200,
+                    temperature=0.4,
+                    caller_context="reply_conversational",
+                )
+                _reply_text = _conv_result.get("response", "") if isinstance(_conv_result, dict) else str(_conv_result)
+                budget_summary = self.model_router.end_budget() or {}
+                yield {
+                    "type": "complete",
+                    "result": {"content": _reply_text, "format": "analysis"},
+                    "success": True,
+                    "metadata": {"budget": budget_summary, "complexity": "simple",
+                                 "intent": classification.intent, "response_mode": "reply"},
+                }
+                return
 
             if classification.complexity == "simple":
                 # Try direct dispatch — returns None if it can't handle it
