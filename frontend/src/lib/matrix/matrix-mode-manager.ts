@@ -83,8 +83,8 @@ export const MODE_CONFIGS: Record<MatrixMode, ModeConfig> = {
   legal: {
     mode: 'legal',
     label: 'Legal',
-    description: 'Clause extraction: contracts, term sheets, vendor agreements, IP docs',
-    defaultColumns: ['clauseId', 'title', 'clauseType', 'text', 'party', 'flags', 'obligationDesc', 'obligationDeadline', 'crossRefService', 'crossRefField', 'crossRefValue', 'erpCategory', 'erpSubcategory', 'annualValue', 'monthlyAmount', 'documentName', 'reasoning'],
+    description: 'Contract register: any agreement, term sheet, NDA, lease, vendor contract',
+    defaultColumns: ['documentName', 'contractType', 'party', 'counterparty', 'status', 'effectiveDate', 'expiryDate', 'totalValue', 'annualValue', 'keyTerms', 'flags', 'obligations', 'nextDeadline', 'reasoning'],
     availableFields: [
       'legal_clauses',
       'documents',

@@ -761,8 +761,7 @@ export function UnifiedMatrix({
 
     // Legal mode: suggestion is a full clause object → accept via API, then reload grid
     if (mode === 'legal' && payload.suggestedValue && typeof payload.suggestedValue === 'object') {
-      const effectiveFundId = fundId ?? matrixData?.metadata?.fundId;
-      if (!effectiveFundId) { toast.error('Unable to save suggestion'); return; }
+      const effectiveFundId = fundId ?? matrixData?.metadata?.fundId ?? 'legal-default';
       setOptimisticallyHiddenIds((ids) => new Set([...ids, suggestionId]));
       editInFlightRef.current++;
       try {
@@ -1094,7 +1093,7 @@ export function UnifiedMatrix({
       prevDataSourceRef.current = undefined;
       prevColumnIdsRef.current = '';
       setMatrixData(getDefaultMatrixData(mode, fundId));
-    } else if (initialData === null && mode === 'legal' && fundId && loadLegalDataRef.current) {
+    } else if (initialData === null && mode === 'legal' && loadLegalDataRef.current) {
       loadLegalDataRef.current();
     }
   }, [initialData, mode, fundId]);
@@ -1132,7 +1131,7 @@ export function UnifiedMatrix({
         } catch (err) {
           console.error('[UnifiedMatrix] Error during P&L refresh:', err);
         }
-      } else if (mode === 'legal' && fundId) {
+      } else if (mode === 'legal') {
         console.log('[UnifiedMatrix] Refresh event received, reloading legal data');
         try {
           if (loadLegalDataRef.current) {
@@ -1737,7 +1736,7 @@ export function UnifiedMatrix({
       loadLPData();
     } else if (mode === 'pnl') {
       loadPnlData();
-    } else if (mode === 'legal' && fundId) {
+    } else if (mode === 'legal') {
       loadLegalData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3355,6 +3354,42 @@ export function UnifiedMatrix({
         });
 
         toast.success('Row added — edit the line item name and cell values');
+        setIsLoading(false);
+        return;
+      }
+
+      // ── Legal mode: add local row, no company creation needed ──
+      if (mode === 'legal') {
+        const currentData = matrixData || getDefaultMatrixData(mode, fundId);
+        const columns = currentData.columns;
+        const rowId = `legal_${Date.now()}`;
+
+        const newRow: MatrixRow = {
+          id: rowId,
+          cells: columns.reduce(
+            (acc, col) => {
+              acc[col.id] = {
+                value: col.id === 'documentName' ? 'New Contract' : null,
+                source: 'manual' as const,
+              };
+              return acc;
+            },
+            {} as Record<string, MatrixCell>,
+          ),
+        };
+
+        setMatrixData((prev) => {
+          const data = prev || getDefaultMatrixData(mode, fundId);
+          const updated: MatrixData = {
+            ...data,
+            rows: [...(data.rows || []), newRow],
+            metadata: { ...data.metadata, lastUpdated: new Date().toISOString() },
+          };
+          onDataChange?.(updated);
+          return updated;
+        });
+
+        toast.success('Row added — drop a contract or fill in manually');
         setIsLoading(false);
         return;
       }
@@ -5090,14 +5125,17 @@ export function UnifiedMatrix({
                     fund_id: fundId || null,
                     category: parentRowId,
                     subcategory,
+                    hierarchy_path: `${parentRowId}/${subcategory}`,
                     period,
                     amount: 0,
-                    source: 'subcategory_create',
+                    source: 'manual_cell_edit',
                   }),
                 });
                 console.log(`[P&L] Created subcategory ${parentRowId}/${subcategory}`);
-                // Refresh grid to pick up new row from PnlBuilder
-                refreshSuggestions?.();
+                // Reload P&L grid to pick up the new row
+                if (loadPnlDataRef.current) {
+                  await loadPnlDataRef.current();
+                }
               } catch (err) {
                 console.error('[P&L] Failed to create subcategory:', err);
               }

@@ -1006,27 +1006,25 @@ export function registerFieldService(mapping: FieldServiceMapping): void {
  */
 /**
  * Legal column definitions for legal mode.
- * Each row = one clause extracted from a legal document.
+ * Each row = one contract/agreement (any type: NDA, lease, term sheet, vendor, etc.)
  */
 export const LEGAL_COLUMNS: import('@/components/matrix/UnifiedMatrix').MatrixColumn[] = [
-  { id: 'documentName', name: 'Source Doc', type: 'text', width: 160, editable: false },
-  { id: 'party', name: 'Party', type: 'text', width: 140, editable: false },
-  { id: 'counterparty', name: 'Counterparty', type: 'text', width: 140, editable: false },
-  { id: 'clauseId', name: 'Clause ID', type: 'text', width: 90, editable: false },
-  { id: 'title', name: 'Clause Title', type: 'text', width: 200, editable: false },
-  { id: 'clauseType', name: 'Type', type: 'text', width: 140, editable: false },
-  { id: 'text', name: 'Clause Text', type: 'text', width: 320, editable: false },
+  // Contract fundamentals
+  { id: 'documentName', name: 'Document', type: 'text', width: 200, editable: true },
+  { id: 'contractType', name: 'Type', type: 'text', width: 140, editable: true },
+  { id: 'party', name: 'Party', type: 'text', width: 160, editable: true },
+  { id: 'counterparty', name: 'Counterparty', type: 'text', width: 160, editable: true },
+  { id: 'status', name: 'Status', type: 'text', width: 100, editable: true },
+  { id: 'effectiveDate', name: 'Effective', type: 'date', width: 110, editable: true },
+  { id: 'expiryDate', name: 'Expiry', type: 'date', width: 110, editable: true },
+  { id: 'totalValue', name: 'Total Value', type: 'currency', width: 130, editable: true },
+  { id: 'annualValue', name: 'Annual Value', type: 'currency', width: 120, editable: true },
+  // Key extracted info
+  { id: 'keyTerms', name: 'Key Terms', type: 'text', width: 250, editable: false },
   { id: 'flags', name: 'Flags', type: 'text', width: 160, editable: false },
-  { id: 'obligationDesc', name: 'Obligation', type: 'text', width: 220, editable: false },
-  { id: 'obligationDeadline', name: 'Deadline', type: 'date', width: 110, editable: false },
-  { id: 'crossRefService', name: 'Cross-Ref Service', type: 'text', width: 140, editable: false },
-  { id: 'crossRefField', name: 'Cross-Ref Field', type: 'text', width: 130, editable: false },
-  { id: 'crossRefValue', name: 'Cross-Ref Value', type: 'text', width: 120, editable: false },
-  { id: 'erpCategory', name: 'ERP Category', type: 'text', width: 120, editable: false },
-  { id: 'erpSubcategory', name: 'ERP Subcategory', type: 'text', width: 130, editable: false },
-  { id: 'annualValue', name: 'Annual Value', type: 'currency', width: 120, editable: false },
-  { id: 'monthlyAmount', name: 'Monthly Cost', type: 'currency', width: 110, editable: false },
-  { id: 'reasoning', name: 'Reasoning', type: 'text', width: 280, editable: false },
+  { id: 'obligations', name: 'Obligations', type: 'text', width: 220, editable: false },
+  { id: 'nextDeadline', name: 'Next Deadline', type: 'date', width: 110, editable: false },
+  { id: 'reasoning', name: 'AI Notes', type: 'text', width: 280, editable: false },
 ];
 
 export const LP_COLUMNS: import('@/components/matrix/UnifiedMatrix').MatrixColumn[] = [

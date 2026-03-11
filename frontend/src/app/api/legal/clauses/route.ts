@@ -6,16 +6,16 @@
  *   2. pending_suggestions (column_id LIKE 'legal:%') — clauses awaiting review
  *
  * Each clause → one grid row with cells matching LEGAL_COLUMNS.
+ * fundId is optional — when absent, returns all clauses for the user/org.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseService } from '@/lib/supabase';
 
 const CLAUSE_FIELDS = [
-  'clauseId', 'title', 'clauseType', 'text', 'party', 'flags',
-  'obligationDesc', 'obligationDeadline', 'crossRefService', 'crossRefField',
-  'crossRefValue', 'erpCategory', 'erpSubcategory', 'annualValue',
-  'monthlyAmount', 'documentName', 'reasoning',
+  'documentName', 'contractType', 'party', 'counterparty', 'status',
+  'effectiveDate', 'expiryDate', 'totalValue', 'annualValue',
+  'keyTerms', 'flags', 'obligations', 'nextDeadline', 'reasoning',
 ] as const;
 
 type CellMap = Record<string, { value: unknown; source: string; metadata?: Record<string, unknown> }>;
@@ -41,32 +41,31 @@ export async function GET(request: NextRequest) {
     const fundId = searchParams.get('fundId');
     const companyId = searchParams.get('companyId');
 
-    if (!fundId) {
-      return NextResponse.json({ error: 'Fund ID is required' }, { status: 400 });
-    }
-
     // ── 1. Accepted clauses from document_clauses ──
     let acceptedQuery = supabaseService
       .from('document_clauses')
       .select('*')
-      .eq('fund_id', fundId)
       .order('created_at', { ascending: true });
+    if (fundId) acceptedQuery = acceptedQuery.eq('fund_id', fundId);
     if (companyId) acceptedQuery = acceptedQuery.eq('company_id', companyId);
 
     // ── 2. Pending clause suggestions ──
     let pendingQuery = supabaseService
       .from('pending_suggestions')
       .select('id, company_id, column_id, suggested_value, source_service, reasoning, metadata, created_at')
-      .eq('fund_id', fundId)
       .like('column_id', 'legal:%')
       .order('created_at', { ascending: true });
+    if (fundId) pendingQuery = pendingQuery.eq('fund_id', fundId);
     if (companyId) pendingQuery = pendingQuery.eq('company_id', companyId);
 
     // ── 3. Rejected set (to filter pending) ──
+    let rejectedQuery = supabaseService.from('rejected_suggestions').select('suggestion_id');
+    if (fundId) rejectedQuery = rejectedQuery.eq('fund_id', fundId);
+
     const [acceptedResult, pendingResult, rejectedResult] = await Promise.all([
       acceptedQuery.then(r => r).catch(() => ({ data: null, error: { message: 'table missing' } })),
       pendingQuery,
-      supabaseService.from('rejected_suggestions').select('suggestion_id').eq('fund_id', fundId),
+      rejectedQuery,
     ]);
 
     const rejectedSet = new Set<string>(
@@ -83,38 +82,34 @@ export async function GET(request: NextRequest) {
       seenClauseKeys.add(clauseKey);
 
       const values: Record<string, unknown> = {
-        clauseId: c.clause_id,
-        title: c.title,
-        clauseType: c.clause_type,
-        text: c.clause_text,
-        party: c.party,
-        flags: Array.isArray(c.flags) ? (c.flags as string[]).join(', ') : '',
-        obligationDesc: c.obligation_desc,
-        obligationDeadline: c.obligation_deadline,
-        crossRefService: c.cross_ref_service,
-        crossRefField: c.cross_ref_field,
-        crossRefValue: c.cross_ref_value,
-        erpCategory: c.erp_category,
-        erpSubcategory: c.erp_subcategory,
-        annualValue: c.annual_value,
-        monthlyAmount: c.monthly_amount,
         documentName: c.document_name,
+        contractType: c.clause_type ?? c.contract_type,
+        party: c.party,
+        counterparty: c.counterparty,
+        status: c.status ?? 'active',
+        effectiveDate: c.effective_date,
+        expiryDate: c.expiry_date ?? c.obligation_deadline,
+        totalValue: c.total_value,
+        annualValue: c.annual_value,
+        keyTerms: c.key_terms ?? c.title,
+        flags: Array.isArray(c.flags) ? (c.flags as string[]).join(', ') : '',
+        obligations: c.obligation_desc,
+        nextDeadline: c.obligation_deadline,
         reasoning: c.reasoning,
       };
 
       rows.push({
-        id: `legal:${c.clause_id}`,
+        id: `legal:${c.clause_id ?? c.id}`,
         companyId: c.company_id,
         cells: buildCells(values, {
           confidence: c.confidence as number ?? 0.8,
           source_service: c.source_service,
           document_id: c.document_id,
           document_name: c.document_name,
-          clause_type: c.clause_type,
+          contract_type: c.clause_type ?? c.contract_type,
           flags: c.flags,
         }),
         isAccepted: true,
-        clauseType: c.clause_type,
         confidence: c.confidence ?? 0.8,
         flags: c.flags ?? [],
         createdAt: c.created_at,
@@ -157,7 +152,7 @@ export async function GET(request: NextRequest) {
           source_service: row.source_service,
           document_id: meta.document_id,
           document_name: meta.document_name,
-          clause_type: meta.clause_type,
+          contract_type: meta.clause_type ?? meta.contract_type,
           flags: meta.flags,
           suggestion_id: suggestionId,
         }),
@@ -166,7 +161,6 @@ export async function GET(request: NextRequest) {
         sourceService: row.source_service,
         confidence: meta.confidence as number ?? 0.8,
         flags: meta.flags as string[] ?? [],
-        clauseType: meta.clause_type as string ?? 'other',
         createdAt: row.created_at,
       });
     }
@@ -175,6 +169,7 @@ export async function GET(request: NextRequest) {
       rows,
       metadata: {
         dataSource: 'legal',
+        fundId: fundId ?? undefined,
         lastUpdated: new Date().toISOString(),
         totalClauses: rows.length,
         acceptedCount: rows.filter((r) => r.isAccepted).length,

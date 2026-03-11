@@ -13,7 +13,8 @@ import logging
 
 from app.services.unified_mcp_orchestrator import (
     get_unified_orchestrator,
-    OutputFormat
+    OutputFormat,
+    AGENT_TOOLS,
 )
 from app.services.model_router import set_provider_affinity
 from app.utils.json_serializer import safe_json_dumps, clean_for_json
@@ -74,26 +75,9 @@ def _build_legal_system_prompt(company_context: Optional[Dict] = None) -> str:
         "- Contract comparison, deal term analysis, compliance review\n"
         "- Multi-document obligation tracking\n\n"
 
-        "## TOOLS — LEGAL\n"
-        "- document_extraction: Extract clauses from uploaded legal documents (contracts, term sheets, NDAs, etc.)\n"
-        "- clause_search: Search existing extracted clauses by type, flag, or party\n"
-        "- obligation_tracker: Track obligations with deadlines and recurring commitments\n"
-        "- cross_reference_linker: Link clause terms to cap_table, waterfall, P&L, cash_flow services\n"
-        "- erp_attributor: Map contract costs to ERP categories and subcategories\n"
-        "- term-sheet-comparator: Compare N term sheets clause-by-clause against existing cap structure. "
-        "Shows stakeholder impact at multiple exits, effective cost of capital, alignment matrix.\n"
-        "- redline-impact-analyzer: Quantify the financial impact of redline changes. "
-        "Takes original + redlined document, returns per-stakeholder dollar impact, cascade effects, breakpoint shifts.\n"
-        "- negotiation-analyzer: Analyze two positions (ours vs theirs), classify each delta as concede/counter/fight, "
-        "generate counter-proposal with accept/counter/fight buckets and multi-stakeholder dynamics.\n\n"
-
-        "## TOOLS — SHARED\n"
-        "- valuation-engine: DCF, comparables (for valuation cross-references)\n"
-        "- financial-analyzer: Ratios, projections (for financial impact of contract terms)\n"
-        "- chart-generator: timeline, bar_comparison (for obligation timelines, cost breakdown)\n"
-        "- memo-writer: contract_review, obligation_summary, term_sheet_comparison, redline_impact, negotiation_analysis\n"
-        "- nl-matrix-controller: Edit grid cells, push clause data to legal matrix\n"
-        "- deck-storytelling: Legal review slides\n\n"
+        "## AVAILABLE TOOLS\n"
+        + "\n".join(f"- {t.name}: {t.description}" for t in AGENT_TOOLS)
+        + "\n\n"
 
         "## GC INSTINCTS\n"
         "- Auto-renewal is a trap. Always flag the notice deadline and dollar impact.\n"
@@ -274,6 +258,15 @@ async def process_legal_stream(request: LegalRequest, raw_request: Request):
                 event_type = event.get("type", "unknown")
                 if event_type == "progress":
                     yield _json.dumps({"type": "progress", "stage": event.get("stage"), "message": event.get("message"), "plan_steps": event.get("plan_steps")}) + "\n"
+                elif event_type == "token":
+                    yield _json.dumps({"type": "token", "content": event.get("content", "")}) + "\n"
+                elif event_type == "tool_call":
+                    yield _json.dumps({"type": "tool_call", "tool": event.get("tool"), "inputs": clean_for_json(event.get("inputs", {})), "tool_call_id": event.get("tool_call_id")}) + "\n"
+                elif event_type == "tool_result":
+                    result_data = event.get("result", {})
+                    if result_data:
+                        result_data = clean_for_json(result_data)
+                    yield _json.dumps({"type": "tool_result", "tool": event.get("tool"), "tool_call_id": event.get("tool_call_id"), "result": result_data}) + "\n"
                 elif event_type == "memo_section":
                     yield _json.dumps({"type": "memo_section", "section": clean_for_json(event.get("section", {}))}) + "\n"
                 elif event_type == "chart_data":

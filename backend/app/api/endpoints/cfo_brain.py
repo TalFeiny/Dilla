@@ -12,7 +12,9 @@ import logging
 
 from app.services.unified_mcp_orchestrator import (
     get_unified_orchestrator,
-    OutputFormat
+    OutputFormat,
+    AGENT_TOOLS,
+    AgentTool,
 )
 from app.services.model_router import set_provider_affinity
 from app.utils.json_serializer import safe_json_dumps, clean_for_json
@@ -25,6 +27,23 @@ router = APIRouter(prefix="/agent", tags=["cfo-brain"])
 # ---------------------------------------------------------------------------
 # CFO system prompt — injected via shared_data so the orchestrator uses it
 # ---------------------------------------------------------------------------
+
+def _build_tool_list_from_registry() -> str:
+    """Auto-generate tool list for system prompt from AGENT_TOOLS registry.
+    Single source of truth — no more drift between prompt and registry."""
+    # Group by cost_tier for readability
+    groups: Dict[str, list] = {"free": [], "cheap": [], "expensive": []}
+    for t in AGENT_TOOLS:
+        tier = t.cost_tier if t.cost_tier in groups else "cheap"
+        groups[tier].append(t)
+    lines = []
+    for tier, tools in groups.items():
+        if not tools:
+            continue
+        for t in tools:
+            lines.append(f"- {t.name}: {t.description}")
+    return "\n".join(lines)
+
 
 def _build_cfo_system_prompt(company_context: Optional[Dict] = None) -> str:
     """Build the CFO agent system prompt from optional company context."""
@@ -96,49 +115,9 @@ def _build_cfo_system_prompt(company_context: Optional[Dict] = None) -> str:
         "- Formal deliverable? Brief summary pointing to memo.\n"
         "- Don't wait for 'show me a chart' — if a visual answers faster than text, generate it.\n\n"
 
-        "## TOOLS — FP&A\n"
-        "- fpa_pnl: Full P&L waterfall (actuals + forecast)\n"
-        "- fpa_variance: Budget vs actuals with status flags, monthly trend\n"
-        "- fpa_forecast: Generate forecast from actuals (monthly/quarterly/annual)\n"
-        "- fpa_regression: Statistical forecasting (linear, exponential, time series, Monte Carlo, sensitivity)\n"
-        "- fpa_scenario_create: Create scenario branch with assumptions\n"
-        "- fpa_scenario_tree: Full scenario tree for a company\n"
-        "- fpa_scenario_compare: Side-by-side branch comparison with probability-weighted EV\n"
-        "- fpa_cash_flow: Monthly cash flow model (revenue → COGS → gross profit → OpEx → EBITDA → FCF → cash → runway)\n"
-        "- fpa_budget_create: Create a new budget (company_id, name, fiscal_year)\n"
-        "- fpa_budget_list: List budgets for a company\n"
-        "- fpa_budget_lines: Budget line items\n"
-        "- fpa_upload_actuals: Ingest actuals from structured time series data\n"
-        "- fpa_upload_budget: Upload budget line items to an existing budget\n"
-        "- fpa_actuals: Company actuals data\n"
-        "- fpa_scenario_delete: Delete a scenario branch and descendants\n"
-        "- fpa_rolling_forecast: Rolling actuals+forecast stitched timeline (monthly/quarterly/annual)\n"
-        "- fpa_xero_sync: Pull latest actuals from Xero into fpa_actuals\n\n"
-
-        "## TOOLS — TRANSFER PRICING\n"
-        "- tp_group_overview: TP overview — entities, IC transactions, benchmark status, reports\n"
-        "- tp_search_comparables: Find comparable companies (portfolio, yfinance, web). OECD 5-factor scoring\n"
-        "- tp_analyze_transaction: Full TP analysis — method selection, PLI computation, IQR, arm's-length\n"
-        "- tp_generate_report: OECD-compliant reports — benchmark, local_file, master_file, cbcr, full_pack\n\n"
-
-        "## TOOLS — INVESTOR & CAP TABLE\n"
-        "- cap_table_evolution: Dilution through all funding rounds with Sankey visualization\n"
-        "- liquidation_waterfall: Liquidation waterfall at specific exit values\n"
-        "- run_round_modeling: Next round — dilution, waterfall, valuation step-up\n"
-        "- run_exit_modeling: Exit scenarios (IPO, M&A) with fund ownership impact\n"
-        "- anti_dilution_modeling: Ratchet / broad-based anti-dilution scenarios\n"
-        "- debt_conversion_modeling: SAFEs, convertible notes, debt conversion\n\n"
-
-        "## TOOLS — SHARED\n"
-        "- valuation-engine: DCF, comparables\n"
-        "- financial-analyzer: Ratios, projections\n"
-        "- scenario-generator: Monte Carlo, sensitivity\n"
-        "- chart-generator: cashflow, stress_test, bar_comparison, stacked_bar, revenue_forecast, bull_bear_base, heatmap\n"
-        "- memo-writer: monthly_close, variance_narrative, runway_analysis, cash_flow_memo, board_deck_financials, "
-        "investor_update_financials, quarterly_review, budget_proposal, hiring_plan, fundraising_model, scenario_comparison\n"
-        "- nl-matrix-controller: Edit grid cells, push computed values\n"
-        "- deck-storytelling: Board deck with financial slides\n"
-        "- excel-generator: Financial model export\n\n"
+        "## AVAILABLE TOOLS\n"
+        + _build_tool_list_from_registry()
+        + "\n\n"
 
         "## CFO INSTINCTS\n"
         "- Runway is the heartbeat. Always know how many months are left.\n"
@@ -316,6 +295,15 @@ async def process_cfo_stream(request: CFORequest, raw_request: Request):
                 event_type = event.get("type", "unknown")
                 if event_type == "progress":
                     yield _json.dumps({"type": "progress", "stage": event.get("stage"), "message": event.get("message"), "plan_steps": event.get("plan_steps")}) + "\n"
+                elif event_type == "token":
+                    yield _json.dumps({"type": "token", "content": event.get("content", "")}) + "\n"
+                elif event_type == "tool_call":
+                    yield _json.dumps({"type": "tool_call", "tool": event.get("tool"), "inputs": clean_for_json(event.get("inputs", {})), "tool_call_id": event.get("tool_call_id")}) + "\n"
+                elif event_type == "tool_result":
+                    result_data = event.get("result", {})
+                    if result_data:
+                        result_data = clean_for_json(result_data)
+                    yield _json.dumps({"type": "tool_result", "tool": event.get("tool"), "tool_call_id": event.get("tool_call_id"), "result": result_data}) + "\n"
                 elif event_type == "memo_section":
                     yield _json.dumps({"type": "memo_section", "section": clean_for_json(event.get("section", {}))}) + "\n"
                 elif event_type == "chart_data":

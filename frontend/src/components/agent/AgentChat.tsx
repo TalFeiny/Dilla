@@ -766,6 +766,78 @@ export default function AgentChat({
                     return [...prev, { id: `prog-${prev.length}`, label: event.message, status: 'running' as const }];
                   });
                 }
+              } else if (event.type === 'token') {
+                // Stream text tokens into the placeholder message in real-time
+                const tokenContent = event.content || '';
+                if (tokenContent) {
+                  setMessages(prev => prev.map(m =>
+                    m.id === placeholderId
+                      ? { ...m, content: m.content + tokenContent, processing: true }
+                      : m
+                  ));
+                }
+              } else if (event.type === 'tool_call') {
+                // Show tool call as a running step
+                setStreamingStage('executing');
+                setStreamingSteps(prev => {
+                  const updated = prev.map(s => s.id.startsWith('think-') && s.status === 'running' ? { ...s, status: 'done' as const } : s);
+                  return [...updated, {
+                    id: `tool-${event.tool}-${event.tool_call_id || Date.now()}`,
+                    label: event.tool || 'tool',
+                    status: 'running' as const,
+                  }];
+                });
+              } else if (event.type === 'tool_result') {
+                // Mark tool call step as done
+                setStreamingSteps(prev => prev.map(s =>
+                  s.id === `tool-${event.tool}-${event.tool_call_id}`
+                    ? { ...s, status: (event.result?.error ? 'failed' : 'done') as 'done' | 'failed' }
+                    : s
+                ));
+              } else if (event.type === 'classification') {
+                // Show intent classification immediately
+                setStreamingStage(event.response_mode === 'reply' ? 'replying' : event.response_mode === 'action' ? 'acting' : 'analyzing');
+                setStreamingSteps(prev => [
+                  ...prev,
+                  { id: 'classify', label: `${event.intent} (${event.response_mode})`, status: 'done' as const, detail: `confidence: ${Math.round((event.confidence ?? 1) * 100)}%` },
+                ]);
+              } else if (event.type === 'thinking') {
+                // Agent reasoning — show as a running step
+                const thinkLabel = event.reasoning?.slice(0, 80) || 'Reasoning...';
+                setStreamingSteps(prev => {
+                  // Mark previous thinking steps as done
+                  const updated = prev.map(s => s.id.startsWith('think-') && s.status === 'running' ? { ...s, status: 'done' as const } : s);
+                  return [...updated, { id: `think-${event.iteration}`, label: thinkLabel, status: 'running' as const }];
+                });
+              } else if (event.type === 'tool_start') {
+                // Tool starting — add as running step
+                setStreamingStage('executing');
+                setStreamingSteps(prev => {
+                  // Mark previous thinking as done
+                  const updated = prev.map(s => s.id.startsWith('think-') && s.status === 'running' ? { ...s, status: 'done' as const } : s);
+                  return [...updated, {
+                    id: `tool-${event.tool}-${event.iteration}`,
+                    label: event.tool,
+                    status: 'running' as const,
+                    detail: event.cost_tier !== 'free' ? event.cost_tier : undefined,
+                  }];
+                });
+              } else if (event.type === 'tool_end') {
+                // Tool completed — mark step done/failed
+                setStreamingSteps(prev => prev.map(s =>
+                  s.id === `tool-${event.tool}-${event.iteration}`
+                    ? { ...s, status: event.success ? 'done' as const : 'failed' as const, detail: event.duration_ms ? `${event.duration_ms}ms` : s.detail }
+                    : s
+                ));
+              } else if (event.type === 'status') {
+                // Generic status update (e.g., synthesizing)
+                if (event.stage) setStreamingStage(event.stage);
+                if (event.message) {
+                  setStreamingSteps(prev => [
+                    ...prev,
+                    { id: `status-${Date.now()}`, label: event.message, status: 'running' as const },
+                  ]);
+                }
               } else if (event.type === 'memo_section' && event.section && onMemoUpdates) {
                 // Stream memo sections to MemoEditor in real-time
                 onMemoUpdates({ action: 'append', sections: [event.section] });
@@ -1048,7 +1120,15 @@ export default function AgentChat({
       const synthesis = result.content || result.summary || result.synthesis || '';
 
       // Last resort: parse synthesis markdown into sections for memo when content is substantial
-      if (!docsSections?.length && typeof synthesis === 'string' && synthesis.length > 100) {
+      // Skip for conversational replies — those belong in chat, not memo
+      // Skip when synthesis looks like raw JSON (agent serialization leak)
+      const _metaTurnType = data?.metadata?.turn_type;
+      const _isConvPath = data?.metadata?.path === 'conversational';
+      const _isConvReply = _isConvPath && _metaTurnType && !['synthesis', 'analysis'].includes(_metaTurnType);
+      const _respMode = data?.metadata?.response_mode;
+      const _isTaskForMemo = !_respMode || _respMode === 'task';
+      const _looksLikeJson = typeof synthesis === 'string' && (synthesis.trimStart().startsWith('{') || synthesis.trimStart().startsWith('['));
+      if (!docsSections?.length && typeof synthesis === 'string' && synthesis.length > 100 && !_isConvReply && _isTaskForMemo && !_looksLikeJson) {
         const parsed = parseMarkdownToSections(synthesis);
         if (parsed.length >= 1) {
           docsSections = parsed.map(s => ({
@@ -1154,7 +1234,13 @@ export default function AgentChat({
 
       // Auto-generate memo_updates from rich response data when backend didn't explicitly provide them
       // This ensures analysis always flows to the memo, not just chat
-      if (!norm.memoUpdates?.sections?.length && hasRichContent && onMemoUpdates) {
+      // Gate on response_mode: only "task" mode generates memos. Reply/action are chat-only.
+      const _turnType = data?.metadata?.turn_type;
+      const _isConversational = data?.metadata?.path === 'conversational';
+      const _responseMode = data?.metadata?.response_mode;
+      const _skipMemo = _isConversational && _turnType && !['synthesis', 'analysis'].includes(_turnType);
+      const _isTaskMode = !_responseMode || _responseMode === 'task';
+      if (!norm.memoUpdates?.sections?.length && hasRichContent && onMemoUpdates && !_skipMemo && _isTaskMode) {
         const autoSections: Array<{ type: string; content?: string; chart?: unknown; items?: string[] }> = [];
 
         // Add text sections from docs or synthesis (use MemoEditor-compatible types)
@@ -1595,33 +1681,39 @@ export default function AgentChat({
                     }`}
                   >
                     {message.processing ? (
-                      <div className="space-y-1.5 min-w-[180px]">
+                      <div className="space-y-1.5 min-w-[200px] font-mono">
                         <div className="flex items-center gap-2">
                           <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />
                           <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
-                            {streamingStage === 'execution' ? 'Running workflows...' :
+                            {streamingStage === 'execution' || streamingStage === 'executing' ? 'Executing tools...' :
                              streamingStage === 'formatting' ? 'Formatting output...' :
-                             streamingStage === 'initialization' ? 'Analyzing request...' :
+                             streamingStage === 'initialization' || streamingStage === 'analyzing' ? 'Classifying intent...' :
+                             streamingStage === 'synthesizing' ? 'Composing response...' :
+                             streamingStage === 'replying' ? 'Replying...' :
+                             streamingStage === 'acting' ? 'Running action...' :
                              streamingStage ? streamingStage.charAt(0).toUpperCase() + streamingStage.slice(1) + '...' :
                              'Analyzing...'}
                           </span>
                         </div>
                         {streamingSteps.length > 0 && (
-                          <div className="pl-1 space-y-0.5 max-h-[160px] overflow-y-auto">
+                          <div className="pl-1 space-y-0.5 max-h-[200px] overflow-y-auto border-l border-gray-200 dark:border-gray-700 ml-1.5">
                             {streamingSteps.map((step) => (
-                              <div key={step.id} className="flex items-center gap-1.5 text-[10px]">
+                              <div key={step.id} className="flex items-center gap-1.5 text-[10px] pl-2">
                                 {step.status === 'done' ? (
-                                  <span className="text-green-500 shrink-0">✓</span>
+                                  <span className="text-green-500 shrink-0 font-bold">✓</span>
                                 ) : step.status === 'failed' ? (
-                                  <span className="text-red-500 shrink-0">✗</span>
+                                  <span className="text-red-500 shrink-0 font-bold">✗</span>
                                 ) : step.status === 'running' ? (
                                   <Loader2 className="h-2.5 w-2.5 animate-spin text-blue-500 shrink-0" />
                                 ) : (
                                   <span className="text-gray-300 shrink-0">○</span>
                                 )}
-                                <span className={`truncate ${step.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-600 dark:text-gray-300'}`}>
+                                <span className={`truncate ${step.status === 'done' ? 'text-gray-500 dark:text-gray-500' : step.status === 'failed' ? 'text-red-400' : 'text-gray-700 dark:text-gray-200'}`}>
                                   {step.label}
                                 </span>
+                                {step.detail && (
+                                  <span className="text-[9px] text-gray-400 shrink-0 ml-auto">{step.detail}</span>
+                                )}
                               </div>
                             ))}
                           </div>

@@ -1125,12 +1125,20 @@ class ModelRouter:
         logger.info(f"[_call_anthropic] Making API call to Anthropic...")
         try:
             # Call Anthropic Messages API (async client)
+            # Wrap system prompt as cacheable content block for prompt caching.
+            # First call pays 1.25x write cost; subsequent calls with the same
+            # prefix get 90% discount on cached input tokens (5-min TTL).
+            system_text = system if system else "You are a helpful AI assistant."
+            cacheable_system = [
+                {"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}
+            ]
+
             request_kwargs: Dict[str, Any] = {
                 "model": model,
                 "max_tokens": max_tokens,
                 "temperature": temp,
                 "messages": messages,
-                "system": system if system else "You are a helpful AI assistant."
+                "system": cacheable_system,
             }
 
             if json_mode:
@@ -1169,6 +1177,14 @@ class ModelRouter:
             if hasattr(response, "usage") and response.usage:
                 usage["input_tokens"] = getattr(response.usage, "input_tokens", 0)
                 usage["output_tokens"] = getattr(response.usage, "output_tokens", 0)
+                # Log prompt caching stats
+                cache_read = getattr(response.usage, "cache_read_input_tokens", 0)
+                cache_create = getattr(response.usage, "cache_creation_input_tokens", 0)
+                if cache_read or cache_create:
+                    logger.info(
+                        f"[_call_anthropic] PROMPT CACHE: read={cache_read} tokens (90% off), "
+                        f"created={cache_create} tokens (1.25x write)"
+                    )
 
             logger.info(f"[_call_anthropic] ✅ Anthropic API call successful! tokens_in={usage['input_tokens']} tokens_out={usage['output_tokens']}")
             return text, usage
@@ -2126,11 +2142,16 @@ class ModelRouter:
         if not self.anthropic_client:
             raise ValueError("Anthropic client not initialized")
 
+        # Cacheable system prompt — same prefix gets 90% input discount
+        cacheable_system = [
+            {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+        ]
+
         response = await self.anthropic_client.messages.create(
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
-            system=system_prompt,
+            system=cacheable_system,
             messages=messages,
             tools=ToolAdapter.to_anthropic(tools),
         )

@@ -2990,14 +2990,14 @@ _ALWAYS_LOADED_TOOLS = {"find_tools"}
 def filter_tools_by_response_mode(tools: list[AgentTool], response_mode: str) -> list[AgentTool]:
     """Gate tools by response_mode to reduce prompt noise and prevent over-action.
 
-    - "reply": only metatools (find_tools)
+    - "reply": free-tier tools + metatools (allows 1 lookup)
     - "action": free-tier tools + metatools
     - "task": full tool set
     All tools remain callable via _execute_tool() and wiring regardless —
     this only controls what appears in the agent prompt.
     """
     if response_mode == "reply":
-        return [t for t in tools if t.name in _ALWAYS_LOADED_TOOLS]
+        return [t for t in tools if t.cost_tier == "free" or t.name in _ALWAYS_LOADED_TOOLS]
     if response_mode == "action":
         return [t for t in tools if t.cost_tier == "free" or t.name in _ALWAYS_LOADED_TOOLS]
     return tools  # "task" gets everything
@@ -3092,7 +3092,7 @@ class QueryClassification:
     needs_portfolio: bool = False  # Touches existing portfolio data
     needs_external: bool = False  # Needs to fetch external (non-portfolio) company data
     confidence: float = 1.0
-    response_mode: str = "task"  # "reply" | "action" | "task" — gates memo generation & loop depth
+    response_mode: str = "reply"  # "reply" | "action" | "task" — reply until crystallised, then task
 
 
 @dataclass
@@ -3492,19 +3492,6 @@ PLAN_TEMPLATES: Dict[str, List[str]] = {
     "contract_drafting": ["query_portfolio", "draft_contract"],
     "contract_review": ["query_portfolio", "draft_contract"],
 }
-
-
-@dataclass
-class SkillChainNode:
-    """Represents a single node in the skill execution chain"""
-    skill: str
-    purpose: str
-    inputs: Dict[str, Any] = field(default_factory=dict)
-    parallel_group: int = 0
-    depends_on: List[str] = field(default_factory=list)
-    result: Optional[Dict[str, Any]] = None
-    status: str = "pending"
-    required: bool = True  # If False, failure is non-fatal — chain continues
 
 
 class UnifiedMCPOrchestrator:
@@ -4483,26 +4470,34 @@ class UnifiedMCPOrchestrator:
         tr = self._turn_result
         full_text = tr["full_text"]
         tool_calls_made = tr["tool_calls_made"]
+        # Extra result fields from agent loop (grid_commands, memo_updates,
+        # charts, suggestions, pnl_refresh, etc.)
+        extra_fields = tr.get("extra_result_fields", {})
 
         await self._update_turn_state(
             turn_type, max_tokens, full_text, tool_calls_made, prompt,
         )
 
         # ── 7. Yield complete event ──
+        # Merge extra_fields from agent loop so grid_commands, memo_updates,
+        # charts etc. reach the frontend in the complete event.
+        result_payload = {
+            "content": full_text,
+            "reply": full_text,
+            "format": extra_fields.get("format", "analysis"),
+            "type": "analysis",
+            "tool_calls": tool_calls_made,
+            **extra_fields,
+        }
         yield {
             "type": "complete",
-            "result": {
-                "content": full_text,
-                "reply": full_text,
-                "format": "analysis",
-                "type": "analysis",
-                "tool_calls": tool_calls_made,
-            },
+            "result": result_payload,
             "success": True,
             "metadata": {
                 "path": "conversational",
                 "turn_type": turn_type.value,
                 "phase": self._conversation_phase.value,
+                "response_mode": "task" if turn_type == TurnType.SYNTHESIS else "reply",
                 "tool_calls_count": len(tool_calls_made),
                 "tools_used": [tc["tool"] for tc in tool_calls_made],
                 "budget": self.model_router.end_budget() or {},
@@ -4596,6 +4591,15 @@ class UnifiedMCPOrchestrator:
         all_text_parts: List[str] = []
         tool_calls_made: List[Dict[str, Any]] = []
 
+        # ── Accumulate structured data from tool outputs (mirrors _run_agent_loop) ──
+        _grid_commands: List[Dict[str, Any]] = []
+        _memo_sections: List[Dict[str, Any]] = []
+        _charts: List[Dict[str, Any]] = []
+        _suggestions: List[Dict[str, Any]] = []
+        _todo_items: List[Dict[str, Any]] = []
+        _pnl_refresh = False
+        _fpa_write_tools = {"fpa_cell_edit", "fpa_upload_actuals", "fpa_apply_forecast", "fpa_forecast"}
+
         for round_num in range(max_tool_rounds):
             yield {
                 "type": "progress",
@@ -4688,6 +4692,34 @@ class UnifiedMCPOrchestrator:
                         "result": tool_output,
                     }
 
+                    # ── Extract structured data from tool output ──
+                    # Mirrors _run_agent_loop (lines 14773-14799)
+                    if isinstance(tool_output, dict):
+                        if "memo_sections" in tool_output:
+                            for ms in tool_output["memo_sections"]:
+                                if "id" not in ms:
+                                    ms["id"] = f"auto_{len(_memo_sections)}"
+                                _memo_sections.append(ms)
+                                yield {"type": "memo_section", "section": ms}
+                        _cd_list = tool_output.get("chart_data") or tool_output.get("charts")
+                        if isinstance(_cd_list, list):
+                            for cd in _cd_list:
+                                _charts.append(cd)
+                                yield {"type": "chart_data", "chart": cd}
+                        if "grid_command" in tool_output:
+                            _grid_commands.append(tool_output["grid_command"])
+                        if "grid_commands" in tool_output and isinstance(tool_output["grid_commands"], list):
+                            _grid_commands.extend(tool_output["grid_commands"])
+                        if "chart_config" in tool_output:
+                            _charts.append(tool_output["chart_config"])
+                            yield {"type": "chart_data", "chart": tool_output["chart_config"]}
+                        if "suggestion" in tool_output:
+                            _suggestions.append(tool_output["suggestion"])
+                        if "todo" in tool_output:
+                            _todo_items.append(tool_output["todo"])
+                        if tool_name in _fpa_write_tools:
+                            _pnl_refresh = True
+
                 except Exception as e:
                     logger.error(f"[CONV_LOOP] Tool {tool_name} failed: {e}")
                     tool_result_blocks.append({
@@ -4705,9 +4737,31 @@ class UnifiedMCPOrchestrator:
 
             messages.append({"role": "user", "content": tool_result_blocks})
 
+        # Build extra_result_fields so _conversational_turn's complete event
+        # forwards structured data to the frontend (same shape as agent loop).
+        extra: Dict[str, Any] = {}
+        if _grid_commands:
+            extra["grid_commands"] = _grid_commands
+        if _memo_sections:
+            extra["memo_sections"] = _memo_sections
+        if _charts:
+            extra["charts"] = _charts
+        if _suggestions:
+            extra["suggestions"] = _suggestions
+        if _todo_items:
+            extra["todo_items"] = _todo_items
+        if _pnl_refresh:
+            extra["pnl_refresh"] = True
+        if tool_calls_made:
+            extra["working_memory"] = [
+                {"tool": tc["tool"], "summary": tc.get("output_preview", "")[:500]}
+                for tc in tool_calls_made
+            ]
+
         self._turn_result = {
             "full_text": "\n".join(all_text_parts),
             "tool_calls_made": tool_calls_made,
+            "extra_result_fields": extra,
         }
 
     async def _crystallize_and_execute(
@@ -4779,6 +4833,7 @@ class UnifiedMCPOrchestrator:
         # ── Hand off to agent loop ──
         full_text_parts: List[str] = []
         tool_calls_made: List[Dict[str, Any]] = []
+        agent_result_fields: Dict[str, Any] = {}
 
         try:
             async for event in self._run_agent_loop(
@@ -4789,27 +4844,23 @@ class UnifiedMCPOrchestrator:
             ):
                 evt_type = event.get("type")
 
-                # Capture text from the agent loop's complete event but
-                # don't yield it — the dispatcher produces its own.
+                # Capture the full result from the agent loop's complete event.
+                # We merge grid_commands, memo_updates, charts, etc. into
+                # _turn_result so the dispatcher's final complete event
+                # forwards them to the frontend.
                 if evt_type == "complete":
                     result = event.get("result", {})
                     content = result.get("content", "")
                     if content:
                         full_text_parts.append(content)
                     tool_calls_made = result.get("tool_calls", []) or []
-                    # Still forward artifacts / grid_commands / etc via
-                    # a separate event so the frontend picks them up.
-                    forwarded = {
+                    # Capture ALL extra result fields (grid_commands, memo_updates,
+                    # charts, suggestions, pnl_refresh, etc.)
+                    agent_result_fields = {
                         k: v for k, v in result.items()
                         if k not in ("content", "reply", "tool_calls")
                         and v is not None
                     }
-                    if forwarded:
-                        yield {
-                            "type": "progress",
-                            "stage": "agent_artifacts",
-                            "artifacts": forwarded,
-                        }
                 else:
                     # Forward everything else (progress, tool_call, token, etc.)
                     yield event
@@ -4823,6 +4874,7 @@ class UnifiedMCPOrchestrator:
         self._turn_result = {
             "full_text": "\n".join(full_text_parts),
             "tool_calls_made": tool_calls_made,
+            "extra_result_fields": agent_result_fields,
         }
 
     async def _steer_execution(
@@ -4929,6 +4981,7 @@ class UnifiedMCPOrchestrator:
 
             full_text_parts: List[str] = []
             tool_calls_made: List[Dict[str, Any]] = []
+            agent_result_fields: Dict[str, Any] = {}
 
             async for event in self._run_agent_loop(
                 prompt=synthesized_prompt,
@@ -4943,23 +4996,18 @@ class UnifiedMCPOrchestrator:
                     if c:
                         full_text_parts.append(c)
                     tool_calls_made = r.get("tool_calls", []) or []
-                    forwarded = {
+                    agent_result_fields = {
                         k: v for k, v in r.items()
                         if k not in ("content", "reply", "tool_calls")
                         and v is not None
                     }
-                    if forwarded:
-                        yield {
-                            "type": "progress",
-                            "stage": "agent_artifacts",
-                            "artifacts": forwarded,
-                        }
                 else:
                     yield event
 
             self._turn_result = {
                 "full_text": "\n".join(full_text_parts),
                 "tool_calls_made": tool_calls_made,
+                "extra_result_fields": agent_result_fields,
             }
 
         except Exception as e:
@@ -5848,234 +5896,6 @@ JUST THE JSON:"""
             logger.error(f"[PROCESS_REQUEST] Returning error: {error}")
             return {"success": False, "error": error}
     
-    # ------------------------------------------------------------------
-    # Agent Loop: complexity classifier, tool executor, ReAct loop
-    # ------------------------------------------------------------------
-
-    async def _classify_intent(self, prompt: str, entities: Optional[Dict[str, Any]] = None,
-                                context: Optional[Dict[str, Any]] = None,
-                                grid_fingerprint: str = "",
-                                grid_mode: str = "portfolio") -> QueryClassification:
-        """LLM-based intent classification with minimal keyword fast-paths.
-
-        Returns a QueryClassification with free-form intent (NOT a rigid enum).
-        Only 3 true fast-paths remain (metric regex, memo polish, memo save).
-        Everything else goes to one LLM call with full grid fingerprint context.
-        """
-        lower = prompt.lower().strip()
-        has_at = "@" in prompt
-        company_names = (entities or {}).get("companies", [])
-        has_companies = bool(has_at or company_names)
-
-        # --- Fast path 0: Reply mode — greetings, thanks, status checks, clarifications ---
-        _reply_patterns = [
-            r"^(hi|hello|hey|thanks|thank you|ok|okay|got it|cool|great|nice|perfect|sure|yep|yes|no|nope)\b",
-            r"^what did you (just )?(do|say|find|run)",
-            r"^(what's|whats|what is) (the |our )?(status|progress)",
-            r"^(can you |could you )?(explain|clarify|elaborate)",
-            r"^(who are you|what can you do|help)\b",
-        ]
-        if any(re.match(p, lower) for p in _reply_patterns) and not has_companies:
-            logger.info(f"[CLASSIFY] Fast-path: reply mode for: {prompt[:80]}")
-            return QueryClassification(
-                complexity="simple",
-                intent="reply",
-                needs_portfolio=False,
-                confidence=0.95,
-                response_mode="reply",
-            )
-
-        # --- Fast path 1: simple single-metric regex (no LLM needed) ---
-        simple_patterns = [
-            r"^what('s| is) (our|the|my) (dpi|tvpi|irr|nav|fund size)",
-            r"^how many (companies|positions|investments)",
-        ]
-        if any(re.match(p, lower) for p in simple_patterns):
-            return QueryClassification(
-                complexity="simple",
-                intent="metric_lookup",
-                needs_portfolio=True,
-                confidence=0.95,
-                response_mode="reply",
-            )
-
-        # --- Fast path 2: memo polish (user refining an existing memo) ---
-        has_memo_artifacts = bool(self.shared_data.get("memo_artifacts"))
-        if has_memo_artifacts and any(s in lower for s in [
-            "refine this", "edit the memo", "change the risk",
-            "update the memo", "polish the memo", "rewrite the",
-            "fix the memo", "adjust the", "revise the",
-        ]):
-            logger.info(f"[CLASSIFY] Detected memo polish request: {prompt[:80]}")
-            return QueryClassification(
-                complexity="simple",
-                intent="memo_polish",
-                needs_portfolio=False,
-                confidence=0.9,
-            )
-
-        # --- Fast path 3: save memo ---
-        if has_memo_artifacts and any(s in lower for s in [
-            "save this memo", "save the memo", "persist this",
-            "save this report", "save the report",
-        ]):
-            logger.info(f"[CLASSIFY] Detected memo save request: {prompt[:80]}")
-            return QueryClassification(
-                complexity="simple",
-                intent="memo_save",
-                needs_portfolio=False,
-                confidence=0.95,
-            )
-
-        # --- Fast path 4: single @mention → company_research (not sourcing) ---
-        _sourcing_signals = {"find", "source", "list", "rank", "score", "build",
-                             "discover", "pipeline", "show me", "top companies"}
-        if has_at and len(company_names) == 1 and not any(w in lower for w in _sourcing_signals):
-            logger.info("[CLASSIFY] Fast-path: single @mention '%s' → company_research", company_names[0])
-            return QueryClassification(
-                complexity="complex",
-                intent="company_research",
-                suggested_chain=["fetch_company_data", "run_valuation", "generate_chart"],
-                needs_portfolio=False,
-                needs_external=True,
-                confidence=0.95,
-            )
-
-        # --- Store feedback/corrections (but still let LLM classify) ---
-        feedback_signals = [
-            "no,", "not that", "wrong", "instead",
-            "don't", "try again", "that's not",
-            "actually,", "i meant", "not what i asked",
-        ]
-        if any(lower.startswith(s) or f" {s}" in f" {lower}" for s in feedback_signals):
-            existing_corrections = self.shared_data.get("session_corrections", [])
-            existing_corrections.append({"correction": prompt, "timestamp": datetime.now().isoformat()})
-            self.shared_data["session_corrections"] = existing_corrections[-10:]
-            logger.info(f"[CLASSIFY] Stored feedback/correction: {prompt[:80]}")
-
-        # --- LLM classification with grid fingerprint context ---
-        try:
-            tool_names = ", ".join(t.name for t in AGENT_VISIBLE_TOOLS)
-            template_names = ", ".join(PLAN_TEMPLATES.keys())
-
-            # Build grid state context for the classifier
-            state_context = grid_fingerprint or "STATE: no grid fingerprint available"
-
-            classify_prompt = f"""Classify this investment query. Return JSON only.
-The user is viewing the {grid_mode} grid.
-
-Query: {prompt}
-Companies mentioned: {company_names or "none"}
-Has @mentions: {has_at}
-
-Grid state:
-{state_context}
-
-Available tools: {tool_names}
-Known workflow patterns: {template_names}
-
-Return:
-{{
-  "complexity": "simple|complex",
-  "intent": "<free-form intent description>",
-  "response_mode": "reply|action|task",
-  "suggested_chain": ["tool1", "tool2"],
-  "needs_portfolio": true/false,
-  "needs_external": true/false,
-  "confidence": 0.0-1.0
-}}
-
-Response mode rules:
-- "reply" = Question, greeting, clarification, status check. Answer from context/memory. Zero or one tool call max. NO memo. Target: <2s.
-  Examples: "what's our burn?", "how many companies?", "what did you just do?"
-- "action" = Direct command: "update X", "write Y", "add Z", "edit the cell", "upload this". Execute the action. Short confirmation. NO memo. Target: 2-5s.
-  Examples: "update revenue to 5M", "add Acme to the portfolio", "set Q1 COGS to 200K"
-- "task" = Complex request: "forecast revenue", "build a model", "analyze the portfolio", "write an IC memo". Plan → execute → synthesize. Memo only if appropriate. Target: 10-30s.
-  Examples: "forecast 24 months", "analyze portfolio performance", "build a cash flow model"
-
-Classification rules:
-- "simple" = Greetings, single metric lookups, status checks, clarifications — anything that needs zero tools or just one quick lookup.
-- "complex" = Multi-step analytical work: forecasting, modeling, portfolio analysis, memo/report writing, valuation, comparison across multiple companies.
-- If grid state shows GAPS or missing data and the query relates to those companies, suggest resolve_data_gaps in chain
-- If the user asks about a company and grid shows it's missing data, suggest fetch_company_data → run_valuation
-- If the user asks for a memo/report, suggest resolve_data_gaps → run_valuation → generate_memo
-- needs_portfolio = query touches existing portfolio data
-- needs_external = query requires fetching new data from web
-- suggested_chain = ordered list of tools to call"""
-
-            result = await self.model_router.get_completion(
-                prompt=classify_prompt,
-                system_prompt="Classify investment queries. Return valid JSON only. Match response_mode accurately — most messages are 'reply' or 'action'. Only use 'task' for genuinely complex multi-step analytical work. Greetings, questions, status checks, and simple commands are NEVER 'task'.",
-                capability=ModelCapability.FAST,
-                max_tokens=200,
-                temperature=0.0,
-                json_mode=True,
-                caller_context="intent_classification",
-            )
-            content = result.get("response", "{}") if isinstance(result, dict) else str(result)
-            parsed = json.loads(content)
-
-            complexity = parsed.get("complexity", "complex")
-            # Normalize: "dealflow" → "complex" (agent loop handles both)
-            if complexity not in ("simple",):
-                complexity = "complex"
-
-            # Extract response_mode from LLM classification
-            _response_mode = parsed.get("response_mode", "task")
-            if _response_mode not in ("reply", "action", "task"):
-                _response_mode = "task"
-
-            return QueryClassification(
-                complexity=complexity,
-                intent=parsed.get("intent", "unknown"),
-                suggested_chain=parsed.get("suggested_chain"),
-                needs_portfolio=parsed.get("needs_portfolio", False),
-                needs_external=parsed.get("needs_external", False),
-                confidence=parsed.get("confidence", 0.7),
-                response_mode=_response_mode,
-            )
-        except Exception as e:
-            logger.warning(f"[CLASSIFY] LLM classification failed: {e}, defaulting to complex")
-
-        # --- Fallback: default to complex (agent loop handles everything) ---
-        return QueryClassification(
-            complexity="complex",
-            intent="general",
-            needs_portfolio=True,
-            needs_external=has_companies,
-            confidence=0.5,
-        )
-
-    def _assess_complexity(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
-        """Backward-compatible sync wrapper. Prefer _classify_intent() for richer data."""
-        lower = prompt.lower().strip()
-
-        simple_patterns = [
-            r"^what('s| is) (our|the|my) (dpi|tvpi|irr|nav|fund size)",
-            r"^how many (companies|positions|investments)",
-        ]
-        if any(re.match(p, lower) for p in simple_patterns):
-            return "simple"
-
-        # Default: everything goes to complex (agent loop)
-        return "complex"
-
-    async def _direct_dispatch(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        """Handle truly simple queries with one tool call. Returns None to upgrade to agent loop."""
-        lower = prompt.lower()
-        fund_ctx = self.shared_data.get("fund_context", {})
-
-        if any(w in lower for w in ["dpi", "tvpi", "irr", "nav", "fund size", "fund metrics"]):
-            result = await self._tool_fund_metrics({
-                "metrics": ["nav", "irr", "dpi", "tvpi"],
-                "fund_id": fund_ctx.get("fundId"),
-            })
-            return {"content": self._format_fund_metrics_text(result), "format": "analysis"}
-
-        # Everything else → return None to signal upgrade to agent loop
-        logger.info(f"[DIRECT_DISPATCH] No simple handler matched, upgrading to agent loop")
-        return None
-
     def _build_grid_context_text(self, max_rows: int = 30, max_cols: int = 15) -> str:
         """Build a compact text representation of the portfolio grid for LLM context."""
         matrix_ctx = self.shared_data.get("matrix_context") or {}
@@ -13970,6 +13790,15 @@ Rules:
         guide the REASON step so the agent can produce clear, actionable plans.
         """
 
+        # ── Reply iteration cap: reply mode gets a mini loop (max 2 iters) ──
+        _resp_mode_entry = classification.response_mode if classification else "reply"
+        if _resp_mode_entry == "reply":
+            _max_iters = min(max_iterations, 2)
+            logger.info(f"[AGENT_LOOP] Reply mode — capping iterations to {_max_iters}")
+            max_iterations = _max_iters
+        elif _resp_mode_entry == "action":
+            max_iterations = min(max_iterations, 4)
+
         # Plan mode: opt-in only. User must explicitly request a plan (e.g. "plan: ...")
         # before we gate execution behind approval. Never auto-trigger on keywords.
         if approved_plan is False and context and context.get("plan_mode"):
@@ -14056,7 +13885,7 @@ Rules:
 
         # Build intent-scoped tool catalog — only relevant categories
         _intent = classification.intent if classification else "general"
-        _resp_mode = classification.response_mode if classification else "task"
+        _resp_mode = classification.response_mode if classification else "reply"
         _scoped_tools = filter_tools_by_response_mode(
             get_tools_for_intent(_intent), _resp_mode
         )
@@ -14096,7 +13925,7 @@ Rules:
         # ── Extract structured goals from user request (LLM-driven, no keywords) ──
         _company_names_json = json.dumps((entities or {}).get('companies', []))
         # Gate memo goal extraction on response mode
-        _resp_mode = classification.response_mode if classification else "task"
+        _resp_mode = classification.response_mode if classification else "reply"
         _memo_rule = ""
         if _resp_mode == "task":
             _memo_rule = (
@@ -14111,7 +13940,7 @@ Rules:
                 "DEFAULT: If in doubt, SKIP the memo goal. Only generate memos when explicitly requested or the task clearly warrants a document.\n\n"
             )
         elif _resp_mode in ("reply", "action"):
-            _memo_rule = "MEMO RULE: NEVER include memo goals. This is a quick {_resp_mode} — no documents.\n\n"
+            _memo_rule = f"MEMO RULE: NEVER include memo goals. This is a quick {_resp_mode} — no documents.\n\n"
 
         _goal_extraction_prompt = (
             f"User request: {prompt}\n"
@@ -14120,10 +13949,11 @@ Rules:
             "Each goal: {\"id\": \"short_slug\", \"description\": \"what must be true when done\", \"check\": \"scoreboard check\"}\n\n"
             f"{_memo_rule}"
             "Examples:\n"
-            '- "portfolio performance and financing needs" -> [{"id":"enrich","description":"Fetch data for all portfolio companies","check":"fetch_count > 0"},{"id":"analyze","description":"Run valuations and metrics","check":"valuation_count > 0"},{"id":"write_memo","description":"Write analysis memo with findings","check":"memo_count > 0"}]\n'
-            '- "analyze @Ramp" -> [{"id":"enrich_ramp","description":"Fetch and enrich Ramp data","check":"fetch_count > 0"},{"id":"valuate_ramp","description":"Run valuation on Ramp","check":"valuation_count > 0"},{"id":"write_memo","description":"Generate investment memo for Ramp","check":"memo_count > 0"}]\n'
-            '- "who are the winners and losers" -> [{"id":"enrich","description":"Fetch portfolio data","check":"fetch_count > 0"},{"id":"write_memo","description":"Write winner/loser analysis","check":"memo_count > 0"}]\n'
-            '- "what is Mercury\'s revenue?" -> [{"id":"quick_look","description":"Look up Mercury revenue","check":"fetch_count > 0"}]\n\n'
+            '- "portfolio performance and financing needs" -> [{"id":"enrich","description":"Fetch data for all portfolio companies","check":"fetch_count > 0"},{"id":"analyze","description":"Run valuations and metrics","check":"valuation_count > 0"}]\n'
+            '- "analyze @Ramp" -> [{"id":"enrich_ramp","description":"Fetch and enrich Ramp data","check":"fetch_count > 0"},{"id":"valuate_ramp","description":"Run valuation on Ramp","check":"valuation_count > 0"}]\n'
+            '- "who are the winners and losers" -> [{"id":"enrich","description":"Fetch portfolio data","check":"fetch_count > 0"},{"id":"rank","description":"Score and rank companies by performance","check":"analysis_count > 0"}]\n'
+            '- "what is Mercury\'s revenue?" -> [{"id":"quick_look","description":"Look up Mercury revenue","check":"fetch_count > 0"}]\n'
+            '- "write me an IC memo on @Stripe" -> [{"id":"enrich_stripe","description":"Fetch Stripe data","check":"fetch_count > 0"},{"id":"analyze_stripe","description":"Run valuation and metrics","check":"valuation_count > 0"},{"id":"write_memo","description":"Generate IC memo for Stripe","check":"memo_count > 0"}]\n\n'
             "RESPOND WITH JUST THE JSON ARRAY. NO MARKDOWN. NO EXPLANATION. NO PROSE. 1-5 goals max.\n"
             "JUST THE JSON ARRAY:"
         )
@@ -14983,7 +14813,7 @@ JSON — pick one:
         portfolio_context = f"\n\nPortfolio Context:\n{portfolio_text}\n" if portfolio_text.strip() else ""
 
         # ── Response mode gate: skip memo for reply/action modes ──
-        _response_mode = classification.response_mode if classification else "task"
+        _response_mode = classification.response_mode if classification else "reply"
         if _response_mode in ("reply", "action"):
             logger.info(f"[AGENT_LOOP] {_response_mode} mode — skipping memo generation")
             # Short synthesis: 1-3 sentence confirmation, no structured memo
@@ -15408,973 +15238,10 @@ ABSOLUTE RULES:
                 async for event in self._conversational_turn(prompt, context):
                     yield event
                 return
-            # ── END CONVERSATIONAL PATH ─────────────────────────────────
-
-            # Extract entities from prompt
-            yield {
-                "type": "progress",
-                "stage": "initialization",
-                "message": "Analyzing request and extracting entities"
-            }
-
-            entities = await self._extract_entities(prompt)
-            
-            # Phase 1: Merge context.companies (all @mentions from frontend) into entities
-            if context and context.get("companies"):
-                ctx_companies = context["companies"]
-                if isinstance(ctx_companies, list) and ctx_companies:
-                    existing = entities.get("companies") or []
-                    merged = list(dict.fromkeys(ctx_companies + [c for c in existing if c not in ctx_companies]))
-                    entities["companies"] = merged
-                    logger.info(f"[ENTITY_EXTRACTION] Merged context.companies: {merged}")
-            
-            # NEW: Merge extracted fund context into shared_data
-            if entities:
-                fund_keys = ['fund_size', 'remaining_capital', 'deployed_capital', 'fund_year', 
-                             'fund_quarter', 'portfolio_count', 'dpi', 'tvpi', 'target_tvpi']
-                extracted_fund_context = {k: v for k, v in entities.items() if k in fund_keys and v is not None}
-                
-                if extracted_fund_context:
-                    async with self.shared_data_lock:
-                        if 'fund_context' not in self.shared_data:
-                            self.shared_data['fund_context'] = {}
-                        self.shared_data['fund_context'].update(extracted_fund_context)
-                        logger.info(f"[ENTITY_EXTRACTION] Updated fund_context: {extracted_fund_context}")
-                else:
-                    logger.info(f"[ENTITY_EXTRACTION] No fund context extracted from entities")
-            
-            # ---- Plan resumption: detect "resume plan" intent and hydrate shared_data ----
-            plan_resume_signals = [
-                "resume plan", "continue the plan", "do this plan",
-                "execute the plan", "pick up where", "resume where",
-            ]
-            if any(s in prompt.lower() for s in plan_resume_signals):
-                await self._try_load_and_hydrate_plan()
-
-            # ---- Entity context: classify mentioned companies for agent awareness ----
-            # NOTE: No auto-triggering — the agent decides when/whether to fetch.
-            # We just categorize companies as new vs in-grid for agent context.
-            extracted_companies = entities.get("companies", [])
-            matrix_ctx = self.shared_data.get("matrix_context") or {}
-            grid_company_names = [n.lower() for n in (matrix_ctx.get("companyNames") or [])]
-            fund_id = (context or {}).get("fundId") or (context or {}).get("fund_id")
-
-            if extracted_companies:
-                new_companies = []
-                sparse_companies = []
-                for comp_name in extracted_companies:
-                    clean_name = comp_name.replace("@", "").strip().lower()
-                    if clean_name and clean_name not in grid_company_names:
-                        new_companies.append(comp_name.replace("@", "").strip())
-                    elif clean_name in grid_company_names:
-                        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-                        grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else []
-                        for row in grid_rows:
-                            row_name = (row.get("companyName") or row.get("company_name") or "").lower()
-                            if clean_name in row_name or row_name in clean_name:
-                                cells = row.get("cells") or row.get("cellValues") or {}
-                                empty_count = sum(1 for v in cells.values()
-                                                  if (v.get("value") if isinstance(v, dict) else v) in (None, "", "N/A"))
-                                if empty_count >= 3:
-                                    sparse_companies.append(comp_name.replace("@", "").strip())
-                                break
-
-                # Store as context hints, not forced actions
-                if new_companies:
-                    logger.info(f"[ENTITY_CONTEXT] New companies (not in grid): {new_companies}")
-                    async with self.shared_data_lock:
-                        self.shared_data["mentioned_new_companies"] = new_companies
-                if sparse_companies:
-                    logger.info(f"[ENTITY_CONTEXT] Sparse grid data for: {sparse_companies}")
-                    async with self.shared_data_lock:
-                        self.shared_data["mentioned_sparse_companies"] = sparse_companies
-
-            # ---- Complexity gate: route to agent loop, direct dispatch, or existing pipeline ----
-            # Also read memo context from agent_context for augmentation
-            memo_ctx = self.shared_data.get("agent_context", {}).get("memo_sections", [])
-            if memo_ctx:
-                memo_text = self._serialize_memo_sections(memo_ctx, limit=15)
-                if memo_text:
-                    logger.info(f"[MEMO_CONTEXT] Injected {len(memo_ctx)} memo sections ({len(memo_text)} chars) into context")
-
-            # --- Build grid fingerprint BEFORE classification ---
-            # SessionState provides a dense ~400 token map of what's filled/missing/inferred
-            _session_state = SessionState(self.shared_data) if SessionState else None
-            grid_fingerprint = _session_state.fingerprint() if _session_state else ""
-            if grid_fingerprint:
-                logger.info(f"[FINGERPRINT] Built grid fingerprint ({len(grid_fingerprint)} chars) for classifier")
-
-            # --- Phase 2: LLM-based intent classification (with grid context) ---
-            classification = await self._classify_intent(
-                prompt, entities=entities, context=context, grid_fingerprint=grid_fingerprint,
-                grid_mode=self.shared_data.get('grid_mode', 'portfolio')
-            )
-            logger.info(
-                f"[ORCHESTRATOR] Classification: complexity={classification.complexity}, "
-                f"intent={classification.intent}, response_mode={classification.response_mode}, "
-                f"needs_portfolio={classification.needs_portfolio}, "
-                f"needs_external={classification.needs_external}, confidence={classification.confidence}"
-            )
-            # Store classification for downstream use
-            async with self.shared_data_lock:
-                self.shared_data["classification"] = {
-                    "complexity": classification.complexity,
-                    "intent": classification.intent,
-                    "suggested_chain": classification.suggested_chain,
-                    "needs_portfolio": classification.needs_portfolio,
-                    "needs_external": classification.needs_external,
-                    "confidence": classification.confidence,
-                    "response_mode": classification.response_mode,
-                }
-
-            # Stream classification event so frontend can show intent/mode immediately
-            yield {
-                "type": "classification",
-                "intent": classification.intent,
-                "response_mode": classification.response_mode,
-                "complexity": classification.complexity,
-                "confidence": classification.confidence,
-            }
-
-            # --- Fast path: memo polish (1 cheap LLM call) ---
-            if classification.intent == "memo_polish":
-                result = await self._handle_memo_polish(prompt)
-                budget_summary = self.model_router.end_budget() or {}
-                yield {
-                    "type": "complete",
-                    "result": result,
-                    "success": True,
-                    "metadata": {"budget": budget_summary, "complexity": "simple", "intent": "memo_polish"},
-                }
-                return
-
-            # --- Fast path: save memo to documents ---
-            if classification.intent == "memo_save":
-                result = await self._handle_memo_save()
-                budget_summary = self.model_router.end_budget() or {}
-                yield {
-                    "type": "complete",
-                    "result": result,
-                    "success": True,
-                    "metadata": {"budget": budget_summary, "complexity": "simple", "intent": "memo_save"},
-                }
-                return
-
-            # --- Response mode: Reply ---
-            # Quick answer from context/memory, max 1 tool call, NO memo.
-            if classification.response_mode == "reply":
-                logger.info(f"[ORCHESTRATOR] Reply mode — answering from context, no memo")
-                result = await self._direct_dispatch(prompt, context)
-                if result is not None:
-                    budget_summary = self.model_router.end_budget() or {}
-                    yield {
-                        "type": "complete",
-                        "result": result,
-                        "success": True,
-                        "metadata": {"budget": budget_summary, "complexity": "simple",
-                                     "intent": classification.intent, "response_mode": "reply"},
-                    }
-                    return
-                # Reply mode: conversational LLM response — NO agent loop, NO memo
-                logger.info("[ORCHESTRATOR] Reply mode — conversational response (no agent loop)")
-                _grid_mode = self.shared_data.get("grid_mode", "portfolio")
-                _grid_summary = self._build_grid_context_text(max_rows=5, max_cols=6)
-                _prior_memory = self.shared_data.get("agent_context", {}).get("working_memory", [])
-                _memory_ctx = ""
-                if _prior_memory:
-                    _memory_ctx = "\n\nRecent context:\n" + "\n".join(
-                        f"- {m.get('tool', '?')}: {m.get('summary', '')[:200]}" for m in _prior_memory[-5:]
-                    )
-                _conv_result = await self.model_router.get_completion(
-                    prompt=f"User says: {prompt}\n\nGrid mode: {_grid_mode}\n{_grid_summary}{_memory_ctx}",
-                    system_prompt=(
-                        "You are a CFO agent. Respond conversationally in 1-3 sentences. "
-                        "Be warm but concise. If the user greets you, greet back and briefly mention "
-                        "what you can help with (depends on grid mode: portfolio analysis, P&L forecasting, "
-                        "legal contract review, LP reporting). Never generate a memo or structured report. "
-                        "Never say 'based on my analysis'. Just talk like a helpful colleague."
-                    ),
-                    capability=ModelCapability.FAST,
-                    max_tokens=200,
-                    temperature=0.4,
-                    caller_context="reply_conversational",
-                )
-                _reply_text = _conv_result.get("response", "") if isinstance(_conv_result, dict) else str(_conv_result)
-                budget_summary = self.model_router.end_budget() or {}
-                yield {
-                    "type": "complete",
-                    "result": {"content": _reply_text, "format": "analysis"},
-                    "success": True,
-                    "metadata": {"budget": budget_summary, "complexity": "simple",
-                                 "intent": classification.intent, "response_mode": "reply"},
-                }
-                return
-
-            if classification.complexity == "simple":
-                # Try direct dispatch — returns None if it can't handle it
-                result = await self._direct_dispatch(prompt, context)
-                if result is not None:
-                    budget_summary = self.model_router.end_budget() or {}
-                    yield {
-                        "type": "complete",
-                        "result": result,
-                        "success": True,
-                        "metadata": {"budget": budget_summary, "complexity": "simple", "intent": classification.intent},
-                    }
-                    return
-                # Direct dispatch couldn't handle it → upgrade to complex
-                logger.info("[ORCHESTRATOR] Upgrading simple→complex: direct dispatch returned None")
-                classification.complexity = "complex"
-
-            if classification.complexity == "complex":
-                memo_ctx = self.shared_data.get("agent_context", {}).get("memo_sections", [])
-                memo_text = self._serialize_memo_sections(memo_ctx) if memo_ctx else ""
-                approved_plan = bool(context.get("approved_plan")) if context else False
-                # Action mode: short loop (max 3 iterations), no memo
-                _max_iters = 3 if classification.response_mode == "action" else 10
-                async for event in self._run_agent_loop(
-                    prompt, context, memo_text=memo_text, approved_plan=approved_plan,
-                    entities=entities, classification=classification,
-                    max_iterations=_max_iters,
-                ):
-                    yield event
-                self.model_router.end_budget()
-                return
-
-            # Fallback: any remaining classification (e.g. legacy "dealflow") → skill chain pipeline
-            # This should rarely be reached since the LLM classifier now returns "simple" or "complex"
-            logger.info(f"[ORCHESTRATOR] Fallthrough to skill chain pipeline: complexity={classification.complexity}")
-
-            # Phase 2: Planning for complex prompts
-            planning_triggers = [
-                "all", "full", "complete", "do everything", "all 5", "full analysis",
-                "step by step", "comprehensive", "detailed analysis",
-                # Fund-wide / multi-company valuation triggers
-                "value the fund", "value all", "value every", "value entire",
-                "fill in everything", "fill in every", "fill everything",
-                "run valuation on all", "run valuation for all",
-                "run pwerm on all", "run pwerm for all",
-                "value the portfolio", "value entire portfolio",
-            ]
-            grid_action_triggers = [
-                "run valuation", "value @", "value for", "run pwerm", "pwerm for",
-                "run dcf", "dcf for", "value acme", "value mercury",
-            ]
-            lower_prompt = prompt.lower()
-            matrix_ctx = context.get("matrix_context") or context.get("matrixContext") if context else {}
-            has_matrix = bool(matrix_ctx and (matrix_ctx.get("rowIds") or matrix_ctx.get("row_ids")))
-            needs_planning = (
-                any(t in lower_prompt for t in planning_triggers)
-                or len(entities.get("companies", [])) >= 3
-                or (has_matrix and any(t in lower_prompt for t in grid_action_triggers))
-            )
-            
-            if needs_planning:
-                yield {
-                    "type": "progress",
-                    "stage": "planning",
-                    "message": "Creating multi-step execution plan"
-                }
-                plan_steps = await self._execute_planning(prompt, output_format, entities)
-                if plan_steps:
-                    async with self.shared_data_lock:
-                        self.shared_data["plan_steps"] = plan_steps
-                    logger.info(f"[PLANNING] Created {len(plan_steps)} plan steps")
-            
-            # Build skill chain based on prompt (or plan when present)
-            yield {
-                "type": "progress",
-                "stage": "planning",
-                "message": "Building execution plan",
-                "plan_steps": self.shared_data.get("plan_steps", []),
-            }
-            
-            skill_chain = await self.build_skill_chain(prompt, output_format, entities=entities)
-            
-            # FORCE deck-storytelling when output_format is "deck"
-            if output_format == "deck":
-                logger.critical(f"[FORCE_DECK] 🟡🟡🟡 Checking deck-storytelling, chain has {len(skill_chain)} skills 🟡🟡🟡")
-                
-                deck_storytelling_exists = any(node.skill == "deck-storytelling" for node in skill_chain)
-                logger.info(f"[FORCE_DECK] 🔒 deck-storytelling exists: {deck_storytelling_exists}")
-                
-                
-                if not deck_storytelling_exists:
-                    logger.warning(f"[FORCE_DECK] ⚠️ deck-storytelling NOT in chain! Force-adding it now...")
-                    skill_chain.append(SkillChainNode(
-                        skill="deck-storytelling",
-                        purpose="Generate presentation (FORCED)",
-                        inputs={"use_shared_data": True},
-                        parallel_group=3
-                    ))
-                    logger.info(f"[FORCE_DECK] ✅ Force-added deck-storytelling. Chain length now: {len(skill_chain)}")
-                    
-                else:
-                    logger.info(f"[FORCE_DECK] ✅ deck-storytelling already in chain")
-            
-            # Execute skill chain with real-time plan step updates
-            plan_steps_snapshot = self.shared_data.get("plan_steps", [])
-            yield {
-                "type": "progress",
-                "stage": "execution",
-                "message": f"Executing {len(skill_chain)} skills",
-                "plan_steps": plan_steps_snapshot,
-            }
-
-            if plan_steps_snapshot:
-                # Use queue to relay real-time plan step updates during execution
-                _progress_queue: asyncio.Queue = asyncio.Queue()
-
-                async def _plan_progress_cb(steps, message=""):
-                    await _progress_queue.put((steps, message))
-
-                exec_task = asyncio.create_task(
-                    self._execute_skill_chain(skill_chain, progress_callback=_plan_progress_cb)
-                )
-
-                while not exec_task.done():
-                    try:
-                        steps, msg = await asyncio.wait_for(_progress_queue.get(), timeout=1.0)
-                        yield {
-                            "type": "progress",
-                            "stage": "execution",
-                            "message": msg or "Executing plan steps",
-                            "plan_steps": steps,
-                        }
-                    except asyncio.TimeoutError:
-                        continue
-
-                # Drain any remaining queued updates
-                while not _progress_queue.empty():
-                    steps, msg = _progress_queue.get_nowait()
-                    yield {
-                        "type": "progress",
-                        "stage": "execution",
-                        "message": msg or "Executing plan steps",
-                        "plan_steps": steps,
-                    }
-
-                results = exec_task.result()
-            else:
-                results = await self._execute_skill_chain(skill_chain)
-            
-            # Format output based on requested format
-            yield {
-                "type": "progress",
-                "stage": "formatting",
-                "message": f"Formatting output as {output_format}",
-                "plan_steps": self.shared_data.get("plan_steps", []),
-            }
-            
-            formatted_result = await self._format_output(results, output_format, prompt)
-
-            # Propagate skill chain warnings into the formatted result
-            skill_warnings = results.get("warnings", [])
-            if skill_warnings and isinstance(formatted_result, dict):
-                formatted_result["warnings"] = skill_warnings
-
-            # Add detailed logging for the complete result being yielded
-            logger.info(f"[STREAM] About to yield complete result")
-            logger.info(f"[STREAM] formatted_result type: {type(formatted_result)}")
-            logger.info(f"[STREAM] formatted_result keys: {list(formatted_result.keys()) if isinstance(formatted_result, dict) else 'not_dict'}")
-            if isinstance(formatted_result, dict):
-                logger.info(f"[STREAM] formatted_result format: {formatted_result.get('format')}")
-                logger.info(f"[STREAM] formatted_result slides count: {len(formatted_result.get('slides') or [])}")
-                slides_data = formatted_result.get('slides') or []
-                if slides_data:
-                    logger.info(f"[STREAM] Slide IDs being yielded: {[s.get('id') for s in slides_data[:3]]}")
-            
-            # End budget tracking and capture summary
-            budget_summary = self.model_router.end_budget() or {}
-
-            # Build analysis manifest for state persistence across requests
-            from app.services.session_state import SessionState as _SS
-            _manifest = _SS(self.shared_data).analysis_manifest()
-
-            # Persist session memo for context continuity across sessions
-            _session_memo_data = None
-            if hasattr(self, '_session_memo') and self._session_memo:
-                try:
-                    _session_memo_data = self._session_memo.to_dict() if hasattr(self._session_memo, 'to_dict') else None
-                except Exception:
-                    pass
-            elif self.shared_data.get("session_memo"):
-                _session_memo_data = self.shared_data["session_memo"]
-
-            if _session_memo_data:
-                _company_id = self.shared_data.get("company_id") or self.shared_data.get("companyId")
-                _fund_id = self.shared_data.get("fund_id") or self.shared_data.get("fundId")
-                _user_id = self.shared_data.get("user_id", "")
-                try:
-                    from app.core.supabase_client import get_supabase_client
-                    _sb = get_supabase_client()
-                    if _sb and _company_id:
-                        _sb.table("session_handoffs").insert({
-                            "company_id": _company_id,
-                            "fund_id": _fund_id,
-                            "user_id": _user_id,
-                            "handoff_data": {
-                                "summary": formatted_result.get("reply", "")[:500] if isinstance(formatted_result, dict) else "",
-                                "tools_used": [node.skill for node in skill_chain],
-                                "prompt": prompt[:200],
-                            },
-                            "session_memo": _session_memo_data,
-                            "context_tokens_used": budget_summary.get("total_tokens"),
-                        }).execute()
-                        logger.info("[SESSION_HANDOFF] Persisted session context for continuity")
-                except Exception as _he:
-                    logger.debug(f"[SESSION_HANDOFF] Failed to persist: {_he}")
-
-            # Yield single complete result
-            yield {
-                "type": "complete",
-                "result": formatted_result,
-                "success": True,
-                "analysis_manifest": _manifest,
-                "metadata": {
-                    "streaming_disabled": True,
-                    "format": output_format,
-                    "skills_executed": len(skill_chain),
-                    "tools_used": [node.skill for node in skill_chain],
-                    "budget": budget_summary,
-                }
-            }
-            
         except Exception as e:
-            logger.error(f"Error processing request: {e}")
-            self.model_router.end_budget()  # Clean up budget on error
-            yield {
-                "type": "error",
-                "error": str(e)
-            }
+            logger.error(f"[REQUEST_STREAM] Unhandled error: {e}")
+            yield {"type": "error", "error": str(e)}
 
-    async def process_request_complete(
-        self,
-        prompt: str,
-        output_format: str = "analysis",
-        context: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """Buffer all streaming chunks and return a single atomic payload.
-
-        Wraps ``process_request_stream()`` so the frontend receives ONE
-        response with all artifacts (suggestions, charts, grid_commands,
-        memo_sections) rather than partial streaming events.
-
-        Progress events are condensed into a ``status_log`` list.
-        """
-        final_result: Dict[str, Any] = {}
-        status_log: List[str] = []
-        all_suggestions: List[Dict[str, Any]] = []
-        all_grid_commands: List[Dict[str, Any]] = []
-        all_charts: List[Dict[str, Any]] = []
-
-        async for event in self.process_request_stream(prompt, output_format, context):
-            event_type = event.get("type", "")
-            if event_type == "progress":
-                status_log.append(event.get("message", ""))
-            elif event_type == "complete":
-                final_result = event
-            elif event_type == "error":
-                final_result = event
-
-        # Enrich the final payload with any accumulated artifacts
-        if final_result.get("type") == "complete":
-            result = final_result.get("result", {})
-            if isinstance(result, dict):
-                result.setdefault("status_log", status_log)
-            final_result["result"] = result
-
-        return final_result
-
-    async def _execute_planning(
-        self, prompt: str, output_format: str, entities: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """Decompose complex prompt into structured plan steps using LLM."""
-        available_skills = list(self.skills.keys())
-        companies = entities.get("companies", [])
-        grid_snapshot = self.shared_data.get("matrix_context", {}).get("gridSnapshot")
-        
-        planning_prompt = f"""Decompose this investment prompt into a multi-step execution plan.
-
-<prompt>
-{prompt}
-</prompt>
-
-<available_skills>
-{json.dumps(available_skills[:25])}
-</available_skills>
-
-<companies_mentioned>
-{json.dumps(companies)}
-</companies_mentioned>
-
-Return a JSON array of steps. Each step:
-{{
-  "id": "step-1",
-  "label": "Short human-readable label",
-  "action": "skill_name",
-  "detail": "Brief description",
-  "tool_to_use": "company-data-fetcher|valuation-engine|cap-table-generator|deal-comparer|exit-modeler|deck-storytelling|portfolio-analyzer|fund-metrics-calculator|followon-strategy|round-modeler|report-generator|scenario-analyzer|memo-generator|portfolio-scenario-modeler|company-health-dashboard|grid-run-valuation|grid-run-pwerm|grid-run-document-extract",
-  "companies": ["CompanyA"],
-  "explanation": "Why this step"
-}}
-
-Map tool_to_use to one of: company-data-fetcher, valuation-engine, cap-table-generator, deal-comparer, exit-modeler, deck-storytelling, portfolio-analyzer, fund-metrics-calculator, followon-strategy, round-modeler, report-generator, scenario-analyzer, memo-generator, excel-generator, portfolio-scenario-modeler, company-health-dashboard, grid-run-valuation, grid-run-pwerm, grid-run-document-extract.
-CRITICAL: When valuing the whole fund or all companies ("value the fund", "fill in everything", "value all"):
-1. FIRST enrich each company with "company-data-fetcher" (fetches real data: revenue, gross margin, growth, burn, headcount, etc.)
-2. THEN run "grid-run-valuation" for all companies (uses enriched data, not guesses)
-This is the SAME enrichment pipeline that runs when a user @mentions a company. Always enrich before valuing.
-
-When the user asks to run valuation, value a company, run PWERM, or run pwerm for specific companies, use tool_to_use "grid-run-valuation" or "grid-run-pwerm" with the companies list in the "companies" field.
-When the user asks to extract a document for a company (e.g. "extract document for @Acme"), use tool_to_use "grid-run-document-extract" with the company in the "companies" field.
-When the user asks about follow-on, pro-rata, dilution, or whether to follow on, use "followon-strategy".
-When the user asks to model a next round (Series D, etc.), use "round-modeler".
-When the user asks about cap table or ownership, use "cap-table-generator".
-When the user asks to generate a report (LP quarterly, follow-on memo, GP deck), use "report-generator".
-When the user asks "what if" or scenario questions, use "scenario-analyzer".
-When the user asks to generate a memo or document, use "memo-generator".
-When the user asks about fund return scenarios, portfolio-level what-ifs, or how different company outcomes affect fund returns, use "portfolio-scenario-modeler".
-When the user asks about portfolio health, company growth/burn/runway, company signals, or wants a health dashboard, use "company-health-dashboard".
-Output format requested: {output_format}
-Return ONLY the JSON array, no other text."""
-
-        try:
-            result = await self.model_router.get_completion(
-                prompt=planning_prompt,
-                capability=ModelCapability.STRUCTURED,
-                max_tokens=1500,
-                temperature=0,
-                json_mode=True,
-                fallback_enabled=True,
-                caller_context="plan_generation"
-            )
-            content = result.get("response", "[]")
-            import re
-            match = re.search(r'\[.*\]', content, re.DOTALL)
-            if match:
-                steps = json.loads(match.group(0))
-                for i, s in enumerate(steps):
-                    s.setdefault("id", f"step-{i+1}")
-                    s.setdefault("status", "pending")
-                    s.setdefault("label", s.get("action", f"Step {i+1}"))
-                return steps
-        except Exception as e:
-            logger.warning(f"[PLANNING] LLM planning failed: {e}")
-        return []
-    
-    async def build_skill_chain(
-        self, prompt: str, output_format: str, entities: Optional[Dict[str, Any]] = None
-    ) -> List[SkillChainNode]:
-        """
-        Use Claude to analyze prompt and build optimal skill chain.
-        When plan_steps exists in shared_data, build chain from plan instead of keyword matching.
-        """
-        logger.critical(f"[SKILL_BUILDER] 🟠🟠🟠 build_skill_chain CALLED: prompt='{prompt[:100]}...', format={output_format} 🟠🟠🟠")
-        
-        # Phase 2: Plan-driven skill chain when plan_steps exists
-        plan_steps = self.shared_data.get("plan_steps", [])
-        if plan_steps:
-            logger.info(f"[SKILL_BUILDER] 📋 Using plan-driven chain with {len(plan_steps)} steps")
-            chain = []
-            tool_to_skill = {
-                "company-data-fetcher": "company-data-fetcher",
-                "valuation-engine": "valuation-engine",
-                "valuation_engine": "valuation-engine",
-                "cap-table-generator": "cap-table-generator",
-                "deal-comparer": "deal-comparer",
-                "exit-modeler": "exit-modeler",
-                "deck-storytelling": "deck-storytelling",
-                "portfolio-analyzer": "portfolio-analyzer",
-                "fund-metrics-calculator": "fund-metrics-calculator",
-                "followon-strategy": "followon-strategy",
-                "round-modeler": "round-modeler",
-                "report-generator": "report-generator",
-                "scenario-analyzer": "scenario-generator",
-                "memo-generator": "memo-writer",
-                "excel-generator": "excel-generator",
-                "portfolio-scenario-modeler": "portfolio-scenario-modeler",
-                "company-health-dashboard": "company-health-dashboard",
-                "term-sheet-comparator": "term-sheet-comparator",
-                "redline-impact-analyzer": "redline-impact-analyzer",
-                "negotiation-analyzer": "negotiation-analyzer",
-                **{k: k for k in GRID_ACTION_MAP},  # All grid-run-* skills map to themselves
-            }
-            for i, step in enumerate(plan_steps):
-                tool = step.get("tool_to_use") or step.get("action", "")
-                skill = tool_to_skill.get(tool, tool) if isinstance(tool, str) else "company-data-fetcher"
-                if skill not in self.skills:
-                    skill = "company-data-fetcher"  # Fallback
-                companies = step.get("companies", [])
-                group = min(i, 2)
-                if skill == "company-data-fetcher" and len(companies) > 1:
-                    for c in companies:
-                        chain.append(SkillChainNode(
-                            skill=skill,
-                            purpose=f"Fetch data for {c}",
-                            inputs={"company": c, "prompt_handle": c, "_plan_step_index": i},
-                            parallel_group=group,
-                            depends_on=[]
-                        ))
-                else:
-                    inputs = {"use_shared_data": True} if not companies else {"company": companies[0], "prompt_handle": companies[0]}
-                    if len(companies) > 1 and skill != "company-data-fetcher":
-                        inputs = {"companies": companies, "use_shared_data": True}
-                    inputs["_plan_step_index"] = i
-                    chain.append(SkillChainNode(
-                        skill=skill,
-                        purpose=step.get("label", step.get("detail", str(skill))),
-                        inputs=inputs,
-                        parallel_group=group,
-                        depends_on=[]
-                    ))
-            return chain
-        
-        # Fallback: keyword-based skill chain
-        if entities is None:
-            logger.info(f"[SKILL_BUILDER] 🔍 Extracting entities from prompt...")
-            entities = await self._extract_entities(prompt)
-        else:
-            logger.info(f"[SKILL_BUILDER] 🔍 Using provided entities: {entities}")
-        logger.info(f"[SKILL_BUILDER] 🔍 Extracted entities: {entities}")
-        
-        chain = []
-        
-        # Phase 0: Data Gathering (parallel)
-        logger.info(f"[SKILL_BUILDER] 📊 Phase 0: Data Gathering")
-        if entities.get("companies"):
-            logger.info(f"[SKILL_BUILDER] 📊 Found {len(entities['companies'])} companies: {entities['companies']}")
-            for company in entities["companies"]:
-                logger.info(f"[SKILL_BUILDER] ✅ Adding company-data-fetcher skill for '{company}'")
-                chain.append(SkillChainNode(
-                    skill="company-data-fetcher",
-                    purpose=f"Fetch data for {company}",
-                    inputs={"company": company, "prompt_handle": company},
-                    parallel_group=0
-                ))
-        else:
-            logger.warning(f"[SKILL_BUILDER] ⚠️  No companies found in entities - company-data-fetcher will NOT be added")
-            # FORCE-ADD company-data-fetcher if deck/docs format is requested and we can extract company names from prompt
-            if output_format in ("deck", "docs") or "deck" in prompt.lower():
-                logger.info(f"[SKILL_BUILDER] 📊 Deck format requested but no companies in entities - attempting to extract from prompt")
-                # Try to extract @mentions from prompt as fallback
-                import re
-                at_mentions = re.findall(r'@(\w+)', prompt)
-                # Also match against known grid company names (no @ required)
-                matrix_ctx = self.shared_data.get("matrix_context") or {}
-                grid_names = matrix_ctx.get("companyNames") or matrix_ctx.get("company_names") or []
-                grid_matches = []
-                at_set = {m.lower() for m in at_mentions}
-                for gname in grid_names:
-                    if gname and len(gname) >= 3 and gname.lower() not in at_set:
-                        if re.search(r'\b' + re.escape(gname) + r'\b', prompt, re.IGNORECASE):
-                            grid_matches.append(gname)
-                all_matches = at_mentions + grid_matches
-                if all_matches:
-                    logger.info(f"[SKILL_BUILDER] 📊 Found companies in prompt: @mentions={at_mentions}, grid_matches={grid_matches}")
-                    for company in all_matches:
-                        src = "@mention" if company in at_mentions else "grid match"
-                        logger.info(f"[SKILL_BUILDER] ✅ Force-adding company-data-fetcher for '{company}' ({src})")
-                        chain.append(SkillChainNode(
-                            skill="company-data-fetcher",
-                            purpose=f"Fetch data for {company} ({src})",
-                            inputs={"company": company, "prompt_handle": company},
-                            parallel_group=0
-                        ))
-                    entities["companies"] = all_matches  # Update entities for later use
-                else:
-                    logger.warning(f"[SKILL_BUILDER] ⚠️  No @mentions or grid matches found - company-data-fetcher will NOT be added")
-        
-        # Phase 1: Analysis (parallel where possible)
-        logger.info(f"[SKILL_BUILDER] 🔬 Phase 1: Analysis")
-        
-        if "valuation" in prompt.lower() or "value" in prompt.lower():
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding valuation-engine (prompt contains 'valuation' or 'value')")
-            chain.append(SkillChainNode(
-                skill="valuation-engine",
-                purpose="Calculate valuations",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-        
-        if "compare" in prompt.lower() and len(entities.get("companies", [])) > 1:
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding deal-comparer (prompt contains 'compare' and multiple companies)")
-            chain.append(SkillChainNode(
-                skill="deal-comparer",
-                purpose="Compare companies",
-                inputs={"companies": entities["companies"]},
-                parallel_group=1
-            ))
-        
-        # ALWAYS generate cap tables for any company analysis
-        companies_count = len(entities.get("companies", []))
-        if companies_count > 0:
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding cap-table-generator ({companies_count} companies found)")
-            chain.append(SkillChainNode(
-                skill="cap-table-generator",
-                purpose="Generate cap tables with ownership evolution",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-        else:
-            logger.warning(f"[SKILL_BUILDER] ⚠️  No companies in entities - skipping cap-table-generator")
-        
-        # ALWAYS do valuations for investment decisions (skip if already added by keyword match above)
-        companies_count = len(entities.get("companies", []))
-        already_has_valuation = any(n.skill == "valuation-engine" for n in chain)
-        if companies_count > 0 and not already_has_valuation:
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding valuation-engine ({companies_count} companies found)")
-            chain.append(SkillChainNode(
-                skill="valuation-engine",
-                purpose="Calculate valuations (bull/bear/base scenarios)",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-        elif already_has_valuation:
-            logger.info(f"[SKILL_BUILDER] ⏭️  valuation-engine already in chain, skipping duplicate")
-        else:
-            logger.warning(f"[SKILL_BUILDER] ⚠️  No companies in entities - skipping valuation-engine")
-        
-        # Fund portfolio analysis - ALWAYS if fund context mentioned
-        if "fund" in prompt.lower() or "portfolio" in prompt.lower() or "deploy" in prompt.lower():
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding portfolio-analyzer (fund/portfolio/deploy mentioned)")
-            chain.append(SkillChainNode(
-                skill="portfolio-analyzer",
-                purpose="Analyze portfolio",
-                inputs={"context": entities},
-                parallel_group=1
-            ))
-        
-        # Fund metrics if DPI or deployment mentioned (deck generation handled separately below)
-        if "dpi" in prompt.lower() or "deploy" in prompt.lower() or "tvpi" in prompt.lower():
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding fund-metrics-calculator (DPI/deploy/TVPI mentioned)")
-            chain.append(SkillChainNode(
-                skill="fund-metrics-calculator",
-                purpose="Calculate fund metrics",
-                inputs={"context": entities},
-                parallel_group=1
-            ))
-        
-        # Multi-stage analysis
-        if ("seed" in prompt.lower() and "series" in prompt.lower()) or "stage" in prompt.lower():
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding stage-analyzer (multi-stage mentioned)")
-            chain.append(SkillChainNode(
-                skill="stage-analyzer",
-                purpose="Analyze investment stages",
-                inputs={"stages": ["seed", "series_a", "series_b"]},
-                parallel_group=1
-            ))
-        
-        # ALWAYS model exit scenarios for investment decisions
-        if len(entities.get("companies", [])) > 0:
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding exit-modeler (companies found)")
-            chain.append(SkillChainNode(
-                skill="exit-modeler",
-                purpose="Model exit scenarios (win/lose/base cases)",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-
-        # Follow-on strategy
-        lower = prompt.lower()
-        if any(kw in lower for kw in ["follow on", "follow-on", "followon", "pro rata", "pro-rata", "should we follow", "extension"]):
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding followon-strategy")
-            chain.append(SkillChainNode(
-                skill="followon-strategy",
-                purpose="Analyze follow-on / extension / sell decision",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-
-        # Round modeling
-        if any(kw in lower for kw in ["next round", "model round", "series d", "series c", "series b"]):
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding round-modeler")
-            chain.append(SkillChainNode(
-                skill="round-modeler",
-                purpose="Model next funding round with dilution & waterfall",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-
-        # NL scenario analysis
-        if any(kw in lower for kw in ["what if", "what happens", "stress test", "scenario"]):
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding scenario-generator")
-            chain.append(SkillChainNode(
-                skill="scenario-generator",
-                purpose="Run scenario / what-if analysis",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-
-        # FPA: Regression analysis
-        if any(kw in lower for kw in ["regression", "correlat", "r-squared", "r squared", "fit line", "trend line"]):
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding regression-analyzer")
-            chain.append(SkillChainNode(
-                skill="regression-analyzer",
-                purpose="Run regression / correlation analysis",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-
-        # FPA: Time series forecast
-        if any(kw in lower for kw in ["forecast", "project revenue", "predict", "time series"]):
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding time-series-forecaster")
-            chain.append(SkillChainNode(
-                skill="time-series-forecaster",
-                purpose="Forecast time series with confidence intervals",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-
-        # FPA: Growth/decay modeling
-        if any(kw in lower for kw in ["growth rate", "decay", "half life", "half-life", "exponential growth", "exponential decay"]):
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding growth-decay-forecaster")
-            chain.append(SkillChainNode(
-                skill="growth-decay-forecaster",
-                purpose="Model exponential growth/decay",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-
-        # FPA: Monte Carlo
-        if any(kw in lower for kw in ["monte carlo", "simulation", "probability distribution", "variance"]):
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding monte-carlo-simulator")
-            chain.append(SkillChainNode(
-                skill="monte-carlo-simulator",
-                purpose="Run Monte Carlo simulation",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-
-        # FPA: Sensitivity / tornado
-        if any(kw in lower for kw in ["sensitivity", "tornado", "what drives", "key driver"]):
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding sensitivity-analyzer")
-            chain.append(SkillChainNode(
-                skill="sensitivity-analyzer",
-                purpose="Sensitivity / tornado analysis",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-
-        # Fund-level analysis (comprehensive)
-        if any(kw in lower for kw in ["analyze fund", "analyse fund", "fund analysis", "fund strategy", "fund performance"]):
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding fund-analyzer")
-            chain.append(SkillChainNode(
-                skill="fund-analyzer",
-                purpose="Comprehensive fund analysis with follow-on strategy",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-
-        # Portfolio scenario modeling (fund-level what-if)
-        if any(kw in lower for kw in ["fund return scenario", "portfolio scenario", "what if company", "fund impact"]):
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding portfolio-scenario-modeler")
-            chain.append(SkillChainNode(
-                skill="portfolio-scenario-modeler",
-                purpose="Model fund return scenarios across portfolio",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-
-        # Company health dashboard (portfolio-wide analytics)
-        if any(kw in lower for kw in ["portfolio health", "company health", "health dashboard", "runway analysis", "growth decay"]):
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding company-health-dashboard")
-            chain.append(SkillChainNode(
-                skill="company-health-dashboard",
-                purpose="Portfolio health: growth, burn, runway, signals",
-                inputs={"use_shared_data": True},
-                parallel_group=1
-            ))
-
-        # Memo / report generation
-        if any(kw in lower for kw in ["memo", "generate report", "lp report", "quarterly report", "gp deck", "follow-on memo"]):
-            logger.info(f"[SKILL_BUILDER] 🔬 Adding report-generator")
-            chain.append(SkillChainNode(
-                skill="report-generator",
-                purpose="Generate report / memo with charts",
-                inputs={"use_shared_data": True},
-                parallel_group=2,
-                required=False
-            ))
-
-        # Phase 1.5: Grid skills (Phase 6) - when matrix_context present and keywords match
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        has_matrix = bool(matrix_ctx.get("rowIds") or matrix_ctx.get("row_ids"))
-        if has_matrix:
-            lower = prompt.lower()
-            for skill_name, triggers in GRID_TRIGGER_MAP.items():
-                if any(t in lower for t in triggers):
-                    action_id = GRID_ACTION_MAP.get(skill_name, ("", "value"))[0]
-                    chain.append(SkillChainNode(
-                        skill=skill_name,
-                        purpose=f"Run {action_id} on grid",
-                        inputs={"use_shared_data": True},
-                        parallel_group=1
-                    ))
-        
-        # Phase 2: Generation/Formatting
-        logger.info(f"[SKILL_BUILDER] 🎨 Phase 2: Generation/Formatting")
-        logger.info(f"[SKILL_BUILDER] 🎨 output_format value: '{output_format}'")
-        logger.info(f"[SKILL_BUILDER] 🎨 output_format == 'deck': {output_format == 'deck'}")
-        logger.info(f"[SKILL_BUILDER] 🎨 output_format == 'spreadsheet': {output_format == 'spreadsheet'}")
-        
-        if output_format == "spreadsheet":
-            logger.info(f"[SKILL_BUILDER] 🎨 Adding excel-generator (output_format=spreadsheet)")
-            chain.append(SkillChainNode(
-                skill="excel-generator",
-                purpose="Generate spreadsheet",
-                inputs={"format": "comparison_matrix"},
-                parallel_group=2
-            ))
-        elif output_format == "deck":
-            logger.info(f"[SKILL_BUILDER] 🎨 Adding deck-storytelling (output_format=deck)")
-            logger.info(f"[SKILL_BUILDER] 🎨 Creating SkillChainNode for deck-storytelling")
-            chain.append(SkillChainNode(
-                skill="deck-storytelling",  # This is the actual registered skill name
-                purpose="Generate presentation",
-                inputs={"use_shared_data": True},
-                parallel_group=3  # CRITICAL FIX: Move to group 3 to ensure companies are available
-            ))
-            logger.info(f"[SKILL_BUILDER] 🎨 ✅ Added deck-storytelling to chain. Chain length now: {len(chain)}")
-        elif output_format == "docs":
-            logger.info(f"[SKILL_BUILDER] 📝 Adding memo upstream services + memo-writer (output_format=docs)")
-
-            # Fix 2: Ensure the skills that produce scenario_analysis, cap_table_history,
-            # and revenue_projections are in the chain (at group 2) even when they weren't
-            # added by Phase 1 keyword matching.  These mirror what deck uses at group 1.
-            existing_skills = {n.skill for n in chain}
-            memo_upstream = [
-                ("valuation-engine",    "Calculate valuations + PWERM scenarios for memo"),
-                ("cap-table-generator", "Build cap table history for memo sankey"),
-                ("exit-modeler",        "Model exit scenarios for memo probability cloud"),
-            ]
-            for skill_name, purpose in memo_upstream:
-                if skill_name not in existing_skills:
-                    chain.append(SkillChainNode(
-                        skill=skill_name,
-                        purpose=purpose,
-                        inputs={"use_shared_data": True},
-                        parallel_group=2,
-                    ))
-                    logger.info(f"[SKILL_BUILDER] 📝   Added {skill_name} at group 2 for memo")
-
-            chain.append(SkillChainNode(
-                skill="memo-writer",
-                purpose="Generate investment memo with charts",
-                inputs={"use_shared_data": True},
-                parallel_group=3  # After data fetching/valuation
-            ))
-            logger.info(f"[SKILL_BUILDER] 📝 ✅ Added memo-writer to chain. Chain length now: {len(chain)}")
-        else:
-            logger.warning(f"[SKILL_BUILDER] ⚠️ Unknown output_format: '{output_format}'")
-        
-        logger.info(f"[SKILL_BUILDER] ✅ Built skill chain with {len(chain)} skills")
-        logger.info(f"[SKILL_BUILDER] 📋 Final skill chain:")
-        for i, node in enumerate(chain):
-            logger.info(f"[SKILL_BUILDER]   {i+1}. Group {node.parallel_group}: {node.skill} - {node.purpose}")
-            logger.info(f"[SKILL_BUILDER]      Inputs: {node.inputs}")
-        
-        return chain
-    
     def _safe_multiply(self, *args: Any) -> float:
         """Safe multiplication handling None, InferenceResult, and Decimal
         
@@ -16387,402 +15254,6 @@ Return ONLY the JSON array, no other text."""
                 return 0
             result *= float(safe_val)
         return result
-    
-    async def _execute_skill_chain(self, chain: List[SkillChainNode], progress_callback=None) -> Dict[str, Any]:
-        """Execute skill chain with parallel group support.
-
-        Args:
-            progress_callback: Optional async callable(steps, message) invoked
-                whenever a plan step status changes, enabling real-time streaming.
-        """
-        logger.critical(f"[SKILL_CHAIN] 🟣🟣🟣 _execute_skill_chain CALLED with {len(chain)} skills 🟣🟣🟣")
-        
-        results = {}
-        
-        logger.info(f"[SKILL_CHAIN] 🚀 Starting skill chain execution with {len(chain)} skills")
-        logger.info(f"[SKILL_CHAIN] Chain overview:")
-        for i, node in enumerate(chain):
-            logger.info(f"[SKILL_CHAIN]   {i+1}. {node.skill} (group {node.parallel_group}) - {node.purpose}")
-        
-        # Group skills by parallel group
-        groups = {}
-        for node in chain:
-            if node.parallel_group not in groups:
-                groups[node.parallel_group] = []
-            groups[node.parallel_group].append(node)
-        
-        logger.info(f"[SKILL_CHAIN] 📊 Grouped into {len(groups)} parallel groups: {sorted(groups.keys())}")
-        
-        # Execute groups in order
-        logger.info(f"[SKILL_CHAIN] 🎯 About to execute {len(groups)} groups: {sorted(groups.keys())}")
-        for group_num in sorted(groups.keys()):
-            group_skills = groups[group_num]
-            logger.info(f"[SKILL_CHAIN] 🔄 Executing group {group_num} with {len(group_skills)} skills: {[s.skill for s in group_skills]}")
-            
-            # Snapshot shared_data under lock so parallel skills in this group
-            # read a consistent view even while the prior group's writes land.
-            async with self.shared_data_lock:
-                group_snapshot = dict(self.shared_data)
-
-            # Pre-execution validation for critical groups
-            if group_num == 3:  # Deck generation group
-                companies_count = len(group_snapshot.get("companies", []))
-                if companies_count == 0:
-                    logger.warning(f"[SKILL_CHAIN] ⚠️ Group 3 (deck generation) has no companies - will attempt to generate anyway")
-                    logger.warning(f"[SKILL_CHAIN] ⚠️ Available shared_data keys: {list(group_snapshot.keys())}")
-                    # Don't raise - let deck generation handle empty companies gracefully
-                else:
-                    logger.info(f"[SKILL_CHAIN] ✅ Group 3 validation passed: {companies_count} companies available")
-
-            # Log shared_data state before group execution (from snapshot)
-            logger.info(f"[SKILL_CHAIN] 📋 Shared data before group {group_num}:")
-            logger.info(f"[SKILL_CHAIN]   Keys: {list(group_snapshot.keys())}")
-            if 'companies' in group_snapshot:
-                companies = group_snapshot['companies']
-                logger.info(f"[SKILL_CHAIN]   Companies count: {len(companies)}")
-                for i, company in enumerate(companies):
-                    logger.info(f"[SKILL_CHAIN]     Company {i}: {company.get('company', 'NO_COMPANY_FIELD')} (keys: {list(company.keys())})")
-            else:
-                logger.info(f"[SKILL_CHAIN]   No 'companies' key in shared_data")
-            
-            # Phase 5: Dependency validation — skip skills whose prerequisites failed
-            validated_skills = []
-            for node in group_skills:
-                if node.depends_on:
-                    missing_deps = [
-                        dep for dep in node.depends_on
-                        if dep not in results or (isinstance(results.get(dep), dict) and results[dep].get("error"))
-                    ]
-                    if missing_deps:
-                        logger.warning(f"[SKILL_CHAIN] ⏭️ Skipping '{node.skill}' — missing dependencies: {missing_deps}")
-                        node.status = "skipped"
-                        node.result = {"skipped": True, "reason": f"Missing dependencies: {missing_deps}"}
-                        results[node.skill] = node.result
-                        # Update plan step status
-                        plan_steps = self.shared_data.get("plan_steps", [])
-                        if plan_steps:
-                            step_idx = node.inputs.get("_plan_step_index")
-                            if step_idx is not None and step_idx < len(plan_steps):
-                                plan_steps[step_idx]["status"] = "skipped"
-                                plan_steps[step_idx]["detail"] = f"Skipped — missing: {', '.join(missing_deps)}"
-                                if progress_callback:
-                                    await progress_callback(
-                                        [dict(s) for s in plan_steps],
-                                        f"Skipped {node.skill}",
-                                    )
-                        continue
-                validated_skills.append(node)
-
-            # Execute all skills in group in parallel with timeout protection
-            tasks = []
-            for node in validated_skills:
-                skill_info = self.skills.get(node.skill, {})
-                handler = skill_info.get("handler")
-                logger.info(f"[SKILL_CHAIN] 🎯 Preparing skill '{node.skill}' with inputs: {node.inputs}")
-                if handler:
-                    logger.info(f"[SKILL_CHAIN] ✅ Handler found for '{node.skill}', adding to tasks")
-                    # Wrap handler in timeout protection (5 minutes max per skill) and error handling
-                    async def safe_handler_wrapper(skill_name, handler_func, inputs):
-                        try:
-                            return await asyncio.wait_for(handler_func(inputs), timeout=300.0)
-                        except asyncio.TimeoutError:
-                            logger.error(f"[SKILL_CHAIN] ⏱️ Skill '{skill_name}' timed out after 5 minutes")
-                            return TimeoutError(f"Skill '{skill_name}' execution timed out")
-                        except Exception as e:
-                            logger.error(f"[SKILL_CHAIN] ❌ Skill '{skill_name}' raised exception: {type(e).__name__}: {e}")
-                            import traceback
-                            logger.error(f"[SKILL_CHAIN] ❌ Traceback: {traceback.format_exc()}")
-                            return e
-                    
-                    # Capture node.skill and handler in closure
-                    skill_name = node.skill
-                    tasks.append(safe_handler_wrapper(skill_name, handler, node.inputs))
-                else:
-                    logger.error(f"[SKILL_CHAIN] ❌ No handler found for skill '{node.skill}'")
-                    # Store error result for missing handler - always use valid list structures
-                    error_result = {
-                        "error": f"No handler found for skill '{node.skill}'",
-                        "error_type": "MissingHandler",
-                        "format": "deck" if node.skill == "deck-storytelling" else None,
-                        "slides": [],  # Always a list, never None
-                        "theme": "professional",
-                        "metadata": {"error": True, "error_type": "MissingHandler"},
-                        "citations": [],
-                        "charts": [],
-                        "companies": []
-                    }
-                    node.status = "failed"
-                    node.result = error_result
-                    results[node.skill] = error_result
-            
-            if tasks:
-                logger.info(f"[SKILL_CHAIN] 🔍 CHECKPOINT 4: About to execute {len(tasks)} tasks in parallel for group {group_num}")
-                logger.info(f"[SKILL_CHAIN] 🔍 CHECKPOINT 4: Task skills: {[node.skill for node in validated_skills]}")
-                logger.info(f"[SKILL_CHAIN] 🔍 CHECKPOINT 4: Task inputs preview: {[str(node.inputs)[:200] + '...' if len(str(node.inputs)) > 200 else str(node.inputs) for node in validated_skills]}")
-                logger.info(f"[SKILL_CHAIN] 🏃 Executing {len(tasks)} tasks in parallel for group {group_num}")
-                # Use return_exceptions=True to prevent one failure from breaking the entire chain
-                # This ensures partial results are always returned even if some skills fail
-                group_results = await asyncio.gather(*tasks, return_exceptions=True)
-                logger.info(f"[SKILL_CHAIN] 🔍 CHECKPOINT 4: Group {group_num} execution completed, processing {len(group_results)} results")
-                logger.info(f"[SKILL_CHAIN] 🔍 CHECKPOINT 4: Result types: {[type(result).__name__ for result in group_results]}")
-                logger.info(f"[SKILL_CHAIN] 🔍 CHECKPOINT 4: Exception results: {[result for result in group_results if isinstance(result, Exception)]}")
-                logger.info(f"[SKILL_CHAIN] ✅ Group {group_num} execution completed, processing {len(group_results)} results")
-                
-                # Store results
-                for node, result in zip(validated_skills, group_results):
-                    if node.skill == "deck-storytelling":
-                        logger.critical(f"[SKILL_CHAIN] 🟢🟢🟢 deck-storytelling result: type={type(result)}, is_exception={isinstance(result, Exception)} 🟢🟢🟢")
-                        
-                    
-                    logger.info(f"[SKILL_CHAIN] 🔍 Processing result for skill '{node.skill}'")
-                    
-                    # Phase 2: Update plan_steps status when present
-                    plan_steps = self.shared_data.get("plan_steps", [])
-                    if plan_steps:
-                        try:
-                            step_idx = node.inputs.get("_plan_step_index")
-                            if step_idx is not None and step_idx < len(plan_steps):
-                                plan_steps[step_idx]["status"] = "failed" if isinstance(result, Exception) else "done"
-                                plan_steps[step_idx]["detail"] = str(result)[:200] if isinstance(result, Exception) else (plan_steps[step_idx].get("explanation") or f"Completed {node.skill}")
-                            elif step_idx is None and node in chain:
-                                step_idx = chain.index(node)
-                                if step_idx < len(plan_steps):
-                                    plan_steps[step_idx]["status"] = "failed" if isinstance(result, Exception) else "done"
-                                    plan_steps[step_idx]["detail"] = str(result)[:200] if isinstance(result, Exception) else (plan_steps[step_idx].get("explanation") or f"Completed {node.skill}")
-                        except (ValueError, IndexError, TypeError):
-                            pass
-                        # Notify caller of plan step status change
-                        if progress_callback:
-                            await progress_callback(
-                                [dict(s) for s in plan_steps],
-                                f"{'Failed' if isinstance(result, Exception) else 'Completed'} {node.skill}",
-                            )
-
-                    if isinstance(result, Exception):
-                        logger.error(f"[SKILL_CHAIN] ❌ Skill '{node.skill}' failed with exception: {result}")
-                        logger.error(f"[SKILL_CHAIN] ❌ Exception type: {type(result).__name__}")
-                        import traceback
-                        if hasattr(result, '__traceback__'):
-                            logger.error(f"[SKILL_CHAIN] ❌ Traceback: {''.join(traceback.format_tb(result.__traceback__))}")
-
-                        # Phase 5: Graceful degradation — optional skills don't break the chain
-                        if not node.required:
-                            logger.info(f"[SKILL_CHAIN] ⚠️ Optional skill '{node.skill}' failed — continuing chain")
-                            node.status = "degraded"
-                            node.result = {"degraded": True, "error": str(result), "note": f"{node.skill} was unavailable — showing data only"}
-                            results[node.skill] = node.result
-                            continue
-
-                        # Record failure in error handler for circuit breaker
-                        if self.error_handler:
-                            self.error_handler.record_failure(node.skill)
-
-                        node.status = "failed"
-                        # CRITICAL FIX: Store error result so _format_deck knows deck-storytelling was attempted
-                        # Always use valid list structures, never None
-                        error_result = {
-                            "error": str(result),
-                            "error_type": type(result).__name__,
-                            "format": "deck" if node.skill == "deck-storytelling" else None,
-                            "slides": [],  # Always a list, never None
-                            "theme": "professional",
-                            "metadata": {"error": True, "error_type": type(result).__name__},
-                            "citations": [],
-                            "charts": [],
-                            "companies": []
-                        }
-                        node.result = error_result
-                        results[node.skill] = error_result
-                        logger.warning(f"[SKILL_CHAIN] ⚠️ Stored error result for skill '{node.skill}' so format_deck can handle it")
-                        continue
-                    
-                    node.result = result
-                    results[node.skill] = result
-                    # Phase 6: Collect grid_commands from grid-run-* skills for frontend
-                    if isinstance(result, dict) and result.get("grid_commands"):
-                        async with self.shared_data_lock:
-                            self.shared_data.setdefault("grid_commands", []).extend(result["grid_commands"])
-                        logger.info(f"[SKILL_CHAIN] 📋 Appended {len(result['grid_commands'])} grid_commands from '{node.skill}'")
-                    logger.info(f"[SKILL_CHAIN] ✅ Stored result for skill '{node.skill}', type: {type(result)}")
-                    
-                    
-                    # Deep logging for specific skills
-                    if isinstance(result, dict):
-                        logger.info(f"[SKILL_CHAIN] 📊 {node.skill} result keys: {list(result.keys())}")
-                        
-                        if node.skill == "deck-storytelling":
-                            logger.info(f"[SKILL_CHAIN] 🎨 deck-storytelling result keys: {list(result.keys())}")
-                            logger.info(f"[SKILL_CHAIN] 🎨 deck-storytelling has {len(result.get('slides', []))} slides")
-                            if result.get('slides'):
-                                logger.info(f"[SKILL_CHAIN] 🎨 First slide preview: {result['slides'][0] if result['slides'] else 'No slides'}")
-                            
-                            # CHANGED: Don't raise exception, just log warning
-                            slides = result.get('slides') or []
-                            if not isinstance(slides, list):
-                                slides = []
-                            if not slides or len(slides) == 0:
-                                logger.warning(f"[SKILL_CHAIN] ⚠️ deck-storytelling returned EMPTY slides!")
-                                logger.warning(f"[SKILL_CHAIN] ⚠️ Companies available: {len(self.shared_data.get('companies', []))}")
-                                logger.warning(f"[SKILL_CHAIN] ⚠️ Will use fallback deck generation in _format_deck")
-                                # Don't raise - let _format_deck handle fallback
-                            else:
-                                logger.info(f"[SKILL_CHAIN] ✅ deck-storytelling validation passed: {len(slides)} slides generated")
-                        
-                        if "companies" in result:
-                            companies = result["companies"]
-                            logger.info(f"[SKILL_CHAIN] 🏢 {node.skill} returned {len(companies)} companies")
-                            for i, company in enumerate(companies):
-                                if isinstance(company, dict):
-                                    logger.info(f"[SKILL_CHAIN] 🏢   Company {i}: {company.get('company', 'NO_COMPANY_FIELD')} (keys: {list(company.keys())})")
-                                else:
-                                    logger.warning(f"[SKILL_CHAIN] 🏢   Company {i}: Invalid type {type(company)} - {company}")
-                        
-                        if "error" in result:
-                            logger.error(f"[SKILL_CHAIN] ⚠️ {node.skill} returned error: {result['error']}")
-                    
-                    else:
-                        logger.warning(f"[SKILL_CHAIN] ⚠️ {node.skill} returned non-dict result: {type(result)} - {result}")
-                        
-                    # Update shared data
-                    if isinstance(result, dict):
-                        logger.info(f"[SKILL_CHAIN] 🔄 Updating shared_data for skill '{node.skill}'")
-                        
-                        # Special handling for companies data
-                        if "companies" in result:
-                            logger.info(f"[SKILL_CHAIN] 🏢 {node.skill} returned companies data with {len(result['companies'])} items")
-                            
-                            # Log raw companies data
-                            logger.info(f"[SKILL_CHAIN] 🏢 Raw companies from {node.skill}:")
-                            for i, company in enumerate(result['companies']):
-                                if isinstance(company, dict):
-                                    logger.info(f"[SKILL_CHAIN] 🏢   Raw {i}: {company.get('company', 'NO_COMPANY_FIELD')} (keys: {list(company.keys())})")
-                                else:
-                                    logger.warning(f"[SKILL_CHAIN] 🏢   Raw {i}: Invalid type {type(company)} - {company}")
-                            
-                            # Filter out None values and ensure valid company data
-                            valid_companies = [c for c in result["companies"] if c and isinstance(c, dict) and c.get('company')]
-                            logger.info(f"[SKILL_CHAIN] 🏢 {node.skill} has {len(valid_companies)} valid companies after filtering")
-                            
-                            if valid_companies:
-                                # Log existing companies in shared_data
-                                existing_companies = self.shared_data.get("companies", [])
-                                logger.info(f"[SKILL_CHAIN] 🏢 Existing companies in shared_data: {len(existing_companies)}")
-                                for i, company in enumerate(existing_companies):
-                                    logger.info(f"[SKILL_CHAIN] 🏢   Existing {i}: {company.get('company', 'NO_COMPANY_FIELD')}")
-                                
-                                existing_handles = {
-                                    (company.get('prompt_handle')
-                                     or company.get('company_handle')
-                                     or company.get('requested_company')
-                                     or company.get('company', "")
-                                     or "").lower()
-                                    for company in existing_companies
-                                    if isinstance(company, dict)
-                                }
-                                logger.info(f"[SKILL_CHAIN] 🏢 {node.skill} existing handles: {existing_handles}")
-                                
-                                new_companies = []
-                                for company in valid_companies:
-                                    if not isinstance(company, dict):
-                                        logger.warning(f"[SKILL_CHAIN] 🏢 Skipping non-dict company: {type(company)}")
-                                        continue
-                                    
-                                    handle = (company.get('prompt_handle')
-                                              or company.get('company_handle')
-                                              or company.get('requested_company')
-                                              or company.get('company', "")
-                                              or "").lower()
-                                    
-                                    logger.info(f"[SKILL_CHAIN] 🏢 Processing company: {company.get('company', 'NO_COMPANY_FIELD')} (handle: '{handle}')")
-                                    
-                                    if handle and handle in existing_handles:
-                                        logger.info(f"[SKILL_CHAIN] 🏢 Skipping duplicate company handle '{handle}'")
-                                        continue
-                                    
-                                    if handle:
-                                        existing_handles.add(handle)
-                                        logger.info(f"[SKILL_CHAIN] 🏢 Adding handle '{handle}' to existing_handles")
-                                    
-                                    new_companies.append(company)
-                                    logger.info(f"[SKILL_CHAIN] 🏢 Added company: {company.get('company', 'NO_COMPANY_FIELD')}")
-                                
-                                if new_companies:
-                                    logger.info(f"[SKILL_CHAIN] 🏢 Extending shared_data with {len(new_companies)} new companies")
-                                    async with self.shared_data_lock:
-                                        if "companies" not in self.shared_data:
-                                            self.shared_data["companies"] = []
-                                        self.shared_data["companies"].extend(new_companies)
-                                        # CRITICAL: Also store the skill result for direct lookup
-                                        self.shared_data[node.skill] = result
-                                    logger.info(f"[SKILL_CHAIN] 🏢 ✅ Added {len(new_companies)} companies to shared_data")
-                                    logger.info(f"[SKILL_CHAIN] 🏢 ✅ Stored {node.skill} result in shared_data for direct lookup")
-                                else:
-                                    logger.warning(f"[SKILL_CHAIN] 🏢 No new companies to add after deduplication")
-                            else:
-                                logger.error(f"[SKILL_CHAIN] 🏢 No valid companies found! Raw companies: {result['companies']}")
-                                # CRITICAL: Even if validation fails, store the raw result so deck generation can try to use it
-                                async with self.shared_data_lock:
-                                    self.shared_data[node.skill] = result
-                                logger.warning(f"[SKILL_CHAIN] ⚠️ Stored raw {node.skill} result despite validation failure")
-                            
-                            logger.info(f"[SKILL_CHAIN] 🏢 Total companies in shared_data after {node.skill}: {len(self.shared_data.get('companies', []))}")
-                        else:
-                            logger.info(f"[SKILL_CHAIN] 🔄 {node.skill} updating shared_data with non-companies data: {list(result.keys())}")
-                            async with self.shared_data_lock:
-                                self.shared_data.update(result)
-                            logger.info(f"[SKILL_CHAIN] 🔄 Updated shared_data keys: {list(self.shared_data.keys())}")
-                    
-                    # Log shared_data state after each skill
-                    logger.info(f"[SKILL_CHAIN] 📋 Shared data after {node.skill}:")
-                    logger.info(f"[SKILL_CHAIN]   Keys: {list(self.shared_data.keys())}")
-                    if 'companies' in self.shared_data:
-                        companies = self.shared_data['companies']
-                        logger.info(f"[SKILL_CHAIN]   Companies count: {len(companies)}")
-                        for i, company in enumerate(companies):
-                            logger.info(f"[SKILL_CHAIN]     Company {i}: {company.get('company', 'NO_COMPANY_FIELD')}")
-                    else:
-                        logger.info(f"[SKILL_CHAIN]   No 'companies' key in shared_data")
-            
-            # Log shared_data state after each group
-            logger.info(f"[SKILL_CHAIN] 📋 Shared data after group {group_num}:")
-            logger.info(f"[SKILL_CHAIN]   Keys: {list(self.shared_data.keys())}")
-            if 'companies' in self.shared_data:
-                companies = self.shared_data['companies']
-                logger.info(f"[SKILL_CHAIN]   Companies count: {len(companies)}")
-                for i, company in enumerate(companies):
-                    logger.info(f"[SKILL_CHAIN]     Company {i}: {company.get('company', 'NO_COMPANY_FIELD')}")
-            else:
-                logger.info(f"[SKILL_CHAIN]   No 'companies' key in shared_data")
-        
-        logger.info(f"[SKILL_CHAIN] 🎉 Skill chain execution completed!")
-        logger.info(f"[SKILL_CHAIN] Final results keys: {list(results.keys())}")
-        logger.info(f"[SKILL_CHAIN] Final shared_data keys: {list(self.shared_data.keys())}")
-        if 'companies' in self.shared_data:
-            logger.info(f"[SKILL_CHAIN] Final companies count: {len(self.shared_data['companies'])}")
-        
-        # Collect warnings from failed/degraded/skipped skills so the frontend can display them
-        skill_warnings = []
-        for node in chain:
-            if node.status == "failed" and isinstance(node.result, dict) and node.result.get("error"):
-                skill_warnings.append(f"Skill '{node.skill}' failed: {node.result['error']}")
-            elif node.status == "degraded":
-                skill_warnings.append(f"Skill '{node.skill}' degraded: {node.result.get('error', 'unavailable')}")
-            elif node.status == "skipped":
-                skill_warnings.append(f"Skill '{node.skill}' skipped: {node.result.get('reason', 'missing dependencies')}")
-
-        # CRITICAL FIX: Include shared_data in results to ensure data flows to _format_output
-        enhanced_results = {
-            **results,
-            "companies": self.shared_data.get("companies", []),
-            "citations": self.citation_manager.get_all_citations(),
-            "warnings": skill_warnings,
-            "shared_data": self.shared_data  # Include full shared_data for debugging
-        }
-        
-        logger.info(f"[SKILL_CHAIN] Enhanced results keys: {list(enhanced_results.keys())}")
-        logger.info(f"[SKILL_CHAIN] Enhanced companies count: {len(enhanced_results.get('companies', []))}")
-        
-        return enhanced_results
     
     def _extract_fund_params_from_prompt(self, prompt: str) -> Dict[str, Any]:
         """Extract fund parameters from prompt using regex patterns"""
@@ -16898,108 +15369,6 @@ Return ONLY the JSON array, no other text."""
 
         return None
 
-    async def _extract_entities(self, prompt: str) -> Dict[str, Any]:
-        """Extract companies, funds, and other entities from prompt using LLM"""
-        import re
-        
-        # Quick regex for @mentions — supports multi-word names like @Safe Intelligence
-        company_pattern = r'@([\w][\w\s]*[\w]|[\w]+)'
-        at_mentions = list(dict.fromkeys(m.strip() for m in re.findall(company_pattern, prompt)))
-        
-        # Use Claude to semantically extract entities
-        extraction_prompt = f"""Extract the following information from this investment prompt:
-
-<prompt>
-{prompt}
-</prompt>
-
-Return a JSON object with:
-{{
-  "companies": ["company1", "company2"],  // Company names mentioned (use @ handles if present, otherwise company names)
-  "fund_size": 150000000,  // Fund size in USD
-  "remaining_capital": 100000000,  // Remaining to deploy in USD
-  "dpi": 0.5,  // Current DPI if mentioned
-  "tvpi": 2.5,  // Current TVPI if mentioned
-  "portfolio_size": 16,  // Number of portfolio companies
-  "exits": 2,  // Number of exits
-  "fund_year": 3,  // What year of the fund
-  "fund_quarter": 2,  // What quarter
-  "deployed_capital": 50000000,  // How much deployed
-  "check_size_range": [5000000, 15000000],  // Check size range if mentioned
-  "target_ownership": 0.12,  // Target ownership % as decimal
-  "is_lead": false,  // Whether they lead rounds
-  "stage_focus": ["Series B"],  // Fund stage focus
-  "metrics_requested": ["irr", "dpi"],  // Specific metrics the user wants (irr, dpi, nav, tvpi, burn, runway, arr, mrr, revenue, valuation, multiple)
-  "time_period": "Q3 2024",  // Time reference ("last quarter", "Q3 2024", "since Series B", "YTD", "trailing 12 months")
-  "scenario_params": {{"rate_change_bps": 200, "revenue_change_pct": -0.30}},  // Scenario parameters if a what-if query
-  "report_type": "ic_memo",  // If generation requested: ic_memo, followon_memo, lp_report, gp_update, comparison, deck
-  "exit_value": 5000000000  // Target exit value if mentioned (e.g., "exit at $5B")
-}}
-
-RULES:
-1. ALL monetary values must be converted to raw USD (no strings like "150M")
-2. ALL percentages as decimals (0.12 for 12%)
-3. If a value is not mentioned, use null (not 0)
-4. Be flexible - "456m fund with 276m left" means fund_size=456000000, remaining_capital=276000000
-5. Extract company names even without @ symbols — natural language names count
-6. Return ONLY the JSON, no explanation.
-7. metrics_requested: only include metrics explicitly asked for or strongly implied
-8. scenario_params: only populate for what-if / stress test / scenario queries
-9. report_type: only populate when user explicitly asks for a document/memo/report/deck
-
-CRITICAL COMPANY DISAMBIGUATION RULES (PROMPT-ONLY, NO KEYWORD HEURISTICS):
-• If a handle like "@Dex" is ambiguous, you MUST pick the single most likely company based on the request context and the fund profile (stage focus, typical check size, sector thesis, geography). Do NOT list multiple options; select one and proceed.
-• LinkedIn company/organization pages are a very strong disambiguation signal. Prefer entities with matching LinkedIn org pages. Deprioritize OS features (e.g., Samsung DeX) or crypto exchanges unless the context clearly indicates them.
-• If confidence < 0.6, ask ONE brief clarification question; otherwise continue silently.
-• Only extract and return information for the selected company. Ignore similarly named products or platforms.
-"""
-
-        try:
-            result = await self.model_router.get_completion(
-                prompt=extraction_prompt,
-                capability=ModelCapability.STRUCTURED,
-                max_tokens=1000,
-                temperature=0,
-                json_mode=True,
-                fallback_enabled=True,
-                caller_context="extraction"
-            )
-            content = result.get('response', '{}')
-            # Extract JSON from response
-            import json
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if json_match:
-                entities = json.loads(json_match.group(0))
-                
-                # Ensure companies is a list
-                if not entities.get("companies") and at_mentions:
-                    entities["companies"] = at_mentions
-                
-                # Map fund_year to deployment_year for compatibility
-                if entities.get("fund_year"):
-                    entities["deployment_year"] = entities["fund_year"]
-                if entities.get("fund_quarter"):
-                    entities["deployment_quarter"] = entities["fund_quarter"]
-                
-                # Add company_handles for compatibility
-                entities["company_handles"] = entities.get("companies", [])
-                
-                # Remove null values
-                entities = {k: v for k, v in entities.items() if v is not None}
-                
-                logger.info(f"[ENTITY_EXTRACTION] LLM extracted: companies={entities.get('companies')}, fund_size={entities.get('fund_size')}, remaining={entities.get('remaining_capital')}, stage_focus={entities.get('stage_focus')}")
-                return entities
-            else:
-                raise ValueError("No JSON found in Claude response")
-                
-        except Exception as e:
-            logger.warning(f"[ENTITY_EXTRACTION] LLM extraction failed: {e}, falling back to @mentions")
-            # Fallback to basic extraction
-            return {
-                "companies": at_mentions,
-                "company_handles": at_mentions
-            }
-    
     def _clean_company_name_for_search(self, company_name: str) -> str:
         """Clean and normalize company name for search queries
         
