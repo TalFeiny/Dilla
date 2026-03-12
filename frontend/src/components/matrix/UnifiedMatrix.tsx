@@ -4755,6 +4755,8 @@ export function UnifiedMatrix({
         ? currentData.rows.find(r => (r.id ?? r.companyId) === dropTargetRowId)
         : null;
 
+      // Phase 1: Match all files to rows upfront
+      const fileRowMappings: { file: File; row: MatrixRow; rowId: string }[] = [];
       for (const file of docFiles) {
         let matchedRow = dropTargetRow;
 
@@ -4764,12 +4766,10 @@ export function UnifiedMatrix({
           matchedRow = currentData.rows.find(r => {
             const compName = (r.name ?? r.companyId ?? '').toLowerCase();
             if (!compName) return false;
-            // Bidirectional substring match
             return fileBase.includes(compName) || compName.includes(fileBase.split(/\s+/)[0]);
           }) ?? null;
         }
 
-        // Final fallback: single-row grid → safe to default
         if (!matchedRow && currentData.rows.length === 1) {
           matchedRow = currentData.rows[0];
         }
@@ -4782,10 +4782,108 @@ export function UnifiedMatrix({
 
         const rowId = matchedRow.id ?? matchedRow.companyId;
         console.log('[UnifiedMatrix] Document drop: targeting row', matchedRow.name ?? rowId, dropTargetRow ? '(cursor hit)' : '(fuzzy match)');
-        await handleUploadDocumentToCell(rowId!, docCol.id, file);
+        fileRowMappings.push({ file, row: matchedRow, rowId: rowId! });
+      }
+
+      if (fileRowMappings.length === 0) return;
+
+      // Single file: existing per-file path (single-provider extraction)
+      if (fileRowMappings.length === 1) {
+        const { file, rowId } = fileRowMappings[0];
+        await handleUploadDocumentToCell(rowId, docCol.id, file);
+        return;
+      }
+
+      // 2+ files: single batch upload → parallel processing backend
+      const targetRow = fileRowMappings[0].row;
+      const targetRowId = fileRowMappings[0].rowId;
+      const targetCompanyId = targetRow.companyId ?? targetRowId;
+
+      // Set loading state immediately
+      setCellActionStatus(prev => ({
+        ...prev,
+        [`${targetRowId}_${docCol.id}`]: { state: 'loading', message: `Uploading ${fileRowMappings.length} documents...` },
+      }));
+
+      try {
+        const formData = new FormData();
+        for (const m of fileRowMappings) formData.append('file', m.file);
+        formData.append('company_id', targetCompanyId);
+        if (fundId) formData.append('fund_id', fundId);
+        formData.append('mode', mode);
+
+        const res = await fetch('/api/documents/batch', { method: 'POST', body: formData });
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(errBody.error || res.statusText);
+        }
+        const data = await res.json() as {
+          success: boolean; documentIds: string[]; documents: { id: string; filename: string; storage_path: string; document_type: string }[];
+          processed: boolean; processedCount: number; uploadErrors?: string[];
+        };
+
+        // Update matrix cell with all new document references
+        const existingCell = targetRow.cells?.[docCol.id];
+        const existingDocs: { id: string; name: string }[] = existingCell?.metadata?.documents ?? [];
+        const newDocs = (data.documents ?? []).map(d => ({ id: d.id, name: d.filename }));
+        const documents = [...existingDocs, ...newDocs];
+        const displayValue = `${documents.length} documents`;
+
+        const updatedData: MatrixData = {
+          ...currentData,
+          rows: currentData.rows.map(r => {
+            if (r.id !== targetRowId && r.companyId !== targetRowId) return r;
+            const cells = { ...r.cells };
+            cells[docCol.id] = {
+              ...existingCell,
+              value: displayValue,
+              displayValue,
+              source: 'document',
+              metadata: { ...existingCell?.metadata, documents },
+            };
+            return { ...r, cells };
+          }),
+        };
+        setMatrixData(updatedData);
+        onDataChange?.(updatedData);
+
+        // Persist cell
+        if (onCellEdit) {
+          onCellEdit(targetRowId, docCol.id, displayValue, { data_source: 'document', metadata: { documents } }).catch(() => {});
+        } else if (targetRow.companyId) {
+          saveCellEditToCompany(targetRow.companyId, docCol.id, displayValue, fundId, { documents }).catch(() => {});
+        }
+
+        setCellActionStatus(prev => ({
+          ...prev,
+          [`${targetRowId}_${docCol.id}`]: {
+            state: data.processed ? 'success' : 'loading',
+            message: data.processed
+              ? `${data.documents?.length ?? fileRowMappings.length} documents extracted`
+              : `Processing ${fileRowMappings.length} documents...`,
+          },
+        }));
+
+        toast.success(`Uploaded ${fileRowMappings.length} documents`, {
+          description: 'Parallel processing — clauses will appear as they extract',
+        });
+
+        setTimeout(() => {
+          setCellActionStatus(prev => { const next = { ...prev }; delete next[`${targetRowId}_${docCol.id}`]; return next; });
+        }, 5000);
+
+        // Refresh suggestions + legal grid rows (clauses as subcategories)
+        await refreshSuggestions();
+        if (mode === 'legal' && loadLegalDataRef.current) {
+          await loadLegalDataRef.current();
+        }
+      } catch (err) {
+        console.error('[UnifiedMatrix] Batch drop failed:', err);
+        toast.error('Batch upload failed', { description: err instanceof Error ? err.message : String(err) });
+        setCellActionStatus(prev => { const next = { ...prev }; delete next[`${targetRowId}_${docCol.id}`]; return next; });
       }
     }
-  }, [mode, fundId, handleFileImport, handlePnlCsvUpload, handleUploadDocumentToCell, matrixData, getDefaultMatrixData]);
+  }, [mode, fundId, handleFileImport, handlePnlCsvUpload, handleUploadDocumentToCell, matrixData, getDefaultMatrixData, onCellEdit, saveCellEditToCompany, onDataChange, refreshSuggestions, onToolCallLog]);
 
   // Export compressed context for @ symbol queries
   const exportCompressedContext = async () => {
@@ -5499,10 +5597,17 @@ export function UnifiedMatrix({
               onApplySuggestions={handleApplySuggestions}
               memoSections={memoSections}
               onMemoUpdates={(updates) => {
-                if (updates.action === 'append') {
-                  setMemoSections(prev => [...prev, ...updates.sections as DocumentSection[]]);
+                if (updates.action === 'update_chart' && updates.chartId != null) {
+                  // Live chart rebuild — find by chartId and replace data in place
+                  setMemoSections(prev => prev.map(s =>
+                    s.chartId === updates.chartId && s.type === 'chart'
+                      ? { ...s, chart: updates.chart as DocumentSection['chart'] }
+                      : s
+                  ));
+                } else if (updates.action === 'append') {
+                  setMemoSections(prev => [...prev, ...(updates.sections || []) as DocumentSection[]]);
                 } else {
-                  setMemoSections(updates.sections as DocumentSection[]);
+                  setMemoSections((updates.sections || []) as DocumentSection[]);
                 }
                 setMemoPanelExpanded(true);
               }}

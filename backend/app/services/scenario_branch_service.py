@@ -128,6 +128,10 @@ class ScenarioBranchService:
                 "capex_override", "debt_service_monthly",
                 "interest_rate", "outstanding_debt",
                 "tax_rate", "working_capital_days",
+                # Balance sheet drivers
+                "dso_days", "dpo_days", "dio_days",
+                "debt_drawdown", "deferred_revenue_delta",
+                "depreciation_monthly",
             ):
                 if key in raw:
                     merged[key] = raw[key]

@@ -164,7 +164,7 @@ interface AgentChatProps {
   /** Optional: highlight target cell in grid when suggestion is hovered/focused */
   onHighlightCell?: (rowId: string, columnId: string) => void;
   /** Callback when agent response contains memo_updates (sections to append/replace) */
-  onMemoUpdates?: (updates: { action: string; sections: Array<{ type: string; content?: string; chart?: unknown; items?: string[]; table?: unknown }> }) => void;
+  onMemoUpdates?: (updates: { action: string; sections?: Array<{ type: string; content?: string; chart?: unknown; chartId?: number; items?: string[]; table?: unknown }>; chartId?: number; chart?: unknown }) => void;
   /** Current memo sections for sending as context */
   memoSections?: Array<{ type: string; content?: string }>;
   /** Emit rich analysis content to the bottom panel instead of crammed into sidebar */
@@ -847,9 +847,19 @@ export default function AgentChat({
                 if (!data.result) data.result = {};
                 if (!data.result.charts) data.result.charts = [];
                 data.result.charts.push(event.chart);
-                // Also stream charts to memo in real-time
+                // Also stream charts to memo in real-time (with chartId for live updates)
                 if (onMemoUpdates) {
-                  onMemoUpdates({ action: 'append', sections: [{ type: 'chart', chart: event.chart }] });
+                  onMemoUpdates({ action: 'append', sections: [{ type: 'chart', chart: event.chart, chartId: event.chart.id }] });
+                }
+              } else if (event.type === 'chart_rebuild' && event.chart) {
+                // Live chart update — replace existing chart in accumulated data and memo
+                const rebuildId = event.chart_id ?? event.chart?.id;
+                if (data?.result?.charts) {
+                  const idx = data.result.charts.findIndex((c: any) => c.id === rebuildId);
+                  if (idx >= 0) data.result.charts[idx] = event.chart;
+                }
+                if (onMemoUpdates) {
+                  onMemoUpdates({ action: 'update_chart', chartId: rebuildId, chart: event.chart });
                 }
               } else if (event.type === 'clarification_needed') {
                 // Agent wants to ask the user a question before proceeding
@@ -887,6 +897,72 @@ export default function AgentChat({
                 setStreamingStage('');
                 setStreamingSteps([]);
                 return; // Pause — user can click a next step or type their own follow-up
+              } else if (event.type === 'doc_processing_progress') {
+                // Multi-doc processing progress — update streaming steps
+                const pctLabel = event.total > 0
+                  ? `Processing documents: ${event.completed}/${event.total}`
+                  : 'Processing documents...';
+                const docDetail = event.current_doc
+                  ? `${event.current_doc} (${event.provider || ''})`
+                  : undefined;
+                setStreamingStage('processing_docs');
+                setStreamingSteps(prev => {
+                  const existing = prev.find(s => s.id === 'doc-batch-progress');
+                  if (existing) {
+                    return prev.map(s =>
+                      s.id === 'doc-batch-progress'
+                        ? { ...s, label: pctLabel, detail: docDetail, status: (event.completed >= event.total ? 'done' : 'running') as 'done' | 'running' }
+                        : s
+                    );
+                  }
+                  return [...prev, {
+                    id: 'doc-batch-progress',
+                    label: pctLabel,
+                    status: 'running' as const,
+                    detail: docDetail,
+                  }];
+                });
+              } else if (event.type === 'doc_extracted') {
+                // Single document extracted successfully
+                setStreamingSteps(prev => [
+                  ...prev,
+                  {
+                    id: `doc-ok-${event.doc_id}`,
+                    label: `Extracted: ${event.file_name || event.doc_id}`,
+                    status: 'done' as const,
+                    detail: event.provider ? `via ${event.provider}` : undefined,
+                  },
+                ]);
+              } else if (event.type === 'doc_error') {
+                // Single document extraction failed
+                setStreamingSteps(prev => [
+                  ...prev,
+                  {
+                    id: `doc-err-${event.doc_id}`,
+                    label: `Failed: ${event.file_name || event.doc_id}`,
+                    status: 'failed' as const,
+                    detail: event.error,
+                  },
+                ]);
+              } else if (event.type === 'doc_search_result') {
+                // Targeted search result for one document
+                const answerPreview = event.answer != null
+                  ? String(event.answer).slice(0, 80)
+                  : 'No answer';
+                setStreamingSteps(prev => [
+                  ...prev,
+                  {
+                    id: `doc-search-${event.doc_id}`,
+                    label: `${event.file_name || event.doc_id}: ${answerPreview}`,
+                    status: 'done' as const,
+                    detail: event.reasoning?.slice(0, 120),
+                  },
+                ]);
+              } else if (event.type === 'batch_complete' || event.type === 'search_complete') {
+                // Mark the batch progress step as done
+                setStreamingSteps(prev => prev.map(s =>
+                  s.id === 'doc-batch-progress' ? { ...s, status: 'done' as const } : s
+                ));
               } else if (event.type === 'complete') {
                 data = event;
               } else if (event.type === 'error') {

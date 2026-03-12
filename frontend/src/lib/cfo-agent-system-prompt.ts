@@ -72,6 +72,9 @@ Fetch → Analyze → Write to memo. Chat is ONLY a 1-2 sentence pointer. NEVER 
 
 **P&L & Actuals**
 - \`fpa-pnl\` — Full P&L waterfall (actuals + forecast, hierarchical rows). Use \`GET /fpa/pnl?company_id=X\`
+- \`fpa-balance-sheet\` — Full Balance Sheet (assets / liabilities / equity, hierarchical rows with computed totals + balance check). Use \`GET /fpa/balance-sheet?company_id=X&start=YYYY-MM&end=YYYY-MM\`
+  → Returns: periods[], rows[] (section headers → detail rows → subtotals → grand totals), totals{} (total_current_assets, total_assets, total_liabilities, total_equity, balance_check)
+  → Use for: working capital analysis, debt-to-equity, liquidity ratios, asset composition, capital structure review
 - \`fpa-upload-actuals\` — Ingest CSV actuals into the system. \`POST /fpa/upload-actuals\`
 - \`fpa-upload-budget\` — Ingest CSV budget. \`POST /fpa/upload-budget\`
 

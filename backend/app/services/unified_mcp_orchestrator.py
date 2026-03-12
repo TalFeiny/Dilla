@@ -687,9 +687,9 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="run_scenario",
-        description="Model a what-if scenario on portfolio or company.",
+        description="Model a what-if scenario on portfolio or company. Macro events cascade into micro driver changes on a branch.",
         handler="_tool_scenario",
-        input_schema={"scenario_description": "str", "affected_companies": "list[str]?"},
+        input_schema={"scenario_description": "str", "affected_companies": "list[str]?", "branch_id": "str?", "company_id": "str?"},
         cost_tier="cheap",
         timeout_ms=45_000,
     ),
@@ -1531,6 +1531,14 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=30_000,
     ),
     AgentTool(
+        name="fpa_balance_sheet",
+        description="Full Balance Sheet (assets / liabilities / equity) with computed totals, balance check. Hierarchical rows by section.",
+        handler="_tool_fpa_balance_sheet",
+        input_schema={"company_id": "str", "fund_id": "str?", "start": "str?", "end": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
         name="fpa_variance",
         description="Budget vs actuals variance report with status flags and monthly trend. budget_id/start/end are optional — defaults to approved branch and YTD.",
         handler="_tool_fpa_variance",
@@ -2061,6 +2069,26 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=60_000,
     ),
     AgentTool(
+        name="cross_domain_analysis",
+        description=(
+            "Weave analysis across financial and legal domains to trace causal chains. "
+            "Pulls P&L, balance sheet, debt/covenants, legal clauses, and equity structure concurrently, "
+            "then runs cascade engine (legal consequences) + driver impact service (financial consequences) "
+            "to produce a unified cross-domain impact picture. Use when a question spans multiple disciplines."
+        ),
+        handler="_tool_cross_domain_analysis",
+        input_schema={
+            "query": "str",
+            "company_id": "str",
+            "domains": "list[str]?",
+            "branch_id": "str?",
+            "trigger_driver": "str?",
+            "trigger_delta": "float?",
+        },
+        cost_tier="standard",
+        timeout_ms=45_000,
+    ),
+    AgentTool(
         name="fpa_monte_carlo",
         description=(
             "Monte Carlo simulation over the cash flow model. Samples driver distributions "
@@ -2184,6 +2212,91 @@ AGENT_TOOLS: list[AgentTool] = [
         input_schema={"query": "str"},
         cost_tier="free",
         timeout_ms=1_000,
+    ),
+
+    # ------------------------------------------------------------------
+    # Interactive model building — drivers + branches
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="inspect_drivers",
+        description="Show all model drivers with base values, overrides, ranges, and ripple chains for a company branch. The user's levers.",
+        handler="_tool_inspect_drivers",
+        input_schema={"company_id": "str", "branch_id": "str?", "level": "str?"},
+        cost_tier="free",
+        timeout_ms=5_000,
+    ),
+    AgentTool(
+        name="adjust_driver",
+        description="Set a driver value on a branch. Auto-forks if no branch_id. Returns before/after deltas for all ripple-affected metrics with base comparison.",
+        handler="_tool_adjust_driver",
+        input_schema={
+            "company_id": "str",
+            "branch_id": "str?",
+            "driver_id": "str",
+            "value": "float",
+        },
+        cost_tier="free",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="adjust_drivers",
+        description="Adjust multiple drivers atomically on one branch. All changes applied in one shot. Auto-forks if no branch_id. Returns cumulative ripple impact + base comparison.",
+        handler="_tool_adjust_drivers",
+        input_schema={
+            "company_id": "str",
+            "branch_id": "str?",
+            "drivers": "list[{driver_id: str, value: float}]",
+        },
+        cost_tier="free",
+        timeout_ms=20_000,
+    ),
+    AgentTool(
+        name="funding_injection",
+        description="Model a funding round on a branch. Auto-forks. Returns runway extension, dilution impact, and base comparison with charts.",
+        handler="_tool_funding_injection",
+        input_schema={
+            "company_id": "str",
+            "branch_id": "str?",
+            "amount": "float",
+            "round_type": "str?",
+            "month": "str?",
+            "dilution_pct": "float?",
+        },
+        cost_tier="free",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="update_chart",
+        description="Update an existing chart by ID. Change type, title, or filters. The chart re-renders live in the memo.",
+        handler="_tool_update_chart",
+        input_schema={
+            "chart_id": "int",
+            "changes": "dict",
+        },
+        cost_tier="free",
+        timeout_ms=5_000,
+    ),
+
+    # --- Concurrent Multi-Doc Processing (Legal Mode) ---
+    AgentTool(
+        name="ingest_documents",
+        description="Extract structured data from multiple documents concurrently across providers.",
+        handler="_tool_ingest_documents",
+        input_schema={"document_ids": "list[str]", "extraction_focus": "str?"},
+        cost_tier="expensive",
+        timeout_ms=300_000,
+    ),
+    AgentTool(
+        name="search_across_documents",
+        description="Ask a question across multiple documents. Returns answer + reasoning + source per doc.",
+        handler="_tool_search_across_documents",
+        input_schema={
+            "document_ids": "list[str]",
+            "query": "str",
+            "answer_type": "str?",
+        },
+        cost_tier="standard",
+        timeout_ms=120_000,
     ),
 ]
 
@@ -2678,6 +2791,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "run_fpa",                  # primary: FP&A forecast, stress test
         "fpa_forecast",             # generate forecast from actuals (persists to DB)
         "fpa_pnl",                  # P&L waterfall view (actuals + forecast)
+        "fpa_balance_sheet",        # balance sheet context (assets, liabilities, equity)
         "fpa_actuals",              # fetch structured actuals
         "fpa_cell_edit",            # edit a single P&L cell
         "fpa_apply_forecast",       # write forecast values into fpa_actuals
@@ -2785,6 +2899,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
     "kpi": [
         "fpa_kpi_dashboard",           # primary: compute KPIs with time series
         "fpa_pnl",                     # P&L context
+        "fpa_balance_sheet",           # balance sheet for liquidity/solvency KPIs
         "fpa_actuals",                 # raw actuals
         "fpa_forecast",                # generate forecast from actuals
         "fpa_cell_edit",               # edit a single P&L cell
@@ -2808,6 +2923,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "strategic_analysis",           # primary: cross-domain CFO reasoning
         "fpa_kpi_dashboard",            # KPI context
         "fpa_pnl",                      # P&L waterfall view
+        "fpa_balance_sheet",            # balance sheet for capital structure
         "fpa_actuals",                  # raw actuals
         "fpa_forecast",                 # generate forecast from actuals
         "fpa_cash_flow",                # cash flow model
@@ -3128,21 +3244,72 @@ class Artifact:
 
 class OutputRegistry:
     """Tracks what the agent has produced this session so it can reference,
-    refine, and build on its own outputs.  ~60 lines, lives in shared_data."""
+    refine, and build on its own outputs.  Lives in shared_data."""
 
     def __init__(self) -> None:
         self.outputs: List[Dict[str, Any]] = []
+        self._chart_counter: int = 0
+        self._charts: Dict[int, Dict[str, Any]] = {}
 
-    def record(self, kind: str, tool: str, summary: str, data: Optional[Dict[str, Any]] = None) -> None:
+    # ── Chart registry (Layer 3: live chart building) ──
+
+    def record_chart(
+        self,
+        chart_type: str,
+        title: str,
+        series_names: Optional[List[str]] = None,
+        value_range: Optional[Dict[str, float]] = None,
+        bound_to_branch: Optional[str] = None,
+        chart_data: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Store a chart with an ID and optional branch binding. Returns chart ID."""
+        cid = self._chart_counter
+        self._chart_counter += 1
+        self._charts[cid] = {
+            "id": cid,
+            "type": chart_type,
+            "title": title,
+            "series_names": series_names or [],
+            "value_range": value_range or {},
+            "bound_to_branch": bound_to_branch,
+            "chart_data": chart_data,
+        }
+        return cid
+
+    def get_charts_for_branch(self, branch_id: str) -> List[Dict[str, Any]]:
+        """Return all charts bound to a given branch."""
+        return [c for c in self._charts.values() if c.get("bound_to_branch") == branch_id]
+
+    def get_chart(self, chart_id: int) -> Optional[Dict[str, Any]]:
+        """Return chart metadata by ID."""
+        return self._charts.get(chart_id)
+
+    def update_chart_data(self, chart_id: int, chart_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Update stored chart data. Returns updated entry or None."""
+        entry = self._charts.get(chart_id)
+        if entry is None:
+            return None
+        entry["chart_data"] = chart_data
+        if "title" in chart_data:
+            entry["title"] = chart_data["title"]
+        if "type" in chart_data:
+            entry["type"] = chart_data["type"]
+        return entry
+
+    # ── General output tracking ──
+
+    def record(self, kind: str, tool: str, summary: str, data: Optional[Dict[str, Any]] = None) -> int:
         """Record a produced output.  kind = memo|chart|grid_edit|scenario|valuation|cap_table"""
+        oid = len(self.outputs)
         self.outputs.append({
-            "id": len(self.outputs),
+            "id": oid,
             "kind": kind,
             "tool": tool,
             "summary": summary,
             "timestamp": datetime.utcnow().isoformat(),
             "data_keys": list((data or {}).keys()),
         })
+        return oid
 
     def record_from_result(self, tool: str, result: Dict[str, Any]) -> None:
         """Auto-detect output type from tool result and record it."""
@@ -3494,6 +3661,68 @@ PLAN_TEMPLATES: Dict[str, List[str]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Shared helper: base vs scenario comparison (used by adjust_driver,
+# adjust_drivers, funding_injection).  Module-level so it can be called
+# from any tool method without needing `self`.
+# ---------------------------------------------------------------------------
+
+_COMPARISON_METRICS = [
+    "revenue", "ebitda", "cash_balance", "runway_months",
+    "total_opex", "free_cash_flow", "burn_rate",
+]
+
+
+def _build_base_comparison(
+    before_result: dict,
+    after_result: dict,
+) -> dict:
+    """Return a delta summary comparing key metrics between base and scenario.
+
+    Looks at the *last* period of each forecast to produce a headline diff,
+    plus a per-period delta series for the most important metrics.
+    """
+    before_fc = before_result.get("forecast") or before_result.get("base_forecast") or []
+    after_fc = after_result.get("forecast") or []
+
+    if not before_fc or not after_fc:
+        return {}
+
+    # Headline: last period comparison
+    b_last = before_fc[-1] if before_fc else {}
+    a_last = after_fc[-1] if after_fc else {}
+    headline: dict = {}
+    for m in _COMPARISON_METRICS:
+        bv = b_last.get(m, 0) or 0
+        av = a_last.get(m, 0) or 0
+        try:
+            bv, av = float(bv), float(av)
+        except (TypeError, ValueError):
+            continue
+        headline[m] = {
+            "base": round(bv, 2),
+            "scenario": round(av, 2),
+            "delta": round(av - bv, 2),
+            "pct_change": round((av - bv) / bv * 100, 1) if bv else 0,
+        }
+
+    # Per-period series for top-4 metrics
+    series: dict = {}
+    for m in _COMPARISON_METRICS[:4]:
+        base_vals = [p.get(m, 0) or 0 for p in before_fc]
+        scen_vals = [p.get(m, 0) or 0 for p in after_fc]
+        series[m] = {
+            "base": [round(float(v), 2) for v in base_vals],
+            "scenario": [round(float(v), 2) for v in scen_vals],
+        }
+
+    return {
+        "headline": headline,
+        "series": series,
+        "periods": [p.get("period", f"M{i}") for i, p in enumerate(after_fc)],
+    }
+
+
 class UnifiedMCPOrchestrator:
     """
     Agentic orchestrator combining MCP tools with skill system
@@ -3606,6 +3835,20 @@ class UnifiedMCPOrchestrator:
         self.decision_engine = DecisionEngine() if DecisionEngine else None
         self.clause_parameter_registry = ClauseParameterRegistry() if ClauseParameterRegistry else None
 
+        # Parallel document processor for concurrent multi-provider extraction
+        try:
+            from app.services.parallel_doc_processor import ParallelDocProcessor
+            self.parallel_doc_processor = ParallelDocProcessor(self.model_router)
+            logger.info("[ORCHESTRATOR_INIT] ✅ ParallelDocProcessor initialized")
+        except Exception as e:
+            logger.warning(f"[ORCHESTRATOR_INIT] ⚠️ Failed to initialize ParallelDocProcessor: {e}")
+            self.parallel_doc_processor = None
+
+        # Queue for streaming intermediate events from long-running tools
+        # (e.g. doc_processing_progress during multi-doc ingestion).
+        # The conversational loop drains this after each tool execution.
+        self._streaming_event_queue: list[Dict[str, Any]] = []
+
         # Error handler for retry + circuit breaker
         self.error_handler = global_error_handler
 
@@ -3626,6 +3869,8 @@ class UnifiedMCPOrchestrator:
         
         # Shared data store for skill communication
         self.shared_data = {}
+        # Chart registry — persists across turns for live chart rebuilds
+        self.chart_registry = OutputRegistry()
 
         # Synchronization locks for thread-safe data updates
         self.shared_data_lock = asyncio.Lock()
@@ -4702,17 +4947,49 @@ class UnifiedMCPOrchestrator:
                                 _memo_sections.append(ms)
                                 yield {"type": "memo_section", "section": ms}
                         _cd_list = tool_output.get("chart_data") or tool_output.get("charts")
+                        _branch_id = tool_output.get("branch_id")
+                        _is_branch_modifier = tool_name in {"adjust_driver", "adjust_drivers", "funding_injection", "update_chart"}
                         if isinstance(_cd_list, list):
-                            for cd in _cd_list:
-                                _charts.append(cd)
-                                yield {"type": "chart_data", "chart": cd}
+                            # If this is a branch-modifying tool re-running on a branch
+                            # that already has charts, emit chart_rebuild instead of new charts
+                            _existing = self.chart_registry.get_charts_for_branch(_branch_id) if _branch_id and _is_branch_modifier else []
+                            if _existing and len(_existing) == len(_cd_list):
+                                # Same branch, same chart count → rebuild in place
+                                for _old, cd in zip(_existing, _cd_list):
+                                    cd["id"] = _old["id"]
+                                    cd["bound_to_branch"] = _branch_id
+                                    self.chart_registry.update_chart_data(_old["id"], cd)
+                                    _charts.append(cd)
+                                    yield {"type": "chart_rebuild", "chart_id": _old["id"], "chart": cd}
+                            else:
+                                # New charts — assign fresh IDs
+                                for cd in _cd_list:
+                                    cid = self.chart_registry.record_chart(
+                                        chart_type=cd.get("type", "chart"),
+                                        title=cd.get("title", ""),
+                                        series_names=[ds.get("name", "") for ds in cd.get("datasets", [])],
+                                        bound_to_branch=_branch_id,
+                                        chart_data=cd,
+                                    )
+                                    cd["id"] = cid
+                                    cd["bound_to_branch"] = _branch_id
+                                    _charts.append(cd)
+                                    yield {"type": "chart_data", "chart": cd}
                         if "grid_command" in tool_output:
                             _grid_commands.append(tool_output["grid_command"])
                         if "grid_commands" in tool_output and isinstance(tool_output["grid_commands"], list):
                             _grid_commands.extend(tool_output["grid_commands"])
                         if "chart_config" in tool_output:
-                            _charts.append(tool_output["chart_config"])
-                            yield {"type": "chart_data", "chart": tool_output["chart_config"]}
+                            cc = tool_output["chart_config"]
+                            cid = self.chart_registry.record_chart(
+                                chart_type=cc.get("type", "chart"),
+                                title=cc.get("title", ""),
+                                bound_to_branch=cc.get("branch_id"),
+                                chart_data=cc,
+                            )
+                            cc["id"] = cid
+                            _charts.append(cc)
+                            yield {"type": "chart_data", "chart": cc}
                         if "suggestion" in tool_output:
                             _suggestions.append(tool_output["suggestion"])
                         if "todo" in tool_output:
@@ -7029,6 +7306,192 @@ Answer using specific company names and numbers from the portfolio grid above.""
             logger.warning(f"[TOOL] query_documents failed: {e}")
             return {"documents": [], "count": 0, "error": str(e)}
 
+    # ------------------------------------------------------------------
+    # Concurrent multi-doc processing tools (legal mode)
+    # ------------------------------------------------------------------
+
+    async def _tool_ingest_documents(self, inputs: dict) -> dict:
+        """Extract structured data from multiple documents concurrently across providers."""
+        try:
+            if not self.parallel_doc_processor:
+                return {"error": "ParallelDocProcessor not available"}
+
+            document_ids = inputs.get("document_ids", [])
+            extraction_focus = inputs.get("extraction_focus")
+
+            if not document_ids:
+                return {"error": "No document_ids provided"}
+
+            # Resolve document IDs to text content via DocumentQueryService
+            documents = await self._resolve_documents_for_processing(document_ids)
+            if not documents:
+                return {"error": f"Could not resolve any of the {len(document_ids)} document IDs"}
+
+            # Build optional extraction schema override from focus hint
+            extraction_schema = None
+            if extraction_focus:
+                extraction_schema = {
+                    "document_type": "string",
+                    "summary": "string",
+                    "focus_extraction": f"string — specifically extract: {extraction_focus}",
+                    "parties": "array of objects [{name, role}]",
+                    "key_facts": "array of strings",
+                    "dates": "array of objects [{event, date}]",
+                }
+
+            # Collect all results from the async generator, pushing progress
+            # events to _streaming_event_queue for the conversational loop to
+            # drain and yield to the frontend.
+            all_results = []
+            all_events = []
+            async for event in self.parallel_doc_processor.ingest_batch(
+                documents=documents,
+                extraction_schema=extraction_schema,
+            ):
+                all_events.append(event)
+                # Push progress/per-doc events so frontend gets live updates
+                self._streaming_event_queue.append(event)
+                if event.get("type") == "doc_extracted":
+                    all_results.append({
+                        "doc_id": event["doc_id"],
+                        "file_name": event.get("file_name", ""),
+                        "extracted_data": event["extracted_data"],
+                        "provider": event.get("provider", ""),
+                    })
+                    # Store in shared_data for cross-turn access
+                    async with self.shared_data_lock:
+                        extracted_docs = self.shared_data.setdefault("extracted_documents", {})
+                        extracted_docs[event["doc_id"]] = event["extracted_data"]
+
+            # Return summary
+            batch_event = next((e for e in all_events if e.get("type") == "batch_complete"), {})
+            summary = batch_event.get("summary", {})
+            return {
+                "results": all_results,
+                "summary": {
+                    "total": summary.get("total", len(document_ids)),
+                    "succeeded": summary.get("succeeded", len(all_results)),
+                    "failed": summary.get("failed", 0),
+                    "providers_used": summary.get("providers_used", []),
+                },
+            }
+        except Exception as e:
+            logger.exception(f"[TOOL] ingest_documents failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_search_across_documents(self, inputs: dict) -> dict:
+        """Ask a question across multiple documents concurrently."""
+        try:
+            if not self.parallel_doc_processor:
+                return {"error": "ParallelDocProcessor not available"}
+
+            document_ids = inputs.get("document_ids", [])
+            query = inputs.get("query", "")
+            answer_type = inputs.get("answer_type", "text")
+
+            if not document_ids:
+                return {"error": "No document_ids provided"}
+            if not query:
+                return {"error": "No query provided"}
+
+            # Resolve document IDs to text content
+            documents = await self._resolve_documents_for_processing(document_ids)
+            if not documents:
+                return {"error": f"Could not resolve any of the {len(document_ids)} document IDs"}
+
+            # Collect answers from the async generator, streaming progress
+            answers = []
+            async for event in self.parallel_doc_processor.targeted_search(
+                documents=documents,
+                query=query,
+                answer_type=answer_type,
+            ):
+                # Push all events for live frontend streaming
+                self._streaming_event_queue.append(event)
+                if event.get("type") == "doc_search_result":
+                    answers.append({
+                        "doc_id": event["doc_id"],
+                        "file_name": event.get("file_name", ""),
+                        "answer": event.get("answer"),
+                        "reasoning": event.get("reasoning", ""),
+                        "source_location": event.get("source_location", ""),
+                    })
+
+            return {
+                "query": query,
+                "answer_type": answer_type,
+                "results": answers,
+                "total_docs": len(document_ids),
+                "docs_answered": len(answers),
+            }
+        except Exception as e:
+            logger.exception(f"[TOOL] search_across_documents failed: {e}")
+            return {"error": str(e)}
+
+    async def _resolve_documents_for_processing(
+        self, document_ids: list[str]
+    ) -> list[dict]:
+        """Resolve document IDs to text content for parallel processing.
+
+        Checks: shared_data extracted_documents, document query service, and
+        falls back to storage download + text extraction.
+        """
+        documents = []
+
+        # Try to get from shared_data first (already extracted docs have text)
+        extracted = self.shared_data.get("extracted_documents", {})
+
+        # Try DocumentQueryService for metadata
+        try:
+            from app.services.document_query_service import DocumentQueryService
+            dqs = DocumentQueryService()
+            fund_id = self.shared_data.get("fund_context", {}).get("fundId")
+
+            for doc_id in document_ids:
+                # Check if we already have text in shared data
+                if doc_id in extracted and extracted[doc_id].get("_raw_text"):
+                    documents.append({
+                        "doc_id": doc_id,
+                        "text": extracted[doc_id]["_raw_text"],
+                        "file_name": extracted[doc_id].get("_file_name", doc_id),
+                        "doc_type": extracted[doc_id].get("document_type", "contract"),
+                    })
+                    continue
+
+                # Query the document metadata
+                try:
+                    doc_results = dqs.query_portfolio_documents(
+                        fund_id=fund_id,
+                        document_types=None,
+                    )
+                    doc_list = doc_results if isinstance(doc_results, list) else doc_results.get("results", doc_results.get("documents", []))
+
+                    matching = [d for d in doc_list if str(d.get("id", "")) == str(doc_id) or d.get("document_id") == doc_id or d.get("file_name", "") == doc_id]
+                    if matching:
+                        doc_meta = matching[0]
+                        # Get text from extracted_data or raw_text field
+                        text = ""
+                        ext_data = doc_meta.get("extracted_data", {})
+                        if isinstance(ext_data, dict):
+                            # Try to get a text summary from extracted data
+                            text = ext_data.get("_raw_text", "") or ext_data.get("summary", "") or json.dumps(ext_data)
+                        if not text:
+                            text = doc_meta.get("raw_text", "") or doc_meta.get("text_preview", "")
+                        if text:
+                            documents.append({
+                                "doc_id": doc_id,
+                                "text": text,
+                                "file_name": doc_meta.get("file_name", doc_id),
+                                "doc_type": doc_meta.get("document_type", "contract"),
+                            })
+                except Exception as query_err:
+                    logger.debug(f"[RESOLVE_DOCS] Could not query doc {doc_id}: {query_err}")
+
+        except Exception as e:
+            logger.warning(f"[RESOLVE_DOCS] DocumentQueryService unavailable: {e}")
+
+        return documents
+
     async def _tool_fund_metrics(self, inputs: dict) -> dict:
         """Calculate fund-level metrics via FundModelingService."""
         try:
@@ -7147,11 +7610,96 @@ Answer using specific company names and numbers from the portfolio grid above.""
             description = inputs.get("scenario_description", "Ad-hoc scenario")
             fund_id = self.shared_data.get("fund_context", {}).get("fundId")
 
+            # --- FAST PATH: direct NL → driver mapping ---
+            # "cut burn 20%", "hire 10 engineers", "raise $5M" etc.
+            direct_drivers = nl_composer.parse_direct_driver_query(description)
+            if direct_drivers:
+                company_id = inputs.get("company_id") or self.shared_data.get("company_id")
+                if company_id:
+                    # Check if it's a funding injection
+                    funding_entries = [d for d in direct_drivers if d["driver_id"] == "funding_injection"]
+                    other_entries = [d for d in direct_drivers if d["driver_id"] != "funding_injection"]
+
+                    # Handle funding separately via funding_injection tool
+                    if funding_entries and not other_entries:
+                        return await self._tool_funding_injection({
+                            "company_id": company_id,
+                            "amount": funding_entries[0]["value"],
+                            "round_type": inputs.get("round_type", "raise"),
+                            "branch_id": inputs.get("branch_id"),
+                        })
+
+                    # Use adjust_drivers for everything else
+                    if other_entries:
+                        result = await self._tool_adjust_drivers({
+                            "company_id": company_id,
+                            "branch_id": inputs.get("branch_id"),
+                            "drivers": other_entries,
+                        })
+                        # If there was also a funding injection, chain it
+                        if funding_entries and "error" not in result:
+                            funding_result = await self._tool_funding_injection({
+                                "company_id": company_id,
+                                "amount": funding_entries[0]["value"],
+                                "round_type": "raise",
+                                "branch_id": result.get("branch_id"),
+                            })
+                            result["funding"] = funding_result
+                        result["nl_fast_path"] = True
+                        result["parsed_drivers"] = direct_drivers
+                        return result
+
             # --- Try NL parsing first for "what if" style queries ---
             composed = await nl_composer.parse_what_if_query(description, fund_id=fund_id)
 
             if composed.events:
                 logger.info(f"[TOOL] scenario: NL composer parsed {len(composed.events)} events")
+
+                # Bridge macro events → micro driver deltas
+                from app.services.driver_registry import macro_to_drivers, drivers_to_assumptions
+                all_driver_deltas: dict = {}
+                for event in composed.events:
+                    mag = event.parameters.get("magnitude", 0.2)
+                    for factor in event.impact_factors:
+                        deltas = macro_to_drivers(factor, mag)
+                        for did, delta in deltas.items():
+                            all_driver_deltas[did] = all_driver_deltas.get(did, 0) + delta
+
+                # If a branch_id is provided, apply driver deltas to it
+                branch_id = inputs.get("branch_id")
+                branch_charts = []
+                if branch_id and all_driver_deltas:
+                    try:
+                        from app.services.scenario_branch_service import ScenarioBranchService, build_forecast_charts
+                        from app.core.supabase_client import get_supabase_client
+                        import json as _json
+
+                        svc = ScenarioBranchService()
+                        sb = get_supabase_client()
+                        branch_row = sb.table("scenario_branches").select("assumptions").eq("id", branch_id).execute()
+                        if branch_row.data:
+                            existing = branch_row.data[0].get("assumptions", {})
+                            if isinstance(existing, str):
+                                try: existing = _json.loads(existing)
+                                except: existing = {}
+                            new_assumptions = drivers_to_assumptions(all_driver_deltas)
+                            for k, v in new_assumptions.items():
+                                if isinstance(v, dict) and isinstance(existing.get(k), dict):
+                                    existing[k].update(v)
+                                else:
+                                    existing[k] = v
+                            sb.table("scenario_branches").update(
+                                {"assumptions": _json.dumps(existing)}
+                            ).eq("id", branch_id).execute()
+
+                            company_id = inputs.get("company_id") or self.shared_data.get("company_id")
+                            if company_id:
+                                after = svc.execute_branch(branch_id, company_id)
+                                if "error" not in after and after.get("forecast"):
+                                    branch_charts = build_forecast_charts(after["forecast"])
+                    except Exception as bridge_err:
+                        logger.warning(f"[TOOL] scenario macro→micro bridge failed: {bridge_err}")
+
                 try:
                     wm_result = await nl_composer.compose_scenario_to_world_model(
                         composed_scenario=composed,
@@ -7166,6 +7714,10 @@ Answer using specific company names and numbers from the portfolio grid above.""
                             {"entity": e.entity_name, "type": e.event_type, "timing": e.timing}
                             for e in composed.events
                         ]
+                        if all_driver_deltas:
+                            result["driver_deltas"] = all_driver_deltas
+                        if branch_charts:
+                            result["chart_data"] = branch_charts
                         # Persist to shared_data (don't overwrite richer PWERM data)
                         async with self.shared_data_lock:
                             if not self.shared_data.get("scenario_analysis"):
@@ -7286,6 +7838,561 @@ Answer using specific company names and numbers from the portfolio grid above.""
         except Exception as e:
             logger.warning(f"[TOOL] scenario_tree failed: {e}")
             return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Interactive Model Building: inspect + adjust drivers
+    # ------------------------------------------------------------------
+
+    async def _tool_inspect_drivers(self, inputs: dict) -> dict:
+        """Show all drivers with base values, overrides, ranges, and ripple chains."""
+        try:
+            from app.services.driver_registry import (
+                get_all_drivers,
+                get_drivers_by_level,
+                assumptions_to_drivers,
+            )
+            from app.services.scenario_branch_service import ScenarioBranchService
+
+            company_id = inputs.get("company_id") or self.shared_data.get("company_id")
+            branch_id = inputs.get("branch_id")
+            level_filter = inputs.get("level")  # revenue, opex, workforce, capital, unit_economics
+
+            # Get driver definitions
+            if level_filter:
+                drivers = get_drivers_by_level(level_filter)
+            else:
+                drivers = get_all_drivers()
+
+            # If a branch is specified, show what's overridden
+            active_overrides = {}
+            branch_name = None
+            if branch_id:
+                svc = ScenarioBranchService()
+                chain = svc.get_ancestor_chain(branch_id)
+                if chain:
+                    merged = svc.merge_assumptions(chain)
+                    active_overrides = assumptions_to_drivers(merged)
+                    branch_name = chain[-1].get("name")
+
+            # Build response: each driver with metadata + current override if any
+            driver_list = []
+            for did, d in drivers.items():
+                entry = {
+                    "id": d.id,
+                    "label": d.label,
+                    "level": d.level,
+                    "unit": d.unit,
+                    "how": d.how,
+                    "hint": d.nl_hint,
+                    "ripple": d.ripple,
+                    "range": list(d.range) if d.range else None,
+                    "computed": d.computed,
+                }
+                if did in active_overrides:
+                    entry["current_value"] = active_overrides[did]["value"]
+                    entry["is_overridden"] = True
+                else:
+                    entry["is_overridden"] = False
+                driver_list.append(entry)
+
+            result = {
+                "drivers": driver_list,
+                "total": len(driver_list),
+                "branch_id": branch_id,
+                "branch_name": branch_name,
+                "company_id": company_id,
+            }
+            if level_filter:
+                result["level_filter"] = level_filter
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] inspect_drivers failed: {e}")
+            return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Shared: base vs scenario comparison helper (used by adjust_driver,
+    # adjust_drivers, funding_injection)
+    # ------------------------------------------------------------------
+
+    async def _auto_fork_or_reuse(
+        self,
+        company_id: str,
+        branch_id: Optional[str],
+        name: str,
+        assumptions: dict,
+    ) -> str:
+        """Return an existing working branch or create a new one.
+
+        - If branch_id is given, use it.
+        - If shared_data has working_branch_id, reuse it.
+        - Otherwise auto-fork a new branch and store as working_branch_id.
+        """
+        bid = branch_id or self.shared_data.get("working_branch_id")
+        if bid:
+            return bid
+
+        import json as _json
+        from app.core.supabase_client import get_supabase_client
+        sb = get_supabase_client()
+        row = {
+            "company_id": company_id,
+            "name": name,
+            "assumptions": _json.dumps(assumptions),
+        }
+        result = sb.table("scenario_branches").insert(row).execute()
+        if not result.data:
+            raise RuntimeError("Failed to create scenario branch")
+        new_id = result.data[0]["id"]
+        async with self.shared_data_lock:
+            self.shared_data["working_branch_id"] = new_id
+        return new_id
+
+    async def _tool_adjust_driver(self, inputs: dict) -> dict:
+        """Adjust a driver on a branch. Returns before/after deltas + rebuilds charts."""
+        try:
+            from app.services.driver_registry import (
+                get_driver,
+                driver_to_assumption,
+                assumptions_to_drivers,
+            )
+            from app.services.scenario_branch_service import ScenarioBranchService
+            from app.core.supabase_client import get_supabase_client
+
+            company_id = inputs.get("company_id") or self.shared_data.get("company_id")
+            branch_id = inputs.get("branch_id") or self.shared_data.get("working_branch_id")
+            driver_id = inputs["driver_id"]
+            value = inputs["value"]
+
+            driver_def = get_driver(driver_id)
+            if not driver_def:
+                return {"error": f"Unknown driver: {driver_id}"}
+            if driver_def.computed:
+                return {"error": f"Driver {driver_id} is computed (read-only). Adjust its inputs instead."}
+            if driver_def.range:
+                lo, hi = driver_def.range
+                if not (lo <= value <= hi):
+                    return {"error": f"Value {value} out of range [{lo}, {hi}] for {driver_id}"}
+
+            if not company_id:
+                return {"error": "company_id required"}
+
+            svc = ScenarioBranchService()
+            sb = get_supabase_client()
+
+            # Auto-fork: if no branch_id, create one and track as working branch
+            if not branch_id:
+                import json as _json
+                new_assumptions = driver_to_assumption(driver_id, value)
+                row = {
+                    "company_id": company_id,
+                    "name": f"Adjust {driver_def.label}",
+                    "assumptions": _json.dumps(new_assumptions),
+                }
+                result = sb.table("scenario_branches").insert(row).execute()
+                if not result.data:
+                    return {"error": "Failed to create scenario branch"}
+                branch_id = result.data[0]["id"]
+                async with self.shared_data_lock:
+                    self.shared_data["working_branch_id"] = branch_id
+
+            # 1. Execute branch BEFORE the change
+            before = svc.execute_branch(branch_id, company_id)
+            if "error" in before:
+                return before
+
+            # 2. Update the branch assumptions in DB
+            branch_row = sb.table("scenario_branches").select("assumptions").eq("id", branch_id).execute()
+            if not branch_row.data:
+                return {"error": f"Branch {branch_id} not found"}
+
+            import json as _json
+            existing = branch_row.data[0].get("assumptions", {})
+            if isinstance(existing, str):
+                try:
+                    existing = _json.loads(existing)
+                except (ValueError, TypeError):
+                    existing = {}
+
+            # Merge the new driver value into existing assumptions
+            new_assumption = driver_to_assumption(driver_id, value)
+            for k, v in new_assumption.items():
+                if isinstance(v, dict) and isinstance(existing.get(k), dict):
+                    existing[k].update(v)
+                else:
+                    existing[k] = v
+
+            sb.table("scenario_branches").update(
+                {"assumptions": _json.dumps(existing)}
+            ).eq("id", branch_id).execute()
+
+            # 3. Execute branch AFTER the change
+            after = svc.execute_branch(branch_id, company_id)
+            if "error" in after:
+                return after
+
+            # 4. Compute deltas for ripple-affected metrics
+            ripple_metrics = driver_def.ripple
+            impact = {}
+            before_last = before["forecast"][-1] if before.get("forecast") else {}
+            after_last = after["forecast"][-1] if after.get("forecast") else {}
+            for metric in ripple_metrics:
+                b_val = before_last.get(metric)
+                a_val = after_last.get(metric)
+                if b_val is not None and a_val is not None:
+                    try:
+                        impact[metric] = {
+                            "before": round(float(b_val), 2),
+                            "after": round(float(a_val), 2),
+                            "delta": round(float(a_val) - float(b_val), 2),
+                        }
+                    except (TypeError, ValueError):
+                        pass
+
+            # 5. Build charts from the updated forecast
+            charts = []
+            try:
+                from app.services.scenario_branch_service import build_forecast_charts
+                charts = build_forecast_charts(after["forecast"])
+            except Exception:
+                pass
+
+            # If no forecast chart builder, build a simple before/after comparison chart
+            if not charts:
+                chart_series = []
+                for metric in ripple_metrics[:4]:  # Top 4 affected metrics
+                    before_series = [m.get(metric, 0) for m in before.get("forecast", [])]
+                    after_series = [m.get(metric, 0) for m in after.get("forecast", [])]
+                    if any(v for v in before_series) or any(v for v in after_series):
+                        chart_series.append({
+                            "name": f"{metric} (before)",
+                            "data": before_series,
+                            "style": "dashed",
+                        })
+                        chart_series.append({
+                            "name": f"{metric} (after)",
+                            "data": after_series,
+                        })
+                if chart_series:
+                    periods = [m.get("period", f"M{i}") for i, m in enumerate(after.get("forecast", []))]
+                    charts = [{
+                        "type": "line",
+                        "title": f"Impact of {driver_def.label} change",
+                        "labels": periods,
+                        "datasets": chart_series,
+                        "branch_id": branch_id,
+                    }]
+
+            result = {
+                "driver": driver_id,
+                "label": driver_def.label,
+                "old_value": before.get("assumptions", {}).get(driver_def.assumption_key),
+                "new_value": value,
+                "branch_id": branch_id,
+                "branch_name": after.get("name", ""),
+                "ripple_chain": ripple_metrics,
+                "impact": impact,
+                "chart_data": charts,
+            }
+
+            # 6. Auto-comparison: base vs scenario delta summary
+            comparison_summary = _build_base_comparison(before, after)
+
+            result["comparison"] = comparison_summary
+
+            # Store updated branch forecast in shared_data + track working branch
+            async with self.shared_data_lock:
+                self.shared_data["last_branch_forecast"] = after
+                self.shared_data["last_driver_adjustment"] = result
+                self.shared_data["working_branch_id"] = branch_id
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] adjust_driver failed: {e}")
+            return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # adjust_drivers (plural) — atomic multi-driver change on one branch
+    # ------------------------------------------------------------------
+
+    async def _tool_adjust_drivers(self, inputs: dict) -> dict:
+        """Adjust multiple drivers atomically on a single branch.
+
+        Accepts drivers: [{driver_id, value}, ...].
+        All changes applied in one shot → single before/after execution.
+        Auto-forks if no branch_id provided.
+        """
+        try:
+            from app.services.driver_registry import (
+                get_driver,
+                driver_to_assumption,
+                drivers_to_assumptions,
+            )
+            from app.services.scenario_branch_service import ScenarioBranchService, build_forecast_charts
+            from app.core.supabase_client import get_supabase_client
+            import json as _json
+
+            company_id = inputs.get("company_id") or self.shared_data.get("company_id")
+            if not company_id:
+                return {"error": "company_id required"}
+
+            drivers_list = inputs.get("drivers", [])
+            if not drivers_list:
+                return {"error": "drivers list required (array of {driver_id, value})"}
+
+            # Validate all drivers first
+            driver_map: dict = {}  # driver_id → (value, DriverDef)
+            all_ripple: list = []
+            for entry in drivers_list:
+                did = entry.get("driver_id")
+                val = entry.get("value")
+                ddef = get_driver(did)
+                if not ddef:
+                    return {"error": f"Unknown driver: {did}"}
+                if ddef.computed:
+                    return {"error": f"Driver {did} is computed (read-only)"}
+                if ddef.range:
+                    lo, hi = ddef.range
+                    if not (lo <= val <= hi):
+                        return {"error": f"Value {val} out of range [{lo}, {hi}] for {did}"}
+                driver_map[did] = (val, ddef)
+                all_ripple.extend(ddef.ripple)
+
+            # Build merged assumptions from all drivers
+            new_assumptions = drivers_to_assumptions({did: val for did, (val, _) in driver_map.items()})
+
+            svc = ScenarioBranchService()
+            sb = get_supabase_client()
+
+            # Auto-fork or reuse working branch
+            branch_id = await self._auto_fork_or_reuse(
+                company_id,
+                inputs.get("branch_id"),
+                "Multi-driver adjustment",
+                new_assumptions,
+            )
+
+            # 1. Execute BEFORE
+            before = svc.execute_branch(branch_id, company_id)
+            if "error" in before:
+                return before
+
+            # 2. Merge into existing assumptions
+            branch_row = sb.table("scenario_branches").select("assumptions").eq("id", branch_id).execute()
+            if not branch_row.data:
+                return {"error": f"Branch {branch_id} not found"}
+
+            existing = branch_row.data[0].get("assumptions", {})
+            if isinstance(existing, str):
+                try:
+                    existing = _json.loads(existing)
+                except (ValueError, TypeError):
+                    existing = {}
+
+            for k, v in new_assumptions.items():
+                if isinstance(v, dict) and isinstance(existing.get(k), dict):
+                    existing[k].update(v)
+                else:
+                    existing[k] = v
+
+            sb.table("scenario_branches").update(
+                {"assumptions": _json.dumps(existing)}
+            ).eq("id", branch_id).execute()
+
+            # 3. Execute AFTER
+            after = svc.execute_branch(branch_id, company_id)
+            if "error" in after:
+                return after
+
+            # 4. Compute per-driver impact
+            unique_ripple = list(dict.fromkeys(all_ripple))
+            before_last = before["forecast"][-1] if before.get("forecast") else {}
+            after_last = after["forecast"][-1] if after.get("forecast") else {}
+            impact: dict = {}
+            for metric in unique_ripple:
+                bv = before_last.get(metric)
+                av = after_last.get(metric)
+                if bv is not None and av is not None:
+                    try:
+                        impact[metric] = {
+                            "before": round(float(bv), 2),
+                            "after": round(float(av), 2),
+                            "delta": round(float(av) - float(bv), 2),
+                        }
+                    except (TypeError, ValueError):
+                        pass
+
+            # 5. Charts
+            charts = []
+            try:
+                charts = build_forecast_charts(after["forecast"])
+            except Exception:
+                pass
+
+            # 6. Base comparison
+            comparison = _build_base_comparison(before, after)
+
+            result = {
+                "drivers_adjusted": [
+                    {"driver_id": did, "label": ddef.label, "value": val}
+                    for did, (val, ddef) in driver_map.items()
+                ],
+                "branch_id": branch_id,
+                "branch_name": after.get("name", ""),
+                "cumulative_ripple": unique_ripple,
+                "impact": impact,
+                "comparison": comparison,
+                "chart_data": charts,
+            }
+
+            async with self.shared_data_lock:
+                self.shared_data["last_branch_forecast"] = after
+                self.shared_data["working_branch_id"] = branch_id
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] adjust_drivers failed: {e}")
+            return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # funding_injection — standalone funding round modeling tool
+    # ------------------------------------------------------------------
+
+    async def _tool_funding_injection(self, inputs: dict) -> dict:
+        """Model a funding injection on a scenario branch.
+
+        Creates/reuses a branch, applies funding amount + dilution,
+        re-executes, and returns before/after with runway extension +
+        dilution impact.
+        """
+        try:
+            from app.services.driver_registry import driver_to_assumption
+            from app.services.scenario_branch_service import ScenarioBranchService, build_forecast_charts
+            from app.core.supabase_client import get_supabase_client
+            import json as _json
+
+            company_id = inputs.get("company_id") or self.shared_data.get("company_id")
+            if not company_id:
+                return {"error": "company_id required"}
+
+            amount = inputs.get("amount")
+            if not amount or amount <= 0:
+                return {"error": "amount required (positive dollar value)"}
+
+            round_type = inputs.get("round_type", "bridge")
+            month = inputs.get("month")  # optional: which month to inject
+            dilution_pct = inputs.get("dilution_pct", 0.0)
+
+            # Build assumptions for the injection
+            assumptions: dict = {
+                "funding_injection": amount,
+            }
+            if month:
+                assumptions["funding_month"] = month
+            if dilution_pct:
+                assumptions["dilution_pct"] = dilution_pct
+
+            svc = ScenarioBranchService()
+            sb = get_supabase_client()
+
+            # Auto-fork or reuse working branch
+            branch_id = await self._auto_fork_or_reuse(
+                company_id,
+                inputs.get("branch_id"),
+                f"{round_type.title()} ${amount / 1_000_000:.1f}M",
+                assumptions,
+            )
+
+            # 1. Execute BEFORE
+            before = svc.execute_branch(branch_id, company_id)
+            if "error" in before:
+                return before
+
+            # 2. Update branch assumptions
+            branch_row = sb.table("scenario_branches").select("assumptions").eq("id", branch_id).execute()
+            if not branch_row.data:
+                return {"error": f"Branch {branch_id} not found"}
+
+            existing = branch_row.data[0].get("assumptions", {})
+            if isinstance(existing, str):
+                try:
+                    existing = _json.loads(existing)
+                except (ValueError, TypeError):
+                    existing = {}
+
+            for k, v in assumptions.items():
+                existing[k] = v
+
+            sb.table("scenario_branches").update(
+                {"assumptions": _json.dumps(existing)}
+            ).eq("id", branch_id).execute()
+
+            # 3. Execute AFTER
+            after = svc.execute_branch(branch_id, company_id)
+            if "error" in after:
+                return after
+
+            # 4. Compute runway extension
+            before_fc = before.get("forecast", [])
+            after_fc = after.get("forecast", [])
+            runway_before = before_fc[-1].get("runway_months", 0) if before_fc else 0
+            runway_after = after_fc[-1].get("runway_months", 0) if after_fc else 0
+            runway_extension = round(float(runway_after or 0) - float(runway_before or 0), 1)
+
+            # 5. Charts
+            charts = []
+            try:
+                charts = build_forecast_charts(after_fc)
+            except Exception:
+                pass
+
+            # 6. Base comparison
+            comparison = _build_base_comparison(before, after)
+
+            result = {
+                "branch_id": branch_id,
+                "branch_name": after.get("name", ""),
+                "round_type": round_type,
+                "amount": amount,
+                "dilution_pct": dilution_pct,
+                "runway_extension_months": runway_extension,
+                "runway_before": round(float(runway_before or 0), 1),
+                "runway_after": round(float(runway_after or 0), 1),
+                "comparison": comparison,
+                "chart_data": charts,
+            }
+
+            async with self.shared_data_lock:
+                self.shared_data["last_branch_forecast"] = after
+                self.shared_data["working_branch_id"] = branch_id
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] funding_injection failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_update_chart(self, inputs: dict) -> dict:
+        """Update an existing chart by ID with new params (type, title, filters)."""
+        chart_id = inputs.get("chart_id")
+        changes = inputs.get("changes", {})
+        if chart_id is None:
+            return {"error": "chart_id is required"}
+
+        entry = self.chart_registry.get_chart(int(chart_id))
+        if not entry:
+            return {"error": f"Chart {chart_id} not found in session"}
+
+        # Merge changes into stored chart data
+        chart_data = dict(entry.get("chart_data") or {})
+        for k, v in changes.items():
+            chart_data[k] = v
+
+        self.chart_registry.update_chart_data(int(chart_id), chart_data)
+
+        # Return as chart_data so the streaming loop emits chart_rebuild
+        chart_data["id"] = int(chart_id)
+        chart_data["bound_to_branch"] = entry.get("bound_to_branch")
+        return {"chart_data": [chart_data], "branch_id": entry.get("bound_to_branch"), "_is_chart_update": True}
 
     async def _tool_cash_flow_model(self, inputs: dict) -> dict:
         """Build full P&L / cash flow model for a company."""
@@ -9641,6 +10748,56 @@ Return JSON with ONLY these fields (use null if unknown):
             logger.warning(f"[TOOL] fpa_pnl failed: {e}")
             return {"error": str(e)}
 
+    async def _tool_fpa_balance_sheet(self, inputs: dict) -> dict:
+        """Full Balance Sheet (assets / liabilities / equity) with balance check."""
+        try:
+            from app.services.balance_sheet_builder import BalanceSheetBuilder
+
+            company_id = inputs.get("company_id")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            builder = BalanceSheetBuilder(company_id)
+            result = builder.build(
+                start=inputs.get("start"),
+                end=inputs.get("end"),
+            )
+            result["company_id"] = company_id
+
+            async with self.shared_data_lock:
+                self.shared_data["fpa_balance_sheet_result"] = result
+
+            # Memo updates
+            totals = result.get("totals", {})
+            periods = result.get("periods", [])
+            latest = periods[-1] if periods else None
+            ta = totals.get("total_assets", {}).get(latest) if latest else None
+            tle = totals.get("total_liabilities_equity", {}).get(latest) if latest else None
+            bc = totals.get("balance_check", {}).get(latest) if latest else None
+            balance_ok = bc is not None and abs(bc) < 1
+            status = "Balanced" if balance_ok else f"Out of balance: {bc}"
+
+            summary_parts = []
+            if ta is not None:
+                summary_parts.append(f"Total Assets: ${ta:,.0f}")
+            if tle is not None:
+                summary_parts.append(f"Total L&E: ${tle:,.0f}")
+            summary_parts.append(status)
+            summary_parts.append(f"{len(periods)} period(s), {len(result.get('rows', []))} line items.")
+
+            result["memo_updates"] = {
+                "action": "append",
+                "sections": [
+                    {"type": "heading2", "content": "Balance Sheet"},
+                    {"type": "paragraph", "content": " | ".join(summary_parts)},
+                ],
+            }
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] fpa_balance_sheet failed: {e}")
+            return {"error": str(e)}
+
     async def _tool_fpa_variance(self, inputs: dict) -> dict:
         """Budget vs actuals variance report."""
         try:
@@ -10233,8 +11390,13 @@ Return JSON with ONLY these fields (use null if unknown):
 
                     # Add structured narration if available
                     try:
-                        from app.services.driver_narration import narrate_branch
-                        narration = narrate_branch(branch_id, company_id)
+                        from app.services.driver_narration import narrate_branch_result
+                        narration = narrate_branch_result(
+                            branch_result=exec_result,
+                            resolved_drivers=assumptions,
+                            base_forecast=exec_result.get("base_forecast"),
+                            branch_forecast=exec_result.get("forecast"),
+                        )
                         if narration:
                             response["narration"] = narration
                     except Exception:
@@ -10307,8 +11469,13 @@ Return JSON with ONLY these fields (use null if unknown):
 
             # Add driver narration if available
             try:
-                from app.services.driver_narration import narrate_branch
-                narration = narrate_branch(branch_id, company_id)
+                from app.services.driver_narration import narrate_branch_result
+                narration = narrate_branch_result(
+                    branch_result=exec_result,
+                    resolved_drivers=current,
+                    base_forecast=exec_result.get("base_forecast"),
+                    branch_forecast=exec_result.get("forecast"),
+                )
                 if narration:
                     response["narration"] = narration
             except Exception:
@@ -10930,6 +12097,616 @@ Return JSON with ONLY these fields (use null if unknown):
             logger.debug(f"[STRATEGIC_HOOK] proactive check failed (non-fatal): {e}")
 
         return result
+
+    # ── Cross-Domain Analysis ─────────────────────────────────────────
+    # Weaves P&L, balance sheet, debt/covenants, legal clauses, and
+    # equity structure into a unified cross-domain impact picture.
+
+    async def _tool_cross_domain_analysis(self, inputs: dict) -> dict:
+        """Cross-domain synthesis — financial + legal causal chains."""
+        try:
+            import asyncio
+
+            company_id = inputs.get("company_id")
+            query = inputs.get("query", "")
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            branch_id = inputs.get("branch_id")
+            trigger_driver = inputs.get("trigger_driver")
+            trigger_delta = inputs.get("trigger_delta")
+
+            # Auto-detect domains from query keywords if not specified
+            domains = inputs.get("domains") or self._infer_domains(query)
+            if not domains:
+                domains = ["pnl", "balance_sheet", "debt", "legal", "equity"]
+
+            # ── 1. Concurrent domain gathering ───────────────────────
+            gatherers = {}
+            if "pnl" in domains:
+                gatherers["pnl"] = self._get_pnl_context(company_id, branch_id)
+            if "balance_sheet" in domains:
+                gatherers["balance_sheet"] = self._get_balance_sheet_context(company_id)
+            if "debt" in domains:
+                gatherers["debt"] = self._get_debt_context(company_id)
+            if "legal" in domains:
+                gatherers["legal"] = self._get_legal_context(company_id)
+            if "equity" in domains:
+                gatherers["equity"] = self._get_equity_context(company_id)
+
+            domain_data = {}
+            if gatherers:
+                results = await asyncio.gather(
+                    *gatherers.values(), return_exceptions=True
+                )
+                for key, result in zip(gatherers.keys(), results):
+                    if isinstance(result, Exception):
+                        logger.warning(f"[CROSS_DOMAIN] {key} gather failed: {result}")
+                        domain_data[key] = {"error": str(result)}
+                    else:
+                        domain_data[key] = result
+
+            # ── 2. Cross-references ──────────────────────────────────
+            cross_refs = self._find_cross_references(domain_data)
+
+            # ── 3. Cascade-to-driver bridge ──────────────────────────
+            cascade_result = None
+            driver_impact_result = None
+            merged_chains = []
+
+            if trigger_driver and trigger_delta is not None:
+                try:
+                    delta = float(trigger_delta)
+
+                    # Financial BFS via DriverImpactService
+                    from app.services.driver_impact_service import DriverImpactService
+                    from app.services.unified_financial_state import build_unified_state
+
+                    svc = self.driver_impact_service or DriverImpactService()
+                    state = await build_unified_state(
+                        company_id=company_id,
+                        branch_id=branch_id,
+                        company_data=self.shared_data.get("company_data"),
+                    )
+                    driver_impact_result = svc.trace_strategic_impact(
+                        state=state,
+                        trigger=trigger_driver,
+                        delta=delta,
+                        max_depth=5,
+                    )
+
+                    # Legal cascade via CascadeEngine
+                    cascade_result = await self._run_cascade_engine(
+                        company_id, trigger_driver, delta
+                    )
+
+                    # Merge: cascade outputs → driver impact inputs
+                    merged_chains = self._merge_cascade_and_driver(
+                        cascade_result, driver_impact_result
+                    )
+                except Exception as e:
+                    logger.warning(f"[CROSS_DOMAIN] cascade/driver bridge failed: {e}")
+                    merged_chains = [{"error": str(e)}]
+
+            # ── 4. Assemble response ─────────────────────────────────
+            response = {
+                "status": "ok",
+                "query": query,
+                "domains_analyzed": list(domain_data.keys()),
+                "domain_data": domain_data,
+                "cross_references": cross_refs,
+            }
+
+            if trigger_driver:
+                response["trigger"] = {
+                    "driver": trigger_driver,
+                    "delta": trigger_delta,
+                }
+                if driver_impact_result:
+                    response["financial_impact"] = {
+                        "chains": driver_impact_result.get("chains", [])[:5],
+                        "summary": driver_impact_result.get("chain_summary", []),
+                    }
+                if cascade_result:
+                    response["legal_cascade"] = cascade_result
+                if merged_chains:
+                    response["merged_impact_chains"] = merged_chains
+
+            return response
+        except Exception as e:
+            logger.error(f"[TOOL] cross_domain_analysis failed: {e}")
+            return {"error": f"Cross-domain analysis failed: {e}"}
+
+    # ── Domain gatherers (private) ────────────────────────────────────
+
+    async def _get_pnl_context(self, company_id: str, branch_id: str = None) -> dict:
+        """Pull latest P&L snapshot — revenue, COGS, EBITDA, net income, ratios."""
+        try:
+            from app.services.pnl_builder import PnlBuilder
+
+            fund_id = (
+                (self.shared_data.get("fund_context") or {}).get("fund_id")
+                or (self.shared_data.get("matrix_context") or {}).get("fundId")
+                or None
+            )
+            builder = PnlBuilder(company_id, fund_id=fund_id)
+            result = builder.build(forecast_months=0, view="waterfall")
+
+            # Extract key metrics from the last actual period
+            rows = result.get("rows", [])
+            periods = result.get("periods", [])
+            latest = periods[-1] if periods else None
+
+            summary = {}
+            key_rows = {
+                "revenue": "revenue",
+                "cogs": "cogs",
+                "gross_profit": "gross_profit",
+                "ebitda": "ebitda",
+                "net_income": "net_income",
+                "operating_expenses": "opex",
+            }
+            for row in rows:
+                row_id = (row.get("id") or "").lower().replace(" ", "_")
+                label = (row.get("label") or "").lower().replace(" ", "_")
+                for match_key, out_key in key_rows.items():
+                    if match_key in row_id or match_key in label:
+                        vals = row.get("values", {})
+                        if latest and latest in vals:
+                            summary[out_key] = vals[latest]
+                        elif vals:
+                            summary[out_key] = list(vals.values())[-1]
+                        break
+
+            # Compute ratios
+            rev = summary.get("revenue", 0)
+            if rev and rev != 0:
+                summary["gross_margin"] = round(summary.get("gross_profit", 0) / rev, 4)
+                summary["ebitda_margin"] = round(summary.get("ebitda", 0) / rev, 4)
+                summary["net_margin"] = round(summary.get("net_income", 0) / rev, 4)
+
+            return {"latest_period": latest, "metrics": summary, "period_count": len(periods)}
+        except Exception as e:
+            logger.warning(f"[CROSS_DOMAIN] pnl gather failed: {e}")
+            return {"error": str(e)}
+
+    async def _get_balance_sheet_context(self, company_id: str) -> dict:
+        """Pull latest balance sheet — assets, liabilities, equity, leverage."""
+        try:
+            from app.services.balance_sheet_builder import BalanceSheetBuilder
+
+            builder = BalanceSheetBuilder(company_id)
+            result = builder.build()
+
+            totals = result.get("totals", {})
+            periods = result.get("periods", [])
+            latest = periods[-1] if periods else None
+
+            summary = {}
+            for key in [
+                "total_assets", "total_liabilities", "total_equity",
+                "total_current_assets", "total_current_liabilities",
+                "total_non_current_assets", "total_non_current_liabilities",
+            ]:
+                vals = totals.get(key, {})
+                if latest and latest in vals:
+                    summary[key] = vals[latest]
+                elif vals:
+                    summary[key] = list(vals.values())[-1]
+
+            # Leverage ratios
+            total_equity = summary.get("total_equity", 0)
+            total_assets = summary.get("total_assets", 0)
+            total_liabilities = summary.get("total_liabilities", 0)
+            current_assets = summary.get("total_current_assets", 0)
+            current_liabilities = summary.get("total_current_liabilities", 0)
+
+            if total_equity and total_equity != 0:
+                summary["debt_to_equity"] = round(total_liabilities / total_equity, 4)
+            if total_assets and total_assets != 0:
+                summary["debt_to_assets"] = round(total_liabilities / total_assets, 4)
+            if current_liabilities and current_liabilities != 0:
+                summary["current_ratio"] = round(current_assets / current_liabilities, 4)
+
+            return {"latest_period": latest, "metrics": summary}
+        except Exception as e:
+            logger.warning(f"[CROSS_DOMAIN] balance_sheet gather failed: {e}")
+            return {"error": str(e)}
+
+    async def _get_debt_context(self, company_id: str) -> dict:
+        """Pull debt facilities, covenants with headroom, maturity dates from document_clauses."""
+        try:
+            from app.core.supabase_client import get_supabase_client
+            sb = get_supabase_client()
+
+            # Get document IDs for this company
+            docs_result = (
+                sb.table("documents")
+                .select("id, document_name, document_type")
+                .eq("company_id", company_id)
+                .execute()
+            )
+            doc_ids = [d["id"] for d in (docs_result.data or [])]
+            if not doc_ids:
+                return {"facilities": [], "covenants": [], "note": "No documents found"}
+
+            doc_name_map = {d["id"]: d.get("document_name", "") for d in docs_result.data}
+
+            # Debt-related clause types
+            debt_types = [
+                "covenant", "floating_charge", "fixed_charge",
+                "cross_default", "acceleration", "security",
+            ]
+            clauses_result = (
+                sb.table("document_clauses")
+                .select("document_id, clause_type, extracted_value")
+                .in_("document_id", doc_ids)
+                .in_("clause_type", debt_types)
+                .execute()
+            )
+
+            facilities = []
+            covenants = []
+            for c in (clauses_result.data or []):
+                entry = {
+                    "clause_type": c["clause_type"],
+                    "source_doc": doc_name_map.get(c["document_id"], c["document_id"]),
+                    "details": c.get("extracted_value", {}),
+                }
+                if c["clause_type"] == "covenant":
+                    covenants.append(entry)
+                else:
+                    facilities.append(entry)
+
+            return {"facilities": facilities, "covenants": covenants}
+        except Exception as e:
+            logger.warning(f"[CROSS_DOMAIN] debt gather failed: {e}")
+            return {"error": str(e)}
+
+    async def _get_legal_context(self, company_id: str) -> dict:
+        """Pull legal clauses — change of control, termination, guarantees, etc."""
+        try:
+            from app.core.supabase_client import get_supabase_client
+            sb = get_supabase_client()
+
+            docs_result = (
+                sb.table("documents")
+                .select("id, document_name, document_type")
+                .eq("company_id", company_id)
+                .execute()
+            )
+            doc_ids = [d["id"] for d in (docs_result.data or [])]
+            if not doc_ids:
+                return {"clauses": [], "note": "No documents found"}
+
+            doc_name_map = {d["id"]: d.get("document_name", "") for d in docs_result.data}
+
+            legal_types = [
+                "change_of_control", "termination", "break_clause",
+                "guarantee", "indemnity", "minimum_commitment",
+            ]
+            clauses_result = (
+                sb.table("document_clauses")
+                .select("document_id, clause_type, extracted_value")
+                .in_("document_id", doc_ids)
+                .in_("clause_type", legal_types)
+                .execute()
+            )
+
+            clauses = []
+            for c in (clauses_result.data or []):
+                clauses.append({
+                    "clause_type": c["clause_type"],
+                    "source_doc": doc_name_map.get(c["document_id"], c["document_id"]),
+                    "details": c.get("extracted_value", {}),
+                })
+
+            return {"clauses": clauses}
+        except Exception as e:
+            logger.warning(f"[CROSS_DOMAIN] legal gather failed: {e}")
+            return {"error": str(e)}
+
+    async def _get_equity_context(self, company_id: str) -> dict:
+        """Pull cap table, anti-dilution provisions, conversion triggers, liq prefs."""
+        try:
+            from app.services.legal_cap_table_bridge import LegalCapTableBridge
+
+            fund_id = (
+                (self.shared_data.get("fund_context") or {}).get("fund_id")
+                or (self.shared_data.get("matrix_context") or {}).get("fundId")
+                or ""
+            )
+            bridge = LegalCapTableBridge()
+            result = bridge.build_from_documents(
+                company_id=company_id, fund_id=fund_id
+            )
+
+            if not result.get("success"):
+                return {"cap_table": [], "note": "No equity data found"}
+
+            # Extract key equity features
+            rounds = result.get("rounds", [])
+            anti_dilution = []
+            conversion_triggers = []
+            liq_prefs = []
+
+            for r in rounds:
+                if r.get("anti_dilution") and r["anti_dilution"] != "none":
+                    anti_dilution.append({
+                        "round": r.get("round_name"),
+                        "type": r["anti_dilution"],
+                    })
+                if r.get("is_convertible"):
+                    conversion_triggers.append({
+                        "round": r.get("round_name"),
+                        "valuation_cap": r.get("valuation_cap"),
+                        "discount_rate": r.get("discount_rate"),
+                    })
+                if r.get("liq_pref"):
+                    liq_prefs.append({
+                        "round": r.get("round_name"),
+                        "preference": r["liq_pref"],
+                    })
+
+            return {
+                "ownership": result.get("ownership", []),
+                "rounds_count": len(rounds),
+                "anti_dilution_provisions": anti_dilution,
+                "conversion_triggers": conversion_triggers,
+                "liquidation_preferences": liq_prefs,
+            }
+        except Exception as e:
+            logger.warning(f"[CROSS_DOMAIN] equity gather failed: {e}")
+            return {"error": str(e)}
+
+    # ── Cross-reference detection ─────────────────────────────────────
+
+    def _find_cross_references(self, domain_data: dict) -> list:
+        """Find joints between domains — covenants referencing P&L, equity referencing BS, etc."""
+        refs = []
+
+        pnl = domain_data.get("pnl", {})
+        bs = domain_data.get("balance_sheet", {})
+        debt = domain_data.get("debt", {})
+        equity = domain_data.get("equity", {})
+
+        pnl_metrics = pnl.get("metrics", {})
+        bs_metrics = bs.get("metrics", {})
+
+        # Debt covenants referencing P&L metrics
+        for cov in debt.get("covenants", []):
+            details = cov.get("details", {})
+            if not isinstance(details, dict):
+                continue
+            cov_metric = (
+                details.get("metric", "")
+                or details.get("ratio", "")
+                or details.get("test", "")
+            ).lower()
+            for pnl_key in ["ebitda", "revenue", "net_income", "gross_profit"]:
+                if pnl_key in cov_metric and pnl_key in pnl_metrics:
+                    threshold = details.get("threshold") or details.get("minimum") or details.get("value")
+                    current = pnl_metrics[pnl_key]
+                    ref = {
+                        "type": "covenant_to_pnl",
+                        "description": f"Covenant tests {pnl_key} (current: {current})",
+                        "covenant_source": cov.get("source_doc"),
+                        "metric": pnl_key,
+                        "current_value": current,
+                    }
+                    if threshold is not None:
+                        try:
+                            ref["threshold"] = float(threshold)
+                            ref["headroom"] = round(float(current) - float(threshold), 2)
+                            ref["breached"] = float(current) < float(threshold)
+                        except (ValueError, TypeError):
+                            ref["threshold_raw"] = str(threshold)
+                    refs.append(ref)
+
+        # Debt covenants referencing balance sheet ratios
+        for cov in debt.get("covenants", []):
+            details = cov.get("details", {})
+            if not isinstance(details, dict):
+                continue
+            cov_metric = (
+                details.get("metric", "")
+                or details.get("ratio", "")
+            ).lower()
+            for bs_key in ["debt_to_equity", "current_ratio", "debt_to_assets"]:
+                if bs_key.replace("_", "") in cov_metric.replace("_", "").replace(" ", "") or \
+                   bs_key.replace("_", " ") in cov_metric:
+                    if bs_key in bs_metrics:
+                        threshold = details.get("threshold") or details.get("maximum") or details.get("value")
+                        current = bs_metrics[bs_key]
+                        ref = {
+                            "type": "covenant_to_balance_sheet",
+                            "description": f"Covenant tests {bs_key} (current: {current})",
+                            "covenant_source": cov.get("source_doc"),
+                            "metric": bs_key,
+                            "current_value": current,
+                        }
+                        if threshold is not None:
+                            try:
+                                ref["threshold"] = float(threshold)
+                            except (ValueError, TypeError):
+                                ref["threshold_raw"] = str(threshold)
+                        refs.append(ref)
+
+        # Equity anti-dilution provisions referencing balance sheet
+        for ad in equity.get("anti_dilution_provisions", []):
+            refs.append({
+                "type": "equity_to_balance_sheet",
+                "description": f"Anti-dilution ({ad.get('type')}) on {ad.get('round')} "
+                               f"could fire if down-round priced below equity value",
+                "round": ad.get("round"),
+                "anti_dilution_type": ad.get("type"),
+                "total_equity": bs_metrics.get("total_equity"),
+            })
+
+        # Legal clauses with financial thresholds
+        for clause in domain_data.get("legal", {}).get("clauses", []):
+            details = clause.get("details", {})
+            if not isinstance(details, dict):
+                continue
+            # Check for financial thresholds in termination/break clauses
+            for threshold_key in ["penalty", "fee", "amount", "value", "threshold"]:
+                if threshold_key in details:
+                    refs.append({
+                        "type": "legal_to_financial",
+                        "description": f"{clause['clause_type']} clause has financial threshold: "
+                                       f"{threshold_key}={details[threshold_key]}",
+                        "clause_type": clause["clause_type"],
+                        "source_doc": clause.get("source_doc"),
+                        "financial_value": details[threshold_key],
+                    })
+                    break
+
+        return refs
+
+    # ── Cascade engine bridge ─────────────────────────────────────────
+
+    async def _run_cascade_engine(
+        self, company_id: str, trigger: str, new_value: float
+    ) -> dict:
+        """Run legal cascade simulation for a trigger change."""
+        try:
+            from app.services.cascade_engine import CascadeEngine
+            from app.services.clause_parameter_registry import ResolvedParameterSet
+
+            # Get extracted docs from shared_data or build empty set
+            extracted_docs = self.shared_data.get("extracted_documents", {})
+            doc_list = []
+            if isinstance(extracted_docs, dict):
+                for doc_id, data in extracted_docs.items():
+                    if isinstance(data, dict):
+                        doc_list.append(data)
+                    elif isinstance(data, list):
+                        doc_list.append({"clauses": data})
+
+            if doc_list and self.clause_parameter_registry:
+                params = self.clause_parameter_registry.resolve_parameters(
+                    company_id, doc_list
+                )
+            else:
+                params = ResolvedParameterSet(company_id=company_id)
+
+            engine = CascadeEngine()
+            engine.build_from_clauses(params)
+            result = engine.simulate(
+                trigger=trigger,
+                new_value=new_value,
+                current_params=params,
+            )
+
+            # Serialize CascadeResult
+            return {
+                "trigger": result.trigger,
+                "steps_count": len(result.steps),
+                "steps": [
+                    {
+                        "step": s.step_number,
+                        "param_affected": s.param_affected,
+                        "old_value": s.old_value,
+                        "new_value": s.new_value,
+                        "edge_type": getattr(s, "edge_type", None),
+                        "description": getattr(s, "description", None),
+                    }
+                    for s in result.steps[:10]
+                ],
+                "cap_table_delta": result.cap_table_delta,
+                "cash_flow_delta": result.cash_flow_delta,
+                "governance_changes": result.governance_changes,
+                "exposure_changes": result.exposure_changes,
+            }
+        except Exception as e:
+            logger.warning(f"[CROSS_DOMAIN] cascade engine failed: {e}")
+            return {"error": str(e)}
+
+    def _merge_cascade_and_driver(
+        self, cascade_result: dict, driver_result: dict
+    ) -> list:
+        """Merge cascade engine outputs with driver impact chains.
+
+        Cascade outputs (covenant breach, anti-dilution firing) become
+        inputs to the driver impact financial BFS.
+        """
+        merged = []
+        if not cascade_result or not driver_result:
+            return merged
+
+        cascade_steps = cascade_result.get("steps", [])
+        driver_chains = driver_result.get("chains", [])
+
+        # Map cascade consequences to financial impacts
+        for step in cascade_steps:
+            edge_type = step.get("edge_type", "")
+            param = step.get("param_affected", "")
+
+            # Find driver chains that connect to this cascade output
+            matching_chains = []
+            for chain in driver_chains:
+                narrative = (chain.get("narrative", "") or "").lower()
+                if param.lower() in narrative or edge_type.lower() in narrative:
+                    matching_chains.append(chain)
+
+            merged.append({
+                "legal_trigger": {
+                    "step": step.get("step"),
+                    "type": edge_type,
+                    "param": param,
+                    "description": step.get("description"),
+                },
+                "financial_consequences": [
+                    {
+                        "narrative": c.get("narrative"),
+                        "terminal_impact": c.get("terminal_delta"),
+                    }
+                    for c in matching_chains[:3]
+                ],
+            })
+
+        # Add cash flow impact from cascade
+        cash_delta = cascade_result.get("cash_flow_delta", {})
+        if cash_delta:
+            merged.append({
+                "legal_trigger": {"type": "aggregate_cash_flow_impact"},
+                "financial_consequences": [
+                    {"category": k, "impact": v}
+                    for k, v in cash_delta.items()
+                ],
+            })
+
+        return merged
+
+    # ── Domain auto-detection ─────────────────────────────────────────
+
+    @staticmethod
+    def _infer_domains(query: str) -> list:
+        """Infer relevant domains from query keywords."""
+        if not query:
+            return []
+
+        q = query.lower()
+        domains = []
+
+        pnl_kw = ["revenue", "cogs", "margin", "ebitda", "profit", "loss", "income", "expense", "opex", "burn"]
+        bs_kw = ["asset", "liability", "equity", "balance sheet", "leverage", "current ratio", "working capital"]
+        debt_kw = ["debt", "loan", "covenant", "facility", "charge", "security", "cross-default", "acceleration", "maturity"]
+        legal_kw = ["clause", "contract", "termination", "change of control", "guarantee", "indemnity", "break clause", "notice"]
+        equity_kw = ["dilution", "anti-dilution", "cap table", "shares", "conversion", "liquidation", "preference", "warrant", "safe", "convertible"]
+
+        if any(kw in q for kw in pnl_kw):
+            domains.append("pnl")
+        if any(kw in q for kw in bs_kw):
+            domains.append("balance_sheet")
+        if any(kw in q for kw in debt_kw):
+            domains.append("debt")
+        if any(kw in q for kw in legal_kw):
+            domains.append("legal")
+        if any(kw in q for kw in equity_kw):
+            domains.append("equity")
+
+        return domains
 
     async def _tool_fpa_monte_carlo(self, inputs: dict) -> dict:
         """Monte Carlo simulation over the cash flow model."""
@@ -14283,9 +16060,9 @@ Rules:
                 "pnl": (
                     "- READ the grid first (fpa_pnl or fpa_actuals) before acting.\n"
                     "- WRITE to grid, not to memo. The grid IS your workspace.\n"
-                    "- Chat response: the key number + what it means. 1-3 sentences.\n"
-                    "- Memo ONLY when user explicitly asks for one.\n"
-                    "- ALWAYS generate a chart when showing trends, forecasts, or comparisons."
+                    "- Chat: key number + what it means. 1-3 sentences. Memo only if asked.\n"
+                    "- ALWAYS chart trends, forecasts, comparisons.\n"
+                    "- For scenarios: inspect_drivers → adjust_driver. User controls the levers, you show impact."
                 ),
                 "portfolio": (
                     "- READ the grid (query_portfolio) before enriching or analyzing.\n"
@@ -14297,6 +16074,12 @@ Rules:
                     "- LP view is READ-ONLY. Read via query_portfolio + calculate_fund_metrics.\n"
                     "- To change LP metrics, update underlying company/fund data.\n"
                     "- Chat: answer with the metric. Memo for LP reports."
+                ),
+                "balance_sheet": (
+                    "- READ balance sheet first (build_balance_sheet) before analyzing.\n"
+                    "- Compare assets vs liabilities, check balance.\n"
+                    "- Cross-reference with P&L (switch to pnl) for income linkage.\n"
+                    "- ALWAYS check balance_check row — non-zero means error."
                 ),
             }
             _rules_text = _mode_rules.get(grid_mode, _mode_rules["portfolio"])
@@ -14559,6 +16342,12 @@ JSON — pick one:
                         session_plan.mark_done(single_step.id, result)
                 iter_results = [{"tool": single_step.tool, "input": single_step.inputs,
                                  "output": result, "step_id": single_step.id}]
+
+            # --- Drain any intermediate streaming events (e.g. doc progress) ---
+            if self._streaming_event_queue:
+                for _streamed in self._streaming_event_queue:
+                    yield _streamed
+                self._streaming_event_queue.clear()
 
             # --- Stream tool_end for each completed tool ---
             _tool_elapsed_ms = int((_time_mod.monotonic() - _tool_start_ts) * 1000)

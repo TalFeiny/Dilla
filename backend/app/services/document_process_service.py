@@ -1437,6 +1437,224 @@ def _normalize_extraction(d: Dict[str, Any], document_type: Optional[str] = None
     return out
 
 
+def run_post_extraction_pipeline(
+    *,
+    extracted_data: Dict[str, Any],
+    document_id: str,
+    document_type: str,
+    company_id: Optional[str],
+    fund_id: Optional[str],
+    document_name: str,
+    field_count: int = 0,
+) -> None:
+    """Run the full post-extraction pipeline: suggestions, bridges, cap table, actuals.
+
+    Called by both run_document_process (single-doc) and the parallel batch path.
+    All errors are caught and logged — never raises.
+    """
+    doc_type_for_routing = (document_type or "").strip().lower()
+
+    # ── Portfolio suggestions (non-legal, non-financial-statement) ──
+    if company_id and fund_id and extracted_data and doc_type_for_routing not in LEGAL_DOC_TYPES and doc_type_for_routing != "financial_statement":
+        try:
+            from app.services.micro_skills.suggestion_emitter import emit_document_suggestions
+            n = emit_document_suggestions(
+                extracted_data=extracted_data,
+                company_id=company_id,
+                fund_id=fund_id,
+                document_id=document_id,
+                document_name=document_name,
+            )
+            if n:
+                logger.info("Emitted %d portfolio suggestions from document %s (type=%s)", n, document_id, doc_type_for_routing)
+            else:
+                logger.info(
+                    "[DOC_PROCESS] No portfolio suggestions emitted from document %s "
+                    "(extracted %d fields, company_id=%s, fund_id=%s)",
+                    document_id, field_count, company_id, fund_id,
+                )
+        except Exception as e:
+            logger.warning("Failed to emit document suggestions for %s: %s", document_id, e, exc_info=True)
+    elif doc_type_for_routing in LEGAL_DOC_TYPES:
+        logger.info("[DOC_PROCESS] Skipping portfolio emitter for legal doc %s (type=%s) — legal emitter handles this", document_id, doc_type_for_routing)
+    elif doc_type_for_routing == "financial_statement":
+        logger.info("[DOC_PROCESS] Skipping portfolio emitter for financial_statement doc %s — actuals ingestion handles this", document_id)
+
+    # ── Legal clause suggestions ──
+    if company_id and fund_id and extracted_data and doc_type_for_routing in LEGAL_DOC_TYPES:
+        try:
+            from app.services.micro_skills.suggestion_emitter import emit_legal_suggestions
+            n = emit_legal_suggestions(
+                extracted_data=extracted_data,
+                company_id=company_id,
+                fund_id=fund_id,
+                document_id=document_id,
+                document_name=document_name,
+            )
+            if n:
+                logger.info("Emitted %d legal clause suggestions from document %s", n, document_id)
+        except Exception as e:
+            logger.warning("Failed to emit legal suggestions for %s: %s", document_id, e, exc_info=True)
+
+    # ── Contract → P&L bridge (ERP attribution) ──
+    if company_id and extracted_data and extracted_data.get("erp_attribution"):
+        from app.services.contract_pnl_bridge import COMMERCIAL_DOC_TYPES, INTERCOMPANY_DOC_TYPES
+        if doc_type_for_routing in COMMERCIAL_DOC_TYPES or doc_type_for_routing in LEGAL_DOC_TYPES:
+            try:
+                from app.services.contract_pnl_bridge import bridge_contract_to_pnl
+                pnl_result = bridge_contract_to_pnl(
+                    extracted_data=extracted_data,
+                    company_id=company_id,
+                    fund_id=fund_id,
+                    document_id=document_id,
+                    document_type=doc_type_for_routing,
+                    document_name=document_name,
+                )
+                if pnl_result.get("success"):
+                    logger.info(
+                        "[DOC_PNL_BRIDGE] Wrote %d P&L rows for doc %s (%s)",
+                        pnl_result["rows_written"], document_id,
+                        pnl_result.get("details", {}).get("hierarchy_path", ""),
+                    )
+            except Exception as e:
+                logger.warning("[DOC_PNL_BRIDGE] Failed for %s: %s", document_id, e, exc_info=True)
+
+        # Intercompany agreements → TP engine suggestions
+        if doc_type_for_routing in INTERCOMPANY_DOC_TYPES:
+            try:
+                from app.services.contract_pnl_bridge import bridge_contract_to_tp
+                tp_result = bridge_contract_to_tp(
+                    extracted_data=extracted_data,
+                    company_id=company_id,
+                    document_id=document_id,
+                    document_name=document_name,
+                )
+                if tp_result.get("success"):
+                    logger.info(
+                        "[DOC_TP_BRIDGE] Created IC suggestion for doc %s (%s)",
+                        document_id, tp_result.get("transaction_type"),
+                    )
+            except Exception as e:
+                logger.warning("[DOC_TP_BRIDGE] Failed for %s: %s", document_id, e, exc_info=True)
+
+    # ── Time-series actuals ──
+    if company_id and extracted_data and extracted_data.get("time_series"):
+        try:
+            from app.services.actuals_ingestion import ingest_time_series
+            n = ingest_time_series(
+                time_series=extracted_data["time_series"],
+                company_id=company_id,
+                fund_id=fund_id,
+                document_id=document_id,
+            )
+            if n:
+                logger.info("Ingested %d actuals rows from document %s", n, document_id)
+        except Exception as e:
+            logger.warning("Failed to ingest actuals for %s: %s", document_id, e, exc_info=True)
+    elif not company_id or not fund_id:
+        logger.info(
+            "[DOC_PROCESS] Skipping suggestion emission for %s: company_id=%s, fund_id=%s",
+            document_id, company_id, fund_id,
+        )
+
+    # ── Path A: Document-derived cap table (SHA, term_sheet, etc. with cap table xrefs) ──
+    cap_table_doc_types = {"sha", "term_sheet", "side_letter", "option_agreement", "spa", "convertible_note", "safe"}
+    if company_id and fund_id and extracted_data and doc_type_for_routing in cap_table_doc_types:
+        has_cap_table_xrefs = any(
+            xr.get("to_service") == "cap_table"
+            for clause in (extracted_data.get("clauses") or [])
+            if isinstance(clause, dict)
+            for xr in (clause.get("cross_references") or [])
+            if isinstance(xr, dict)
+        )
+        if has_cap_table_xrefs:
+            try:
+                from app.services.legal_cap_table_bridge import LegalCapTableBridge
+                bridge = LegalCapTableBridge()
+                bridge_result = bridge.build_from_documents(company_id, fund_id, document_id)
+                if bridge_result.get("success"):
+                    logger.info("[DOC_CAP_TABLE] Built document-derived cap table for company %s from document %s", company_id, document_id)
+                    try:
+                        from app.services.micro_skills.suggestion_emitter import emit_cap_table_suggestions
+                        emit_cap_table_suggestions(
+                            cap_table_result=bridge_result,
+                            company_id=company_id,
+                            fund_id=fund_id,
+                            document_id=document_id,
+                            document_name=document_name,
+                        )
+                    except Exception as e_emit:
+                        logger.warning("[DOC_CAP_TABLE] Cap table suggestion emission failed: %s", e_emit)
+            except Exception as e:
+                logger.warning("[DOC_CAP_TABLE] Document-derived cap table failed for %s: %s", document_id, e, exc_info=True)
+
+    # ── Path B: Synthetic cap table from funding signals (fallback) ──
+    if company_id and fund_id and extracted_data:
+        has_funding_signal = (
+            extracted_data.get("stage")
+            or extracted_data.get("total_funding")
+            or extracted_data.get("valuation_pre_money")
+            or extracted_data.get("round")
+        )
+        if has_funding_signal:
+            try:
+                from app.services.pre_post_cap_table import PrePostCapTable
+                from app.services.intelligent_gap_filler import IntelligentGapFiller
+
+                gap_filler = IntelligentGapFiller()
+                synthetic_rounds = gap_filler.generate_stage_based_funding_rounds(extracted_data)
+                if not synthetic_rounds:
+                    stage = extracted_data.get("stage") or extracted_data.get("round") or "Unknown"
+                    amount = extracted_data.get("total_funding") or extracted_data.get("valuation_pre_money") or 0
+                    if amount:
+                        synthetic_rounds = [{"round": stage, "amount": amount}]
+
+                if synthetic_rounds:
+                    cap_data = {
+                        "funding_rounds": synthetic_rounds,
+                        "founders": [],
+                        "is_yc": False,
+                        "geography": extracted_data.get("geography", "Unknown"),
+                    }
+                    cap_service = PrePostCapTable()
+                    cap_result = cap_service.calculate_full_cap_table_history(cap_data)
+
+                    from app.core.database import get_supabase_service
+                    sb = get_supabase_service()
+                    if sb:
+                        client = sb.get_client() if hasattr(sb, 'get_client') else sb
+                        if client:
+                            source = "extracted" if extracted_data.get("total_funding") else "synthetic"
+                            client.table("company_cap_tables").upsert({
+                                "portfolio_id": fund_id,
+                                "company_id": company_id,
+                                "company_name": extracted_data.get("company_name", ""),
+                                "cap_table_json": cap_result.get("current_cap_table", {}),
+                                "sankey_data": cap_result.get("sankey_data"),
+                                "waterfall_data": cap_result.get("waterfall_data"),
+                                "ownership_summary": cap_result.get("ownership_summary"),
+                                "founder_ownership": cap_result.get("founder_ownership"),
+                                "total_raised": cap_result.get("total_raised"),
+                                "num_rounds": cap_result.get("num_rounds"),
+                                "source": source,
+                                "funding_data_source": f"document:{document_id}",
+                            }, on_conflict="portfolio_id,company_id").execute()
+                            logger.info("[DOC_CAP_TABLE] Persisted cap table for company %s from document %s", company_id, document_id)
+
+                            founder_own = cap_result.get("founder_ownership")
+                            if founder_own is not None:
+                                client.table("pending_suggestions").upsert({
+                                    "fund_id": fund_id,
+                                    "company_id": company_id,
+                                    "column_id": "founderOwnership",
+                                    "suggested_value": {"value": founder_own},
+                                    "source_service": "doc_cap_table",
+                                    "reasoning": f"Founder ownership from document extraction: {founder_own:.1f}%",
+                                }, on_conflict="fund_id,company_id,column_id").execute()
+            except Exception as e:
+                logger.warning("[DOC_CAP_TABLE] Cap table calculation failed for document %s: %s", document_id, e, exc_info=True)
+
+
 def run_document_process(
     document_id: str,
     storage_path: str,
@@ -1626,217 +1844,15 @@ def run_document_process(
             update_payload["fund_id"] = fund_id
         doc_repo.update(document_id, update_payload)
 
-        # Persist extracted metrics as individual pending_suggestions rows
-        # so the badge-based suggestion pipeline picks them up automatically.
-        # ONLY for portfolio-relevant doc types — legal and financial_statement
-        # have their own dedicated emitters / ingestion paths.
-        doc_type_for_routing = (document_type or "").strip().lower()
-        if company_id and fund_id and extracted_data and doc_type_for_routing not in LEGAL_DOC_TYPES and doc_type_for_routing != "financial_statement":
-            try:
-                from app.services.micro_skills.suggestion_emitter import emit_document_suggestions
-                n = emit_document_suggestions(
-                    extracted_data=extracted_data,
-                    company_id=company_id,
-                    fund_id=fund_id,
-                    document_id=document_id,
-                    document_name=Path(storage_path).stem,
-                )
-                if n:
-                    logger.info("Emitted %d portfolio suggestions from document %s (type=%s)", n, document_id, doc_type_for_routing)
-                else:
-                    logger.info(
-                        "[DOC_PROCESS] No portfolio suggestions emitted from document %s "
-                        "(extracted %d fields, company_id=%s, fund_id=%s)",
-                        document_id, field_count, company_id, fund_id,
-                    )
-            except Exception as e:
-                logger.warning("Failed to emit document suggestions for %s: %s", document_id, e, exc_info=True)
-        elif doc_type_for_routing in LEGAL_DOC_TYPES:
-            logger.info("[DOC_PROCESS] Skipping portfolio emitter for legal doc %s (type=%s) — legal emitter handles this", document_id, doc_type_for_routing)
-        elif doc_type_for_routing == "financial_statement":
-            logger.info("[DOC_PROCESS] Skipping portfolio emitter for financial_statement doc %s — actuals ingestion handles this", document_id)
-
-        # Legal docs: emit clause-level suggestions to the legal grid
-        if company_id and fund_id and extracted_data and (document_type or "").strip().lower() in LEGAL_DOC_TYPES:
-            try:
-                from app.services.micro_skills.suggestion_emitter import emit_legal_suggestions
-                n = emit_legal_suggestions(
-                    extracted_data=extracted_data,
-                    company_id=company_id,
-                    fund_id=fund_id,
-                    document_id=document_id,
-                    document_name=Path(storage_path).stem,
-                )
-                if n:
-                    logger.info("Emitted %d legal clause suggestions from document %s", n, document_id)
-            except Exception as e:
-                logger.warning("Failed to emit legal suggestions for %s: %s", document_id, e, exc_info=True)
-
-        # Commercial contracts: bridge ERP attribution → fpa_actuals (P&L line items)
-        doc_type_lower_bridge = (document_type or "").strip().lower()
-        if company_id and extracted_data and extracted_data.get("erp_attribution"):
-            from app.services.contract_pnl_bridge import COMMERCIAL_DOC_TYPES, INTERCOMPANY_DOC_TYPES
-            if doc_type_lower_bridge in COMMERCIAL_DOC_TYPES or doc_type_lower_bridge in LEGAL_DOC_TYPES:
-                try:
-                    from app.services.contract_pnl_bridge import bridge_contract_to_pnl
-                    pnl_result = bridge_contract_to_pnl(
-                        extracted_data=extracted_data,
-                        company_id=company_id,
-                        fund_id=fund_id,
-                        document_id=document_id,
-                        document_type=doc_type_lower_bridge,
-                        document_name=Path(storage_path).stem,
-                    )
-                    if pnl_result.get("success"):
-                        logger.info(
-                            "[DOC_PNL_BRIDGE] Wrote %d P&L rows for doc %s (%s)",
-                            pnl_result["rows_written"], document_id,
-                            pnl_result.get("details", {}).get("hierarchy_path", ""),
-                        )
-                except Exception as e:
-                    logger.warning("[DOC_PNL_BRIDGE] Failed for %s: %s", document_id, e, exc_info=True)
-
-            # Intercompany agreements → TP engine suggestions
-            if doc_type_lower_bridge in INTERCOMPANY_DOC_TYPES:
-                try:
-                    from app.services.contract_pnl_bridge import bridge_contract_to_tp
-                    tp_result = bridge_contract_to_tp(
-                        extracted_data=extracted_data,
-                        company_id=company_id,
-                        document_id=document_id,
-                        document_name=Path(storage_path).stem,
-                    )
-                    if tp_result.get("success"):
-                        logger.info(
-                            "[DOC_TP_BRIDGE] Created IC suggestion for doc %s (%s)",
-                            document_id, tp_result.get("transaction_type"),
-                        )
-                except Exception as e:
-                    logger.warning("[DOC_TP_BRIDGE] Failed for %s: %s", document_id, e, exc_info=True)
-
-        # Persist time-series actuals if present
-        if company_id and extracted_data and extracted_data.get("time_series"):
-            try:
-                from app.services.actuals_ingestion import ingest_time_series
-                n = ingest_time_series(
-                    time_series=extracted_data["time_series"],
-                    company_id=company_id,
-                    fund_id=fund_id,
-                    document_id=document_id,
-                )
-                if n:
-                    logger.info("Ingested %d actuals rows from document %s", n, document_id)
-            except Exception as e:
-                logger.warning("Failed to ingest actuals for %s: %s", document_id, e, exc_info=True)
-
-        elif not company_id or not fund_id:
-            logger.info(
-                "[DOC_PROCESS] Skipping suggestion emission for %s: company_id=%s, fund_id=%s",
-                document_id, company_id, fund_id,
-            )
-
-        # Path A: Document-derived cap table (SHA, term_sheet, side_letter with cap table xrefs)
-        cap_table_doc_types = {"sha", "term_sheet", "side_letter", "option_agreement", "spa", "convertible_note", "safe"}
-        doc_type_lower = (document_type or "").strip().lower()
-        if company_id and fund_id and extracted_data and doc_type_lower in cap_table_doc_types:
-            has_cap_table_xrefs = any(
-                xr.get("to_service") == "cap_table"
-                for clause in (extracted_data.get("clauses") or [])
-                if isinstance(clause, dict)
-                for xr in (clause.get("cross_references") or [])
-                if isinstance(xr, dict)
-            )
-            if has_cap_table_xrefs:
-                try:
-                    from app.services.legal_cap_table_bridge import LegalCapTableBridge
-                    bridge = LegalCapTableBridge()
-                    bridge_result = bridge.build_from_documents(company_id, fund_id, document_id)
-                    if bridge_result.get("success"):
-                        logger.info("[DOC_CAP_TABLE] Built document-derived cap table for company %s from document %s", company_id, document_id)
-                        # Emit shareholder-level suggestions for the cap table grid
-                        try:
-                            from app.services.micro_skills.suggestion_emitter import emit_cap_table_suggestions
-                            emit_cap_table_suggestions(
-                                cap_table_result=bridge_result,
-                                company_id=company_id,
-                                fund_id=fund_id,
-                                document_id=document_id,
-                                document_name=Path(storage_path).stem,
-                            )
-                        except Exception as e_emit:
-                            logger.warning("[DOC_CAP_TABLE] Cap table suggestion emission failed: %s", e_emit)
-                except Exception as e:
-                    logger.warning("[DOC_CAP_TABLE] Document-derived cap table failed for %s: %s", document_id, e, exc_info=True)
-
-        # Path B: Synthetic cap table from funding signals (fallback)
-        if company_id and fund_id and extracted_data:
-            has_funding_signal = (
-                extracted_data.get("stage")
-                or extracted_data.get("total_funding")
-                or extracted_data.get("valuation_pre_money")
-                or extracted_data.get("round")
-            )
-            if has_funding_signal:
-                try:
-                    from app.services.pre_post_cap_table import PrePostCapTable
-                    from app.services.intelligent_gap_filler import IntelligentGapFiller
-
-                    # Reconstruct funding rounds from flat extracted fields
-                    gap_filler = IntelligentGapFiller()
-                    synthetic_rounds = gap_filler.generate_stage_based_funding_rounds(extracted_data)
-                    if not synthetic_rounds:
-                        # Minimal single-round fallback
-                        stage = extracted_data.get("stage") or extracted_data.get("round") or "Unknown"
-                        amount = extracted_data.get("total_funding") or extracted_data.get("valuation_pre_money") or 0
-                        if amount:
-                            synthetic_rounds = [{"round": stage, "amount": amount}]
-
-                    if synthetic_rounds:
-                        cap_data = {
-                            "funding_rounds": synthetic_rounds,
-                            "founders": [],
-                            "is_yc": False,
-                            "geography": extracted_data.get("geography", "Unknown"),
-                        }
-                        cap_service = PrePostCapTable()
-                        cap_result = cap_service.calculate_full_cap_table_history(cap_data)
-
-                        # Persist to company_cap_tables
-                        from app.core.database import get_supabase_service
-                        sb = get_supabase_service()
-                        if sb:
-                            client = sb.get_client() if hasattr(sb, 'get_client') else sb
-                            if client:
-                                source = "extracted" if extracted_data.get("total_funding") else "synthetic"
-                                client.table("company_cap_tables").upsert({
-                                    "portfolio_id": fund_id,
-                                    "company_id": company_id,
-                                    "company_name": extracted_data.get("company_name", ""),
-                                    "cap_table_json": cap_result.get("current_cap_table", {}),
-                                    "sankey_data": cap_result.get("sankey_data"),
-                                    "waterfall_data": cap_result.get("waterfall_data"),
-                                    "ownership_summary": cap_result.get("ownership_summary"),
-                                    "founder_ownership": cap_result.get("founder_ownership"),
-                                    "total_raised": cap_result.get("total_raised"),
-                                    "num_rounds": cap_result.get("num_rounds"),
-                                    "source": source,
-                                    "funding_data_source": f"document:{document_id}",
-                                }, on_conflict="portfolio_id,company_id").execute()
-                                logger.info("[DOC_CAP_TABLE] Persisted cap table for company %s from document %s", company_id, document_id)
-
-                                # Also emit founderOwnership as a suggestion for the grid
-                                founder_own = cap_result.get("founder_ownership")
-                                if founder_own is not None:
-                                    client.table("pending_suggestions").upsert({
-                                        "fund_id": fund_id,
-                                        "company_id": company_id,
-                                        "column_id": "founderOwnership",
-                                        "suggested_value": {"value": founder_own},
-                                        "source_service": "doc_cap_table",
-                                        "reasoning": f"Founder ownership from document extraction: {founder_own:.1f}%",
-                                    }, on_conflict="fund_id,company_id,column_id").execute()
-                except Exception as e:
-                    logger.warning("[DOC_CAP_TABLE] Cap table calculation failed for document %s: %s", document_id, e, exc_info=True)
+        run_post_extraction_pipeline(
+            extracted_data=extracted_data,
+            document_id=document_id,
+            document_type=document_type or "other",
+            company_id=company_id,
+            fund_id=fund_id,
+            document_name=Path(storage_path).stem,
+            field_count=field_count,
+        )
 
         result = {
             "success": True,

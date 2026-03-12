@@ -66,6 +66,8 @@ export interface DocumentSection {
   };
   /** Whether this section is draggable context */
   is_context?: boolean;
+  /** Chart ID for live chart rebuilds (Layer 3) */
+  chartId?: number;
 }
 
 export interface MemoEditorProps {

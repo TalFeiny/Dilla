@@ -455,6 +455,121 @@ class NLScenarioComposer:
         return current_value
     
     # ------------------------------------------------------------------
+    # Direct NL → driver mapping (fast path for "cut burn 20%", etc.)
+    # ------------------------------------------------------------------
+
+    # Patterns that map natural language to driver_id + value extraction
+    DIRECT_DRIVER_PATTERNS: List[Tuple[str, str, str]] = [
+        # (regex, driver_id, value_mode)
+        # value_mode: "pct_of" (extract % → decimal), "abs" (extract $ amount),
+        # "shift" (extract signed number), "pct_cut" (% → negative decimal)
+
+        # Burn rate
+        (r"(?:cut|reduce|lower|decrease)\s+burn\s+(?:rate\s+)?(?:by\s+)?(\d+(?:\.\d+)?)\s*%", "burn_rate", "pct_cut"),
+        (r"(?:increase|raise|grow)\s+burn\s+(?:rate\s+)?(?:by\s+)?(\d+(?:\.\d+)?)\s*%", "burn_rate", "pct_raise"),
+        (r"set\s+burn\s+(?:rate\s+)?(?:to\s+)?\$?([\d,.]+)(?:k|K)", "burn_rate", "abs_k"),
+
+        # Revenue growth
+        (r"(?:set|make|change)\s+(?:revenue\s+)?growth\s+(?:rate\s+)?(?:to\s+)?(\d+(?:\.\d+)?)\s*%", "revenue_growth", "pct_of"),
+        (r"(?:increase|raise|grow)\s+(?:revenue\s+)?growth\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*%", "revenue_growth", "pct_of"),
+        (r"(?:cut|reduce|lower|decrease|slow)\s+(?:revenue\s+)?growth\s+(?:to\s+)?(\d+(?:\.\d+)?)\s*%", "revenue_growth", "pct_of"),
+
+        # Headcount
+        (r"(?:hire|add)\s+(\d+)\s+(?:people|employees|heads?|engineers?|staff)", "headcount_change", "shift"),
+        (r"(?:cut|fire|layoff|lay off|reduce)\s+(\d+)\s+(?:people|employees|heads?|engineers?|staff)", "headcount_change", "shift_neg"),
+        (r"(?:increase|grow)\s+headcount\s+(?:by\s+)?(\d+)", "headcount_change", "shift"),
+        (r"(?:reduce|cut|decrease)\s+headcount\s+(?:by\s+)?(\d+)", "headcount_change", "shift_neg"),
+
+        # Gross margin
+        (r"(?:set|change|make)\s+(?:gross\s+)?margin\s+(?:to\s+)?(\d+(?:\.\d+)?)\s*%", "gross_margin", "pct_of"),
+
+        # R&D spend
+        (r"(?:cut|reduce|lower)\s+(?:r&d|rd|R&D|research)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*%", "rd_pct", "pct_cut"),
+        (r"(?:increase|raise|grow)\s+(?:r&d|rd|R&D|research)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*%", "rd_pct", "pct_raise"),
+
+        # S&M spend
+        (r"(?:cut|reduce|lower)\s+(?:s&m|sm|S&M|sales|marketing)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*%", "sm_pct", "pct_cut"),
+        (r"(?:increase|raise|grow)\s+(?:s&m|sm|S&M|sales|marketing)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*%", "sm_pct", "pct_raise"),
+
+        # G&A spend
+        (r"(?:cut|reduce|lower)\s+(?:g&a|ga|G&A|admin|overhead)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*%", "ga_pct", "pct_cut"),
+
+        # Funding / raise
+        (r"(?:raise|inject|get|close)\s+\$?([\d,.]+)\s*([mMbB])", "funding_injection", "abs_mb"),
+
+        # Pricing
+        (r"(?:increase|raise)\s+pric(?:es?|ing)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*%", "pricing_change", "pct_of"),
+        (r"(?:cut|reduce|lower|decrease)\s+pric(?:es?|ing)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*%", "pricing_change", "pct_cut"),
+    ]
+
+    def parse_direct_driver_query(
+        self,
+        query: str,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Fast path: detect direct driver language and return driver changes.
+
+        Returns a list of {driver_id, value} dicts if the query maps directly
+        to driver adjustments. Returns None if no direct mapping found (caller
+        should fall through to macro event pipeline).
+
+        Examples:
+            "cut burn 20%" → [{"driver_id": "burn_rate", "value": -0.20}]
+            "hire 10 engineers" → [{"driver_id": "headcount_change", "value": 10}]
+            "raise $5M" → [{"driver_id": "funding_injection", "value": 5_000_000}]
+        """
+        query_lower = query.lower().strip()
+        # Strip leading "what if" etc.
+        query_lower = re.sub(r"^(what\s+(?:happens?\s+)?if|if)\s+(?:we\s+)?", "", query_lower)
+
+        results: List[Dict[str, Any]] = []
+        matched_spans: List[Tuple[int, int]] = []
+
+        # Try to split by "and" to handle compound queries
+        parts = re.split(r"\s+and\s+", query_lower)
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            for pattern, driver_id, value_mode in self.DIRECT_DRIVER_PATTERNS:
+                match = re.search(pattern, part, re.IGNORECASE)
+                if not match:
+                    continue
+
+                raw = match.group(1)
+                raw_clean = raw.replace(",", "")
+
+                try:
+                    if value_mode == "pct_of":
+                        value = float(raw_clean) / 100.0
+                    elif value_mode == "pct_cut":
+                        value = -float(raw_clean) / 100.0
+                    elif value_mode == "pct_raise":
+                        value = float(raw_clean) / 100.0
+                    elif value_mode == "abs":
+                        value = float(raw_clean)
+                    elif value_mode == "abs_k":
+                        value = float(raw_clean) * 1_000
+                    elif value_mode == "abs_mb":
+                        multiplier_char = match.group(2).lower()
+                        mult = 1_000_000 if multiplier_char == "m" else 1_000_000_000
+                        value = float(raw_clean) * mult
+                    elif value_mode == "shift":
+                        value = int(float(raw_clean))
+                    elif value_mode == "shift_neg":
+                        value = -int(float(raw_clean))
+                    else:
+                        value = float(raw_clean)
+                except (ValueError, TypeError):
+                    continue
+
+                results.append({"driver_id": driver_id, "value": value})
+                break  # first pattern match per part wins
+
+        return results if results else None
+
+    # ------------------------------------------------------------------
     # Scenario tree growth path parsing
     # ------------------------------------------------------------------
 

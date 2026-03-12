@@ -79,7 +79,7 @@ export interface AgentPanelProps {
   /** Memo sections — passed to AgentChat for context forwarding */
   memoSections?: Array<{ type: string; content?: string }>;
   /** Callback when agent returns memo_updates */
-  onMemoUpdates?: (updates: { action: string; sections: Array<{ type: string; content?: string; chart?: unknown; items?: string[]; table?: unknown }> }) => void;
+  onMemoUpdates?: (updates: { action: string; sections?: Array<{ type: string; content?: string; chart?: unknown; chartId?: number; items?: string[]; table?: unknown }>; chartId?: number; chart?: unknown }) => void;
   /** Emit rich analysis to bottom panel */
   onAnalysisReady?: (analysis: {
     sections: Array<{ title?: string; content?: string; level?: number }>;

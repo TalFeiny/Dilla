@@ -2373,6 +2373,77 @@ class ModelRouter:
 
         return ToolAdapter.parse_openai_response(response)
 
+    # ------------------------------------------------------------------
+    # Provider-level routing for concurrent multi-doc processing
+    # ------------------------------------------------------------------
+
+    def get_available_providers(self) -> list[str]:
+        """Return provider names with valid API keys and no active circuit breaker.
+
+        Used by ParallelDocProcessor to fan LLM calls across providers.
+        """
+        provider_key_map: dict[str, bool] = {
+            "anthropic": bool(self.anthropic_key),
+            "openai": bool(self.openai_key),
+            "google": bool(self.google_key),
+            "groq": bool(self.groq_key),
+            "together": bool(self.together_key),
+        }
+        available: list[str] = []
+        for provider, has_key in provider_key_map.items():
+            if not has_key:
+                continue
+            # Pick the best model for this provider and check circuit breaker
+            best = self.get_model_for_provider(provider)
+            if best and not self._is_circuit_broken(best["name"]):
+                available.append(provider)
+        return available
+
+    def get_model_for_provider(self, provider: str) -> dict | None:
+        """Return the best analysis-capable model config for a specific provider.
+
+        Returns dict with keys: name, model, provider, max_tokens, tier
+        or None if no model available for that provider.
+        """
+        from app.services.model_router import ModelProvider
+        try:
+            target_provider = ModelProvider(provider)
+        except ValueError:
+            return None
+
+        candidates = []
+        for name, config in self.model_configs.items():
+            if config["provider"] != target_provider:
+                continue
+            # Prefer models with ANALYSIS or STRUCTURED capability
+            has_analysis = ModelCapability.ANALYSIS in config.get("capabilities", [])
+            has_structured = ModelCapability.STRUCTURED in config.get("capabilities", [])
+            candidates.append({
+                "name": name,
+                "model": config["model"],
+                "provider": provider,
+                "max_tokens": config.get("max_tokens", 4096),
+                "tier": config.get("tier", ModelTier.CHEAP).value,
+                "priority": config.get("priority", 99),
+                "has_analysis": has_analysis,
+                "has_structured": has_structured,
+            })
+
+        if not candidates:
+            return None
+
+        # Sort: analysis-capable first, then by priority (lower is better)
+        candidates.sort(key=lambda c: (not c["has_analysis"], c["priority"]))
+        best = candidates[0]
+        # Strip internal sorting fields
+        return {
+            "name": best["name"],
+            "model": best["model"],
+            "provider": best["provider"],
+            "max_tokens": best["max_tokens"],
+            "tier": best["tier"],
+        }
+
     async def close(self):
         """Close any open sessions"""
         if self.session:

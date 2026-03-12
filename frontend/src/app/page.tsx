@@ -1,223 +1,443 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { motion, useInView, AnimatePresence } from 'framer-motion';
 import {
   ArrowRight,
-  Shield,
   LineChart,
-  Users,
-  Sparkles,
+  FileText,
+  TrendingUp,
+  Layers,
+  GitBranch,
+  Brain,
+  Table2,
+  FileSearch,
+  Building2,
+  Rocket,
+  BarChart3,
+  Network,
   CheckCircle2,
-  Target,
-  BarChart3
+  Shield,
 } from 'lucide-react';
 
-const proofPoints = [
+// ---------------------------------------------------------------------------
+// Data
+// ---------------------------------------------------------------------------
+
+const features = [
   {
-    label: 'Deal Boards',
-    value: '18+',
-    description: 'Funds standardize their IC materials on Dilla.'
+    icon: <LineChart className="h-5 w-5" />,
+    title: 'FP&A',
+    description: 'P&L, cash flow, balance sheet, and forecasts built from your actuals. Change a driver, see it cascade through every line item.',
   },
   {
-    label: 'Faster Decisions',
-    value: '4x',
-    description: 'Reduction in time spent from intake to IC review.'
+    icon: <FileText className="h-5 w-5" />,
+    title: 'Contract Intelligence',
+    description: 'Upload any contract. Dilla extracts every clause, quantifies the financial impact, and feeds the terms directly into your model.',
   },
   {
-    label: 'Sources Consolidated',
-    value: '40+',
-    description: 'Data providers, models, and war rooms unified.'
-  }
+    icon: <TrendingUp className="h-5 w-5" />,
+    title: 'Capital Strategy',
+    description: 'Cap table, waterfall, debt structures, and valuation — derived from your actual legal documents, not manual data entry.',
+  },
+  {
+    icon: <GitBranch className="h-5 w-5" />,
+    title: 'Scenario Engine',
+    description: 'Branch any assumption. Revenue drops, a contract expires, rates move — see the full cascade across financials, covenants, and equity.',
+  },
+  {
+    icon: <Brain className="h-5 w-5" />,
+    title: 'Agent',
+    description: 'Ask questions in plain English. The agent reasons across your P&L, contracts, and capital structure to give you one connected answer.',
+  },
+  {
+    icon: <Layers className="h-5 w-5" />,
+    title: 'Multi-Entity',
+    description: 'Group structures, intercompany flows, and transfer pricing. Roll up subsidiaries into a consolidated view with full attribution.',
+  },
+  {
+    icon: <FileSearch className="h-5 w-5" />,
+    title: 'Document Processing',
+    description: '50+ document types — term sheets, loan agreements, vendor contracts, leases. Automatically classified, extracted, and cross-referenced.',
+  },
+  {
+    icon: <Table2 className="h-5 w-5" />,
+    title: 'Covenant Monitoring',
+    description: 'Tracks every obligation and threshold from your debt facilities. Alerts you months before a breach, not after.',
+  },
 ];
 
-const capabilityHighlights = [
+const segments = [
   {
-    title: 'Institutional Intelligence',
-    description: 'On-demand models, deal pacing, and custom diligence narratives driven by your playbook.',
-    icon: <LineChart className="w-6 h-6 text-primary" />
+    icon: <Rocket className="h-5 w-5" />,
+    title: 'Startups',
+    description: 'Model your raise, understand your cap table, forecast your runway — all connected to the actual documents.',
   },
   {
-    title: 'Operational OS',
-    description: 'Full-firm operating system across fund admin, LP reporting, portfolio monitoring, and audit.',
-    icon: <Shield className="w-6 h-6 text-primary" />
+    icon: <Building2 className="h-5 w-5" />,
+    title: 'SMEs',
+    description: 'Your contracts, financials, and obligations in one place. See the full picture without hiring a finance team.',
   },
   {
-    title: 'Collaboration Layer',
-    description: 'Single workspace for investment committee, finance, and platform teams to make decisions faster.',
-    icon: <Users className="w-6 h-6 text-primary" />
-  }
+    icon: <BarChart3 className="h-5 w-5" />,
+    title: 'Mid-Market',
+    description: 'Complex capital structures, multiple debt facilities, dozens of contracts. Dilla keeps it all connected and monitored.',
+  },
+  {
+    icon: <Network className="h-5 w-5" />,
+    title: 'PE Roll-Ups',
+    description: 'Consolidate multiple entities, harmonise reporting, and model the group structure with full intercompany visibility.',
+  },
 ];
 
 const packages = [
   {
-    id: 'solo',
-    label: 'Solo VC / Angel',
-    price: 'From $1,250 / month',
-    summary: 'Everything you need to run institutional-grade diligence with zero back office.',
+    id: 'starter',
+    label: 'Starter',
+    price: 'From $500 / mo',
+    summary: 'Full FP&A, contract extraction, and cap table management.',
     bullets: [
-      'Unlimited memo generation and IC-ready packets',
-      'Automated market maps, pacing models, and cap table insights',
-      'Hands-on onboarding with a forward deployed engineer'
-    ]
-  },
-  {
-    id: 'mid',
-    label: 'Mid-Sized Shop',
-    price: 'From $3,800 / month',
-    summary: 'Purpose-built workflows for dedicated deal, finance, and platform teams.',
-    bullets: [
-      'Firm-wide workspace with role-based governance',
-      'Fund admin automation and LP reporting templates',
-      'Dedicated forward deployed engineer embedded with your team'
+      'P&L, cash flow, balance sheet, and forecasting',
+      'Up to 25 contracts with clause extraction',
+      'Cap table and basic scenario modeling',
     ],
-    badge: 'Most Popular'
   },
   {
-    id: 'mega',
-    label: 'Megafund / Financial Institution',
-    price: 'Custom Annual Engagements',
-    summary: 'Deep integration into legacy systems, data governance, and controls.',
+    id: 'growth',
+    label: 'Growth',
+    price: 'From $2,000 / mo',
+    summary: 'Unlimited contracts, advanced scenarios, and capital strategy.',
     bullets: [
-      'Signed SLAs, on-premise options, and advanced security',
-      'Custom modeling across funds, credit, and secondaries',
-      'Dedicated pod of forward deployed engineers + solutions lead'
-    ]
-  }
+      'Unlimited contract processing and covenant monitoring',
+      'Monte Carlo forecasting and scenario branching',
+      'Waterfall analysis, valuation, and stakeholder mapping',
+    ],
+    badge: 'Most Popular',
+  },
+  {
+    id: 'enterprise',
+    label: 'Enterprise',
+    price: 'Custom',
+    summary: 'Multi-entity consolidation, custom integrations, and dedicated support.',
+    bullets: [
+      'Group structure with transfer pricing',
+      'Custom ERP integrations and data pipelines',
+      'Dedicated implementation team',
+    ],
+  },
 ];
 
+// ---------------------------------------------------------------------------
+// Animated product demo data
+// ---------------------------------------------------------------------------
+
+const agentMessages = [
+  { role: 'user' as const, text: 'What happens if we lose the Nexus contract?' },
+  { role: 'agent' as const, text: 'Analysing impact across financials, contracts, and capital structure...' },
+];
+
+const cascadeSteps = [
+  { label: 'P&L', detail: 'Revenue drops £340K — EBITDA turns negative' },
+  { label: 'Cash Flow', detail: 'Runway shrinks from 14 months to 7' },
+  { label: 'Covenants', detail: 'DSCR breaches 1.20x threshold in month 4' },
+  { label: 'Debt', detail: 'Floating charge over receivables crystallises' },
+  { label: 'Equity', detail: 'Bridge round triggers anti-dilution ratchet' },
+  { label: 'Ownership', detail: 'Founder stake dilutes from 34% to 27%' },
+];
+
+const chartBars = [
+  { label: 'Q1', base: 82, scenario: 82 },
+  { label: 'Q2', base: 91, scenario: 74 },
+  { label: 'Q3', base: 97, scenario: 58 },
+  { label: 'Q4', base: 105, scenario: 43 },
+];
+
+// ---------------------------------------------------------------------------
+// Free email domain list
+// ---------------------------------------------------------------------------
+
 const freeEmailDomains = new Set([
-  'gmail.com',
-  'yahoo.com',
-  'outlook.com',
-  'hotmail.com',
-  'aol.com',
-  'icloud.com',
-  'me.com',
-  'msn.com',
-  'live.com',
-  'hey.com',
-  'protonmail.com',
-  'pm.me',
-  'gmx.com',
-  'yandex.com',
-  'zoho.com'
+  'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'aol.com',
+  'icloud.com', 'me.com', 'msn.com', 'live.com', 'hey.com',
+  'protonmail.com', 'pm.me', 'gmx.com', 'yandex.com', 'zoho.com',
 ]);
 
-interface LeadFormState {
-  name: string;
-  email: string;
-  firmType: string;
-  notes: string;
-}
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 
 export default function LandingPage() {
   return (
     <div className="bg-white text-gray-900" data-theme="day">
       <div className="bg-gradient-to-b from-white via-white to-gray-50">
-        <header className="marketing-container flex items-center justify-between py-6">
-          <Link href="/" className="flex items-center gap-3">
-            <img
-              src="/dilla-logo.svg"
-              alt="Dilla AI"
-              className="h-8 w-auto"
-            />
-            <span className="sr-only">Dilla</span>
-          </Link>
-          <Link
-            href="/login"
-            className="rounded-full border border-gray-200 px-5 py-2 text-sm font-medium text-gray-900 transition-colors hover:bg-gray-100"
-          >
-            Login
-          </Link>
-        </header>
-        <HeroSection />
-        <ProofPoints />
-        <Capabilities />
-        <ForwardDeployedSection />
-        <PricingSection />
-        <FinalCTA />
+        <Nav />
+        <Hero />
+        <ProductDemo />
+        <Features />
+        <Segments />
+        <Pricing />
+        <CTA />
       </div>
     </div>
   );
 }
 
-function HeroSection() {
+// ---------------------------------------------------------------------------
+// Nav
+// ---------------------------------------------------------------------------
+
+function Nav() {
   return (
-    <section className="marketing-section pt-24 lg:pt-32">
-      <div className="marketing-container grid gap-12 lg:grid-cols-[1.2fr_1fr] items-center">
-        <div className="space-y-8">
-          <span className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-white/70 px-4 py-1 text-sm text-muted-foreground shadow-sm backdrop-blur">
-            <Sparkles className="h-4 w-4 text-primary" />
-            Institutional-grade venture automation
-          </span>
-          <h1 className="text-4xl font-semibold tracking-tight text-foreground sm:text-5xl lg:text-6xl">
-            The operating system for conviction-driven venture investors.
-          </h1>
-          <p className="max-w-xl text-lg leading-relaxed text-muted-foreground">
-            Dilla unifies your deal flow, diligence engine, fund operations, and LP communications into a
-            single monochrome workspace that firms can trust. Built for teams that move with conviction.
+    <header className="marketing-container flex items-center justify-between py-6">
+      <Link href="/" className="flex items-center gap-3">
+        <img src="/dilla-logo.svg" alt="Dilla AI" className="h-8 w-auto" />
+        <span className="sr-only">Dilla</span>
+      </Link>
+      <div className="flex items-center gap-4">
+        <Link
+          href="#pricing"
+          className="hidden sm:inline-flex text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Pricing
+        </Link>
+        <Link
+          href="/login"
+          className="rounded-full border border-gray-200 px-5 py-2 text-sm font-medium text-gray-900 transition-colors hover:bg-gray-100"
+        >
+          Login
+        </Link>
+      </div>
+    </header>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Hero
+// ---------------------------------------------------------------------------
+
+function Hero() {
+  return (
+    <section className="marketing-section pt-20 lg:pt-28">
+      <div className="marketing-container max-w-3xl text-center mx-auto space-y-8">
+        <motion.h1
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+          className="text-4xl font-semibold tracking-tight text-foreground sm:text-5xl lg:text-6xl"
+        >
+          An AI CFO for your business.
+        </motion.h1>
+        <motion.p
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.1 }}
+          className="max-w-2xl mx-auto text-lg leading-relaxed text-muted-foreground"
+        >
+          Dilla connects to your ERP, reads your contracts, and reasons across your
+          entire financial stack. FP&A, contract lifecycle management, and capital strategy
+          — connected, not siloed.
+        </motion.p>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.2 }}
+          className="flex flex-wrap justify-center gap-4"
+        >
+          <ScrollButton target="get-started" label="Get Started" primary />
+          <ScrollButton target="features" label="See Features" />
+        </motion.div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Animated Product Demo
+// ---------------------------------------------------------------------------
+
+function ProductDemo() {
+  const ref = useRef(null);
+  const isInView = useInView(ref, { once: true, margin: '-100px' });
+  const [phase, setPhase] = useState(0);
+
+  useEffect(() => {
+    if (!isInView) return;
+    const timers = [
+      setTimeout(() => setPhase(1), 400),   // user message
+      setTimeout(() => setPhase(2), 1600),   // agent thinking
+      setTimeout(() => setPhase(3), 2800),   // cascade starts
+      setTimeout(() => setPhase(4), 3400),   // cascade step 2
+      setTimeout(() => setPhase(5), 4000),   // cascade step 3
+      setTimeout(() => setPhase(6), 4600),   // cascade step 4
+      setTimeout(() => setPhase(7), 5200),   // cascade step 5
+      setTimeout(() => setPhase(8), 5800),   // cascade step 6
+      setTimeout(() => setPhase(9), 6600),   // chart appears
+    ];
+    return () => timers.forEach(clearTimeout);
+  }, [isInView]);
+
+  return (
+    <section ref={ref} className="marketing-section">
+      <div className="marketing-container space-y-6">
+        <div className="max-w-2xl mx-auto text-center">
+          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">How it thinks</p>
+          <h2 className="mt-3 text-3xl font-semibold text-foreground sm:text-4xl">
+            One question. Full cascade.
+          </h2>
+          <p className="mt-3 text-base text-muted-foreground">
+            Ask a question and watch Dilla reason across your financials, contracts, and capital structure in real time.
           </p>
-          <div className="flex flex-wrap gap-4">
-            <ActionButton />
-            <Link
-              href="#pricing"
-              className="inline-flex items-center gap-2 rounded-full border border-border px-6 py-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary/80"
+        </div>
+
+        {/* Demo container — dark, looks like the product */}
+        <div className="mx-auto max-w-4xl rounded-2xl border border-gray-800 bg-[#0f1117] p-6 shadow-2xl overflow-hidden">
+          <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
+            {/* Left: Agent chat + cascade */}
+            <div className="space-y-4 min-h-[360px]">
+              {/* Agent header */}
+              <div className="flex items-center gap-2 text-xs text-gray-500">
+                <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                <span>dilla agent</span>
+              </div>
+
+              <AnimatePresence>
+                {/* User message */}
+                {phase >= 1 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="rounded-lg bg-gray-800/60 px-4 py-3 text-sm text-gray-200"
+                  >
+                    {agentMessages[0].text}
+                  </motion.div>
+                )}
+
+                {/* Agent response */}
+                {phase >= 2 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="rounded-lg bg-gray-800/30 border border-gray-700/50 px-4 py-3 text-sm text-gray-400"
+                  >
+                    {agentMessages[1].text}
+                  </motion.div>
+                )}
+
+                {/* Cascade steps */}
+                {phase >= 3 && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="space-y-2 pt-2"
+                  >
+                    {cascadeSteps.map((step, i) => {
+                      const stepPhase = 3 + i;
+                      if (phase < stepPhase) return null;
+                      return (
+                        <motion.div
+                          key={step.label}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ duration: 0.3 }}
+                          className="flex items-start gap-3"
+                        >
+                          <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-emerald-500/20 text-[10px] font-medium text-emerald-400">
+                            {i + 1}
+                          </span>
+                          <div className="text-xs">
+                            <span className="font-medium text-gray-300">{step.label}</span>
+                            <span className="text-gray-500"> — {step.detail}</span>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Right: Animated chart */}
+            <div className="flex flex-col justify-end">
+              <AnimatePresence>
+                {phase >= 9 && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.4 }}
+                    className="space-y-3"
+                  >
+                    <div className="flex items-center justify-between text-xs text-gray-500">
+                      <span>Cash Flow Forecast — Base vs. Scenario</span>
+                      <div className="flex gap-3">
+                        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-gray-500" />Base</span>
+                        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-red-500" />Scenario</span>
+                      </div>
+                    </div>
+                    <div className="flex items-end gap-3 h-40">
+                      {chartBars.map((bar, i) => (
+                        <div key={bar.label} className="flex-1 flex flex-col items-center gap-1">
+                          <div className="flex items-end gap-1 w-full h-32">
+                            <motion.div
+                              initial={{ height: 0 }}
+                              animate={{ height: `${bar.base}%` }}
+                              transition={{ duration: 0.6, delay: i * 0.1 }}
+                              className="flex-1 rounded-t bg-gray-600"
+                            />
+                            <motion.div
+                              initial={{ height: 0 }}
+                              animate={{ height: `${bar.scenario}%` }}
+                              transition={{ duration: 0.6, delay: i * 0.1 + 0.05 }}
+                              className="flex-1 rounded-t bg-red-500/80"
+                            />
+                          </div>
+                          <span className="text-[10px] text-gray-600">{bar.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Features
+// ---------------------------------------------------------------------------
+
+function Features() {
+  const ref = useRef(null);
+  const isInView = useInView(ref, { once: true, margin: '-80px' });
+
+  return (
+    <section id="features" ref={ref} className="marketing-section">
+      <div className="marketing-container space-y-12">
+        <div className="max-w-2xl">
+          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Features</p>
+          <h2 className="mt-3 text-3xl font-semibold text-foreground sm:text-4xl">
+            What Dilla does.
+          </h2>
+        </div>
+        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+          {features.map((f, i) => (
+            <motion.div
+              key={f.title}
+              initial={{ opacity: 0, y: 20 }}
+              animate={isInView ? { opacity: 1, y: 0 } : {}}
+              transition={{ duration: 0.4, delay: i * 0.06 }}
+              className="rounded-2xl border border-border/60 bg-white p-5 space-y-3 hover:shadow-md transition-shadow"
             >
-              View Pricing Overview
-              <ArrowRight className="h-4 w-4" />
-            </Link>
-          </div>
-        </div>
-        <div className="relative">
-          <div className="marketing-card p-8">
-            <div className="space-y-6">
-              <div>
-                <p className="text-sm uppercase tracking-[0.3em] text-muted-foreground">Modern IC Packet</p>
-                <h3 className="mt-2 text-2xl font-medium text-foreground">
-                  Every question answered before committee convenes.
-                </h3>
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary text-primary">
+                {f.icon}
               </div>
-              <ul className="space-y-3 text-sm text-muted-foreground">
-                <li className="flex items-start gap-3">
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary" />
-                  <span>Live company dossiers with financial, product, and talent signals.</span>
-                </li>
-                <li className="flex items-start gap-3">
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary" />
-                  <span>Scenario modeling and pacing controls aligned to mandate.</span>
-                </li>
-                <li className="flex items-start gap-3">
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary" />
-                  <span>Audit-ready archive covering LP updates, compliance, and risk.</span>
-                </li>
-              </ul>
-              <div className="rounded-2xl border border-border/60 bg-secondary/50 px-6 py-5 text-sm text-muted-foreground">
-                “We eliminated five tools and hit IC with the exact story we wanted. The forward deployed team
-                rewired our entire diligence flow in weeks.”
-              </div>
-            </div>
-          </div>
-          <div className="absolute -bottom-10 -right-10 hidden w-32 rounded-3xl border border-border/70 bg-white/80 p-4 text-xs tracking-wide text-muted-foreground shadow-lg lg:block">
-            Backed by teams investing from New York, London, Dubai, and Singapore.
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function ProofPoints() {
-  return (
-    <section className="marketing-section pt-0">
-      <div className="marketing-container">
-        <div className="grid gap-6 rounded-3xl border border-border/70 bg-white/80 p-8 backdrop-blur-lg sm:grid-cols-3">
-          {proofPoints.map(point => (
-            <div key={point.label} className="space-y-2">
-              <p className="text-sm uppercase tracking-[0.35em] text-muted-foreground">{point.label}</p>
-              <p className="text-3xl font-semibold text-foreground">{point.value}</p>
-              <p className="text-sm text-muted-foreground">{point.description}</p>
-            </div>
+              <h3 className="text-sm font-semibold text-foreground">{f.title}</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed">{f.description}</p>
+            </motion.div>
           ))}
         </div>
       </div>
@@ -225,31 +445,38 @@ function ProofPoints() {
   );
 }
 
-function Capabilities() {
+// ---------------------------------------------------------------------------
+// Segments
+// ---------------------------------------------------------------------------
+
+function Segments() {
+  const ref = useRef(null);
+  const isInView = useInView(ref, { once: true, margin: '-80px' });
+
   return (
-    <section className="marketing-section">
+    <section ref={ref} className="marketing-section">
       <div className="marketing-container space-y-12">
         <div className="max-w-2xl">
-          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Capabilities</p>
+          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Who it&apos;s for</p>
           <h2 className="mt-3 text-3xl font-semibold text-foreground sm:text-4xl">
-            A monochrome workspace built for consistent investment judgment.
+            Built for financial complexity.
           </h2>
-          <p className="mt-4 text-base text-muted-foreground">
-            Dilla orchestrates models, narrative intelligence, compliance, and fund operations with controls that
-            satisfy your mandate and downstream partners.
-          </p>
         </div>
-        <div className="grid gap-6 md:grid-cols-3">
-          {capabilityHighlights.map(capability => (
-            <div key={capability.title} className="marketing-card p-6">
-              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-secondary">
-                {capability.icon}
+        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+          {segments.map((s, i) => (
+            <motion.div
+              key={s.title}
+              initial={{ opacity: 0, y: 20 }}
+              animate={isInView ? { opacity: 1, y: 0 } : {}}
+              transition={{ duration: 0.4, delay: i * 0.08 }}
+              className="rounded-2xl border border-border/60 bg-white p-5 space-y-3 hover:shadow-md transition-shadow"
+            >
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary text-primary">
+                {s.icon}
               </div>
-              <h3 className="mt-6 text-xl font-medium text-foreground">{capability.title}</h3>
-              <p className="mt-3 text-sm text-muted-foreground leading-relaxed">
-                {capability.description}
-              </p>
-            </div>
+              <h3 className="text-sm font-semibold text-foreground">{s.title}</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed">{s.description}</p>
+            </motion.div>
           ))}
         </div>
       </div>
@@ -257,84 +484,33 @@ function Capabilities() {
   );
 }
 
-function ForwardDeployedSection() {
-  return (
-    <section className="marketing-section">
-      <div className="marketing-container grid items-center gap-12 lg:grid-cols-[1fr_1.1fr]">
-        <div className="space-y-4">
-          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Forward Deployed Engineers</p>
-          <h2 className="text-3xl font-semibold text-foreground sm:text-4xl">
-            A team embedded directly into your firm.
-          </h2>
-          <p className="text-base text-muted-foreground">
-            We pair every engagement with forward deployed engineers who live inside your investment and
-            operations rhythms. They own instrumentation, workflow rewiring, and the integrations that make
-            the platform feel native.
-          </p>
-          <ul className="mt-6 space-y-3 text-sm text-muted-foreground">
-            <ListItem icon={<Target className="h-4 w-4 text-primary" />} text="Implementation roadmap aligned to fundraising, deployment, and reporting cycles." />
-            <ListItem icon={<BarChart3 className="h-4 w-4 text-primary" />} text="Custom data pipelines, model calibration, and bespoke dashboards per fund." />
-            <ListItem icon={<Shield className="h-4 w-4 text-primary" />} text="Security review, audits, and runbooks that satisfy LP, regulatory, and internal controls." />
-          </ul>
-        </div>
-        <div className="marketing-card p-8 space-y-6">
-          <div className="rounded-3xl border border-border/60 bg-white/70 p-6">
-            <h3 className="text-lg font-medium text-foreground">Embedded Partnership</h3>
-            <p className="mt-3 text-sm text-muted-foreground leading-relaxed">
-              Weekly working sessions, shared OKRs, and direct lines into product engineering ensure your edge
-              compounds. Our team ships in your Slack, Notion, and data warehouse.
-            </p>
-          </div>
-          <div className="rounded-3xl border border-border/60 bg-secondary/60 p-6">
-            <h4 className="text-sm font-semibold uppercase tracking-[0.3em] text-muted-foreground">What we ship</h4>
-            <ul className="mt-4 space-y-3 text-sm text-muted-foreground">
-              <li className="flex items-center gap-3">
-                <CheckCircle2 className="h-4 w-4 text-primary" />
-                <span>Analyst-grade ingestion of decks, datasites, and management reports.</span>
-              </li>
-              <li className="flex items-center gap-3">
-                <CheckCircle2 className="h-4 w-4 text-primary" />
-                <span>Firm-wide single source of truth for deal, finance, and platform data.</span>
-              </li>
-              <li className="flex items-center gap-3">
-                <CheckCircle2 className="h-4 w-4 text-primary" />
-                <span>Custom automations for LP questionnaires, compliance, and audit trails.</span>
-              </li>
-            </ul>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
+// ---------------------------------------------------------------------------
+// Pricing
+// ---------------------------------------------------------------------------
 
-function PricingSection() {
+function Pricing() {
   return (
-    <section id="pricing" className="marketing-section pt-0">
+    <section id="pricing" className="marketing-section">
       <div className="marketing-container space-y-12">
         <div className="max-w-2xl">
-          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Pricing Overview</p>
+          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Pricing</p>
           <h2 className="mt-3 text-3xl font-semibold text-foreground sm:text-4xl">
-            Three packages tuned to how your firm operates today.
+            Pick the tier that matches your complexity.
           </h2>
-          <p className="mt-4 text-base text-muted-foreground">
-            Every tier includes onboarding with a forward deployed engineer, secured workspace, and direct access to
-            the Dilla product roadmap. No card collection—talk to sales to activate.
-          </p>
         </div>
         <div className="grid gap-6 lg:grid-cols-3">
           {packages.map(pkg => (
             <div
               key={pkg.id}
               className={[
-                'marketing-card flex flex-col p-8',
-                pkg.badge ? 'border-2 border-primary/80 shadow-xl' : ''
+                'flex flex-col rounded-2xl border bg-white p-7',
+                pkg.badge ? 'border-2 border-primary/80 shadow-xl' : 'border-border/60',
               ].join(' ')}
             >
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <p className="text-sm uppercase tracking-[0.3em] text-muted-foreground">{pkg.label}</p>
-                  <h3 className="mt-4 text-2xl font-semibold text-foreground">{pkg.price}</h3>
+                  <h3 className="mt-3 text-2xl font-semibold text-foreground">{pkg.price}</h3>
                 </div>
                 {pkg.badge && (
                   <span className="rounded-full border border-border bg-secondary px-3 py-1 text-xs font-medium text-muted-foreground">
@@ -342,21 +518,21 @@ function PricingSection() {
                   </span>
                 )}
               </div>
-              <p className="mt-4 text-sm text-muted-foreground leading-relaxed">{pkg.summary}</p>
-              <ul className="mt-6 space-y-3 text-sm text-muted-foreground">
-                {pkg.bullets.map(item => (
-                  <li key={item} className="flex items-start gap-3">
-                    <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary" />
-                    <span>{item}</span>
+              <p className="mt-3 text-sm text-muted-foreground">{pkg.summary}</p>
+              <ul className="mt-5 space-y-2.5 text-sm text-muted-foreground">
+                {pkg.bullets.map(b => (
+                  <li key={b} className="flex items-start gap-2.5">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary flex-shrink-0" />
+                    <span>{b}</span>
                   </li>
                 ))}
               </ul>
               <div className="mt-auto pt-6">
                 <a
-                  href="#talk-to-sales"
+                  href="#get-started"
                   className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
                 >
-                  Talk to Sales
+                  Get Started
                   <ArrowRight className="h-4 w-4" />
                 </a>
               </div>
@@ -368,60 +544,95 @@ function PricingSection() {
   );
 }
 
-function FinalCTA() {
+// ---------------------------------------------------------------------------
+// CTA + Lead Form
+// ---------------------------------------------------------------------------
+
+function CTA() {
   return (
-    <section id="talk-to-sales" className="marketing-section pt-0">
+    <section id="get-started" className="marketing-section">
       <div className="marketing-container grid items-center gap-12 lg:grid-cols-[1.1fr_1fr]">
-        <div className="space-y-6">
-          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Talk To Sales</p>
+        <div className="space-y-5">
           <h2 className="text-3xl font-semibold text-foreground sm:text-4xl">
-            Share your name and work email, we’ll route the right forward deployed engineer.
+            See it with your own data.
           </h2>
           <p className="text-base text-muted-foreground">
-            Tell us which package fits your current stage. We’ll follow up within one business day with a tailored
-            walkthrough, sample outputs, and an integration checklist. Work emails only—we partner directly with funds.
+            Tell us what you're working with. We'll walk you through Dilla with a setup
+            tailored to your business — your structure, your contracts, your questions.
           </p>
-          <div className="flex flex-wrap gap-6 text-sm text-muted-foreground">
-            <ListItem icon={<Users className="h-4 w-4 text-primary" />} text="Built with security reviews cleared by global LPs." />
-            <ListItem icon={<Sparkles className="h-4 w-4 text-primary" />} text="Monochrome interface across every module." />
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <div className="flex items-center gap-2.5">
+              <Shield className="h-4 w-4 text-primary" />
+              <span>Your data stays yours. Always.</span>
+            </div>
+            <div className="flex items-center gap-2.5">
+              <CheckCircle2 className="h-4 w-4 text-primary" />
+              <span>No commitment. See if it fits.</span>
+            </div>
           </div>
         </div>
-        <LeadCaptureForm />
+        <LeadForm />
       </div>
     </section>
   );
 }
 
-function ActionButton() {
+// ---------------------------------------------------------------------------
+// Shared Components
+// ---------------------------------------------------------------------------
+
+function ScrollButton({ target, label, primary }: { target: string; label: string; primary?: boolean }) {
   const handleClick = () => {
-    const target = document.getElementById('talk-to-sales');
-    if (target) {
-      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    document.getElementById(target)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
+
+  if (primary) {
+    return (
+      <button
+        onClick={handleClick}
+        className="inline-flex items-center gap-2 rounded-full bg-primary px-6 py-3 text-sm font-medium text-primary-foreground shadow-sm transition-transform hover:translate-y-[-2px] hover:bg-primary/90"
+      >
+        {label}
+        <ArrowRight className="h-4 w-4" />
+      </button>
+    );
+  }
 
   return (
     <button
       onClick={handleClick}
-      className="inline-flex items-center gap-2 rounded-full bg-primary px-6 py-3 text-sm font-medium text-primary-foreground shadow-sm transition-transform hover:translate-y-[-2px] hover:bg-primary/90"
+      className="inline-flex items-center gap-2 rounded-full border border-border px-6 py-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary/80"
     >
-      Talk to Sales
+      {label}
       <ArrowRight className="h-4 w-4" />
     </button>
   );
 }
 
-function LeadCaptureForm() {
+// ---------------------------------------------------------------------------
+// Lead Form
+// ---------------------------------------------------------------------------
+
+interface LeadFormState {
+  name: string;
+  email: string;
+  companyType: string;
+  notes: string;
+}
+
+function LeadForm() {
   const [form, setForm] = useState<LeadFormState>({
     name: '',
     email: '',
-    firmType: 'solo',
-    notes: ''
+    companyType: 'sme',
+    notes: '',
   });
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
 
-  const handleChange = (field: keyof LeadFormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+  const handleChange = (field: keyof LeadFormState) => (
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) => {
     setForm(prev => ({ ...prev, [field]: e.target.value }));
     if (status === 'success' || status === 'error') {
       setStatus('idle');
@@ -429,49 +640,41 @@ function LeadCaptureForm() {
     }
   };
 
-  const validateWorkEmail = (email: string) => {
-    const domain = email.split('@')[1]?.toLowerCase();
-    if (!domain) return false;
-    return !freeEmailDomains.has(domain);
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
     if (!form.name.trim()) {
-      setError('Please share your name.');
+      setError('Name is required.');
       return;
     }
 
-    if (!form.email.trim() || !validateWorkEmail(form.email)) {
-      setError('Use your work email so we can route you correctly.');
+    const domain = form.email.split('@')[1]?.toLowerCase();
+    if (!domain || freeEmailDomains.has(domain)) {
+      setError('Please use your work email.');
       return;
     }
 
     setStatus('submitting');
     try {
-      const response = await fetch('/api/leads', {
+      const res = await fetch('/api/leads', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(form)
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: form.name,
+          email: form.email,
+          firmType: form.companyType,
+          notes: form.notes,
+        }),
       });
 
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        const message = payload?.error ?? 'Unable to submit right now. Please try again.';
-        throw new Error(message);
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        throw new Error(payload?.error ?? 'Something went wrong. Try again.');
       }
 
       setStatus('success');
-      setForm({
-        name: '',
-        email: '',
-        firmType: form.firmType,
-        notes: ''
-      });
+      setForm({ name: '', email: '', companyType: form.companyType, notes: '' });
     } catch (err) {
       setStatus('error');
       setError(err instanceof Error ? err.message : 'Submission failed.');
@@ -479,110 +682,84 @@ function LeadCaptureForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="marketing-card space-y-6 p-8" aria-label="Talk to sales lead form">
-      <div>
-        <h3 className="text-xl font-semibold text-foreground">Route me to the right pod</h3>
-        <p className="mt-2 text-sm text-muted-foreground">
-          We’ll send a calendar link and sample outputs straight to your inbox.
-        </p>
-      </div>
-
+    <form
+      onSubmit={handleSubmit}
+      className="rounded-2xl border border-border/60 bg-white p-7 shadow-sm space-y-5"
+      aria-label="Get started form"
+    >
       <div className="space-y-4">
-        <div className="space-y-2">
-          <label htmlFor="lead-name" className="text-sm font-medium text-foreground">
-            Name
-          </label>
+        <FormField label="Name" id="lead-name">
           <input
             id="lead-name"
-            name="name"
             value={form.name}
             onChange={handleChange('name')}
-            placeholder="Alex, Partner @ Example Ventures"
-            className="w-full rounded-2xl border border-border bg-white/80 px-4 py-3 text-sm text-foreground shadow-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+            placeholder="Jane Smith"
+            className="form-input"
             required
           />
-        </div>
+        </FormField>
 
-        <div className="space-y-2">
-          <label htmlFor="lead-email" className="text-sm font-medium text-foreground">
-            Work Email
-          </label>
+        <FormField label="Work Email" id="lead-email">
           <input
             id="lead-email"
-            name="email"
             type="email"
             value={form.email}
             onChange={handleChange('email')}
-            placeholder="alex@firm.com"
-            className="w-full rounded-2xl border border-border bg-white/80 px-4 py-3 text-sm text-foreground shadow-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+            placeholder="jane@company.com"
+            className="form-input"
             required
           />
-          <p className="text-xs text-muted-foreground">
-            Personal email domains are automatically filtered out.
-          </p>
-        </div>
+        </FormField>
 
-        <div className="space-y-2">
-          <label htmlFor="lead-firm-type" className="text-sm font-medium text-foreground">
-            Firm Profile
-          </label>
+        <FormField label="Company Type" id="lead-type">
           <select
-            id="lead-firm-type"
-            name="firmType"
-            value={form.firmType}
-            onChange={handleChange('firmType')}
-            className="w-full rounded-2xl border border-border bg-white/80 px-4 py-3 text-sm text-foreground shadow-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+            id="lead-type"
+            value={form.companyType}
+            onChange={handleChange('companyType')}
+            className="form-input"
           >
-            <option value="solo">Solo VC / Angel</option>
-            <option value="mid">Mid-Sized Shop</option>
-            <option value="mega">Megafund / Financial Institution</option>
+            <option value="startup">Startup</option>
+            <option value="sme">SME</option>
+            <option value="midmarket">Mid-Market</option>
+            <option value="pe">PE / Multi-Entity</option>
           </select>
-        </div>
+        </FormField>
 
-        <div className="space-y-2">
-          <label htmlFor="lead-notes" className="text-sm font-medium text-foreground">
-            What do you want to see?
-          </label>
+        <FormField label="What are you trying to solve?" id="lead-notes">
           <textarea
             id="lead-notes"
-            name="notes"
             value={form.notes}
             onChange={handleChange('notes')}
-            placeholder="Share focus areas, portfolio workflow gaps, or must-have integrations."
-            rows={4}
-            className="w-full rounded-2xl border border-border bg-white/80 px-4 py-3 text-sm text-foreground shadow-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+            placeholder="E.g. forecasting, contract management, cap table, scenario modeling..."
+            rows={3}
+            className="form-input"
           />
-        </div>
+        </FormField>
       </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       {status === 'success' && (
-        <p className="rounded-2xl border border-primary/40 bg-secondary px-4 py-3 text-sm text-foreground">
-          Thanks—we’ll be in touch within one business day.
+        <p className="rounded-xl border border-primary/30 bg-secondary px-4 py-3 text-sm text-foreground">
+          Thanks — we&apos;ll be in touch within one business day.
         </p>
       )}
 
       <button
         type="submit"
         disabled={status === 'submitting'}
-        className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-medium text-primary-foreground transition-colors disabled:cursor-not-allowed disabled:opacity-70 hover:bg-primary/90"
+        className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-medium text-primary-foreground transition-colors disabled:opacity-70 hover:bg-primary/90"
       >
-        {status === 'submitting' ? 'Sending…' : 'Submit'}
+        {status === 'submitting' ? 'Sending...' : 'Book a Walkthrough'}
       </button>
-      <p className="text-xs text-muted-foreground">
-        We’ll keep you off any marketing drips until you opt-in via Beehiiv.
-      </p>
     </form>
   );
 }
 
-function ListItem({ icon, text }: { icon: React.ReactNode; text: string }) {
+function FormField({ label, id, children }: { label: string; id: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-start gap-3">
-      <div className="mt-1 flex h-7 w-7 items-center justify-center rounded-xl bg-secondary">
-        {icon}
-      </div>
-      <span>{text}</span>
+    <div className="space-y-1.5">
+      <label htmlFor={id} className="text-sm font-medium text-foreground">{label}</label>
+      {children}
     </div>
   );
 }

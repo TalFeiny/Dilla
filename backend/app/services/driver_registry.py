@@ -742,3 +742,50 @@ def assumptions_to_drivers(assumptions: Dict[str, Any]) -> Dict[str, Dict[str, A
                     }
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Macro → Micro bridge: world model impact factors → driver IDs
+# ---------------------------------------------------------------------------
+
+# Maps NL world model factor names to the micro drivers they affect.
+# Each entry: (driver_id, direction_multiplier)
+#   direction_multiplier > 0 means the macro event pushes the driver UP
+#   direction_multiplier < 0 means the macro event pushes it DOWN
+
+MACRO_TO_MICRO: Dict[str, List[Tuple[str, float]]] = {
+    "growth_rate":          [("revenue_growth", 1.0)],
+    "revenue":              [("revenue_growth", 0.5), ("new_customer_growth", 0.3)],
+    "revenue_projection":   [("revenue_growth", 0.7)],
+    "burn_rate":            [("burn_rate", 1.0)],
+    "runway":               [("burn_rate", -0.5), ("cash_override", 0.3)],
+    "valuation":            [],  # valuation is an output, not a driver
+    "competitive_position": [("pricing_change", 0.1), ("churn_rate", -0.2)],
+    "market_sentiment":     [("new_customer_growth", 0.2)],
+    "market_share":         [("revenue_growth", 0.3), ("churn_rate", -0.15)],
+    "execution_quality":    [("gross_margin", 0.1)],
+    "team_quality":         [("payroll_cost_per_head", 0.1)],
+    "exit_value":           [],  # output
+    "dpi":                  [],  # output
+    "tvpi":                 [],  # output
+    "operational_efficiency": [("gross_margin", 0.15), ("ga_pct", -0.1)],
+}
+
+
+def macro_to_drivers(
+    impact_factor: str,
+    magnitude: float = 0.1,
+) -> Dict[str, float]:
+    """Convert a macro impact factor + magnitude into driver deltas.
+
+    Returns {driver_id: delta_value} for each micro driver affected.
+    magnitude is the raw event strength (e.g. 0.2 = 20% change).
+    The direction_multiplier in MACRO_TO_MICRO scales + directs it.
+    """
+    entries = MACRO_TO_MICRO.get(impact_factor, [])
+    result: Dict[str, float] = {}
+    for driver_id, direction in entries:
+        d = _DRIVERS.get(driver_id)
+        if d and not d.computed:
+            result[driver_id] = round(magnitude * direction, 4)
+    return result
