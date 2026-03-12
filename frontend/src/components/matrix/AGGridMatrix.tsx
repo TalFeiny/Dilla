@@ -673,6 +673,7 @@ export function AGGridMatrix({
         };
         baseColDef.editable = false;
         baseColDef.width = 260;
+        baseColDef.pinned = 'left';
       }
 
       // Legal mode: document→clause hierarchy on documentName column (same tree renderer as PnL)
@@ -684,6 +685,7 @@ export function AGGridMatrix({
         };
         baseColDef.editable = false;
         baseColDef.width = 240;
+        baseColDef.pinned = 'left';
       }
 
       // P&L value cells — style based on row type and forecast boundary
