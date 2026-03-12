@@ -100,3 +100,98 @@ export function buildPnlSkeletonRows(): import('@/components/matrix/UnifiedMatri
     row('runway', 'Runway (months)', { depth: 1 }),
   ];
 }
+
+/**
+ * Standard balance sheet skeleton rows.
+ * Row IDs match backend/app/services/balance_sheet_builder.py.
+ */
+export function buildBalanceSheetSkeletonRows(): import('@/components/matrix/UnifiedMatrix').MatrixRow[] {
+  const row = (
+    id: string,
+    label: string,
+    opts: { isHeader?: boolean; isTotal?: boolean; isComputed?: boolean; depth?: number } = {},
+  ): import('@/components/matrix/UnifiedMatrix').MatrixRow => ({
+    id,
+    cells: { lineItem: { value: label, source: 'api' as const } },
+    depth: opts.depth ?? 0,
+    isHeader: opts.isHeader ?? false,
+    isTotal: opts.isTotal ?? false,
+    isComputed: opts.isComputed ?? false,
+    parentId: null,
+    childIds: [],
+  });
+
+  return [
+    row('assets_header', 'Assets', { isHeader: true }),
+    row('current_assets_header', 'Current Assets', { isHeader: true, depth: 1 }),
+    row('cash_equivalents', 'Cash & Equivalents', { depth: 2 }),
+    row('accounts_receivable', 'Accounts Receivable', { depth: 2 }),
+    row('inventory', 'Inventory', { depth: 2 }),
+    row('prepaid_expenses', 'Prepaid Expenses', { depth: 2 }),
+    row('total_current_assets', 'Total Current Assets', { isTotal: true, depth: 1 }),
+    row('noncurrent_assets_header', 'Non-Current Assets', { isHeader: true, depth: 1 }),
+    row('ppe', 'PP&E', { depth: 2 }),
+    row('intangible_assets', 'Intangible Assets', { depth: 2 }),
+    row('goodwill', 'Goodwill', { depth: 2 }),
+    row('total_noncurrent_assets', 'Total Non-Current Assets', { isTotal: true, depth: 1 }),
+    row('total_assets', 'Total Assets', { isTotal: true, isComputed: true }),
+    row('liabilities_header', 'Liabilities', { isHeader: true }),
+    row('current_liabilities_header', 'Current Liabilities', { isHeader: true, depth: 1 }),
+    row('accounts_payable', 'Accounts Payable', { depth: 2 }),
+    row('accrued_expenses', 'Accrued Expenses', { depth: 2 }),
+    row('short_term_debt', 'Short-Term Debt', { depth: 2 }),
+    row('deferred_revenue', 'Deferred Revenue', { depth: 2 }),
+    row('total_current_liabilities', 'Total Current Liabilities', { isTotal: true, depth: 1 }),
+    row('noncurrent_liabilities_header', 'Non-Current Liabilities', { isHeader: true, depth: 1 }),
+    row('long_term_debt', 'Long-Term Debt', { depth: 2 }),
+    row('other_lt_liabilities', 'Other LT Liabilities', { depth: 2 }),
+    row('total_noncurrent_liabilities', 'Total Non-Current Liabilities', { isTotal: true, depth: 1 }),
+    row('total_liabilities', 'Total Liabilities', { isTotal: true, isComputed: true }),
+    row('equity_header', 'Equity', { isHeader: true }),
+    row('common_stock', 'Common Stock', { depth: 1 }),
+    row('retained_earnings', 'Retained Earnings', { depth: 1 }),
+    row('additional_paid_in', 'Additional Paid-In Capital', { depth: 1 }),
+    row('total_equity', 'Total Equity', { isTotal: true, isComputed: true }),
+    row('total_liabilities_equity', 'Total Liabilities & Equity', { isTotal: true, isComputed: true }),
+  ];
+}
+
+/**
+ * Standard cash flow skeleton rows.
+ * Row IDs match CASHFLOW_LINE_ITEMS in pnl-views.ts.
+ */
+export function buildCashFlowSkeletonRows(): import('@/components/matrix/UnifiedMatrix').MatrixRow[] {
+  const row = (
+    id: string,
+    label: string,
+    opts: { isHeader?: boolean; isTotal?: boolean; isComputed?: boolean; depth?: number } = {},
+  ): import('@/components/matrix/UnifiedMatrix').MatrixRow => ({
+    id,
+    cells: { lineItem: { value: label, source: 'api' as const } },
+    depth: opts.depth ?? 0,
+    isHeader: opts.isHeader ?? false,
+    isTotal: opts.isTotal ?? false,
+    isComputed: opts.isComputed ?? false,
+    parentId: null,
+    childIds: [],
+  });
+
+  return [
+    row('revenue', 'Revenue', {}),
+    row('cogs', 'COGS', {}),
+    row('gross_profit', 'Gross Profit', { isComputed: true }),
+    row('gross_margin', 'Gross Margin %', { depth: 1, isComputed: true }),
+    row('rd_spend', 'R&D', { depth: 1 }),
+    row('sm_spend', 'Sales & Marketing', { depth: 1 }),
+    row('ga_spend', 'G&A', { depth: 1 }),
+    row('total_opex', 'Total OpEx', { isComputed: true }),
+    row('ebitda', 'EBITDA', { isComputed: true }),
+    row('ebitda_margin', 'EBITDA Margin %', { depth: 1, isComputed: true }),
+    row('capex', 'CapEx', {}),
+    row('debt_service', 'Debt Service', {}),
+    row('tax', 'Tax', {}),
+    row('free_cash_flow', 'Free Cash Flow', { isComputed: true }),
+    row('cash_balance', 'Cash Balance', {}),
+    row('runway_months', 'Runway (months)', {}),
+  ];
+}

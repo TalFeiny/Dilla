@@ -132,7 +132,7 @@ import {
 import { normalizeChartConfig } from '@/lib/matrix/chart-utils';
 import { buildCellEditOptionsFromSuggestion, buildApplyPayloadFromSuggestion, acceptSuggestionViaApi, rejectSuggestion, addServiceSuggestion } from '@/lib/matrix/suggestion-helpers';
 import { exportMatrixToCSV, exportMatrixToXLS, exportToPDF } from '@/lib/matrix/export-orchestrator';
-import { buildPnlColumns, buildPnlSkeletonRows } from '@/lib/matrix/pnl-columns';
+import { buildPnlColumns, buildPnlSkeletonRows, buildBalanceSheetSkeletonRows, buildCashFlowSkeletonRows } from '@/lib/matrix/pnl-columns';
 import { useScenarioForkTree } from '@/hooks/useScenarioForkTree';
 
 export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal';
