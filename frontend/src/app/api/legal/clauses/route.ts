@@ -165,12 +165,59 @@ export async function GET(request: NextRequest) {
       });
     }
 
+    // ── Group flat clause rows into document → clause hierarchy ──
+    // Same tree structure as PnL: document headers (depth 0) → clause children (depth 1)
+    const docGroups = new Map<string, { name: string; clauses: typeof rows }>();
+    for (const row of rows) {
+      const meta = (row.cells as CellMap)?.documentName?.metadata ?? {};
+      const docId = (meta.document_id as string) ?? 'unknown';
+      const docName = ((row.cells as CellMap)?.documentName?.value as string) ?? 'Untitled Document';
+      if (!docGroups.has(docId)) {
+        docGroups.set(docId, { name: docName, clauses: [] });
+      }
+      docGroups.get(docId)!.clauses.push(row);
+    }
+
+    const hierarchicalRows: Array<Record<string, unknown>> = [];
+    for (const [docId, group] of docGroups) {
+      const headerId = `legal:doc:${docId}`;
+      // Document header row
+      hierarchicalRows.push({
+        id: headerId,
+        companyId: group.clauses[0]?.companyId,
+        cells: {
+          documentName: { value: group.name, source: 'document' },
+          contractType: (group.clauses[0]?.cells as CellMap)?.contractType,
+          status: (group.clauses[0]?.cells as CellMap)?.status,
+        },
+        depth: 0,
+        isHeader: true,
+        isTotal: false,
+        isComputed: false,
+        parentId: null,
+        childIds: group.clauses.map((c) => c.id),
+      });
+      // Clause child rows
+      for (const clause of group.clauses) {
+        hierarchicalRows.push({
+          ...clause,
+          depth: 1,
+          isHeader: false,
+          isTotal: false,
+          isComputed: false,
+          parentId: headerId,
+          childIds: [],
+        });
+      }
+    }
+
     return NextResponse.json({
-      rows,
+      rows: hierarchicalRows,
       metadata: {
         dataSource: 'legal',
         fundId: fundId ?? undefined,
         lastUpdated: new Date().toISOString(),
+        totalDocuments: docGroups.size,
         totalClauses: rows.length,
         acceptedCount: rows.filter((r) => r.isAccepted).length,
         pendingCount: rows.filter((r) => !r.isAccepted).length,

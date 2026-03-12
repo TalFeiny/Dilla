@@ -712,6 +712,59 @@ def get_cross_domain_edges() -> List[CrossDomainEdge]:
                 _estimate_ltv_cac_change(state, delta)
             ),
         ),
+
+        # --- P&L → Balance Sheet bridges ---
+        CrossDomainEdge(
+            source="ebitda",
+            target="bs_cash",
+            description="EBITDA flows through to cash (proxy for operating cash flow)",
+            estimate_impact=lambda state, delta: delta,
+        ),
+        CrossDomainEdge(
+            source="revenue",
+            target="bs_receivables",
+            description="Revenue change drives receivables (DSO-based)",
+            estimate_impact=lambda state, delta: (
+                # Assume ~45 days DSO = 1.5 months of revenue in AR
+                delta * 1.5 if state.revenue else None
+            ),
+        ),
+        CrossDomainEdge(
+            source="cogs",
+            target="bs_payables",
+            description="COGS change drives payables (DPO-based)",
+            estimate_impact=lambda state, delta: (
+                delta * 1.0  # ~30 days DPO
+            ),
+        ),
+        CrossDomainEdge(
+            source="debt_capacity",
+            target="bs_lt_debt",
+            description="Debt capacity determines maximum long-term borrowing",
+            estimate_impact=lambda state, delta: (
+                delta * 0.7  # assume 70% utilization of capacity
+            ),
+        ),
+        CrossDomainEdge(
+            source="capex",
+            target="bs_ppe",
+            description="CapEx increases PP&E (net of depreciation)",
+            estimate_impact=lambda state, delta: (
+                delta * 12  # annualized capex flows to PP&E
+            ),
+        ),
+        CrossDomainEdge(
+            source="bs_lt_debt",
+            target="net_debt",
+            description="Long-term debt is the primary driver of net debt position",
+            estimate_impact=lambda state, delta: delta,
+        ),
+        CrossDomainEdge(
+            source="bs_cash",
+            target="net_debt",
+            description="Cash reduces net debt position",
+            estimate_impact=lambda state, delta: -delta,
+        ),
     ]
 
 

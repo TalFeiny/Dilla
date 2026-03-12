@@ -1628,7 +1628,10 @@ def run_document_process(
 
         # Persist extracted metrics as individual pending_suggestions rows
         # so the badge-based suggestion pipeline picks them up automatically.
-        if company_id and fund_id and extracted_data:
+        # ONLY for portfolio-relevant doc types — legal and financial_statement
+        # have their own dedicated emitters / ingestion paths.
+        doc_type_for_routing = (document_type or "").strip().lower()
+        if company_id and fund_id and extracted_data and doc_type_for_routing not in LEGAL_DOC_TYPES and doc_type_for_routing != "financial_statement":
             try:
                 from app.services.micro_skills.suggestion_emitter import emit_document_suggestions
                 n = emit_document_suggestions(
@@ -1639,15 +1642,19 @@ def run_document_process(
                     document_name=Path(storage_path).stem,
                 )
                 if n:
-                    logger.info("Emitted %d suggestions from document %s", n, document_id)
+                    logger.info("Emitted %d portfolio suggestions from document %s (type=%s)", n, document_id, doc_type_for_routing)
                 else:
                     logger.info(
-                        "[DOC_PROCESS] No suggestions emitted from document %s "
+                        "[DOC_PROCESS] No portfolio suggestions emitted from document %s "
                         "(extracted %d fields, company_id=%s, fund_id=%s)",
                         document_id, field_count, company_id, fund_id,
                     )
             except Exception as e:
                 logger.warning("Failed to emit document suggestions for %s: %s", document_id, e, exc_info=True)
+        elif doc_type_for_routing in LEGAL_DOC_TYPES:
+            logger.info("[DOC_PROCESS] Skipping portfolio emitter for legal doc %s (type=%s) — legal emitter handles this", document_id, doc_type_for_routing)
+        elif doc_type_for_routing == "financial_statement":
+            logger.info("[DOC_PROCESS] Skipping portfolio emitter for financial_statement doc %s — actuals ingestion handles this", document_id)
 
         # Legal docs: emit clause-level suggestions to the legal grid
         if company_id and fund_id and extracted_data and (document_type or "").strip().lower() in LEGAL_DOC_TYPES:

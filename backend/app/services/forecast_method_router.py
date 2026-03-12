@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 METHODS = {
-    "growth_rate", "regression", "driver_based",
+    "growth_rate", "regression", "advanced_regression", "driver_based",
     "seasonal", "budget_pct", "manual",
 }
 
@@ -84,7 +84,23 @@ class ForecastMethodRouter:
             except Exception as e:
                 logger.debug(f"Seasonal detection failed: {e}")
 
-        # 3. Regression if enough data
+        # 3. Advanced regression if enough data
+        if rev_months >= 6:
+            try:
+                best_model = self._quick_advanced_regression_check(company_id)
+                if best_model:
+                    model_name = best_model.get("model_name", "unknown")
+                    adj_r2 = best_model.get("adjusted_r_squared", 0)
+                    if adj_r2 > 0.7:
+                        return (
+                            "advanced_regression",
+                            f"Best fit: {model_name} (adj R²={adj_r2:.2f}) from {rev_months} months — "
+                            f"{best_model.get('qualitative_assessment', '')}"
+                        )
+            except Exception as e:
+                logger.debug(f"Advanced regression check failed: {e}")
+
+        # 3b. Fallback to basic linear regression
         if rev_months >= 12:
             try:
                 r2 = self._quick_regression_check(company_id)
@@ -125,6 +141,10 @@ class ForecastMethodRouter:
 
         if method == "growth_rate":
             forecast = self._build_growth_rate(seed_data, months, assumptions)
+        elif method == "advanced_regression":
+            forecast = self._build_advanced_regression(
+                company_id, seed_data, months, start_period, provenance
+            )
         elif method == "regression":
             forecast = self._build_regression(company_id, seed_data, months, start_period, provenance)
         elif method == "driver_based":
@@ -137,6 +157,15 @@ class ForecastMethodRouter:
             forecast = self._build_manual(assumptions, months)
         else:
             forecast = self._build_growth_rate(seed_data, months, assumptions)
+
+        # Evolve balance sheet positions across forecast periods
+        if forecast and method != "manual":
+            try:
+                forecast = self._evolve_balance_sheet(company_id, forecast, seed_data)
+                provenance["bs_evolved"] = True
+            except Exception as e:
+                logger.debug(f"BS evolution failed (non-fatal): {e}")
+                provenance["bs_evolved"] = False
 
         return forecast, provenance
 
@@ -326,9 +355,279 @@ class ForecastMethodRouter:
         # Return them as-is in forecast format
         return assumptions.get("forecast", [])
 
+    def _build_advanced_regression(
+        self, company_id: str, seed_data: Dict, months: int,
+        start_period: str, provenance: Dict,
+    ) -> List[Dict]:
+        """Advanced regression: fit all models, pick best, project revenue,
+        then feed into CashFlowPlanningService for full P&L build."""
+        from app.services.advanced_regression_service import AdvancedRegressionService
+        from app.services.actuals_ingestion import get_actuals_for_forecast
+        from app.services.cash_flow_planning_service import CashFlowPlanningService
+
+        adv = AdvancedRegressionService()
+        actuals = get_actuals_for_forecast(company_id, "revenue")
+
+        if len(actuals) < 3:
+            logger.warning("Not enough actuals for advanced regression, falling back to growth_rate")
+            return self._build_growth_rate(seed_data, months)
+
+        try:
+            result = adv.project_metric(
+                actuals, periods=months, metric_key="amount", metric_name="revenue"
+            )
+
+            provenance["advanced_regression"] = {
+                "model": result["model"],
+                "selection_reasoning": result["selection_reasoning"],
+                "data_characteristics": result["data_characteristics"],
+            }
+
+            projected_revenue = result["projected_values"]
+            confidence_intervals = result["confidence_intervals"]
+
+            # Compute implied growth from the regression curve
+            last_actual = actuals[-1]["amount"]
+            if last_actual > 0 and len(projected_revenue) >= 12:
+                rev_12m = projected_revenue[min(11, len(projected_revenue) - 1)]
+                implied_annual_growth = (rev_12m / last_actual) - 1
+            elif last_actual > 0 and projected_revenue:
+                # Shorter horizon — annualize
+                n = len(projected_revenue)
+                implied_annual_growth = ((projected_revenue[-1] / last_actual) ** (12 / n)) - 1
+            else:
+                implied_annual_growth = seed_data.get("growth_rate", 0)
+
+            provenance["implied_annual_growth"] = implied_annual_growth
+            provenance["regression_model_name"] = result["model"]["model_name"]
+
+            # Build full P&L using CashFlowPlanningService with regression-derived growth,
+            # then overlay the actual regression curve for revenue
+            adjusted_seed = {**seed_data, "growth_rate": implied_annual_growth}
+            cfp = CashFlowPlanningService()
+            forecast = cfp.build_monthly_cash_flow_model(
+                adjusted_seed, months=months, start_period=start_period,
+            )
+
+            # Override revenue with actual regression projections (more accurate than
+            # simple growth rate)
+            for i, month_data in enumerate(forecast):
+                if i < len(projected_revenue):
+                    old_rev = month_data.get("revenue", 0) or 0
+                    new_rev = projected_revenue[i]
+                    if new_rev > 0:
+                        month_data["revenue"] = round(new_rev, 2)
+                        # Cascade: adjust COGS, gross_profit proportionally
+                        gm = month_data.get("gross_margin") or seed_data.get("gross_margin", 0.65)
+                        month_data["cogs"] = round(new_rev * (1 - gm), 2)
+                        month_data["gross_profit"] = round(new_rev * gm, 2)
+                        # EBITDA = gross_profit - opex (opex stays from model)
+                        total_opex = month_data.get("total_opex", 0) or 0
+                        month_data["ebitda"] = round(month_data["gross_profit"] - total_opex, 2)
+                        capex = month_data.get("capex", 0) or 0
+                        month_data["free_cash_flow"] = round(month_data["ebitda"] - capex, 2)
+
+                    # Attach CI
+                    if i < len(confidence_intervals):
+                        month_data["_revenue_ci_lower"] = confidence_intervals[i]["lower"]
+                        month_data["_revenue_ci_upper"] = confidence_intervals[i]["upper"]
+
+            # Recalculate cumulative cash balance
+            for i in range(1, len(forecast)):
+                prev_cash = forecast[i - 1].get("cash_balance", 0) or 0
+                fcf = forecast[i].get("free_cash_flow", 0) or 0
+                forecast[i]["cash_balance"] = round(prev_cash + fcf, 2)
+
+            return forecast
+
+        except Exception as e:
+            logger.warning(f"Advanced regression failed ({e}), falling back to basic regression")
+            return self._build_regression(company_id, seed_data, months, start_period, provenance)
+
+    # ------------------------------------------------------------------
+    # Balance Sheet evolution — runs after P&L forecast to evolve BS
+    # ------------------------------------------------------------------
+
+    def _evolve_balance_sheet(
+        self,
+        company_id: str,
+        forecast: List[Dict],
+        seed_data: Dict,
+    ) -> List[Dict]:
+        """Evolve balance sheet positions across forecast periods.
+
+        Uses DSO/DPO/DIO ratios from seed data or defaults to derive:
+          bs_receivables = revenue × (dso / 30)
+          bs_payables = cogs × (dpo / 30)
+          bs_inventory = cogs × (dio / 30)
+          bs_cash[t] = bs_cash[t-1] + fcf + Δworking_capital
+          bs_ppe[t] = bs_ppe[t-1] - depreciation + capex
+          bs_lt_debt[t] = bs_lt_debt[t-1] - debt_service_principal
+
+        Attaches bs_* fields to each forecast row in-place.
+        """
+        # Load opening BS position from actuals
+        opening = self._load_opening_bs(company_id)
+
+        # Working capital assumptions (days)
+        dso = seed_data.get("dso_days", opening.get("dso_days", 45))
+        dpo = seed_data.get("dpo_days", opening.get("dpo_days", 30))
+        dio = seed_data.get("dio_days", opening.get("dio_days", 0))
+        monthly_depreciation = seed_data.get("depreciation_monthly", opening.get("depreciation_monthly", 0))
+        debt_service = seed_data.get("debt_service_monthly", 0)
+
+        # Initialize from opening position
+        prev_cash = opening.get("bs_cash", seed_data.get("cash_balance", 0))
+        prev_ppe = opening.get("bs_ppe", 0)
+        prev_lt_debt = opening.get("bs_lt_debt", 0)
+        prev_deferred_rev = opening.get("bs_deferred_revenue", 0)
+        prev_retained_earnings = opening.get("bs_retained_earnings", 0)
+        share_capital = opening.get("bs_share_capital", 0)
+
+        for row in forecast:
+            revenue = row.get("revenue", 0) or 0
+            cogs = row.get("cogs", 0) or 0
+            fcf = row.get("free_cash_flow", 0) or 0
+            capex = row.get("capex", 0) or 0
+            net_income = row.get("net_income", 0) or row.get("ebitda", 0) or 0
+
+            # Receivables/payables/inventory from ratio model
+            bs_receivables = round(revenue * (dso / 30), 2)
+            bs_payables = round(cogs * (dpo / 30), 2)
+            bs_inventory = round(cogs * (dio / 30), 2) if dio > 0 else 0
+
+            # PP&E evolution
+            bs_ppe = round(prev_ppe - monthly_depreciation + capex, 2)
+
+            # Debt paydown
+            bs_lt_debt = round(max(0, prev_lt_debt - debt_service), 2)
+
+            # Cash from P&L FCF (working capital delta already in FCF for most models)
+            bs_cash = round(prev_cash + fcf, 2)
+
+            # Deferred revenue — hold constant unless revenue growth implies change
+            bs_deferred_revenue = round(prev_deferred_rev, 2)
+
+            # Equity: retained earnings accumulates net income each period
+            bs_retained_earnings = round(prev_retained_earnings + net_income, 2)
+
+            # Working capital & net debt
+            working_capital = bs_receivables + bs_inventory - bs_payables - bs_deferred_revenue
+            net_debt = bs_lt_debt - bs_cash
+
+            # Total assets & total liabilities+equity for balance check
+            total_assets = bs_cash + bs_receivables + bs_inventory + bs_ppe
+            total_liabilities = bs_payables + bs_lt_debt + bs_deferred_revenue
+            total_equity = share_capital + bs_retained_earnings
+
+            row["bs_cash"] = bs_cash
+            row["bs_receivables"] = bs_receivables
+            row["bs_payables"] = bs_payables
+            row["bs_inventory"] = bs_inventory
+            row["bs_ppe"] = bs_ppe
+            row["bs_lt_debt"] = bs_lt_debt
+            row["bs_st_debt"] = 0
+            row["bs_deferred_revenue"] = bs_deferred_revenue
+            row["bs_retained_earnings"] = bs_retained_earnings
+            row["bs_share_capital"] = share_capital
+            row["bs_total_equity"] = round(total_equity, 2)
+            row["working_capital"] = round(working_capital, 2)
+            row["net_debt"] = round(net_debt, 2)
+            row["bs_total_assets"] = round(total_assets, 2)
+            row["bs_total_liabilities"] = round(total_liabilities, 2)
+
+            # Carry forward
+            prev_cash = bs_cash
+            prev_ppe = bs_ppe
+            prev_lt_debt = bs_lt_debt
+            prev_deferred_rev = bs_deferred_revenue
+            prev_retained_earnings = bs_retained_earnings
+
+        return forecast
+
+    def _load_opening_bs(self, company_id: str) -> Dict[str, float]:
+        """Load the most recent BS position from fpa_actuals."""
+        try:
+            from app.core.supabase_client import get_supabase_client
+
+            sb = get_supabase_client()
+            if not sb:
+                return {}
+
+            result = (
+                sb.table("fpa_actuals")
+                .select("period, category, amount")
+                .eq("company_id", company_id)
+                .like("category", "bs_%")
+                .order("period", desc=True)
+                .limit(200)
+                .execute()
+            )
+
+            if not result.data:
+                return {}
+
+            # Get the latest period's values
+            latest_period = result.data[0]["period"][:7]
+            opening: Dict[str, float] = {}
+            for row in result.data:
+                if row["period"][:7] != latest_period:
+                    break
+                cat = row["category"]
+                opening[cat] = opening.get(cat, 0) + float(row["amount"])
+
+            # Compute implied DSO/DPO from actuals if we have revenue/cogs
+            # (pull latest P&L too)
+            # Filter to the single latest period using .like on YYYY-MM prefix
+            pnl_result = (
+                sb.table("fpa_actuals")
+                .select("category, amount")
+                .eq("company_id", company_id)
+                .like("period", f"{latest_period}%")
+                .in_("category", ["revenue", "cogs"])
+                .execute()
+            )
+            pnl_vals: Dict[str, float] = {}
+            for row in (pnl_result.data or []):
+                pnl_vals[row["category"]] = pnl_vals.get(row["category"], 0) + float(row["amount"])
+
+            rev = pnl_vals.get("revenue", 0)
+            cogs = pnl_vals.get("cogs", 0)
+            if rev > 0 and opening.get("bs_receivables", 0) > 0:
+                opening["dso_days"] = round(opening["bs_receivables"] / rev * 30, 0)
+            if cogs > 0 and opening.get("bs_payables", 0) > 0:
+                opening["dpo_days"] = round(opening["bs_payables"] / cogs * 30, 0)
+            if cogs > 0 and opening.get("bs_inventory", 0) > 0:
+                opening["dio_days"] = round(opening["bs_inventory"] / cogs * 30, 0)
+
+            return opening
+        except Exception as e:
+            logger.debug(f"Could not load opening BS: {e}")
+            return {}
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _quick_advanced_regression_check(self, company_id: str) -> Optional[Dict]:
+        """Quick check: fit advanced models on revenue actuals, return best model info."""
+        from app.services.actuals_ingestion import get_actuals_for_forecast
+        from app.services.advanced_regression_service import AdvancedRegressionService
+
+        actuals = get_actuals_for_forecast(company_id, "revenue", months=36)
+        if len(actuals) < 6:
+            return None
+
+        x = list(range(len(actuals)))
+        y = [a["amount"] for a in actuals]
+
+        try:
+            adv = AdvancedRegressionService()
+            result = adv.auto_select_best_model(x, y, forecast_periods=12, metric_name="revenue")
+            return result.best_model.to_dict()
+        except Exception as e:
+            logger.debug(f"Advanced regression check failed: {e}")
+            return None
 
     def _quick_regression_check(self, company_id: str) -> Optional[float]:
         """Quick R² check on revenue actuals."""

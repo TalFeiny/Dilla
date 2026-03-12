@@ -35,13 +35,21 @@ class ForecastExplainer:
         method_desc = {
             "growth_rate": "growth-rate extrapolation with monthly decay",
             "regression": "linear regression on historical actuals",
+            "advanced_regression": "advanced auto-selected regression",
             "driver_based": "driver-based customer model (ACV x customers x NRR)",
             "seasonal": "growth-rate model with seasonal overlay",
             "budget_pct": "budget achievement-rate projection",
             "manual": "manually specified values",
             "scenario_promoted": "promoted scenario branch",
         }
-        parts.append(f"{months}-month forecast using {method_desc.get(method, method)}.")
+        # For advanced regression, include the specific model name
+        if method == "advanced_regression":
+            reg_info = seed_data.get("_regression_params", {})
+            model_name = reg_info.get("model_name", "best-fit")
+            method_label = f"advanced regression ({model_name})"
+        else:
+            method_label = method_desc.get(method, method)
+        parts.append(f"{months}-month forecast using {method_label}.")
 
         # Data source
         if rev_months:
@@ -58,6 +66,22 @@ class ForecastExplainer:
             parts.append(f"Gross margin {gm:.0%} from actuals.")
 
         # Method-specific details
+        if method == "advanced_regression":
+            reg = seed_data.get("_regression_params", {})
+            model_name = reg.get("model_name", "")
+            adj_r2 = reg.get("adjusted_r_squared")
+            assessment = reg.get("qualitative_assessment", "")
+            biz_interp = reg.get("business_interpretation", "")
+            if adj_r2 is not None:
+                parts.append(f"Model: {model_name} (adj R² = {adj_r2:.2f}).")
+            if assessment:
+                parts.append(assessment)
+            if biz_interp:
+                parts.append(biz_interp)
+            reasoning = reg.get("selection_reasoning", "")
+            if reasoning:
+                parts.append(f"Selection: {reasoning}")
+
         if method == "regression":
             reg = seed_data.get("_regression_params", {})
             r2 = reg.get("r_squared")
@@ -148,6 +172,15 @@ class ForecastExplainer:
                 f"Revenue {period}: ${amount:,.0f} = "
                 f"${base_revenue:,.0f} × (1 + {monthly_growth:.3f})^{month_index + 1} "
                 f"({growth:.0%} annual growth with decay)"
+            )
+        elif method == "advanced_regression":
+            reg = seed_data.get("_regression_params", {})
+            model_name = reg.get("model_name", "best-fit")
+            eq = reg.get("equation", "")
+            confidence = reg.get("confidence", "")
+            return (
+                f"Revenue {period}: ${amount:,.0f} from {model_name} regression "
+                f"({eq}) — confidence: {confidence}"
             )
         elif method == "regression":
             reg = seed_data.get("_regression_params", {})

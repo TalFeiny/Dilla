@@ -230,7 +230,7 @@ _r(DriverDef(
     label="Funding Injection",
     level="capital", unit="$", how="shift",
     assumption_key="funding_injection",
-    ripple=["cash_balance", "runway_months", "dilution", "ownership"],
+    ripple=["cash_balance", "runway_months", "dilution", "ownership", "bs_cash", "bs_share_capital", "bs_apic"],
     nl_hint="One-time cash injection in dollars (e.g. fundraise amount)",
     range=(0, 1e12),
 ))
@@ -259,7 +259,7 @@ _r(DriverDef(
     label="Capital Expenditure",
     level="capital", unit="$", how="set",
     assumption_key="capex_override",
-    ripple=["free_cash_flow", "cash_balance", "runway_months"],
+    ripple=["free_cash_flow", "cash_balance", "runway_months", "bs_ppe", "bs_cash"],
     nl_hint="Monthly capital expenditure in absolute dollars",
     range=(0, 100_000_000),
 ))
@@ -269,7 +269,7 @@ _r(DriverDef(
     label="Debt Service / Loan Payments",
     level="capital", unit="$", how="set",
     assumption_key="debt_service_monthly",
-    ripple=["free_cash_flow", "cash_balance", "runway_months"],
+    ripple=["free_cash_flow", "cash_balance", "runway_months", "bs_lt_debt", "bs_cash", "net_debt"],
     nl_hint="Monthly debt/loan principal payment in dollars",
     range=(0, 100_000_000),
 ))
@@ -279,7 +279,7 @@ _r(DriverDef(
     label="Interest Rate on Debt",
     level="capital", unit="%", how="set",
     assumption_key="interest_rate",
-    ripple=["debt_service", "free_cash_flow", "cash_balance"],
+    ripple=["debt_service", "free_cash_flow", "cash_balance", "bs_interest_payable"],
     nl_hint="Annual interest rate on outstanding debt as decimal (0.08 = 8%)",
     range=(0.0, 1.0),
 ))
@@ -299,7 +299,7 @@ _r(DriverDef(
     label="Working Capital Cycle",
     level="capital", unit="days", how="set",
     assumption_key="working_capital_days",
-    ripple=["cash_timing"],
+    ripple=["cash_timing", "bs_receivables", "bs_payables", "bs_inventory", "working_capital", "bs_cash"],
     nl_hint="Net working capital cycle in days (positive = cash tied up)",
     range=(-180, 365),
 ))
@@ -311,6 +311,68 @@ _r(DriverDef(
     assumption_key="one_time_costs",
     ripple=["ebitda", "cash_balance", "runway_months"],
     nl_hint="List of {period: 'YYYY-MM', amount: $, label: str} one-time cost events",
+))
+
+# ── Balance Sheet Drivers ─────────────────────────────────────────────────
+
+_r(DriverDef(
+    id="dso_days",
+    label="Days Sales Outstanding",
+    level="capital", unit="days", how="set",
+    assumption_key="dso_days",
+    ripple=["bs_receivables", "working_capital", "bs_cash"],
+    nl_hint="Days sales outstanding — drives accounts receivable (45 = 1.5 months of revenue in AR)",
+    range=(0, 180),
+))
+
+_r(DriverDef(
+    id="dpo_days",
+    label="Days Payable Outstanding",
+    level="capital", unit="days", how="set",
+    assumption_key="dpo_days",
+    ripple=["bs_payables", "working_capital", "bs_cash"],
+    nl_hint="Days payable outstanding — drives accounts payable (30 = 1 month of COGS in AP)",
+    range=(0, 180),
+))
+
+_r(DriverDef(
+    id="dio_days",
+    label="Days Inventory Outstanding",
+    level="capital", unit="days", how="set",
+    assumption_key="dio_days",
+    ripple=["bs_inventory", "working_capital", "bs_cash"],
+    nl_hint="Days inventory outstanding — drives inventory balance. 0 for services/SaaS.",
+    range=(0, 365),
+))
+
+_r(DriverDef(
+    id="debt_drawdown",
+    label="Debt Drawdown / New Borrowing",
+    level="capital", unit="$", how="shift",
+    assumption_key="debt_drawdown",
+    ripple=["bs_lt_debt", "bs_cash", "cash_balance", "net_debt"],
+    nl_hint="New debt drawn in dollars (e.g. term loan, venture debt)",
+    range=(0, 1e12),
+))
+
+_r(DriverDef(
+    id="deferred_revenue_change",
+    label="Deferred Revenue Change",
+    level="revenue", unit="$", how="shift",
+    assumption_key="deferred_revenue_delta",
+    ripple=["bs_deferred_revenue", "revenue", "bs_cash"],
+    nl_hint="Monthly change in deferred revenue (positive = more prepaid contracts)",
+    range=(-100_000_000, 100_000_000),
+))
+
+_r(DriverDef(
+    id="depreciation_monthly",
+    label="Monthly Depreciation",
+    level="capital", unit="$", how="set",
+    assumption_key="depreciation_monthly",
+    ripple=["bs_ppe", "ebitda", "free_cash_flow"],
+    nl_hint="Monthly depreciation amount in dollars (reduces PP&E)",
+    range=(0, 10_000_000),
 ))
 
 # ── OpEx Subcategory Level (active only when subcategory data exists) ──────

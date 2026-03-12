@@ -695,6 +695,7 @@ export function UnifiedMatrix({
     for (const file of filesToUpload) formData.append('file', file);
     if (opts.companyId) formData.append('company_id', opts.companyId);
     if (opts.fundId) formData.append('fund_id', opts.fundId);
+    formData.append('mode', mode);
     const res = await fetch('/api/documents/batch', { method: 'POST', body: formData });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -1696,24 +1697,24 @@ export function UnifiedMatrix({
       const data = await res.json();
       const clauseRows = data.rows ?? [];
 
-      if (clauseRows.length > 0) {
-        const currentData = matrixData ?? getDefaultMatrixData('legal', fundId);
-        const legalData: MatrixData = {
-          columns: currentData.columns,
-          rows: clauseRows.map((row: { id: string; companyId?: string; cells: Record<string, unknown>; confidence?: number; flags?: string[]; isAccepted?: boolean }) => ({
-            id: row.id,
-            companyId: row.companyId,
-            cells: row.cells,
-            depth: 0,
-            isHeader: false,
-            isTotal: false,
-            isComputed: false,
-          })),
-          metadata: data.metadata ?? { dataSource: 'legal', lastUpdated: new Date().toISOString() },
-        };
-        setMatrixData(legalData);
-        onDataChange?.(legalData);
-      }
+      // GUARD: Always use LEGAL_COLUMNS — never inherit stale columns from a previous mode
+      const legalData: MatrixData = {
+        columns: LEGAL_COLUMNS,
+        rows: clauseRows.map((row: { id: string; companyId?: string; cells: Record<string, unknown>; depth?: number; isHeader?: boolean; isTotal?: boolean; isComputed?: boolean; parentId?: string | null; childIds?: string[] }) => ({
+          id: row.id,
+          companyId: row.companyId,
+          cells: row.cells,
+          depth: row.depth ?? 0,
+          isHeader: row.isHeader ?? false,
+          isTotal: row.isTotal ?? false,
+          isComputed: row.isComputed ?? false,
+          parentId: row.parentId ?? null,
+          childIds: row.childIds ?? [],
+        })),
+        metadata: data.metadata ?? { dataSource: 'legal', lastUpdated: new Date().toISOString() },
+      };
+      setMatrixData(legalData);
+      onDataChange?.(legalData);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       console.error('[UnifiedMatrix] Error loading legal data:', err);
@@ -3119,8 +3120,7 @@ export function UnifiedMatrix({
       formData.append('file', file);
       if (companyId) formData.append('company_id', companyId);
       if (fundId) formData.append('fund_id', fundId);
-      // Legal mode uploads contracts for clause extraction; all other modes use monthly_update
-      formData.append('document_type', mode === 'legal' ? 'contract' : 'monthly_update');
+      formData.append('mode', mode);
 
       setCellActionStatus((prev) => ({ ...prev, [`${canonicalRowId}_${columnId}`]: { state: 'loading', message: `Uploading ${file.name}...` } }));
 

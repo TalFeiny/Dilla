@@ -606,6 +606,116 @@ def _compute_ebitda(
 
 
 # ---------------------------------------------------------------------------
+# Balance Sheet parsing → fpa_actuals rows (bs_* categories)
+# ---------------------------------------------------------------------------
+
+# Xero BS section headers → FPA balance sheet category fallback.
+# Fine-grained matching via match_erp_account takes priority; these are
+# last-resort defaults when no account-level match is found.
+BS_SECTION_MAP = {
+    # Assets
+    "Bank": "bs_cash",
+    "Current Assets": "bs_other_ca",
+    "Current Asset": "bs_other_ca",
+    "Fixed Assets": "bs_ppe",
+    "Fixed Asset": "bs_ppe",
+    "Non-current Assets": "bs_other_nca",
+    "Non-Current Assets": "bs_other_nca",
+    "Assets": "bs_other_ca",  # fallback
+    # Liabilities
+    "Current Liabilities": "bs_other_cl",
+    "Current Liability": "bs_other_cl",
+    "Non-current Liabilities": "bs_other_ncl",
+    "Non-Current Liabilities": "bs_other_ncl",
+    "Liabilities": "bs_other_cl",  # fallback
+    # Equity
+    "Equity": "bs_other_equity",
+}
+
+
+def parse_balance_sheet(
+    report: Dict[str, Any],
+    company_id: str,
+) -> List[Dict[str, Any]]:
+    """Parse a Xero Balance Sheet report into fpa_actuals rows with bs_* categories.
+
+    Walks the report row tree, mapping section headers to BS categories
+    and extracting amounts per period. Uses ERP_ACCOUNT_MAP from
+    balance_sheet_builder for fine-grained account → category matching.
+    """
+    if not report:
+        return []
+
+    periods = _parse_report_header_dates(report)
+    if not periods:
+        logger.warning("No period columns found in Balance Sheet report")
+        return []
+
+    iso_periods = [_normalize_period(p) for p in periods]
+
+    # Lazy import — avoid circular dependency
+    from app.services.balance_sheet_builder import match_erp_account
+
+    rows_out: List[Dict[str, Any]] = []
+
+    top_reports = report.get("reports", report.get("Reports", [{}]))
+    report_rows = top_reports[0].get("rows", top_reports[0].get("Rows", [])) if top_reports else []
+
+    current_section_cat = "bs_cash"
+
+    for section in report_rows:
+        row_type = section.get("row_type", section.get("RowType", ""))
+        title = section.get("title", section.get("Title", ""))
+
+        if row_type == "Section" and title:
+            current_section_cat = BS_SECTION_MAP.get(title, current_section_cat)
+
+        inner_rows = section.get("rows", section.get("Rows", []))
+        for row in inner_rows:
+            rt = row.get("row_type", row.get("RowType", ""))
+            if rt != "Row":
+                continue
+
+            cells = row.get("cells", row.get("Cells", []))
+            if len(cells) < 2:
+                continue
+
+            account_name = cells[0].get("value", cells[0].get("Value", "")).strip()
+            if not account_name:
+                continue
+
+            # Try fine-grained matching first, fall back to section-level
+            category = match_erp_account(account_name) or current_section_cat
+
+            for i, cell_val in enumerate(cells[1:]):
+                if i >= len(iso_periods) or not iso_periods[i]:
+                    continue
+
+                raw_value = cell_val.get("value", cell_val.get("Value", ""))
+                if not raw_value:
+                    continue
+
+                try:
+                    amount = float(str(raw_value).replace(",", ""))
+                except (ValueError, TypeError):
+                    continue
+
+                if amount == 0:
+                    continue
+
+                rows_out.append({
+                    "company_id": company_id,
+                    "period": f"{iso_periods[i]}-01",
+                    "category": category,
+                    "subcategory": account_name.lower().replace(" ", "_"),
+                    "amount": amount,
+                    "source": "xero",
+                })
+
+    return rows_out
+
+
+# ---------------------------------------------------------------------------
 # Full sync operation
 # ---------------------------------------------------------------------------
 
@@ -677,17 +787,42 @@ async def sync_xero_data(
         on_conflict="company_id,period,category,source",
     ).execute()
 
+    # --- Also sync Balance Sheet ---
+    bs_rows = []
+    try:
+        bs_report = fetch_balance_sheet(
+            access_token=access_token,
+            tenant_id=tenant_id,
+            report_date=to_date.isoformat(),
+        )
+        if bs_report:
+            bs_rows = parse_balance_sheet(
+                report=bs_report,
+                company_id=company_id,
+            )
+            if bs_rows:
+                sb.table("fpa_actuals").upsert(
+                    bs_rows,
+                    on_conflict="company_id,period,category,source",
+                ).execute()
+                logger.info("Xero BS sync: %d rows for company %s", len(bs_rows), company_id)
+    except Exception as bs_err:
+        logger.warning("Xero BS sync failed (non-fatal): %s", bs_err)
+
     update_sync_status(connection_id, "idle")
 
-    unique_periods = sorted(set(r["period"][:7] for r in rows))
+    all_rows = rows + bs_rows
+    unique_periods = sorted(set(r["period"][:7] for r in all_rows))
 
     logger.info(
-        "Xero sync complete: %d rows across %d periods for company %s",
-        len(rows), len(unique_periods), company_id,
+        "Xero sync complete: %d P&L + %d BS rows across %d periods for company %s",
+        len(rows), len(bs_rows), len(unique_periods), company_id,
     )
 
     return {
         "success": True,
-        "rows_synced": len(rows),
+        "rows_synced": len(all_rows),
+        "pl_rows": len(rows),
+        "bs_rows": len(bs_rows),
         "periods": unique_periods,
     }

@@ -329,6 +329,11 @@ class ScenarioBranchService:
         ev_forecast = self._compute_expected_value(comparisons)
         charts = self._build_multi_branch_charts(comparisons)
 
+        # Capital impact cascade: how each branch affects fundraising
+        capital_impact = self._compute_capital_impact_cascade(
+            comparisons, company_id, base_data, forecast_months
+        )
+
         # Legal diff: if any branches have legal overrides, run clause diff
         legal_diffs = self._compute_legal_diffs(comparisons, company_id)
 
@@ -339,6 +344,7 @@ class ScenarioBranchService:
             "comparisons": comparisons,
             "expected_value": ev_forecast,
             "charts": charts,
+            "capital_impact": capital_impact,
         }
 
         if legal_diffs:
@@ -1285,6 +1291,209 @@ class ScenarioBranchService:
     # ------------------------------------------------------------------
     # Private: comparison helpers
     # ------------------------------------------------------------------
+
+    def _compute_capital_impact_cascade(
+        self,
+        comparisons: List[Dict[str, Any]],
+        company_id: str,
+        base_data: Dict[str, Any],
+        forecast_months: int,
+    ) -> Dict[str, Any]:
+        """Compute how each branch scenario impacts capital raising plans.
+
+        For each branch, calculates:
+        - Runway trajectory (when cash hits zero)
+        - Whether/when fundraising is needed
+        - Implied round size, dilution, and post-money ownership
+        - How the branch's growth trajectory affects valuation multiples
+        - Net impact: which scenario is best/worst for founder economics
+
+        Returns a dict with per-branch capital analysis + summary comparison.
+        """
+        stage = base_data.get("funding_stage") or base_data.get("stage") or "Seed"
+        founder_ownership = base_data.get("founder_ownership", 0.70)
+
+        branch_analyses: List[Dict[str, Any]] = []
+
+        for comp in comparisons:
+            forecast = comp.get("forecast", [])
+            if not forecast:
+                continue
+
+            name = comp.get("name", "Unknown")
+            bid = comp.get("branch_id")
+            is_base = bid is None
+
+            # Find cash-zero month (runway exhaustion)
+            cash_zero_month = None
+            min_cash_month = None
+            min_cash = float("inf")
+            for i, month in enumerate(forecast):
+                cash = month.get("cash_balance", 0) or 0
+                if cash < min_cash:
+                    min_cash = cash
+                    min_cash_month = i
+                if cash <= 0 and cash_zero_month is None:
+                    cash_zero_month = i
+
+            last = forecast[-1]
+            first = forecast[0]
+
+            # Revenue trajectory
+            start_rev = first.get("revenue", 0) or 0
+            end_rev = last.get("revenue", 0) or 0
+            if start_rev > 0:
+                total_rev_growth = (end_rev / start_rev) - 1
+                annualized_growth = ((end_rev / start_rev) ** (12 / max(len(forecast), 1))) - 1
+            else:
+                total_rev_growth = 0
+                annualized_growth = 0
+
+            # Average monthly burn (last 6 months)
+            recent_months = forecast[-min(6, len(forecast)):]
+            avg_fcf = sum(m.get("free_cash_flow", 0) or 0 for m in recent_months) / len(recent_months)
+            monthly_burn = abs(avg_fcf) if avg_fcf < 0 else 0
+
+            # Current runway
+            end_cash = last.get("cash_balance", 0) or 0
+            runway_at_end = end_cash / monthly_burn if monthly_burn > 0 else 999
+
+            # Does this branch need funding?
+            needs_funding = cash_zero_month is not None or runway_at_end < 6
+
+            # Capital raising implications
+            capital_plan = None
+            if needs_funding:
+                # When should they raise? (6 months before cash-zero, or now if already tight)
+                if cash_zero_month is not None:
+                    raise_by_month = max(0, cash_zero_month - 6)
+                    raise_period = forecast[raise_by_month].get("period", "") if raise_by_month < len(forecast) else ""
+                else:
+                    raise_by_month = max(0, len(forecast) - 12)
+                    raise_period = forecast[raise_by_month].get("period", "") if raise_by_month < len(forecast) else ""
+
+                # Revenue at raise time (determines valuation)
+                raise_month_data = forecast[raise_by_month] if raise_by_month < len(forecast) else last
+                rev_at_raise = raise_month_data.get("revenue", 0) or 0
+                arr_at_raise = rev_at_raise * 12
+
+                # Round sizing: 18 months of runway from raise point
+                target_runway = 18
+                cash_at_raise = raise_month_data.get("cash_balance", 0) or 0
+                # Use burn at raise point, not end
+                burn_at_raise = abs(raise_month_data.get("free_cash_flow", 0) or avg_fcf)
+                cash_needed = max(0, (burn_at_raise * target_runway) - max(cash_at_raise, 0))
+
+                round_size = self._estimate_round_size(stage, cash_needed)
+
+                # Valuation: growth-adjusted multiple
+                # Higher growth = higher multiple = less dilution
+                base_multiples = {
+                    "Pre-seed": 20, "Seed": 15, "Series A": 12,
+                    "Series B": 10, "Series C": 8, "Series D": 6,
+                }
+                base_mult = base_multiples.get(stage, 10)
+
+                # Growth premium/discount: +50% growth = +2x multiple, -50% = -2x
+                growth_premium = min(2.0, max(-0.5, annualized_growth)) * 4
+                effective_multiple = max(3, base_mult + growth_premium)
+
+                pre_money = arr_at_raise * effective_multiple
+                if pre_money < round_size:
+                    pre_money = round_size * 3  # Floor: at least 3x round size
+
+                dilution = round_size / (pre_money + round_size) if pre_money > 0 else 0.25
+                post_money_ownership = founder_ownership * (1 - dilution)
+                runway_extension = round_size / burn_at_raise if burn_at_raise > 0 else 0
+
+                capital_plan = {
+                    "needs_funding": True,
+                    "raise_by_period": raise_period,
+                    "raise_by_month_index": raise_by_month,
+                    "cash_zero_month": cash_zero_month,
+                    "cash_zero_period": forecast[cash_zero_month].get("period", "") if cash_zero_month is not None and cash_zero_month < len(forecast) else None,
+                    "arr_at_raise": round(arr_at_raise, 0),
+                    "growth_at_raise": round(annualized_growth, 4),
+                    "effective_multiple": round(effective_multiple, 1),
+                    "pre_money_valuation": round(pre_money, 0),
+                    "round_size": round(round_size, 0),
+                    "dilution_pct": round(dilution, 4),
+                    "post_money_ownership": round(post_money_ownership, 4),
+                    "runway_extension_months": round(runway_extension, 1),
+                    "monthly_burn_at_raise": round(burn_at_raise, 0),
+                }
+            else:
+                capital_plan = {
+                    "needs_funding": False,
+                    "reason": "Sufficient runway through forecast horizon",
+                    "end_cash": round(end_cash, 0),
+                    "runway_months": round(runway_at_end, 1),
+                }
+
+            analysis = {
+                "branch_name": name,
+                "branch_id": bid,
+                "is_base": is_base,
+                "revenue_trajectory": {
+                    "start": round(start_rev, 0),
+                    "end": round(end_rev, 0),
+                    "total_growth": round(total_rev_growth, 4),
+                    "annualized_growth": round(annualized_growth, 4),
+                },
+                "cash_trajectory": {
+                    "start": round(first.get("cash_balance", 0) or 0, 0),
+                    "end": round(end_cash, 0),
+                    "minimum": round(min_cash, 0),
+                    "minimum_month": min_cash_month,
+                    "cash_zero_month": cash_zero_month,
+                },
+                "burn_profile": {
+                    "avg_monthly_burn": round(monthly_burn, 0),
+                    "runway_at_end": round(runway_at_end, 1),
+                },
+                "capital_plan": capital_plan,
+            }
+
+            branch_analyses.append(analysis)
+
+        # Summary: rank branches by founder economics (post-money ownership)
+        funded_branches = [
+            a for a in branch_analyses
+            if a["capital_plan"].get("needs_funding")
+        ]
+        unfunded = [
+            a for a in branch_analyses
+            if not a["capital_plan"].get("needs_funding")
+        ]
+
+        # Best scenario = highest post-money ownership (least dilution)
+        # or no funding needed at all
+        ranking = []
+        for a in unfunded:
+            ranking.append({
+                "branch": a["branch_name"],
+                "score": 1.0,  # No dilution = best
+                "reason": f"No funding needed. {a['capital_plan'].get('runway_months', 0):.0f} months runway.",
+            })
+        for a in sorted(funded_branches, key=lambda x: x["capital_plan"].get("post_money_ownership", 0), reverse=True):
+            cp = a["capital_plan"]
+            ranking.append({
+                "branch": a["branch_name"],
+                "score": cp.get("post_money_ownership", 0),
+                "reason": (
+                    f"Raise ${cp.get('round_size', 0):,.0f} at "
+                    f"${cp.get('pre_money_valuation', 0):,.0f} pre-money "
+                    f"({cp.get('dilution_pct', 0):.1%} dilution). "
+                    f"Post-money ownership: {cp.get('post_money_ownership', 0):.1%}."
+                ),
+            })
+
+        return {
+            "branches": branch_analyses,
+            "ranking": ranking,
+            "stage": stage,
+            "founder_ownership_current": founder_ownership,
+        }
 
     def _compute_deltas(
         self, base: List[Dict], branch: List[Dict]

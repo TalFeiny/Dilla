@@ -365,7 +365,7 @@ export function AGGridMatrix({
     
     // P&L mode: filter out rows whose parent is collapsed
     let rowsToRender = validRows;
-    if (mode === 'pnl' && collapsedSections.size > 0) {
+    if ((mode === 'pnl' || mode === 'legal') && collapsedSections.size > 0) {
       // Collect all row IDs that are descendants of a collapsed section
       const hiddenIds = new Set<string>();
       const collectHidden = (parentId: string) => {
@@ -673,6 +673,17 @@ export function AGGridMatrix({
         };
         baseColDef.editable = false;
         baseColDef.width = 260;
+      }
+
+      // Legal mode: document→clause hierarchy on documentName column (same tree renderer as PnL)
+      if (col.id === 'documentName' && mode === 'legal') {
+        baseColDef.cellRenderer = PnLLineItemRenderer;
+        baseColDef.cellRendererParams = {
+          collapsedSections,
+          onToggleSection: toggleSection,
+        };
+        baseColDef.editable = false;
+        baseColDef.width = 240;
       }
 
       // P&L value cells — style based on row type and forecast boundary

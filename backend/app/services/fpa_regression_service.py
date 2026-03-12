@@ -1,7 +1,8 @@
 """
 FPA Regression Service
 Linear regression, exponential decay, time-series, Monte Carlo, sensitivity sweeps
-Extended for world model analysis - finding relationships between qualitative and quantitative factors
+Extended with advanced regression toolkit: polynomial, logistic, power law,
+piecewise, weighted, gompertz + auto-selection by adjusted R².
 """
 
 import logging
@@ -16,9 +17,46 @@ logger = logging.getLogger(__name__)
 
 class FPARegressionService:
     """Statistical analysis and regression for FPA and world models"""
-    
+
     def __init__(self):
-        pass
+        from app.services.advanced_regression_service import AdvancedRegressionService
+        self._advanced = AdvancedRegressionService()
+
+    # ------------------------------------------------------------------
+    # Advanced regression (delegates to AdvancedRegressionService)
+    # ------------------------------------------------------------------
+
+    async def advanced_regression(
+        self,
+        x: List[float],
+        y: List[float],
+        forecast_periods: int = 12,
+        metric_name: str = "revenue",
+    ) -> Dict[str, Any]:
+        """Fit all regression models and auto-select the best one.
+
+        Returns the best model, all models ranked, forecast, and qualitative reasoning.
+        This is the primary regression method the PnL agent should use.
+        """
+        result = self._advanced.auto_select_best_model(
+            x, y, forecast_periods=forecast_periods, metric_name=metric_name
+        )
+        return result.to_dict()
+
+    async def project_metric_advanced(
+        self,
+        actuals: List[Dict[str, Any]],
+        periods: int = 12,
+        metric_key: str = "amount",
+        metric_name: str = "revenue",
+    ) -> Dict[str, Any]:
+        """Convenience: project a metric forward using best-fit advanced regression.
+
+        Takes actuals list [{period, amount}, ...] and returns best-fit projection.
+        """
+        return self._advanced.project_metric(
+            actuals, periods=periods, metric_key=metric_key, metric_name=metric_name
+        )
     
     async def linear_regression(
         self,

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -996,22 +996,34 @@ export default function AgentChat({
       // Forward grid_suggestions from FPA tools → suggestions accept/reject flow
       // Deduplicate by (rowId, columnId) — keeps the last value when multiple tools
       // (e.g. fpa_forecast + fpa_cash_flow) suggest edits for the same cell.
+      // SKIP any cells already handled by commandsToRun (grid_commands or intent)
+      // to prevent the same action firing twice from the same response.
       if (norm.gridSuggestions?.length && onGridCommandsFromBackend) {
+        // Build set of cells already executed by commandsToRun
+        const alreadyHandled = new Set<string>();
+        for (const cmd of commandsToRun) {
+          if (cmd.rowId && cmd.columnId) alreadyHandled.add(`${cmd.rowId}:${cmd.columnId}`);
+        }
         const seen = new Map<string, any>();
         for (const s of norm.gridSuggestions) {
-          seen.set(`${s.rowId}:${s.columnId}`, s);
+          const key = `${s.rowId}:${s.columnId}`;
+          if (!alreadyHandled.has(key)) {
+            seen.set(key, s);
+          }
         }
-        const suggestionCmds = Array.from(seen.values()).map((s: any) => ({
-          action: 'edit' as const,
-          rowId: s.rowId,
-          columnId: s.columnId,
-          value: s.value,
-          source_service: s.source_service || 'fpa_forecast',
-          reasoning: s.reasoning,
-        }));
-        onGridCommandsFromBackend(suggestionCmds).catch((err: any) =>
-          console.error('[AgentChat] grid_suggestions error:', err)
-        );
+        if (seen.size > 0) {
+          const suggestionCmds = Array.from(seen.values()).map((s: any) => ({
+            action: 'edit' as const,
+            rowId: s.rowId,
+            columnId: s.columnId,
+            value: s.value,
+            source_service: s.source_service || 'fpa_forecast',
+            reasoning: s.reasoning,
+          }));
+          onGridCommandsFromBackend(suggestionCmds).catch((err: any) =>
+            console.error('[AgentChat] grid_suggestions error:', err)
+          );
+        }
       }
 
       // P&L grid refresh: when FPA write tools ran, signal the control panel to re-fetch

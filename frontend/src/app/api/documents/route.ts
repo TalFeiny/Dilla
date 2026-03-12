@@ -332,7 +332,9 @@ export async function POST(request: NextRequest) {
     const file = formData.get('file') as File;
     const companyId = formData.get('company_id') as string | null;
     const fundId = formData.get('fund_id') as string | null;
-    const formDocumentType = formData.get('document_type') as string | null;
+    const formMode = formData.get('mode') as string | null;
+    const formDocumentType = formData.get('document_type') as string | null
+      ?? (formMode === 'legal' ? 'contract' : formMode === 'pnl' ? 'financial_statement' : null);
     const erpCategoryHint = formData.get('erp_category_hint') as string | null;
     const erpSubcategoryHint = formData.get('erp_subcategory_hint') as string | null;
 

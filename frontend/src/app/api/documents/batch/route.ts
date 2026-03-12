@@ -31,7 +31,9 @@ export async function POST(request: NextRequest) {
     const formData = await request.formData();
     const companyId = (formData.get('company_id') as string) || null;
     const fundId = (formData.get('fund_id') as string) || null;
-    const formDocumentType = (formData.get('document_type') as string) || null;
+    const formMode = (formData.get('mode') as string) || null;
+    const formDocumentType = (formData.get('document_type') as string)
+      || (formMode === 'legal' ? 'contract' : formMode === 'pnl' ? 'financial_statement' : null);
 
     // Collect all files: multiple "file" or "files" parts
     const files: File[] = [];

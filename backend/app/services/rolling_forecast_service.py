@@ -236,6 +236,23 @@ class RollingForecastService:
                 by_period[period]["cash_balance"] = amount
             elif cat == "burn_rate":
                 by_period[period]["burn_rate"] = amount
+            # Balance sheet categories
+            elif cat == "bs_cash":
+                by_period[period]["bs_cash"] = by_period[period].get("bs_cash", 0) + amount
+            elif cat == "bs_receivables":
+                by_period[period]["bs_receivables"] = by_period[period].get("bs_receivables", 0) + amount
+            elif cat == "bs_payables":
+                by_period[period]["bs_payables"] = by_period[period].get("bs_payables", 0) + amount
+            elif cat == "bs_inventory":
+                by_period[period]["bs_inventory"] = by_period[period].get("bs_inventory", 0) + amount
+            elif cat == "bs_deferred_revenue":
+                by_period[period]["bs_deferred_revenue"] = by_period[period].get("bs_deferred_revenue", 0) + amount
+            elif cat == "bs_lt_debt":
+                by_period[period]["bs_lt_debt"] = by_period[period].get("bs_lt_debt", 0) + amount
+            elif cat == "bs_st_debt":
+                by_period[period]["bs_st_debt"] = by_period[period].get("bs_st_debt", 0) + amount
+            elif cat == "bs_ppe":
+                by_period[period]["bs_ppe"] = by_period[period].get("bs_ppe", 0) + amount
 
         # Build rows in standard P&L shape
         rows: List[Dict[str, Any]] = []
@@ -255,6 +272,20 @@ class RollingForecastService:
 
             ebitda = vals.get("ebitda", gross_profit - total_opex)
 
+            # Balance sheet fields
+            bs_cash = vals.get("bs_cash", 0)
+            bs_receivables = vals.get("bs_receivables", 0)
+            bs_payables = vals.get("bs_payables", 0)
+            bs_inventory = vals.get("bs_inventory", 0)
+            bs_deferred_revenue = vals.get("bs_deferred_revenue", 0)
+            bs_lt_debt = vals.get("bs_lt_debt", 0)
+            bs_st_debt = vals.get("bs_st_debt", 0)
+            bs_ppe = vals.get("bs_ppe", 0)
+
+            # Derived BS metrics
+            working_capital = bs_receivables + bs_inventory - bs_payables - bs_deferred_revenue
+            net_debt = bs_lt_debt + bs_st_debt - bs_cash
+
             rows.append({
                 "period": period,
                 "revenue": round(revenue, 2),
@@ -271,6 +302,17 @@ class RollingForecastService:
                 "free_cash_flow": round(ebitda, 2),  # no capex in actuals
                 "cash_balance": round(vals.get("cash_balance", 0), 2),
                 "runway_months": 0,
+                # Balance sheet position
+                "bs_cash": round(bs_cash, 2),
+                "bs_receivables": round(bs_receivables, 2),
+                "bs_payables": round(bs_payables, 2),
+                "bs_inventory": round(bs_inventory, 2),
+                "bs_deferred_revenue": round(bs_deferred_revenue, 2),
+                "bs_lt_debt": round(bs_lt_debt, 2),
+                "bs_st_debt": round(bs_st_debt, 2),
+                "bs_ppe": round(bs_ppe, 2),
+                "working_capital": round(working_capital, 2),
+                "net_debt": round(net_debt, 2),
             })
 
         return rows

@@ -17,7 +17,7 @@ import type { MatrixColumn, MatrixRow, MatrixData, MatrixCell } from '@/componen
 // Types
 // ---------------------------------------------------------------------------
 
-export type PnlView = 'waterfall' | 'forecast' | 'budget' | 'cashflow' | 'scenarios';
+export type PnlView = 'waterfall' | 'forecast' | 'budget' | 'cashflow' | 'scenarios' | 'balancesheet';
 export type Granularity = 'monthly' | 'quarterly' | 'annual';
 
 export interface PnlViewConfig {
@@ -69,6 +69,14 @@ export const PNL_VIEW_CONFIGS: Record<PnlView, PnlViewConfig> = {
     description: 'Fork-based scenario forecasts with branch comparison',
     supportsGranularity: true,
     endpoint: '/api/fpa/scenarios/tree',
+    method: 'GET',
+  },
+  balancesheet: {
+    id: 'balancesheet',
+    label: 'Balance Sheet',
+    description: 'Assets, liabilities & equity with balance check',
+    supportsGranularity: false,
+    endpoint: '/api/fpa/balance-sheet',
     method: 'GET',
   },
 };
@@ -459,6 +467,65 @@ export function transformScenarioRows(
 }
 
 // ---------------------------------------------------------------------------
+// Balance Sheet columns + row transformer
+// ---------------------------------------------------------------------------
+
+/** Balance Sheet columns — period columns with % of Total Assets computed column */
+export function buildBalanceSheetColumns(periods: string[]): MatrixColumn[] {
+  return [
+    { id: 'lineItem', name: 'Line Item', type: 'text', width: 260, editable: false },
+    ...periods.map((p) => ({
+      id: p,
+      name: monthLabel(p),
+      type: 'currency' as const,
+      width: 120,
+      editable: true,
+    })),
+  ];
+}
+
+/**
+ * Balance Sheet: BalanceSheetBuilder output → rows.
+ * Input shape: { periods, rows: [{ id, label, values, isHeader, isComputed, isTotal, depth, section }], totals }
+ */
+export function transformBalanceSheetRows(data: any): { columns: MatrixColumn[]; rows: MatrixRow[]; meta: any } {
+  const periods: string[] = data.periods || [];
+  const columns = buildBalanceSheetColumns(periods);
+
+  const rows: MatrixRow[] = (data.rows || []).map((r: any) => {
+    const cells: Record<string, MatrixCell> = {
+      lineItem: cell(r.label || r.id, {
+        metadata: {
+          generated_by: r.isHeader ? 'header' : r.isComputed ? 'computed' : r.isTotal ? 'total' : undefined,
+        },
+      }),
+    };
+    for (const p of periods) {
+      const val = r.values?.[p] ?? null;
+      cells[p] = cell(val, {
+        source: r.isComputed || r.isTotal ? 'formula' : 'api',
+      });
+    }
+    return {
+      id: r.id,
+      cells,
+      isHeader: r.isHeader,
+      isComputed: r.isComputed,
+      isTotal: r.isTotal,
+      depth: r.depth ?? 0,
+      section: r.section,
+      parentId: r.parentId,
+    } as MatrixRow;
+  });
+
+  return {
+    columns,
+    rows,
+    meta: { totals: data.totals },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Unified fetch + transform
 // ---------------------------------------------------------------------------
 
@@ -525,6 +592,14 @@ export async function fetchPnlView(params: PnlViewFetchParams): Promise<MatrixDa
       url = `${config.endpoint}?${qs}`;
       break;
     }
+    case 'balancesheet': {
+      const qs = new URLSearchParams({ company_id: companyId });
+      if (fundId) qs.set('fund_id', fundId);
+      if (start) qs.set('start', start);
+      if (end) qs.set('end', end);
+      url = `${config.endpoint}?${qs}`;
+      break;
+    }
     default:
       throw new Error(`Unknown P&L view: ${view}`);
   }
@@ -565,6 +640,9 @@ export async function fetchPnlView(params: PnlViewFetchParams): Promise<MatrixDa
       result = transformScenarioRows(baseFc, granularity);
       break;
     }
+    case 'balancesheet':
+      result = transformBalanceSheetRows(data);
+      break;
     default:
       throw new Error(`Unknown view: ${view}`);
   }

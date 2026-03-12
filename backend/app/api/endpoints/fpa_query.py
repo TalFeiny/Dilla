@@ -234,6 +234,62 @@ async def bulk_upsert_pnl_cells(req: BulkPnlWriteRequest):
 
 
 # ---------------------------------------------------------------------------
+# Balance Sheet endpoint — assembles bs_* actuals into hierarchical rows
+# ---------------------------------------------------------------------------
+
+
+@router.get("/balance-sheet")
+async def get_balance_sheet(
+    company_id: Optional[str] = Query(None),
+    start: Optional[str] = Query(None, description="Start period YYYY-MM"),
+    end: Optional[str] = Query(None, description="End period YYYY-MM"),
+):
+    """
+    Fetch Balance Sheet data via BalanceSheetBuilder.
+    Returns hierarchical rows (assets / liabilities / equity) with computed totals
+    and balance check.
+    """
+    from app.services.balance_sheet_builder import BalanceSheetBuilder
+
+    try:
+        if not company_id:
+            return {"periods": [], "rows": [], "totals": {}}
+
+        builder = BalanceSheetBuilder(company_id)
+        return builder.build(start=start, end=end)
+
+    except Exception as e:
+        logger.error("Error fetching Balance Sheet: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/balance-sheet")
+async def upsert_bs_cell(req: PnlCellEditRequest):
+    """Upsert a single Balance Sheet cell value into fpa_actuals."""
+    from app.core.supabase_client import get_supabase_client
+
+    sb = get_supabase_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    if not req.category.startswith("bs_"):
+        raise HTTPException(status_code=400, detail="Balance sheet categories must start with 'bs_'")
+
+    row = _normalize_cell_row(req)
+
+    try:
+        sb.table("fpa_actuals").upsert(
+            row,
+            on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+        ).execute()
+    except Exception as e:
+        logger.error("BS cell upsert failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"success": True, "category": req.category, "period": req.period, "amount": req.amount}
+
+
+# ---------------------------------------------------------------------------
 # Variance endpoint — compare actuals vs budget
 # ---------------------------------------------------------------------------
 
@@ -421,6 +477,45 @@ _CATEGORY_PATTERNS: List[tuple] = [
     (re.compile(r"burn\s*rate|monthly\s*burn|net\s*burn", re.I), "burn_rate"),
     (re.compile(r"headcount|employees|fte|hc", re.I), "headcount"),
     (re.compile(r"customers?|clients?", re.I), "customers"),
+    # ---- Balance Sheet categories ----
+    # Current Assets
+    (re.compile(r"cash\s*(?:&|and)\s*cash\s*equiv|cash\s*at\s*bank|petty\s*cash|checking|savings", re.I), "bs_cash"),
+    (re.compile(r"(?:accounts?\s*)?receiv|trade\s*debtors?|debtors?|sundry\s*debtors?", re.I), "bs_receivables"),
+    (re.compile(r"other\s*receiv|other\s*debtors?|employee\s*advances?|intercompany\s*receiv", re.I), "bs_other_receivables"),
+    (re.compile(r"prepay|prepaid\s*exp|accrued\s*(?:income|revenue)", re.I), "bs_prepayments"),
+    (re.compile(r"inventor|stock(?:\s*on\s*hand)?|raw\s*materials?|work\s*in\s*progress|finished\s*goods|merchandise", re.I), "bs_inventory"),
+    (re.compile(r"short[\s-]*term\s*invest|marketable\s*securities|current\s*investments?", re.I), "bs_st_investments"),
+    (re.compile(r"(?:tax|vat|gst|income\s*tax|corporation\s*tax)\s*receiv|input\s*tax", re.I), "bs_tax_receivable"),
+    # Non-Current Assets
+    (re.compile(r"property[\s,]*plant|pp\s*&?\s*e|fixed\s*assets?|land\s*(?:&|and)\s*build|plant\s*(?:&|and)\s*machin|furniture|motor\s*vehic|computer\s*equip|office\s*equip|leasehold\s*improv|accumulated\s*deprec", re.I), "bs_ppe"),
+    (re.compile(r"intangible|goodwill|patent|trademark|capitalised?\s*(?:dev|software)|intellectual\s*prop|accumulated\s*amortiz", re.I), "bs_intangibles"),
+    (re.compile(r"right[\s-]*of[\s-]*use|rou\s*assets?|operating\s*lease\s*assets?", re.I), "bs_rou_assets"),
+    (re.compile(r"long[\s-]*term\s*invest|invest(?:ments?)?\s*in\s*(?:subsidiar|associat)|equity\s*method", re.I), "bs_lt_investments"),
+    (re.compile(r"deferred\s*tax\s*asset", re.I), "bs_deferred_tax_asset"),
+    # Current Liabilities
+    (re.compile(r"(?:accounts?\s*)?payab|trade\s*creditors?|creditors?|sundry\s*creditors?", re.I), "bs_payables"),
+    (re.compile(r"accrued\s*(?:exp|liabilit)|accruals?|wages?\s*payab|salaries?\s*payab", re.I), "bs_accrued_expenses"),
+    (re.compile(r"short[\s-]*term\s*(?:debt|borrow)|bank\s*overdraft|revolving\s*credit|line\s*of\s*credit|credit\s*line", re.I), "bs_st_debt"),
+    (re.compile(r"current\s*(?:portion|maturit)", re.I), "bs_current_ltd"),
+    (re.compile(r"deferred\s*revenue|unearned\s*(?:revenue|income)|contract\s*liabilit|customer\s*deposits?|prepaid\s*revenue", re.I), "bs_deferred_revenue"),
+    (re.compile(r"(?:tax|vat|gst|income\s*tax|corporation\s*tax|payroll\s*tax|sales\s*tax)\s*payab|output\s*tax", re.I), "bs_tax_payable"),
+    (re.compile(r"interest\s*payab|accrued\s*interest", re.I), "bs_interest_payable"),
+    (re.compile(r"dividends?\s*payab", re.I), "bs_dividends_payable"),
+    # Non-Current Liabilities
+    (re.compile(r"long[\s-]*term\s*(?:debt|borrow)|term\s*loans?|bonds?\s*payab|notes?\s*payab|mortgage", re.I), "bs_lt_debt"),
+    (re.compile(r"convertible\s*(?:note|debt|loan)|safe(?:\s*notes?)?", re.I), "bs_convertible_notes"),
+    (re.compile(r"lease\s*liabilit|finance\s*lease|operating\s*lease\s*liabilit", re.I), "bs_lease_liabilities"),
+    (re.compile(r"deferred\s*tax\s*liabilit", re.I), "bs_deferred_tax_liability"),
+    (re.compile(r"provisions?|warranty\s*provision|legal\s*provision|restructuring\s*provision|contingent\s*liabilit", re.I), "bs_provisions"),
+    (re.compile(r"pension|retirement\s*benefit|post[\s-]*employment|defined\s*benefit\s*obligation", re.I), "bs_pension"),
+    # Equity
+    (re.compile(r"share\s*capital|common\s*stock|ordinary\s*shares?|issued\s*capital|paid[\s-]*up\s*capital", re.I), "bs_share_capital"),
+    (re.compile(r"additional\s*paid[\s-]*in|share\s*premium|capital\s*surplus|paid[\s-]*in\s*capital\s*in\s*excess", re.I), "bs_apic"),
+    (re.compile(r"retained\s*earnings?|accumulated\s*profits?|retained\s*profits?|profit\s*(?:&|and)\s*loss\s*reserve", re.I), "bs_retained_earnings"),
+    (re.compile(r"current\s*(?:year|period)\s*earnings?|profit\s*for\s*the\s*period", re.I), "bs_current_pnl"),
+    (re.compile(r"other\s*comprehensive|revaluation\s*reserve|foreign\s*currency\s*translat|hedging\s*reserve", re.I), "bs_oci"),
+    (re.compile(r"treasury\s*(?:stock|shares?)|own\s*shares?", re.I), "bs_treasury_stock"),
+    (re.compile(r"(?:non[\s-]*)?controlling\s*interest|minority\s*interest", re.I), "bs_minority_interest"),
 ]
 
 
@@ -767,6 +862,23 @@ _CATEGORY_SYNONYMS = {
     "customers": ["customers", "clients"],
     "arr": ["arr", "annual recurring revenue"],
     "mrr": ["mrr", "monthly recurring revenue"],
+    # Balance Sheet fuzzy synonyms
+    "bs_cash": ["cash", "cash and cash equivalents", "bank", "bank accounts", "petty cash"],
+    "bs_receivables": ["accounts receivable", "trade debtors", "debtors", "trade receivables"],
+    "bs_inventory": ["inventory", "stock", "stock on hand", "raw materials", "finished goods"],
+    "bs_ppe": ["property plant and equipment", "fixed assets", "pp&e"],
+    "bs_intangibles": ["intangible assets", "goodwill", "patents", "software"],
+    "bs_payables": ["accounts payable", "trade creditors", "creditors", "trade payables"],
+    "bs_accrued_expenses": ["accrued expenses", "accrued liabilities", "accruals"],
+    "bs_deferred_revenue": ["deferred revenue", "unearned revenue", "contract liabilities"],
+    "bs_lt_debt": ["long term debt", "term loans", "bonds payable", "notes payable"],
+    "bs_convertible_notes": ["convertible notes", "convertible debt", "safe", "safe notes"],
+    "bs_lease_liabilities": ["lease liabilities", "finance lease", "operating lease liability"],
+    "bs_share_capital": ["share capital", "common stock", "ordinary shares", "issued capital"],
+    "bs_apic": ["additional paid in capital", "share premium", "capital surplus"],
+    "bs_retained_earnings": ["retained earnings", "accumulated profits", "retained profits"],
+    "bs_treasury_stock": ["treasury stock", "treasury shares", "own shares"],
+    "bs_minority_interest": ["minority interest", "non controlling interest"],
 }
 
 
@@ -819,6 +931,12 @@ _SECTION_HEADER_PATTERNS = [
     (re.compile(r"^(?:r\s*&?\s*d|research\s*(?:&|and)\s*development)$", re.I), "opex_rd"),
     (re.compile(r"^(?:s\s*&?\s*m|sales\s*(?:&|and)\s*marketing)$", re.I), "opex_sm"),
     (re.compile(r"^(?:g\s*&?\s*a|general\s*(?:&|and)\s*admin(?:istrative)?)$", re.I), "opex_ga"),
+    # Balance Sheet section headers
+    (re.compile(r"^(?:current\s+)?assets$", re.I), "bs_cash"),
+    (re.compile(r"^non[\s-]*current\s+assets?$", re.I), "bs_ppe"),
+    (re.compile(r"^(?:current\s+)?liabilities$", re.I), "bs_payables"),
+    (re.compile(r"^non[\s-]*current\s+liabilities$", re.I), "bs_lt_debt"),
+    (re.compile(r"^equity|^shareholders?\s*equity|^stockholders?\s*equity|^owners?\s*equity$", re.I), "bs_share_capital"),
 ]
 
 # Map section header categories to the parent category for child rows
@@ -829,6 +947,12 @@ _SECTION_TO_PARENT = {
     "opex_rd": "opex_rd",
     "opex_sm": "opex_sm",
     "opex_ga": "opex_ga",
+    # BS sections — child rows under these headers inherit the parent
+    "bs_cash": "bs_cash",
+    "bs_ppe": "bs_ppe",
+    "bs_payables": "bs_payables",
+    "bs_lt_debt": "bs_lt_debt",
+    "bs_share_capital": "bs_share_capital",
 }
 
 
