@@ -1067,7 +1067,7 @@ export function AGGridMatrix({
                 className="h-8"
               >
                 <Plus className="h-4 w-4 mr-2" />
-                {mode === 'portfolio' ? 'Add Company' : mode === 'lp' ? 'Add LP' : mode === 'legal' ? 'Add Clause' : mode === 'pnl' ? 'Add Line Item' : 'Add Row'}
+                {mode === 'portfolio' ? 'Add Company' : mode === 'lp' ? 'Add LP' : mode === 'legal' ? 'Add Document' : mode === 'pnl' ? 'Add Line Item' : 'Add Row'}
               </Button>
             )}
             {onAddColumn && (

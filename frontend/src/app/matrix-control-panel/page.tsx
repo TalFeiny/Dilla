@@ -77,7 +77,7 @@ import CitationDisplay, { type Citation, deduplicateCitations } from '@/componen
 import { ScenarioInput } from '@/components/matrix/ScenarioInput';
 import type { ToolCallEntry } from '@/components/matrix/AgentPanel';
 import { type PnlView, type Granularity, PNL_VIEW_CONFIGS, fetchPnlView } from '@/lib/matrix/pnl-views';
-import { buildPnlColumns } from '@/lib/matrix/pnl-columns';
+import { buildPnlColumns, buildPnlSkeletonRows } from '@/lib/matrix/pnl-columns';
 
 const MAX_TOOL_CALL_ENTRIES = 100;
 
@@ -255,10 +255,11 @@ export default function MatrixControlPanel() {
         const hasRealData = data.rows.length > 0 && data.columns.length > 1;
         if (!hasRealData) {
           // Always rebuild columns with current granularity/trailing/forward
+          // Use skeleton rows as fallback so the grid is always usable
           const skeletonCols = buildPnlColumns({ granularity, trailing, forward });
           setMatrixData((prev) => ({
             columns: skeletonCols,
-            rows: prev?.rows ?? [],
+            rows: (prev?.rows?.length ? prev.rows : buildPnlSkeletonRows()),
             metadata: { dataSource: `fpa-${pnlView}`, lastUpdated: new Date().toISOString() },
           }));
         } else {
@@ -271,10 +272,11 @@ export default function MatrixControlPanel() {
           console.error(`P&L ${pnlView} view error:`, err);
           toast.error(`Failed to load ${PNL_VIEW_CONFIGS[pnlView].label} view: ${err.message}`);
           // Always rebuild columns so granularity/trailing/forward changes are visible even on error
+          // Use skeleton rows as fallback so the grid is always usable
           const skeletonCols = buildPnlColumns({ granularity, trailing, forward });
           setMatrixData((prev) => ({
             columns: skeletonCols,
-            rows: prev?.rows ?? [],
+            rows: (prev?.rows?.length ? prev.rows : buildPnlSkeletonRows()),
             metadata: { dataSource: `fpa-${pnlView}`, lastUpdated: new Date().toISOString() },
           }));
           setPnlViewLoading(false);

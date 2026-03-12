@@ -59,3 +59,44 @@ export function buildPnlColumns(options?: PnlColumnOptions): MatrixColumn[] {
 
   return cols;
 }
+
+/**
+ * Standard income statement skeleton rows — single source of truth.
+ * Row IDs match backend/app/services/pnl_builder.py so that grid
+ * suggestions land on the correct cells.
+ */
+export function buildPnlSkeletonRows(): import('@/components/matrix/UnifiedMatrix').MatrixRow[] {
+  const row = (
+    id: string,
+    label: string,
+    opts: { isHeader?: boolean; isTotal?: boolean; isComputed?: boolean; depth?: number; parentId?: string } = {},
+  ): import('@/components/matrix/UnifiedMatrix').MatrixRow => ({
+    id,
+    cells: { lineItem: { value: label, source: 'api' as const } },
+    depth: opts.depth ?? 0,
+    isHeader: opts.isHeader ?? false,
+    isTotal: opts.isTotal ?? false,
+    isComputed: opts.isComputed ?? false,
+    parentId: opts.parentId ?? null,
+    childIds: [],
+  });
+
+  return [
+    row('revenue_header', 'Revenue', { isHeader: true }),
+    row('revenue', 'Revenue', { depth: 1 }),
+    row('total_revenue', 'Total Revenue', { isTotal: true }),
+    row('cogs_header', 'Cost of Sales', { isHeader: true }),
+    row('cogs', 'COGS', { depth: 1 }),
+    row('total_cogs', 'Total COGS', { isTotal: true }),
+    row('gross_profit', 'Gross Profit', { isComputed: true, isTotal: true }),
+    row('opex_header', 'Operating Expenses', { isHeader: true }),
+    row('opex_rd', 'R&D', { depth: 1 }),
+    row('opex_sm', 'Sales & Marketing', { depth: 1 }),
+    row('opex_ga', 'G&A', { depth: 1 }),
+    row('total_opex', 'Total OpEx', { isTotal: true }),
+    row('ebitda', 'EBITDA', { isComputed: true, isTotal: true }),
+    row('bottom_header', 'Cash & Runway', { isHeader: true }),
+    row('cash_balance', 'Cash Balance', { depth: 1 }),
+    row('runway', 'Runway (months)', { depth: 1 }),
+  ];
+}

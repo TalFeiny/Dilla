@@ -132,7 +132,7 @@ import {
 import { normalizeChartConfig } from '@/lib/matrix/chart-utils';
 import { buildCellEditOptionsFromSuggestion, buildApplyPayloadFromSuggestion, acceptSuggestionViaApi, rejectSuggestion, addServiceSuggestion } from '@/lib/matrix/suggestion-helpers';
 import { exportMatrixToCSV, exportMatrixToXLS, exportToPDF } from '@/lib/matrix/export-orchestrator';
-import { buildPnlColumns } from '@/lib/matrix/pnl-columns';
+import { buildPnlColumns, buildPnlSkeletonRows } from '@/lib/matrix/pnl-columns';
 import { useScenarioForkTree } from '@/hooks/useScenarioForkTree';
 
 export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal';
@@ -1081,9 +1081,17 @@ export function UnifiedMatrix({
 
     if (initialData) {
       setMatrixData((prev) => {
-        if (sourceChanged || columnsChanged) return initialData; // View or columns changed — always apply
-        const hasRows = prev?.rows?.length && prev.rows.length > 0;
-        if (hasRows) return prev; // Already loaded - don't overwrite
+        const incomingHasRows = initialData.rows?.length > 0;
+        const prevHasRows = prev?.rows?.length && prev.rows.length > 0;
+        if (sourceChanged || columnsChanged) {
+          // View or columns changed — apply new columns but preserve existing rows
+          // when incoming data has none (e.g. API returned empty for a new view)
+          if (!incomingHasRows && prevHasRows) {
+            return { ...initialData, rows: prev.rows };
+          }
+          return initialData;
+        }
+        if (prevHasRows) return prev; // Already loaded - don't overwrite
         return initialData;
       });
     } else if (initialData === null && mode === 'portfolio' && fundId && loadPortfolioDataRef.current) {
@@ -1698,23 +1706,32 @@ export function UnifiedMatrix({
       const clauseRows = data.rows ?? [];
 
       // GUARD: Always use LEGAL_COLUMNS — never inherit stale columns from a previous mode
-      const legalData: MatrixData = {
-        columns: LEGAL_COLUMNS,
-        rows: clauseRows.map((row: { id: string; companyId?: string; cells: Record<string, unknown>; depth?: number; isHeader?: boolean; isTotal?: boolean; isComputed?: boolean; parentId?: string | null; childIds?: string[] }) => ({
-          id: row.id,
-          companyId: row.companyId,
-          cells: row.cells,
-          depth: row.depth ?? 0,
-          isHeader: row.isHeader ?? false,
-          isTotal: row.isTotal ?? false,
-          isComputed: row.isComputed ?? false,
-          parentId: row.parentId ?? null,
-          childIds: row.childIds ?? [],
-        })),
-        metadata: data.metadata ?? { dataSource: 'legal', lastUpdated: new Date().toISOString() },
-      };
-      setMatrixData(legalData);
-      onDataChange?.(legalData);
+      const apiRows = clauseRows.map((row: { id: string; companyId?: string; cells: Record<string, unknown>; depth?: number; isHeader?: boolean; isTotal?: boolean; isComputed?: boolean; parentId?: string | null; childIds?: string[] }) => ({
+        id: row.id,
+        companyId: row.companyId,
+        cells: row.cells,
+        depth: row.depth ?? 0,
+        isHeader: row.isHeader ?? false,
+        isTotal: row.isTotal ?? false,
+        isComputed: row.isComputed ?? false,
+        parentId: row.parentId ?? null,
+        childIds: row.childIds ?? [],
+      }));
+
+      // Preserve manually added local rows (legal_*) that aren't in the API response
+      setMatrixData((prev) => {
+        const apiRowIds = new Set(apiRows.map((r: { id: string }) => r.id));
+        const localRows = (prev?.rows ?? []).filter(
+          (r) => r.id.startsWith('legal_') && !apiRowIds.has(r.id)
+        );
+        const legalData: MatrixData = {
+          columns: LEGAL_COLUMNS,
+          rows: [...apiRows, ...localRows],
+          metadata: data.metadata ?? { dataSource: 'legal', lastUpdated: new Date().toISOString() },
+        };
+        onDataChange?.(legalData);
+        return legalData;
+      });
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       console.error('[UnifiedMatrix] Error loading legal data:', err);
@@ -1722,7 +1739,8 @@ export function UnifiedMatrix({
     } finally {
       setIsLoading(false);
     }
-  }, [fundId, companyId, matrixData, onDataChange, getDefaultMatrixData]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- matrixData intentionally excluded to prevent refetch loop
+  }, [fundId, companyId, onDataChange]);
 
   useEffect(() => {
     loadLegalDataRef.current = loadLegalData;
@@ -3366,6 +3384,12 @@ export function UnifiedMatrix({
 
         const newRow: MatrixRow = {
           id: rowId,
+          depth: 0,
+          isHeader: false,
+          isTotal: false,
+          isComputed: false,
+          parentId: null,
+          childIds: [],
           cells: columns.reduce(
             (acc, col) => {
               acc[col.id] = {
