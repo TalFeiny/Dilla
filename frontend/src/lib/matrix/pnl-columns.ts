@@ -95,9 +95,11 @@ export function buildPnlSkeletonRows(): import('@/components/matrix/UnifiedMatri
     row('opex_ga', 'G&A', { depth: 1 }),
     row('total_opex', 'Total OpEx', { isTotal: true }),
     row('ebitda', 'EBITDA', { isComputed: true, isTotal: true }),
-    row('bottom_header', 'Cash & Runway', { isHeader: true }),
-    row('cash_balance', 'Cash Balance', { depth: 1 }),
-    row('runway', 'Runway (months)', { depth: 1 }),
+    row('below_line_header', 'Below the Line', { isHeader: true }),
+    row('debt_service', 'Interest / Debt Service', { depth: 1 }),
+    row('pre_tax_income', 'Pre-Tax Income', { isComputed: true, depth: 1 }),
+    row('tax_expense', 'Tax', { depth: 1 }),
+    row('net_income', 'Net Income', { isComputed: true, isTotal: true }),
   ];
 }
 
@@ -177,19 +179,11 @@ export function buildCashFlowSkeletonRows(): import('@/components/matrix/Unified
   });
 
   return [
-    row('revenue', 'Revenue', {}),
-    row('cogs', 'COGS', {}),
-    row('gross_profit', 'Gross Profit', { isComputed: true }),
-    row('gross_margin', 'Gross Margin %', { depth: 1, isComputed: true }),
-    row('rd_spend', 'R&D', { depth: 1 }),
-    row('sm_spend', 'Sales & Marketing', { depth: 1 }),
-    row('ga_spend', 'G&A', { depth: 1 }),
-    row('total_opex', 'Total OpEx', { isComputed: true }),
-    row('ebitda', 'EBITDA', { isComputed: true }),
-    row('ebitda_margin', 'EBITDA Margin %', { depth: 1, isComputed: true }),
+    row('net_income', 'Net Income', { isComputed: true }),
+    row('working_capital_delta', 'Working Capital Changes', { depth: 1 }),
+    row('operating_cash_flow', 'Operating Cash Flow', { isComputed: true }),
     row('capex', 'CapEx', {}),
     row('debt_service', 'Debt Service', {}),
-    row('tax', 'Tax', {}),
     row('free_cash_flow', 'Free Cash Flow', { isComputed: true }),
     row('cash_balance', 'Cash Balance', {}),
     row('runway_months', 'Runway (months)', {}),

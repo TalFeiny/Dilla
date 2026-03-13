@@ -388,7 +388,7 @@ def match_erp_account(account_name: str) -> Optional[str]:
 class BalanceSheetBuilder:
     """Builds a dynamic Balance Sheet from fpa_actuals (bs_* categories)."""
 
-    def __init__(self, company_id: str):
+    def __init__(self, company_id: Optional[str] = None):
         self.company_id = company_id
 
     def build(
@@ -458,9 +458,10 @@ class BalanceSheetBuilder:
         query = (
             sb.table("fpa_actuals")
             .select("period, category, subcategory, amount")
-            .eq("company_id", self.company_id)
-            .like("category", "bs_%")
         )
+        if self.company_id:
+            query = query.eq("company_id", self.company_id)
+        query = query.like("category", "bs_%")
         if start:
             query = query.gte("period", f"{start}-01")
         if end:

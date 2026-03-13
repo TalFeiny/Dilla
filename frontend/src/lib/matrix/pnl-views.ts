@@ -237,10 +237,9 @@ const FORECAST_LINE_ITEMS = [
   { key: 'ga_spend', label: 'G&A', section: 'opex', depth: 1 },
   { key: 'total_opex', label: 'Total OpEx', section: 'opex', depth: 0, isComputed: true },
   { key: 'ebitda', label: 'EBITDA', section: 'ebitda', depth: 0, isComputed: true },
-  { key: 'capex', label: 'CapEx', section: 'below', depth: 0 },
-  { key: 'free_cash_flow', label: 'Free Cash Flow', section: 'below', depth: 0, isComputed: true },
-  { key: 'cash_balance', label: 'Cash Balance', section: 'below', depth: 0 },
-  { key: 'runway_months', label: 'Runway (months)', section: 'below', depth: 0 },
+  { key: 'debt_service', label: 'Interest / Debt Service', section: 'below_line', depth: 0 },
+  { key: 'tax_expense', label: 'Tax', section: 'below_line', depth: 0 },
+  { key: 'net_income', label: 'Net Income', section: 'below_line', depth: 0, isComputed: true },
 ];
 
 export function transformForecastRows(
@@ -370,22 +369,18 @@ function trendArrow(trend: string): string {
  */
 
 const CASHFLOW_LINE_ITEMS = [
-  { key: 'revenue', label: 'Revenue', section: 'revenue', depth: 0 },
-  { key: 'cogs', label: 'COGS', section: 'cogs', depth: 0 },
-  { key: 'gross_profit', label: 'Gross Profit', section: 'gross_profit', depth: 0, isComputed: true },
-  { key: 'gross_margin', label: 'Gross Margin %', section: 'gross_profit', depth: 1, isComputed: true, isPct: true },
-  { key: 'rd_spend', label: 'R&D', section: 'opex', depth: 1 },
-  { key: 'sm_spend', label: 'Sales & Marketing', section: 'opex', depth: 1 },
-  { key: 'ga_spend', label: 'G&A', section: 'opex', depth: 1 },
-  { key: 'total_opex', label: 'Total OpEx', section: 'opex', depth: 0, isComputed: true },
-  { key: 'ebitda', label: 'EBITDA', section: 'ebitda', depth: 0, isComputed: true },
-  { key: 'ebitda_margin', label: 'EBITDA Margin %', section: 'ebitda', depth: 1, isComputed: true, isPct: true },
-  { key: 'capex', label: 'CapEx', section: 'capex', depth: 0 },
-  { key: 'debt_service', label: 'Debt Service', section: 'debt', depth: 0 },
-  { key: 'tax', label: 'Tax', section: 'tax', depth: 0 },
-  { key: 'free_cash_flow', label: 'Free Cash Flow', section: 'fcf', depth: 0, isComputed: true },
-  { key: 'cash_balance', label: 'Cash Balance', section: 'cash', depth: 0 },
-  { key: 'runway_months', label: 'Runway (months)', section: 'cash', depth: 0 },
+  // Operating Activities
+  { key: 'net_income', label: 'Net Income', section: 'operating', depth: 0, isComputed: true },
+  { key: 'working_capital_delta', label: 'Working Capital Changes', section: 'operating', depth: 1 },
+  { key: 'operating_cash_flow', label: 'Operating Cash Flow', section: 'operating', depth: 0, isComputed: true, isDerived: true },
+  // Investing Activities
+  { key: 'capex', label: 'CapEx', section: 'investing', depth: 0 },
+  // Financing Activities
+  { key: 'debt_service', label: 'Debt Service', section: 'financing', depth: 0 },
+  // Summary
+  { key: 'free_cash_flow', label: 'Free Cash Flow', section: 'summary', depth: 0, isComputed: true },
+  { key: 'cash_balance', label: 'Cash Balance', section: 'summary', depth: 0 },
+  { key: 'runway_months', label: 'Runway (months)', section: 'summary', depth: 0 },
 ];
 
 export function transformCashFlowRows(
@@ -401,16 +396,16 @@ export function transformCashFlowRows(
       lineItem: cell(item.label),
     };
     forecast.forEach((periodRow: any) => {
-      const val = periodRow[item.key] ?? null;
-      const isPct = (item as any).isPct && val != null;
-      cells[periodRow.period] = cell(
-        isPct ? val / 100 : val,
-        {
-          source: 'formula',
-          displayValue: isPct ? `${val.toFixed(1)}%` : undefined,
-          metadata: isPct ? { output_type: 'percentage' } : undefined,
-        }
-      );
+      let val: number | null;
+      if ((item as any).isDerived && item.key === 'operating_cash_flow') {
+        // Derive: net_income + working_capital_delta
+        const ni = periodRow.net_income ?? 0;
+        const wc = periodRow.working_capital_delta ?? 0;
+        val = ni + wc;
+      } else {
+        val = periodRow[item.key] ?? null;
+      }
+      cells[periodRow.period] = cell(val, { source: 'formula' });
     });
     return {
       id: item.key,

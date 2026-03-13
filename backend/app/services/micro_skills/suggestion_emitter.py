@@ -18,6 +18,10 @@ from . import CitationSource, MicroSkillResult
 
 logger = logging.getLogger(__name__)
 
+# Sentinel UUID used when company_id or fund_id is unknown.
+# Keeps existing unique constraints and ON CONFLICT upserts working.
+_UNLINKED = "00000000-0000-0000-0000-000000000000"
+
 # Minimum confidence to persist — anything below this is noise
 MIN_EMIT_CONFIDENCE = 0.15
 
@@ -204,8 +208,8 @@ def _build_row(
         serialized = {"value": normalized}
 
     return {
-        "fund_id": fund_id,
-        "company_id": company_id,
+        "fund_id": fund_id or _UNLINKED,
+        "company_id": company_id or _UNLINKED,
         "column_id": column_id,
         "suggested_value": serialized,
         "source_service": f"micro_skill:{result.source}",
@@ -239,10 +243,6 @@ async def emit_suggestions(
 
     if result.confidence < MIN_EMIT_CONFIDENCE:
         logger.debug(f"[SUGGESTION_EMITTER] Skipping {company_name}/{result.source}: confidence {result.confidence:.2f} < {MIN_EMIT_CONFIDENCE}")
-        return 0
-
-    if not fund_id or not company_id:
-        logger.warning(f"[SUGGESTION_EMITTER] Missing fund_id or company_id for {company_name}")
         return 0
 
     sb = _get_supabase_client()
@@ -299,9 +299,6 @@ async def emit_batch(
 
     Deduplicates by column_id across all results — keeps highest confidence.
     """
-    if not fund_id or not company_id:
-        return 0
-
     sb = _get_supabase_client()
     if not sb:
         logger.warning("[SUGGESTION_EMITTER] Supabase unavailable — suggestions not persisted")
@@ -535,7 +532,7 @@ def emit_document_suggestions(
     Synchronous — called from run_document_process() which already runs in
     its own thread/event-loop.
     """
-    if not extracted_data or not fund_id or not company_id:
+    if not extracted_data:
         return 0
 
     field_updates = _flatten_extracted_data(extracted_data)
@@ -636,8 +633,8 @@ def emit_document_suggestions(
             reasoning = f"Extracted from document: {document_name}" if document_name else "Extracted from uploaded document"
 
         rows.append({
-            "fund_id": fund_id,
-            "company_id": company_id,
+            "fund_id": fund_id or _UNLINKED,
+            "company_id": company_id or _UNLINKED,
             "column_id": column_id,
             "suggested_value": serialized,
             "source_service": f"document:{document_id}",
@@ -834,7 +831,7 @@ def emit_legal_suggestions(
 
     Synchronous — called from run_document_process() in its own thread.
     """
-    if not extracted_data or not fund_id or not company_id:
+    if not extracted_data:
         return 0
 
     clauses = extracted_data.get("clauses")
@@ -924,8 +921,8 @@ def emit_legal_suggestions(
         column_id = f"legal:{clause_id}"
 
         rows.append({
-            "fund_id": fund_id,
-            "company_id": company_id,
+            "fund_id": fund_id or _UNLINKED,
+            "company_id": company_id or _UNLINKED,
             "column_id": column_id,
             "suggested_value": clause_fields,
             "source_service": f"document:{document_id}",
@@ -993,7 +990,7 @@ def emit_cap_table_suggestions(
     Synchronous — called from document processing.
     Returns count of suggestions written.
     """
-    if not cap_table_result or not fund_id or not company_id:
+    if not cap_table_result:
         return 0
 
     entries = cap_table_result.get("share_entries")
@@ -1051,8 +1048,8 @@ def emit_cap_table_suggestions(
         )
 
         rows.append({
-            "fund_id": fund_id,
-            "company_id": company_id,
+            "fund_id": fund_id or _UNLINKED,
+            "company_id": company_id or _UNLINKED,
             "column_id": column_id,
             "suggested_value": suggested_value,
             "source_service": f"document:{document_id}",

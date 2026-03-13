@@ -19,6 +19,8 @@ from app.abstractions.storage import DocumentBlobStorage
 
 logger = logging.getLogger(__name__)
 
+_UNLINKED = "00000000-0000-0000-0000-000000000000"
+
 # Startup check: pypdf required for PDF extraction
 def _check_pypdf() -> None:
     try:
@@ -1455,7 +1457,7 @@ def run_post_extraction_pipeline(
     doc_type_for_routing = (document_type or "").strip().lower()
 
     # ── Portfolio suggestions (non-legal, non-financial-statement) ──
-    if company_id and fund_id and extracted_data and doc_type_for_routing not in LEGAL_DOC_TYPES and doc_type_for_routing != "financial_statement":
+    if extracted_data and doc_type_for_routing not in LEGAL_DOC_TYPES and doc_type_for_routing != "financial_statement":
         try:
             from app.services.micro_skills.suggestion_emitter import emit_document_suggestions
             n = emit_document_suggestions(
@@ -1481,7 +1483,7 @@ def run_post_extraction_pipeline(
         logger.info("[DOC_PROCESS] Skipping portfolio emitter for financial_statement doc %s — actuals ingestion handles this", document_id)
 
     # ── Legal clause suggestions ──
-    if company_id and fund_id and extracted_data and doc_type_for_routing in LEGAL_DOC_TYPES:
+    if extracted_data and doc_type_for_routing in LEGAL_DOC_TYPES:
         try:
             from app.services.micro_skills.suggestion_emitter import emit_legal_suggestions
             n = emit_legal_suggestions(
@@ -1497,7 +1499,7 @@ def run_post_extraction_pipeline(
             logger.warning("Failed to emit legal suggestions for %s: %s", document_id, e, exc_info=True)
 
     # ── Contract → P&L bridge (ERP attribution) ──
-    if company_id and extracted_data and extracted_data.get("erp_attribution"):
+    if extracted_data and extracted_data.get("erp_attribution"):
         from app.services.contract_pnl_bridge import COMMERCIAL_DOC_TYPES, INTERCOMPANY_DOC_TYPES
         if doc_type_for_routing in COMMERCIAL_DOC_TYPES or doc_type_for_routing in LEGAL_DOC_TYPES:
             try:
@@ -1538,7 +1540,7 @@ def run_post_extraction_pipeline(
                 logger.warning("[DOC_TP_BRIDGE] Failed for %s: %s", document_id, e, exc_info=True)
 
     # ── Time-series actuals ──
-    if company_id and extracted_data and extracted_data.get("time_series"):
+    if extracted_data and extracted_data.get("time_series"):
         try:
             from app.services.actuals_ingestion import ingest_time_series
             n = ingest_time_series(
@@ -1551,15 +1553,10 @@ def run_post_extraction_pipeline(
                 logger.info("Ingested %d actuals rows from document %s", n, document_id)
         except Exception as e:
             logger.warning("Failed to ingest actuals for %s: %s", document_id, e, exc_info=True)
-    elif not company_id or not fund_id:
-        logger.info(
-            "[DOC_PROCESS] Skipping suggestion emission for %s: company_id=%s, fund_id=%s",
-            document_id, company_id, fund_id,
-        )
 
     # ── Path A: Document-derived cap table (SHA, term_sheet, etc. with cap table xrefs) ──
     cap_table_doc_types = {"sha", "term_sheet", "side_letter", "option_agreement", "spa", "convertible_note", "safe"}
-    if company_id and fund_id and extracted_data and doc_type_for_routing in cap_table_doc_types:
+    if extracted_data and doc_type_for_routing in cap_table_doc_types:
         has_cap_table_xrefs = any(
             xr.get("to_service") == "cap_table"
             for clause in (extracted_data.get("clauses") or [])
@@ -1589,7 +1586,7 @@ def run_post_extraction_pipeline(
                 logger.warning("[DOC_CAP_TABLE] Document-derived cap table failed for %s: %s", document_id, e, exc_info=True)
 
     # ── Path B: Synthetic cap table from funding signals (fallback) ──
-    if company_id and fund_id and extracted_data:
+    if extracted_data:
         has_funding_signal = (
             extracted_data.get("stage")
             or extracted_data.get("total_funding")
@@ -1626,8 +1623,8 @@ def run_post_extraction_pipeline(
                         if client:
                             source = "extracted" if extracted_data.get("total_funding") else "synthetic"
                             client.table("company_cap_tables").upsert({
-                                "portfolio_id": fund_id,
-                                "company_id": company_id,
+                                "portfolio_id": fund_id or _UNLINKED,
+                                "company_id": company_id or _UNLINKED,
                                 "company_name": extracted_data.get("company_name", ""),
                                 "cap_table_json": cap_result.get("current_cap_table", {}),
                                 "sankey_data": cap_result.get("sankey_data"),
@@ -1644,8 +1641,8 @@ def run_post_extraction_pipeline(
                             founder_own = cap_result.get("founder_ownership")
                             if founder_own is not None:
                                 client.table("pending_suggestions").upsert({
-                                    "fund_id": fund_id,
-                                    "company_id": company_id,
+                                    "fund_id": fund_id or _UNLINKED,
+                                    "company_id": company_id or _UNLINKED,
                                     "column_id": "founderOwnership",
                                     "suggested_value": {"value": founder_own},
                                     "source_service": "doc_cap_table",

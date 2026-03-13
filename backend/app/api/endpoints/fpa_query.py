@@ -108,10 +108,7 @@ async def get_pnl(
     from app.services.pnl_builder import PnlBuilder
 
     try:
-        if not company_id:
-            return {"periods": [], "forecastStartIndex": 0, "rows": []}
-
-        builder = PnlBuilder(company_id, fund_id=fund_id)
+        builder = PnlBuilder(company_id=company_id, fund_id=fund_id)
         return builder.build(start=start, end=end, forecast_months=months)
 
     except Exception as e:
@@ -252,10 +249,7 @@ async def get_balance_sheet(
     from app.services.balance_sheet_builder import BalanceSheetBuilder
 
     try:
-        if not company_id:
-            return {"periods": [], "rows": [], "totals": {}}
-
-        builder = BalanceSheetBuilder(company_id)
+        builder = BalanceSheetBuilder(company_id=company_id)
         return builder.build(start=start, end=end)
 
     except Exception as e:

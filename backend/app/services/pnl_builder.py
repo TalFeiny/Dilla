@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Waterfall section ordering — controls how rows are grouped and sorted
 # ---------------------------------------------------------------------------
 
-SECTION_ORDER = ["revenue", "cogs", "gross_profit", "opex", "ebitda", "bottom", "operational"]
+SECTION_ORDER = ["revenue", "cogs", "gross_profit", "opex", "ebitda", "below_line", "operational"]
 
 SECTION_LABELS = {
     "revenue": "Revenue",
@@ -25,7 +25,7 @@ SECTION_LABELS = {
     "gross_profit": "Gross Profit",
     "opex": "Operating Expenses",
     "ebitda": "EBITDA",
-    "bottom": "Cash & Runway",
+    "below_line": "Below the Line",
     "operational": "Operational Metrics",
 }
 
@@ -40,8 +40,11 @@ CATEGORY_SECTION = {
     "opex_sm": "opex",
     "opex_ga": "opex",
     "ebitda": "ebitda",
-    "cash_balance": "bottom",
-    "burn_rate": "bottom",
+    "debt_service": "below_line",
+    "interest": "below_line",
+    "tax": "below_line",
+    "tax_expense": "below_line",
+    "net_income": "below_line",
     "headcount": "operational",
     "customers": "operational",
 }
@@ -74,7 +77,7 @@ CATEGORY_LABELS = {
 class PnlBuilder:
     """Builds a dynamic P&L waterfall from fpa_actuals + forecast."""
 
-    def __init__(self, company_id: str, fund_id: Optional[str] = None):
+    def __init__(self, company_id: Optional[str] = None, fund_id: Optional[str] = None):
         self.company_id = company_id
         self.fund_id = fund_id
 
@@ -191,11 +194,13 @@ class PnlBuilder:
         has_contract_filters = excluded_sources or source_multipliers or terminated_sources
         select_cols = "period, category, subcategory, hierarchy_path, amount, source" if has_contract_filters else "period, category, subcategory, amount"
 
-        query = (
-            sb.table("fpa_actuals")
-            .select(select_cols)
-            .eq("company_id", self.company_id)
-        )
+        query = sb.table("fpa_actuals").select(select_cols)
+        if self.company_id:
+            query = query.eq("company_id", self.company_id)
+        elif self.fund_id:
+            query = query.eq("fund_id", self.fund_id)
+        else:
+            return {}, []
         if entity_id:
             query = query.eq("entity_id", entity_id)
         if start:
@@ -564,8 +569,10 @@ class PnlBuilder:
             {"id": "opex_ga", "label": "G&A", "section": "opex", "depth": 1},
             {"id": "total_opex", "label": "Total OpEx", "section": "opex", "depth": 0, "isTotal": True},
             {"id": "ebitda", "label": "EBITDA", "section": "ebitda", "depth": 0, "isComputed": True},
-            {"id": "cash_balance", "label": "Cash Balance", "section": "bottom", "depth": 0},
-            {"id": "runway", "label": "Runway (months)", "section": "bottom", "depth": 0},
+            {"id": "debt_service", "label": "Interest / Debt Service", "section": "below_line", "depth": 0},
+            {"id": "pre_tax_income", "label": "Pre-Tax Income", "section": "below_line", "depth": 0, "isComputed": True},
+            {"id": "tax_expense", "label": "Tax", "section": "below_line", "depth": 0},
+            {"id": "net_income", "label": "Net Income", "section": "below_line", "depth": 0, "isComputed": True},
         ]
 
     # ------------------------------------------------------------------

@@ -17,6 +17,8 @@ from dateutil.relativedelta import relativedelta
 
 logger = logging.getLogger(__name__)
 
+_UNLINKED = "00000000-0000-0000-0000-000000000000"
+
 # Doc types that produce P&L line items
 COMMERCIAL_DOC_TYPES = {
     "vendor_contract", "services_agreement", "msa", "sow", "lease",
@@ -94,7 +96,7 @@ def bridge_contract_to_pnl(
 
     Returns {"success": bool, "rows_written": int, "details": {...}}.
     """
-    if not extracted_data or not company_id:
+    if not extracted_data:
         return {"success": False, "rows_written": 0, "error": "missing data"}
 
     erp = extracted_data.get("erp_attribution") or {}
@@ -186,7 +188,7 @@ def bridge_contract_to_pnl(
     rows = []
     for period in periods:
         rows.append({
-            "company_id": company_id,
+            "company_id": company_id or _UNLINKED,
             "fund_id": fund_id,
             "period": period.isoformat(),
             "category": category,
@@ -245,7 +247,7 @@ def bridge_contract_to_tp(
     The TP engine picks these up for benchmarking.
     Returns {"success": bool, "suggestions_written": int}.
     """
-    if not extracted_data or not company_id:
+    if not extracted_data:
         return {"success": False, "suggestions_written": 0, "error": "missing data"}
 
     erp = extracted_data.get("erp_attribution") or {}
@@ -278,7 +280,7 @@ def bridge_contract_to_tp(
     )
 
     suggestion = {
-        "company_id": company_id,
+        "company_id": company_id or _UNLINKED,
         "transaction_type": transaction_type,
         "description": description,
         "annual_value": annual_value,
