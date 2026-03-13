@@ -1141,12 +1141,6 @@ class ModelRouter:
                 "system": cacheable_system,
             }
 
-            if json_mode:
-                # Anthropic has no json_mode -- use assistant prefill to force JSON object
-                messages.append({"role": "assistant", "content": "{"})
-                request_kwargs["messages"] = messages
-                logger.info("[_call_anthropic] JSON mode: prefilling '{' for %s", model)
-
             response = await self.anthropic_client.messages.create(**request_kwargs)
 
             # Parse Anthropic response - handle both old and new format
@@ -1164,13 +1158,6 @@ class ModelRouter:
 
             if not text:
                 raise ValueError("Anthropic API returned empty text")
-
-            # CRITICAL FIX: When using assistant prefill for JSON mode, the API
-            # response only contains text AFTER the prefill. We must prepend '{'
-            # to reconstruct valid JSON.
-            if json_mode and not text.lstrip().startswith("{"):
-                text = "{" + text
-                logger.info("[_call_anthropic] JSON mode: prepended '{' to response")
 
             # Extract REAL token counts from Anthropic usage
             usage = {"input_tokens": 0, "output_tokens": 0}
