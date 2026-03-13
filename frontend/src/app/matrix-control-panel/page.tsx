@@ -258,11 +258,11 @@ export default function MatrixControlPanel() {
           const skeletonRows = pnlView === 'balancesheet' ? buildBalanceSheetSkeletonRows()
             : pnlView === 'cashflow' ? buildCashFlowSkeletonRows()
             : buildPnlSkeletonRows();
-          setMatrixData((prev) => ({
+          setMatrixData({
             columns: skeletonCols,
-            rows: (prev?.rows?.length ? prev.rows : skeletonRows),
+            rows: skeletonRows,
             metadata: { dataSource: `fpa-${pnlView}`, lastUpdated: new Date().toISOString() },
-          }));
+          });
         } else {
           setMatrixData(data);
         }
@@ -276,11 +276,11 @@ export default function MatrixControlPanel() {
           const skeletonRows = pnlView === 'balancesheet' ? buildBalanceSheetSkeletonRows()
             : pnlView === 'cashflow' ? buildCashFlowSkeletonRows()
             : buildPnlSkeletonRows();
-          setMatrixData((prev) => ({
+          setMatrixData({
             columns: skeletonCols,
-            rows: (prev?.rows?.length ? prev.rows : skeletonRows),
+            rows: skeletonRows,
             metadata: { dataSource: `fpa-${pnlView}`, lastUpdated: new Date().toISOString() },
-          }));
+          });
           setPnlViewLoading(false);
         }
       });
