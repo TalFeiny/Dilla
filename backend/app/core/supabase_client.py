@@ -1,18 +1,20 @@
 """
 Supabase client accessor.
 
-Thin wrapper around DatabasePool.get_supabase_client() so the rest of
-the codebase can do:
+Thin wrapper so the rest of the codebase can do:
 
     from app.core.supabase_client import get_supabase_client
+
+Delegates to the single SupabaseService in database.py — there is
+only ONE Supabase client instance for the whole app.
 """
 
 from typing import Optional
 from supabase import Client
 
-from app.core.database_pool import db_pool
+from app.core.database import get_supabase_service
 
 
 def get_supabase_client() -> Optional[Client]:
     """Return the shared Supabase client (lazy-initialised)."""
-    return db_pool.get_supabase_client()
+    return get_supabase_service().get_client()

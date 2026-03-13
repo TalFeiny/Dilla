@@ -50,7 +50,19 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up Dilla AI Backend...")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"Debug mode: {settings.DEBUG}")
-    # Initialize database pool + Supabase client
+    # Eagerly initialize the single Supabase client so failures are visible at startup
+    try:
+        from app.core.database import get_supabase_service
+        svc = get_supabase_service()
+        svc.initialize()
+        if svc.client:
+            logger.info("Supabase client ready at startup")
+        else:
+            logger.warning("Supabase client NOT available — check env vars")
+    except Exception as e:
+        logger.error(f"Failed to initialize Supabase client: {e}")
+
+    # Initialize asyncpg pool (optional, only if DATABASE_URL is set)
     try:
         from app.core.database_pool import db_pool
         await db_pool.initialize()

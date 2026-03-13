@@ -33,7 +33,14 @@ class SupabaseService:
         try:
             # Use NEXT_PUBLIC_SUPABASE_URL if SUPABASE_URL is not set
             supabase_url = settings.SUPABASE_URL or settings.NEXT_PUBLIC_SUPABASE_URL
-            supabase_key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_SERVICE_KEY
+
+            # Try all key variants — match the broadest fallback chain
+            supabase_key = (
+                settings.SUPABASE_SERVICE_ROLE_KEY
+                or settings.SUPABASE_SERVICE_KEY
+                or settings.SUPABASE_ANON_KEY
+                or settings.NEXT_PUBLIC_SUPABASE_ANON_KEY
+            )
 
             # Check if we have valid Supabase URL
             if not supabase_url or supabase_url.startswith("https://xxxxx"):
@@ -53,7 +60,7 @@ class SupabaseService:
                 supabase_url,
                 supabase_key
             )
-            logger.info("Supabase client initialized successfully")
+            logger.info("Supabase client initialized successfully (url=%s, key=%s…)", supabase_url[:40], supabase_key[:8])
             self._initialized = True
         except Exception as e:
             logger.error(f"Failed to initialize Supabase client: {e}")

@@ -488,7 +488,10 @@ export function useDocumentSuggestions(
     const md = matrixDataRef.current;
     const lookup = rowLookupRef.current;
     const fid = fundId ?? md?.metadata?.fundId;
-    if (!md || !fid || !md.rows || md.rows.length === 0) {
+    // Legal & PnL modes: suggestions create rows, so fetch even when grid is empty.
+    // Portfolio mode: rows (companies) must exist first.
+    const isRowIndependentMode = mode === 'legal' || mode === 'pnl';
+    if (!fid || (!isRowIndependentMode && (!md || !md.rows || md.rows.length === 0))) {
       setSuggestions([]);
       setInsights([]);
       return;

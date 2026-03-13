@@ -2366,6 +2366,26 @@ export function UnifiedMatrix({
           console.error('Error saving to company:', err);
           toast.error(err instanceof Error ? err.message : 'Failed to save edit');
         }
+      } else if (mode === 'legal') {
+        // Legal mode: persist cell edit to document_clauses via POST /api/legal/cells
+        try {
+          const clauseId = rowId.replace('legal:', '');
+          const meta = row?.cells?.documentName?.metadata as Record<string, unknown> | undefined;
+          await fetch('/api/legal/cells', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fund_id: fundId || null,
+              clause_id: clauseId,
+              document_id: meta?.document_id ?? null,
+              column_id: columnId,
+              value: valueToStore,
+            }),
+          });
+        } catch (err) {
+          console.error('[Legal cell save] error:', err);
+          toast.error('Failed to save cell edit');
+        }
       } else if (mode === 'pnl' && companyId && columnId !== 'lineItem') {
         // PnL mode: persist cell edit to fpa_actuals via POST /api/fpa/pnl
         try {
