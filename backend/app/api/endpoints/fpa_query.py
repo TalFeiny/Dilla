@@ -1413,6 +1413,13 @@ async def upload_actuals_csv(
             })
             raise HTTPException(status_code=400, detail=err)
 
+        # --- Deduplicate rows (same conflict key can appear twice from hierarchy + parent aggregation) ---
+        dedup: dict = {}
+        for row in actuals_rows:
+            key = (row["company_id"], row["period"], row["category"], row["subcategory"], row["hierarchy_path"], row["source"])
+            dedup[key] = row  # last write wins
+        actuals_rows = list(dedup.values())
+
         # --- Upsert into fpa_actuals ---
         _update_job({"step": "upserting", "message": f"Upserting {len(actuals_rows)} rows into fpa_actuals"})
 
