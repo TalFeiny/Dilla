@@ -62,8 +62,8 @@ import { buildGridSnapshot } from '@/lib/portfolio-context-compressor';
 import { SkeletonChart } from '@/components/ui/skeleton';
 import type { MatrixData } from '@/components/matrix/UnifiedMatrix';
 import { contextManager } from '@/lib/agent-context-manager';
-import { FormatHandlerFactory } from '@/lib/format-handlers/factory';
-import { parseMarkdownToSections } from '@/lib/format-handlers/docs-handler';
+
+
 import { formatSuggestionValue } from '@/lib/matrix/cell-formatters';
 
 // Dynamically import TableauLevelCharts to avoid SSR issues
@@ -1163,80 +1163,24 @@ export default function AgentChat({
         ? (norm.slides ?? [])
         : undefined;
 
-      // Use FormatHandlerFactory to enrich docs responses
+      // Docs sections + charts from backend only — no frontend enrichment/reprocessing
       let docsSections: Array<{ type?: string; title?: string; content?: string; level?: number; table?: any; chart?: any; items?: string[] }> | undefined;
       let docsCharts: Array<{ type: string; title?: string; data: any }> | undefined;
       let docsChartPositions: Array<{ afterParagraph: number; inline: boolean }> | undefined;
 
-      const formatHandler = FormatHandlerFactory.getHandler(responseFormat);
-      const hasDocContent = responseFormat === 'docs' || responseFormat === 'document' || responseFormat === 'analysis';
-      // Run docs enrichment for doc formats, but also when grid commands co-exist with sections
-      const shouldEnrichDocs = formatHandler && (hasDocContent || (commandsToRun.length > 0 && (result.sections?.length || result.memo?.sections?.length)));
-      if (shouldEnrichDocs) {
-        try {
-          const handlerResult = await formatHandler.format({
-            text: JSON.stringify(result),
-            contextData: '',
-            companiesData: [],
-            financialAnalyses: result.financialAnalyses || [],
-            charts: result.charts || data.charts || [],
-            citations: result.citations || data.citations || [],
-            requestAnalysis: {},
-            skillResults: result.skill_results || {},
-            extractedCompanies: (result.companies || []).map((c: any) => c.company || c.name || ''),
-            mentionedCompanies: [],
-          });
-          if (handlerResult.success && handlerResult.result?.sections?.length) {
-            docsSections = handlerResult.result.sections;
-            docsCharts = handlerResult.result.charts || [];
-            docsChartPositions = handlerResult.result.chartPositions || [];
-          }
-        } catch (e) {
-          console.warn('[FormatHandler] Enrichment failed, falling back:', e);
-        }
-      }
-
-      // Fallback: extract docs sections directly if handler didn't produce them
-      if (!docsSections?.length) {
-        const rawSections = result.sections ?? result.memo?.sections ?? result.docs?.sections;
-        if (Array.isArray(rawSections) && rawSections.length > 0) {
-          docsSections = rawSections;
-        }
+      const rawSections = result.sections ?? result.memo?.sections ?? result.docs?.sections;
+      if (Array.isArray(rawSections) && rawSections.length > 0) {
+        docsSections = rawSections;
       }
 
       // Extract the agent synthesis early so it is available for fallback parsing
       const synthesis = result.content || result.summary || result.synthesis || '';
 
-      // Last resort: parse synthesis markdown into sections for memo when content is substantial
-      // Skip for conversational replies — those belong in chat, not memo
-      // Skip when synthesis looks like raw JSON (agent serialization leak)
-      const _metaTurnType = data?.metadata?.turn_type;
-      const _isConvPath = data?.metadata?.path === 'conversational';
-      const _isConvReply = _isConvPath && _metaTurnType && !['synthesis', 'analysis'].includes(_metaTurnType);
-      const _respMode = data?.metadata?.response_mode;
-      const _isTaskForMemo = !_respMode || _respMode === 'task';
-      const _looksLikeJson = typeof synthesis === 'string' && (synthesis.trimStart().startsWith('{') || synthesis.trimStart().startsWith('['));
-      if (!docsSections?.length && typeof synthesis === 'string' && synthesis.length > 100 && !_isConvReply && _isTaskForMemo && !_looksLikeJson) {
-        const parsed = parseMarkdownToSections(synthesis);
-        if (parsed.length >= 1) {
-          docsSections = parsed.map(s => ({
-            title: s.title || (s.type?.startsWith('heading') ? s.content : undefined),
-            content: s.type === 'paragraph' || s.type === 'list' ? (s.content || s.items?.join('\n')) : s.content,
-            level: s.level ?? 2,
-          }));
-          // If we only got 1 section (no headings in content), wrap it with a title
-          if (docsSections.length === 1 && !docsSections[0].title) {
-            docsSections = [
-              { title: 'Executive Summary', content: undefined, level: 1 },
-              ...docsSections,
-            ];
-          }
-        }
-      }
-
-      // --- Composite content generation ---
-      // Chat is NOT the primary output. The memo is. Chat gets a brief summary.
-      // Rich content (sections, charts, analysis) routes to memo/document viewer.
+      // --- Content generation ---
+      // The agent decides what goes where. Chat shows the agent's full reply text.
+      // Surfaces (memo, grid, charts) are populated ONLY by explicit backend tool calls
+      // (write_to_memo, generate_chart, suggest_grid_edit, etc).
+      // The frontend never auto-generates surface content from chat text.
       let content = '';
       let capTables: any[] = [];
       let citations: any[] = [];
@@ -1244,7 +1188,7 @@ export default function AgentChat({
       const companies = norm.companies;
       const allCitations = norm.citations;
 
-      // Extract cap tables from companies (used by memo/viewer, not chat)
+      // Extract cap tables from companies (used by viewer)
       if (companies && companies.length > 0) {
         companies.forEach((company: any) => {
           const companyName = company.company || company.name || '';
@@ -1254,53 +1198,15 @@ export default function AgentChat({
         });
       }
 
-      // Store citations for structured rendering (not dumped in chat text)
+      // Citations for structured rendering
       if (allCitations && allCitations.length > 0) {
         citations = allCitations;
       }
 
-      // Determine if this response has rich content that belongs in memo, not chat
-      const hasRichContent = (docsSections?.length ?? 0) > 0
-        || (norm.charts?.length ?? 0) > 0
-        || (companies?.length ?? 0) > 0
-        || (deckSlides?.length ?? 0) > 0
-        || (typeof synthesis === 'string' && synthesis.length > 300);
+      // Chat content = what the agent said. Full text, no truncation.
+      content = synthesis || result.response || result.answer || result.message || result.reply || '';
 
-      // 1. Use synthesis (extracted above) as chat content
-      if (typeof synthesis === 'string' && synthesis.trim().length > 10) {
-        content = synthesis;
-      }
-
-      // 2. If we have rich content, truncate chat to a brief pointer
-      if (hasRichContent && content.length > 600) {
-        // Keep first ~3 sentences as a chat summary
-        const sentences = content.match(/[^.!?]+[.!?]+/g) || [content];
-        content = sentences.slice(0, 3).join(' ').trim();
-      }
-
-      // 3. Deck format: brief summary only
-      if (deckSlides?.length) {
-        content = content
-          ? `${content.slice(0, 300)}\n\n**Deck ready** — ${deckSlides.length} slides generated.`
-          : `**Investment deck generated** — ${deckSlides.length} slides. Click to preview.`;
-      }
-
-      // 4. Docs/memo format: brief pointer to the memo
-      if (docsSections?.length && !content) {
-        const title = docsSections[0]?.title || 'Analysis';
-        content = `**${title}** — written to memo. Click "View Document" to read.`;
-      } else if (docsSections?.length && content) {
-        // Ensure chat doesn't repeat what's in the memo
-        content = content.slice(0, 400);
-      }
-
-      // 5. Company analysis: brief summary, not a data dump
-      if (companies?.length && !content) {
-        const names = companies.map((c: any) => c.company || c.name).filter(Boolean);
-        content = `Analysis of ${names.join(', ')} complete. See memo for details.`;
-      }
-
-      // 6. Fallback for truly empty responses — keep it brief
+      // Fallback for empty responses
       if (!content) {
         const fallbackFields = [
           result.analysis?.executive_summary,
@@ -1309,85 +1215,36 @@ export default function AgentChat({
           result.analysis_text,
           typeof result.explanation === 'string' ? result.explanation : result.explanation?.reasoning,
           result.portfolio_summary || result.fund_summary,
-          result.insight || result.response || result.answer || result.message,
+          result.insight,
         ].filter((v): v is string => typeof v === 'string' && v.trim().length > 10);
 
         if (fallbackFields.length > 0) {
-          // Take the first meaningful field, cap at ~500 chars
-          content = fallbackFields[0].slice(0, 500);
-        } else {
-          content = 'Analysis complete.';
+          content = fallbackFields[0];
         }
       }
 
-      // Auto-generate memo_updates from rich response data when backend didn't explicitly provide them
-      // This ensures analysis always flows to the memo, not just chat
-      // Gate on response_mode: only "task" mode generates memos. Reply/action are chat-only.
-      const _turnType = data?.metadata?.turn_type;
-      const _isConversational = data?.metadata?.path === 'conversational';
-      const _responseMode = data?.metadata?.response_mode;
-      const _skipMemo = _isConversational && _turnType && !['synthesis', 'analysis'].includes(_turnType);
-      const _isTaskMode = !_responseMode || _responseMode === 'task';
-      if (!norm.memoUpdates?.sections?.length && hasRichContent && onMemoUpdates && !_skipMemo && _isTaskMode) {
-        const autoSections: Array<{ type: string; content?: string; chart?: unknown; items?: string[] }> = [];
+      // Deck slides: append a note but keep full chat text
+      if (deckSlides?.length && content) {
+        content += `\n\n**Deck ready** — ${deckSlides.length} slides generated.`;
+      } else if (deckSlides?.length) {
+        content = `**Investment deck generated** — ${deckSlides.length} slides. Click to preview.`;
+      }
 
-        // Add text sections from docs or synthesis (use MemoEditor-compatible types)
-        if (docsSections?.length) {
-          for (const sec of docsSections) {
-            if (sec.title) {
-              autoSections.push({ type: 'heading2', content: sec.title });
-            }
-            if (sec.content) {
-              autoSections.push({ type: 'paragraph', content: sec.content });
-            }
-          }
-        } else if (typeof synthesis === 'string' && synthesis.length > 100) {
-          autoSections.push({ type: 'paragraph', content: synthesis });
-        }
-
-        // Add charts as memo sections
-        if (norm.charts?.length) {
-          for (const chart of norm.charts) {
-            autoSections.push({ type: 'chart', chart });
-          }
-        }
-
-        // Add citations ONLY if they won't already be rendered as citation pills
-        if (allCitations?.length && !citations.length) {
-          const citationText = allCitations
-            .filter((c: any) => c.url)
-            .map((c: any, i: number) => `${i + 1}. [${c.source || c.title || 'Source'}](${c.url})`)
-            .join('\n');
-          if (citationText) {
-            autoSections.push({ type: 'heading3', content: 'Sources' });
-            autoSections.push({ type: 'paragraph', content: citationText });
-          }
-        }
-
-        if (autoSections.length > 0) {
-          onMemoUpdates({ action: 'append', sections: autoSections });
-        }
+      // Memo updates ONLY from explicit backend tool output — never auto-generated
+      if (norm.memoUpdates?.sections?.length && onMemoUpdates) {
+        onMemoUpdates(norm.memoUpdates);
       }
       
       const toolsUsed = data.tool_calls?.map((tc: any) => tc.tool) || 
                         data.metadata?.tools_used || 
                         (result.metadata ? result.metadata.entities?.actions || [] : []);
       
-      // Charts: ALWAYS route to memo/document viewer, never inline in chat sidebar.
-      // Charts in a narrow sidebar are unreadable and drag the page.
+      // Charts: route to memo surface (scenario branches are handled separately via grid events).
       const allCharts = [...norm.charts, ...chartCharts];
-      let charts: typeof allCharts = []; // Never render charts inline in chat
+      const charts: typeof allCharts = []; // Never inline in chat
       if (allCharts.length > 0) {
         if (!docsCharts) docsCharts = [];
         docsCharts.push(...allCharts.map(c => ({ type: c.type, title: c.title, data: c.data })));
-        // Ensure we have at least a minimal section so the document viewer opens
-        if (!docsSections?.length) {
-          docsSections = [{ title: 'Analysis', content: content || 'See charts below.', level: 1 }];
-        }
-        // Add a note in chat that charts are in the memo
-        if (!content.includes('chart') && !content.includes('memo')) {
-          content += `\n\n${allCharts.length} chart${allCharts.length > 1 ? 's' : ''} added to memo.`;
-        }
       }
 
       // Explanation block from backend
@@ -1460,19 +1317,18 @@ export default function AgentChat({
           : msg
       ));
 
-      // Emit rich analysis to bottom panel when we have docs content
-      if (onAnalysisReady && docsSections?.length) {
+      // Emit rich analysis to bottom panel when we have docs/chart content from backend
+      if (onAnalysisReady && (docsSections?.length || docsCharts?.length)) {
         onAnalysisReady({
-          sections: docsSections,
-          charts: docsCharts || charts || [],
+          sections: docsSections || [],
+          charts: docsCharts || [],
           companies: companies,
           capTables: capTables,
         });
       }
 
-      // AUTO-OPEN document viewer when docs/memo sections arrive
-      if (docsSections?.length) {
-        // Small delay to ensure message is rendered before opening viewer
+      // Auto-open document viewer when backend sent docs sections or charts
+      if (docsSections?.length || docsCharts?.length) {
         setTimeout(() => {
           setMessages(prev => {
             const updated = prev.find(m => m.id === placeholderId);

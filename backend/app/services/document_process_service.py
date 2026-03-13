@@ -1020,8 +1020,14 @@ async def _extract_document_structured_async(
         system_prompt, user_prompt = _signal_first_prompt(text, document_type, schema_desc, memo_context)
         empty = _empty_signal_extraction()
 
-    # Legal docs get more tokens — clause extraction is verbose
-    max_tok = 8192 if doc_type in LEGAL_DOC_TYPES else 4096
+    # Legal docs get more tokens — clause extraction is verbose.
+    # Use 16384 for legal to avoid truncation on complex contracts.
+    max_tok = 16384 if doc_type in LEGAL_DOC_TYPES else 4096
+
+    # Legal docs MUST use a quality model — Haiku truncates at 8k tokens
+    # and produces incomplete JSON.  Explicit preferred_models overrides
+    # the caller_context routing so we guarantee Sonnet/GPT-5.2 first.
+    legal_preferred = ["claude-sonnet-4-6", "gpt-5.2", "gemini-2.5-pro"] if doc_type in LEGAL_DOC_TYPES else None
 
     try:
         result = await router.get_completion(
@@ -1031,6 +1037,7 @@ async def _extract_document_structured_async(
             max_tokens=max_tok,
             temperature=0.2,
             json_mode=True,
+            preferred_models=legal_preferred,
             caller_context="document_process_service.extract_structured",
         )
         raw = (result.get("response") or "").strip()

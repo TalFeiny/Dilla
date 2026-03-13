@@ -3990,6 +3990,12 @@ class UnifiedMCPOrchestrator:
             "dpi_sankey, bull_bear_base, radar_comparison\n"
             "- Deck: deck-storytelling (16–18 slide investment presentation)\n\n"
 
+            "## OUTPUT SURFACES\n"
+            "- **Chat**: conversation, query results, narration. Transient.\n"
+            "- **Memo**: work product that should persist beyond this session — analysis, reports, deliverables.\n"
+            "- **Grid**: when services operate on grid data — forecasting, enrichment, adding rows, cell edits.\n"
+            "- **Charts**: in memo. Comparisons, trends, distributions — not single numbers.\n\n"
+
             "## FORMAT RULES\n"
             "- Financial comparisons → always include a chart. Not optional.\n"
             "- Time series → line or area chart.\n"
@@ -16031,15 +16037,13 @@ Rules:
                     valuation_count = _scoreboard.valuation_count
                     memo_section_count = max(_scoreboard.memo_section_count, len(memo_sections))
                     memo_count = _scoreboard.memo_count
-                    if memo_section_count >= 2 and memo_count == 0:
-                        memo_count = 1
                     chart_count = _scoreboard.chart_count
                 else:
                     fetch_count = sum(1 for r in tool_results if r["tool"] in ("fetch_company_data", "resolve_data_gaps"))
                     valuation_count = sum(1 for r in tool_results if r["tool"] == "run_valuation")
                     memo_section_count = len(memo_sections)
                     memo_tool_count = sum(1 for r in tool_results if r["tool"] in ("generate_memo", "run_report", "write_to_memo"))
-                    memo_count = memo_tool_count if memo_tool_count else (1 if memo_section_count >= 2 else 0)
+                    memo_count = memo_tool_count
                     chart_count = sum(1 for r in tool_results if r["tool"] == "generate_chart")
                     _portfolio_size = len(
                         self.shared_data.get("matrix_context", {}).get("companyNames")
@@ -16080,6 +16084,12 @@ Rules:
                     "- Compare assets vs liabilities, check balance.\n"
                     "- Cross-reference with P&L (switch to pnl) for income linkage.\n"
                     "- ALWAYS check balance_check row — non-zero means error."
+                ),
+                "legal": (
+                    "- Extract and analyze clauses, obligations, risks from uploaded documents.\n"
+                    "- WRITE suggestions to grid (suggest_grid_edit / bulk_write_grid).\n"
+                    "- Chat: summarize key terms, flag risks, answer questions. 1-3 sentences.\n"
+                    "- Do NOT generate memos unless the user explicitly asks for one."
                 ),
             }
             _rules_text = _mode_rules.get(grid_mode, _mode_rules["portfolio"])
