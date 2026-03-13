@@ -51,6 +51,7 @@ class DocumentProcessRequest(BaseModel):
     fund_id: Optional[str] = Field(None, description="Optional fund to link after processing")
     erp_category_hint: Optional[str] = Field(None, description="ERP category hint from P&L context")
     erp_subcategory_hint: Optional[str] = Field(None, description="ERP subcategory hint from P&L context")
+    force: bool = Field(False, description="Force re-extraction even if already completed")
 
 
 class DocumentProcessResponse(BaseModel):
@@ -118,6 +119,7 @@ async def process_document(body: DocumentProcessRequest):
             fund_id=body.fund_id,
             erp_category_hint=body.erp_category_hint,
             erp_subcategory_hint=body.erp_subcategory_hint,
+            force=body.force,
         )
         return DocumentProcessResponse(
             success=out.get("success", False),

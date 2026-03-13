@@ -1670,11 +1670,15 @@ def run_document_process(
     fund_id: Optional[str] = None,
     erp_category_hint: Optional[str] = None,
     erp_subcategory_hint: Optional[str] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """
     Download document from storage, extract text, run structured extraction in-process,
     update metadata via repo. Progress is written to processing_summary at each step.
     Returns { "success": bool, "document_id": str, "result"?: dict, "error"?: str }.
+
+    Pass force=True to re-extract even if the document is already completed or stuck
+    in processing state.
     """
     doc_repo = document_repo
     tmp_path: Optional[str] = None
@@ -1684,7 +1688,15 @@ def run_document_process(
         current_doc = doc_repo.get(document_id)
         if current_doc:
             current_status = current_doc.get("status")
-            if current_status == "completed":
+
+            if force:
+                logger.info(
+                    "[DOC_PROCESS] Document %s force re-processing (was %s)",
+                    document_id, current_status,
+                )
+                # Reset status so extraction runs fresh
+                doc_repo.update(document_id, {"status": "processing"})
+            elif current_status == "completed":
                 logger.info(
                     "[DOC_PROCESS] Document %s already completed — returning cached result",
                     document_id,
@@ -1697,20 +1709,41 @@ def run_document_process(
                         "processing_summary": current_doc.get("processing_summary", {}),
                     },
                 }
-            if current_status == "processing":
-                logger.info(
-                    "[DOC_PROCESS] Document %s already processing — skipping duplicate run",
-                    document_id,
-                )
-                return {
-                    "success": True,
-                    "document_id": document_id,
-                    "result": None,
-                    "message": "Already processing",
-                }
-            # Atomic claim: transition pending → processing in one DB call.
-            # If another caller races us, only one will get True.
-            if current_status == "pending":
+            elif current_status == "processing":
+                # Check for zombie: if processing_summary.updated_at is stale
+                # (>5 min old), treat as stuck and re-process.
+                summary = current_doc.get("processing_summary") or {}
+                updated_at = summary.get("updated_at")
+                is_zombie = False
+                if updated_at:
+                    try:
+                        from datetime import datetime, timezone, timedelta
+                        last_update = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                        is_zombie = (datetime.now(timezone.utc) - last_update) > timedelta(minutes=5)
+                    except Exception:
+                        is_zombie = True  # Can't parse timestamp → assume stuck
+                else:
+                    is_zombie = True  # No timestamp at all → assume stuck
+
+                if is_zombie:
+                    logger.warning(
+                        "[DOC_PROCESS] Document %s stuck in processing (zombie) — re-processing",
+                        document_id,
+                    )
+                    doc_repo.update(document_id, {"status": "processing"})
+                else:
+                    logger.info(
+                        "[DOC_PROCESS] Document %s already processing — skipping duplicate run",
+                        document_id,
+                    )
+                    return {
+                        "success": True,
+                        "document_id": document_id,
+                        "result": None,
+                        "message": "Already processing",
+                    }
+            elif current_status == "pending":
+                # Atomic claim: transition pending → processing in one DB call.
                 claimed = doc_repo.claim_for_processing(document_id)
                 if not claimed:
                     logger.info(

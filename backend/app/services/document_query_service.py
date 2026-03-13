@@ -392,6 +392,22 @@ class DocumentQueryService:
             extracted = {}
 
         if doc.get("status") == "completed":
+            # Always re-run the post-extraction pipeline (suggestions, grid writes)
+            # so that completed docs that missed the pipeline still get grid output.
+            if extracted:
+                try:
+                    from app.services.document_process_service import run_post_extraction_pipeline
+                    run_post_extraction_pipeline(
+                        extracted_data=extracted,
+                        document_id=document_id,
+                        document_type=doc.get("document_type") or "other",
+                        company_id=doc.get("company_id"),
+                        fund_id=doc.get("fund_id"),
+                        document_name=doc.get("file_name") or doc.get("name") or f"doc-{document_id}",
+                        field_count=sum(1 for v in extracted.values() if v is not None),
+                    )
+                except Exception as pipe_err:
+                    logger.warning("Post-extraction pipeline failed for completed doc %s: %s", document_id, pipe_err)
             return {"value": extracted, "summary": "Extracted from completed document"}
 
         # Already being processed by another call (batch endpoint, Celery, etc.)

@@ -21,53 +21,50 @@ class DatabasePool:
         self.pool: Optional[asyncpg.Pool] = None
         self.supabase_client: Optional[Client] = None
         self._lock = asyncio.Lock()
-        
+        self._initialized = False
+
     async def initialize(self):
-        """Initialize connection pool"""
+        """Initialize connection pool and Supabase client (independently)."""
         async with self._lock:
-            if self.pool is not None:
-                return  # Already initialized
-            
-            try:
-                # Parse Supabase URL to get PostgreSQL connection string
-                supabase_url = settings.SUPABASE_URL
-                if supabase_url:
-                    # Convert Supabase URL to PostgreSQL DSN
-                    # Format: postgresql://user:password@host:port/database
-                    db_url = supabase_url.replace('https://', 'postgresql://')
-                    db_url = db_url.replace('.supabase.co', '.supabase.co:5432')
-                    
-                    # Create connection pool
+            if self._initialized:
+                return
+            self._initialized = True
+
+            # --- Supabase REST client (independent of asyncpg) ---
+            sb_key = settings.SUPABASE_SERVICE_KEY or settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+            supabase_url = settings.SUPABASE_URL or settings.NEXT_PUBLIC_SUPABASE_URL
+            if not sb_key:
+                sb_key = settings.NEXT_PUBLIC_SUPABASE_ANON_KEY
+            if supabase_url and sb_key:
+                try:
+                    self.supabase_client = create_client(supabase_url, sb_key)
+                    logger.info("Supabase client initialized (url=%s, key=%s…)", supabase_url[:40], sb_key[:8])
+                except Exception as e:
+                    logger.error(f"Failed to initialize Supabase client: {e}")
+                    self.supabase_client = None
+            else:
+                logger.warning(
+                    "Supabase client NOT initialized — missing env vars "
+                    "(SUPABASE_URL=%s, key=%s)",
+                    bool(supabase_url), bool(sb_key),
+                )
+
+            # --- asyncpg connection pool (optional, for raw SQL) ---
+            db_dsn = getattr(settings, "DATABASE_URL", None)
+            if db_dsn:
+                try:
                     self.pool = await asyncpg.create_pool(
-                        dsn=db_url,
-                        min_size=2,  # Minimum connections
-                        max_size=20,  # Maximum connections
-                        max_inactive_connection_lifetime=300,  # 5 minutes
+                        dsn=db_dsn,
+                        min_size=2,
+                        max_size=20,
+                        max_inactive_connection_lifetime=300,
                         command_timeout=10,
-                        pool_recycle=3600  # Recycle connections after 1 hour
                     )
                     logger.info("Database connection pool initialized")
-                
-                # Initialize Supabase client (this is stateless, so one instance is fine)
-                sb_key = settings.SUPABASE_SERVICE_KEY or settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
-                if settings.SUPABASE_URL and sb_key:
-                    try:
-                        self.supabase_client = create_client(
-                            settings.SUPABASE_URL,
-                            sb_key
-                        )
-                        logger.info("Supabase client initialized")
-                    except Exception as e:
-                        logger.error(f"Failed to initialize Supabase client in pool: {e}")
-                        logger.error(f"Error type: {type(e).__name__}")
-                        import traceback
-                        logger.error(f"Traceback: {traceback.format_exc()}")
-                        # Don't raise - allow backend to start without Supabase
-                        self.supabase_client = None
-                    
-            except Exception as e:
-                logger.error(f"Failed to initialize database pool: {e}")
-                raise
+                except Exception as e:
+                    logger.error(f"Failed to initialize database pool: {e}")
+            else:
+                logger.info("No DATABASE_URL set — asyncpg pool skipped (using Supabase REST only)")
     
     async def close(self):
         """Close connection pool"""
@@ -107,18 +104,29 @@ class DatabasePool:
             return await conn.fetchval(query, *args, timeout=timeout)
     
     def get_supabase_client(self) -> Optional[Client]:
-        """Get the Supabase client instance"""
-        if self.supabase_client is None and settings.SUPABASE_URL:
-            try:
-                sb_key = settings.SUPABASE_SERVICE_KEY or settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
-                self.supabase_client = create_client(
-                    settings.SUPABASE_URL,
-                    sb_key
-                )
-            except Exception as e:
-                logger.error(f"Failed to create Supabase client: {e}")
-                return None
-        return self.supabase_client
+        """Get the Supabase client instance, lazy-creating if needed."""
+        if self.supabase_client is not None:
+            return self.supabase_client
+
+        supabase_url = settings.SUPABASE_URL or settings.NEXT_PUBLIC_SUPABASE_URL
+        sb_key = settings.SUPABASE_SERVICE_KEY or settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+        if not sb_key:
+            sb_key = settings.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+        if not supabase_url or not sb_key:
+            logger.error(
+                "Cannot create Supabase client — SUPABASE_URL=%s, key=%s",
+                bool(supabase_url), bool(sb_key),
+            )
+            return None
+
+        try:
+            self.supabase_client = create_client(supabase_url, sb_key)
+            logger.info("Supabase client created (lazy, url=%s)", supabase_url[:40])
+            return self.supabase_client
+        except Exception as e:
+            logger.error(f"Failed to create Supabase client: {e}")
+            return None
     
     async def health_check(self) -> bool:
         """Check if database is accessible"""

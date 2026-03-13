@@ -945,7 +945,9 @@ class ModelRouter:
                         await self._apply_rate_limit(model_name)
                         
                         # Route to appropriate provider with json_mode for structured output
-                        # Per-model timeout so a hung provider triggers fallback
+                        # Per-model timeout scales with max_tokens: large extractions
+                        # (legal docs, 16k tokens) need more time than small calls.
+                        per_call_timeout = max(90, min(300, max_tokens // 50))
                         response_text, usage = await asyncio.wait_for(
                             self._call_model(
                                 model_config,
@@ -955,7 +957,7 @@ class ModelRouter:
                                 temperature,
                                 json_mode
                             ),
-                            timeout=90,
+                            timeout=per_call_timeout,
                         )
 
                         # Use real token counts from provider; fall back to estimate
@@ -999,7 +1001,7 @@ class ModelRouter:
                         return result
                     
                     except asyncio.TimeoutError:
-                        logger.warning(f"[MODEL_ROUTER] ⏱️  {model_name} timed out after 90s, trying next model")
+                        logger.warning(f"[MODEL_ROUTER] ⏱️  {model_name} timed out after {per_call_timeout}s, trying next model")
                         last_error = TimeoutError(f"{model_name} timed out")
                         break  # Skip to next model immediately — no retry on timeout
 
