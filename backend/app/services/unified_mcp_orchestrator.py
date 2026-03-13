@@ -728,12 +728,8 @@ AGENT_TOOLS: list[AgentTool] = [
         handler="_tool_suggest_action",
         input_schema={"type": "str", "title": "str", "description": "str", "priority": "str?", "company_id": "str?"},
     ),
-    AgentTool(
-        name="write_to_memo",
-        description="Append sections to the working memo/LP report.",
-        handler="_tool_write_memo",
-        input_schema={"sections": "list[dict]"},
-    ),
+    # REMOVED: duplicate write_to_memo — canonical definition is at line ~1396
+    # with richer schema (section_title, text, chart_type, chart_data, table).
     AgentTool(
         name="fetch_company_data",
         description="Fetch company data from web (Tavily + extraction). Use for any company name — fetches funding, revenue, team, market data.",

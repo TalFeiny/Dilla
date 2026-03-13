@@ -2412,8 +2412,6 @@ export function UnifiedMatrix({
           console.error('[PnL cell save] error:', err);
           toast.error('Failed to save cell edit');
         }
-      } else {
-        toast.info('Add to portfolio to save edits');
       }
     } finally {
       editInFlightRef.current--;

@@ -1027,7 +1027,7 @@ async def _extract_document_structured_async(
     # Legal docs MUST use a quality model — Haiku truncates at 8k tokens
     # and produces incomplete JSON.  Explicit preferred_models overrides
     # the caller_context routing so we guarantee Sonnet/GPT-5.2 first.
-    legal_preferred = ["claude-sonnet-4-6", "gpt-5.2", "gemini-2.5-pro"] if doc_type in LEGAL_DOC_TYPES else None
+    legal_preferred = ["gpt-5.2", "claude-sonnet-4-6", "gemini-2.5-pro"] if doc_type in LEGAL_DOC_TYPES else None
 
     try:
         result = await router.get_completion(
@@ -1697,15 +1697,51 @@ def run_document_process(
                 # Reset status so extraction runs fresh
                 doc_repo.update(document_id, {"status": "processing"})
             elif current_status == "completed":
+                extracted = current_doc.get("extracted_data") or {}
+                doc_type_check = (current_doc.get("document_type") or document_type or "other").strip().lower()
+
+                # Check if post-extraction pipeline was missed (e.g. transient DB failure).
+                # If suggestions don't exist yet for this document, re-run the pipeline.
+                needs_pipeline_rerun = False
+                try:
+                    from app.core.database import get_supabase_service
+                    sb_check = get_supabase_service().get_client()
+                    if sb_check and (company_id or fund_id):
+                        existing = sb_check.table("pending_suggestions").select("id").eq(
+                            "source_service", f"document:{document_id}"
+                        ).limit(1).execute()
+                        if not (existing.data if existing else []):
+                            needs_pipeline_rerun = True
+                            logger.warning(
+                                "[DOC_PROCESS] Document %s is completed but has 0 pending_suggestions — re-running post-extraction pipeline",
+                                document_id,
+                            )
+                except Exception as e:
+                    logger.warning("[DOC_PROCESS] Could not check suggestions for %s: %s", document_id, e)
+
+                if needs_pipeline_rerun and extracted:
+                    try:
+                        run_post_extraction_pipeline(
+                            extracted_data=extracted,
+                            document_id=document_id,
+                            document_type=doc_type_check,
+                            company_id=company_id or current_doc.get("company_id"),
+                            fund_id=fund_id or current_doc.get("fund_id"),
+                            document_name=Path(storage_path).stem if storage_path else "",
+                            field_count=len([k for k, v in extracted.items() if v]),
+                        )
+                    except Exception as e:
+                        logger.warning("[DOC_PROCESS] Post-extraction pipeline re-run failed for %s: %s", document_id, e, exc_info=True)
+
                 logger.info(
-                    "[DOC_PROCESS] Document %s already completed — returning cached result",
-                    document_id,
+                    "[DOC_PROCESS] Document %s already completed%s — returning cached result",
+                    document_id, " (re-ran pipeline)" if needs_pipeline_rerun else "",
                 )
                 return {
                     "success": True,
                     "document_id": document_id,
                     "result": {
-                        "extracted_data": current_doc.get("extracted_data", {}),
+                        "extracted_data": extracted,
                         "processing_summary": current_doc.get("processing_summary", {}),
                     },
                 }

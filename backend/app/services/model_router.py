@@ -729,7 +729,7 @@ class ModelRouter:
                     AsyncAnthropic = getattr(anthropic_module, "AsyncAnthropic")
                     self.anthropic_client = AsyncAnthropic(
                         api_key=self.anthropic_key,
-                        timeout=60.0,  # 60s per-request timeout (SDK default is 600s)
+                        timeout=300.0,  # 5min per-request timeout (SDK default is 600s)
                     )
                     logger.info("[_init_clients] ✅ Anthropic client initialized successfully")
                 except ImportError as exc:
@@ -945,9 +945,10 @@ class ModelRouter:
                         await self._apply_rate_limit(model_name)
                         
                         # Route to appropriate provider with json_mode for structured output
-                        # Per-model timeout scales with max_tokens: large extractions
-                        # (legal docs, 16k tokens) need more time than small calls.
-                        per_call_timeout = max(90, min(300, max_tokens // 50))
+                        # Per-model timeout scales with max_tokens + prompt size:
+                        # large extractions (legal docs, 16k tokens) need more time.
+                        input_size_factor = (prompt_length + system_length) // 2000  # ~1s per 2k chars
+                        per_call_timeout = max(120, min(600, max_tokens // 50 + input_size_factor * 5))
                         response_text, usage = await asyncio.wait_for(
                             self._call_model(
                                 model_config,
@@ -1001,9 +1002,13 @@ class ModelRouter:
                         return result
                     
                     except asyncio.TimeoutError:
-                        logger.warning(f"[MODEL_ROUTER] ⏱️  {model_name} timed out after {per_call_timeout}s, trying next model")
                         last_error = TimeoutError(f"{model_name} timed out")
-                        break  # Skip to next model immediately — no retry on timeout
+                        if retry == 0:
+                            logger.warning(f"[MODEL_ROUTER] ⏱️  {model_name} timed out after {per_call_timeout}s, retrying once...")
+                            await asyncio.sleep(1)
+                            continue  # One fast retry before giving up
+                        logger.warning(f"[MODEL_ROUTER] ⏱️  {model_name} timed out again after {per_call_timeout}s, trying next model")
+                        break  # Move to next model after 1 retry
 
                     except Exception as e:
                         last_error = e

@@ -175,9 +175,12 @@ def _get_supabase_client():
         from app.core.database import get_supabase_service
         svc = get_supabase_service()
         if svc:
-            return svc.get_client()
-    except Exception:
-        pass
+            client = svc.get_client()
+            if not client:
+                logger.warning("[SUGGESTION_EMITTER] get_supabase_service().get_client() returned None — DB not initialized")
+            return client
+    except Exception as e:
+        logger.warning("[SUGGESTION_EMITTER] Failed to get Supabase client: %s", e, exc_info=True)
     return None
 
 
