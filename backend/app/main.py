@@ -50,6 +50,13 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up Dilla AI Backend...")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"Debug mode: {settings.DEBUG}")
+    # Initialize database pool + Supabase client
+    try:
+        from app.core.database_pool import db_pool
+        await db_pool.initialize()
+    except Exception as e:
+        logger.error(f"Failed to initialize database pool: {e}")
+
     # Initialize cell action registry so all actions are available immediately
     try:
         from app.services.cell_action_registry import get_registry

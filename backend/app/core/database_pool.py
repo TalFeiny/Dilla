@@ -49,11 +49,12 @@ class DatabasePool:
                     logger.info("Database connection pool initialized")
                 
                 # Initialize Supabase client (this is stateless, so one instance is fine)
-                if settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY:
+                sb_key = settings.SUPABASE_SERVICE_KEY or settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+                if settings.SUPABASE_URL and sb_key:
                     try:
                         self.supabase_client = create_client(
                             settings.SUPABASE_URL,
-                            settings.SUPABASE_SERVICE_KEY
+                            sb_key
                         )
                         logger.info("Supabase client initialized")
                     except Exception as e:
@@ -109,9 +110,10 @@ class DatabasePool:
         """Get the Supabase client instance"""
         if self.supabase_client is None and settings.SUPABASE_URL:
             try:
+                sb_key = settings.SUPABASE_SERVICE_KEY or settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
                 self.supabase_client = create_client(
                     settings.SUPABASE_URL,
-                    settings.SUPABASE_SERVICE_KEY or settings.SUPABASE_ANON_KEY
+                    sb_key
                 )
             except Exception as e:
                 logger.error(f"Failed to create Supabase client: {e}")
