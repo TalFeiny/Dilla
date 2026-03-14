@@ -123,16 +123,6 @@ export async function applyCellUpdate(input: ApplyCellInput): Promise<ApplyCellR
     return { success: false, error: 'Supabase service not configured', status: 500 };
   }
 
-  const { data: companyExists, error: companyFetchErr } = await supabaseService
-    .from('companies')
-    .select('id')
-    .eq('id', company_id)
-    .single();
-  if (companyFetchErr || !companyExists) {
-    console.warn('[apply-cell] Company not found', { company_id, error: companyFetchErr?.message });
-    return { success: false, error: 'Company not found', status: 404, code: 'COMPANY_NOT_FOUND' };
-  }
-
   const extraDataKey = EXTRA_DATA_KEYS[column_id];
   if (extraDataKey) {
     const raw: unknown =

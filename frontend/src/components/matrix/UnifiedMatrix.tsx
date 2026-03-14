@@ -425,7 +425,7 @@ export function UnifiedMatrix({
   // Track which mode the current matrixData belongs to, so we can reset on mode switch
   const matrixDataModeRef = useRef<MatrixMode>(mode);
   const [query, setQuery] = useState('');
-  const [showInsightsPanel, setShowInsightsPanel] = useState(mode === 'portfolio' ? false : showInsights);
+  const [showInsightsPanel, setShowInsightsPanel] = useState(false);
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
   const [startEditingCellRef, setStartEditingCellRef] = useState<((rowId: string, columnId: string) => void) | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -5029,12 +5029,6 @@ export function UnifiedMatrix({
               <Plus className="w-4 h-4 mr-2" />
               Add Column
             </DropdownMenuItem>
-            {showInsights && (
-              <DropdownMenuItem onClick={() => setShowInsightsPanel(!showInsightsPanel)}>
-                {showInsightsPanel ? <EyeOff className="w-4 h-4 mr-2" /> : <Eye className="w-4 h-4 mr-2" />}
-                {showInsightsPanel ? 'Hide' : 'Show'} Insights
-              </DropdownMenuItem>
-            )}
             {mode === 'portfolio' && (
               <>
                 <input type="file" accept=".csv,.xlsx,.xls" onChange={(e) => handleFileImport(null, e)} className="hidden" id="matrix-import-input" />
@@ -5153,7 +5147,7 @@ export function UnifiedMatrix({
       <div className="flex gap-3 flex-1 min-h-0 overflow-hidden">
         {/* AG Grid Matrix with Drag-and-Drop */}
         <div 
-          className={`flex-1 min-w-0 ${showInsightsPanel ? 'w-2/3' : 'w-full'} relative flex flex-col`}
+          className="flex-1 min-w-0 w-full relative flex flex-col"
           style={{ height: 640, minHeight: 640 }}
           onDragOverCapture={handleDragOverCapture}
           onDragEnterCapture={handleDragEnterCapture}
@@ -5633,13 +5627,6 @@ export function UnifiedMatrix({
               onScenarioBranchCreated={forkTree.addBranchFromAgentResponse}
               onScenarioComparisonReady={forkTree.setChartsFromComparison}
             />
-          </div>
-        )}
-
-        {/* Insights Panel */}
-        {showInsightsPanel && matrixData && (
-          <div className="w-1/3">
-            <MatrixInsights matrixData={matrixData} />
           </div>
         )}
 

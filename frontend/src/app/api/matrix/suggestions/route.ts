@@ -1706,21 +1706,6 @@ export async function POST(request: NextRequest) {
             { status: 404 }
           );
         }
-        // Validate company exists before applying
-        const { data: svcCompanyRow, error: svcCompanyErr } = await supabaseService
-          .from('companies')
-          .select('id')
-          .eq('id', pendingRow.company_id)
-          .single();
-        if (svcCompanyErr || !svcCompanyRow) {
-          console.warn('[suggestions] Service accept: company_id not found', { suggestionId, company_id: pendingRow.company_id });
-          // Clean up the orphaned pending suggestion
-          await supabaseService.from('pending_suggestions').delete().eq('id', suggestionId);
-          return NextResponse.json(
-            { error: 'Company not found. The suggestion may refer to a company no longer in the matrix.' },
-            { status: 404 }
-          );
-        }
         let rawSuggested = pendingRow.suggested_value;
         // JSONB may return a JSON-encoded string — parse it
         if (typeof rawSuggested === 'string') {
@@ -1832,19 +1817,6 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(
           { error: 'Document suggestions require applyPayload with company_id, column_id, and new_value' },
           { status: 400 }
-        );
-      }
-      // Ensure applyPayload.company_id exists in companies table before applying
-      const { data: companyRow, error: companyErr } = await supabaseService
-        .from('companies')
-        .select('id')
-        .eq('id', applyPayload.company_id)
-        .single();
-      if (companyErr || !companyRow) {
-        console.warn('[suggestions] Document accept: company_id not found in companies', { suggestionId, company_id: applyPayload.company_id, error: companyErr?.message });
-        return NextResponse.json(
-          { error: 'Company not found. The suggestion may refer to a company no longer in the matrix.' },
-          { status: 404 }
         );
       }
       {
