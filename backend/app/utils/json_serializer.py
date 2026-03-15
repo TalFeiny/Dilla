@@ -285,6 +285,70 @@ def clean_for_json(obj: Any, max_depth: int = 10, _depth: int = 0, _visited: Set
             _visited.discard(obj_id)
 
 
+# ── Shared SSE event serializer ──
+# All event types the frontend handles (AgentChat.tsx).
+# Any event whose type is in this set gets forwarded; others are silently dropped.
+_FRONTEND_EVENT_TYPES = frozenset({
+    # Core streaming
+    "progress", "token", "error",
+    # Tool lifecycle (conversational loop)
+    "tool_call", "tool_result",
+    # Tool lifecycle (agent loop)
+    "tool_start", "tool_end", "thinking",
+    # Structured data
+    "memo_section", "chart_data", "chart_rebuild",
+    # Agent flow control
+    "clarification_needed", "checkpoint", "status", "classification",
+    # Document processing
+    "doc_processing_progress", "doc_extracted", "doc_error",
+    "doc_search_result", "batch_complete", "search_complete",
+    # Terminal
+    "complete",
+    # Internal (frontend ignores but may be useful for debugging)
+    "session_handoff",
+})
+
+
+def serialize_stream_event(
+    event: Dict[str, Any],
+    *,
+    agent_label: str | None = None,
+) -> str | None:
+    """Serialize an orchestrator stream event to an NDJSON line.
+
+    Returns *None* for event types not in the frontend whitelist so the
+    caller can simply skip them.  The ``complete`` type receives special
+    numpy conversion; everything else is passed through ``clean_for_json``.
+    """
+    evt_type = event.get("type", "unknown")
+    if evt_type not in _FRONTEND_EVENT_TYPES:
+        return None
+
+    if evt_type == "complete":
+        from app.utils.numpy_converter import convert_numpy_to_native
+
+        result = event.get("result", {})
+        if result:
+            result = convert_numpy_to_native(result)
+        payload: Dict[str, Any] = {
+            "type": "complete",
+            "success": True,
+            "result": result,
+        }
+        if agent_label:
+            payload["agent"] = agent_label
+        metadata = event.get("metadata")
+        if metadata:
+            payload["metadata"] = metadata
+        return json.dumps(clean_for_json(payload)) + "\n"
+
+    # Generic path: forward the whole event dict through clean_for_json
+    out = dict(event)  # shallow copy so we don't mutate the caller's dict
+    if agent_label and "agent" not in out:
+        out["agent"] = agent_label
+    return json.dumps(clean_for_json(out)) + "\n"
+
+
 def detect_circular_references(obj: Any, path: str = "root") -> Dict[str, Any]:
     """
     Detect circular references in an object structure

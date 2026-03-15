@@ -17,7 +17,7 @@ from app.services.unified_mcp_orchestrator import (
     AGENT_TOOLS,
 )
 from app.services.model_router import set_provider_affinity
-from app.utils.json_serializer import safe_json_dumps, clean_for_json
+from app.utils.json_serializer import safe_json_dumps, clean_for_json, serialize_stream_event
 
 logger = logging.getLogger(__name__)
 
@@ -255,31 +255,9 @@ async def process_legal_stream(request: LegalRequest, raw_request: Request):
                 output_format=request.output_format,
                 context=merged_context,
             ):
-                event_type = event.get("type", "unknown")
-                if event_type == "progress":
-                    yield _json.dumps({"type": "progress", "stage": event.get("stage"), "message": event.get("message"), "plan_steps": event.get("plan_steps")}) + "\n"
-                elif event_type == "token":
-                    yield _json.dumps({"type": "token", "content": event.get("content", "")}) + "\n"
-                elif event_type == "tool_call":
-                    yield _json.dumps({"type": "tool_call", "tool": event.get("tool"), "inputs": clean_for_json(event.get("inputs", {})), "tool_call_id": event.get("tool_call_id")}) + "\n"
-                elif event_type == "tool_result":
-                    result_data = event.get("result", {})
-                    if result_data:
-                        result_data = clean_for_json(result_data)
-                    yield _json.dumps({"type": "tool_result", "tool": event.get("tool"), "tool_call_id": event.get("tool_call_id"), "result": result_data}) + "\n"
-                elif event_type == "memo_section":
-                    yield _json.dumps({"type": "memo_section", "section": clean_for_json(event.get("section", {}))}) + "\n"
-                elif event_type == "chart_data":
-                    yield _json.dumps({"type": "chart_data", "chart": clean_for_json(event.get("chart", {}))}) + "\n"
-                elif event_type == "complete":
-                    from app.utils.numpy_converter import convert_numpy_to_native
-                    result = event.get("result", {})
-                    if result:
-                        result = convert_numpy_to_native(result)
-                    cleaned = clean_for_json({"type": "complete", "success": True, "result": result, "agent": "legal"})
-                    yield _json.dumps(cleaned) + "\n"
-                elif event_type == "error":
-                    yield _json.dumps({"type": "error", "error": event.get("error"), "agent": "legal"}) + "\n"
+                line = serialize_stream_event(event, agent_label="legal")
+                if line:
+                    yield line
         except Exception as e:
             logger.error(f"[LEGAL-BRAIN-STREAM] Error: {e}")
             yield _json.dumps({"type": "error", "error": str(e), "agent": "legal"}) + "\n"

@@ -3173,13 +3173,13 @@ class ConversationPhase(Enum):
 
 # Token budgets per turn type — None means inherit from previous turn
 TURN_BUDGETS: Dict[TurnType, Optional[int]] = {
-    TurnType.PHATIC:     128,
-    TurnType.STATUS:     512,
-    TurnType.RETRIEVAL:  1024,
+    TurnType.PHATIC:     256,
+    TurnType.STATUS:     1024,
+    TurnType.RETRIEVAL:  4096,
     TurnType.ITERATION:  None,   # inherit previous budget
-    TurnType.ANALYSIS:   2048,
+    TurnType.ANALYSIS:   4096,
     TurnType.STEERING:   None,   # inherit previous budget
-    TurnType.SYNTHESIS:  4096,
+    TurnType.SYNTHESIS:  8192,
 }
 
 # How many recent turns to keep verbatim before summarizing older ones
@@ -4057,211 +4057,213 @@ class UnifiedMCPOrchestrator:
         re.IGNORECASE,
     )
 
-    def _classify_turn(self, prompt: str) -> TurnType:
+    async def _classify_turn(self, prompt: str) -> TurnType:
         """Classify what kind of conversational turn this is.
 
-        Pure pattern matching — fast, no LLM. Reads conversational cadence
-        by combining (message content, previous turn type, whether tools
-        ran last turn, message length) to understand what the user actually
-        wants — not just what words they used.
-
-        The order of checks matters: context-dependent checks (post-tool
-        refinements, pushback) run first because they override keyword
-        matching. A user saying "try 50M" after a valuation run is
-        ITERATION, not a generic request.
+        Haiku-primary: LLM classifies all non-trivial messages. Only PHATIC
+        gets a fast keyword check (greetings/acks don't need an LLM call).
+        Keywords are the FALLBACK if the LLM call fails.
         """
         lower = prompt.lower().strip()
-        prev_had_tools = bool(self._prev_tool_calls)
         words = lower.split()
         msg_len = len(words)
 
-        # ── 1. Post-tool refinements (context-dependent, highest priority) ──
-        # After a tool-heavy turn, short messages are almost always
-        # refining what was just produced, not starting something new.
-        # Broaden: prev turn type is a strong classification signal
+        # ── 1. PHATIC fast-path: very short social/ack messages ──
+        # These are unambiguous and don't need an LLM call.
+        if msg_len <= 5 and self._RE_PHATIC.match(lower):
+            return TurnType.PHATIC
+
+        # ── 2. Primary: Haiku LLM classification ──
+        try:
+            turn_type = await self._llm_classify_turn(prompt, msg_len)
+            if turn_type is not None:
+                return turn_type
+        except Exception as e:
+            logger.warning(f"[CADENCE] LLM turn classification failed: {e}")
+
+        # ── 3. Fallback: keyword matching (only if LLM failed) ──
+        logger.info(f"[CADENCE] LLM unavailable — falling back to keywords ({msg_len} words)")
+        return self._keyword_classify_turn(prompt)
+
+    def _keyword_classify_turn(self, prompt: str) -> TurnType:
+        """Keyword-based turn classification. Fallback when LLM is unavailable."""
+        lower = prompt.lower().strip()
+        words = lower.split()
+        msg_len = len(words)
+        prev_had_tools = bool(self._prev_tool_calls)
         _recent_work = prev_had_tools or self._prev_turn_type in (
             TurnType.ANALYSIS, TurnType.SYNTHESIS, TurnType.RETRIEVAL,
         )
-        if _recent_work and msg_len < 20:
 
-            # Iteration: tweaking values, parameters, or approach
+        # Post-tool refinements
+        if _recent_work and msg_len < 20:
             _iteration_phrases = (
-                # Direct tweaks
                 "what about", "what if", "how about", "instead",
                 "try", "change", "make it", "set it to", "use",
                 "swap", "replace", "switch to", "redo", "rerun",
-                "do it again", "run it again", "one more time",
-                # Adjusting numbers
                 "bump", "lower", "raise", "increase", "decrease",
-                "double", "halve", "cut", "add", "remove",
-                "more", "fewer", "bigger", "smaller",
-                # Hypotheticals
-                "assuming", "if we", "if i", "suppose", "say",
-                "let's say", "imagine", "pretend",
-                # Re-scoping entities
-                "the other", "that one", "this one", "those",
-                "for series", "with series", "at series",
-                "for q", "in q1", "in q2", "in q3", "in q4",
+                "double", "halve", "assuming", "if we", "if i",
+                "suppose", "let's say",
             )
             if any(p in lower for p in _iteration_phrases):
                 return TurnType.ITERATION
 
-            # Steering: narrowing, broadening, or redirecting scope/format
             _steering_phrases = (
-                # Scope narrowing
                 "just", "only", "skip", "focus on", "without",
-                "drop", "ignore", "exclude", "leave out", "cut out",
-                "narrow", "limit to", "restrict to", "include only",
-                "specifically", "in particular",
-                # Scope broadening
-                "also include", "add in", "expand", "broaden",
-                "what else", "anything else", "and also",
-                # Format steering
                 "shorter", "longer", "simpler", "more detail",
-                "less detail", "more concise", "bullet points",
-                "as a table", "as a chart", "break it down",
-                "break that down", "can you break", "elaborate",
-                "high level", "top level", "tldr", "tl;dr",
-                "the gist", "bottom line", "net net",
-                "in plain english", "dumb it down", "eli5",
+                "less detail", "bullet points", "as a table",
+                "break it down", "elaborate", "tldr", "tl;dr",
+                "bottom line", "for the board", "for investors",
             )
             if any(p in lower for p in _steering_phrases):
                 return TurnType.STEERING
 
-        # ── 2. Pushback / interjection (can happen anytime) ──
-        # User is correcting, redirecting, or disagreeing. These are
-        # conversational pivots — the system should stay cheap and responsive.
+        # Pushback
         _pushback_starters = (
-            "no,", "no ", "nah", "nope", "not that", "wrong",
-            "actually", "actually,", "i meant", "i mean",
-            "that's not", "thats not", "that isn't", "that isnt",
-            "wait", "wait,", "hold on", "hang on", "hold up",
-            "stop", "pause", "back up", "go back",
-            "not what i", "not what we", "i didn't",
-            "different", "the other", "other way",
-            "i was thinking", "i was asking", "what i meant",
-            "let me rephrase", "let me clarify", "to clarify",
-            "sorry i meant", "sorry, i meant",
-            "no no", "nonono", "hmm no", "eh no",
-            "that feels", "feels off", "feels wrong",
+            "no,", "no ", "nah", "nope", "actually", "i meant",
+            "that's not", "wait", "hold on", "not what i",
             "not quite", "not exactly", "close but",
         )
         if any(lower.startswith(s) for s in _pushback_starters):
-            return TurnType.STEERING if prev_had_tools else TurnType.ITERATION
+            return TurnType.STEERING if prev_had_tools else TurnType.ANALYSIS
 
-        # ── 3. Phatic: social glue, not actionable ──
-        # Short acknowledgements, greetings, sign-offs. The key signal
-        # is *brevity + no substance*. "cool" is phatic, "cool now
-        # model it out" is execution.
-        if msg_len <= 5 and self._RE_PHATIC.match(lower):
-            return TurnType.PHATIC
-
-        # ── 4. Execution triggers: "stop talking, go do it" ──
-        # Phase transition from exploring/converging → executing.
-        # These are the signals that the user is done hashing out
-        # the idea and wants the system to commit.
-        _execution_phrases = (
-            # Direct commands
+        # Execution approval (only short confirmations, not action verbs)
+        _approval_phrases = (
             "do it", "go ahead", "go for it", "let's do it",
-            "let's go", "run it", "execute", "proceed",
-            "ship it", "make it happen", "pull the trigger",
-            "kick it off", "fire it up", "get it done",
-            "ok do it", "yeah do it", "yep do it", "sure do it",
-            "ok go", "yeah go", "alright go", "cool go",
-            # Imperative starters (with substance following)
-            "build", "generate", "create", "compute", "calculate",
-            "model", "forecast", "project", "estimate", "value",
-            "run the", "do the", "perform the", "start the",
-            # Approval after discussion
-            "looks good", "that works", "go with that",
-            "go with this", "go with option", "let's go with",
-            "i like that", "love it", "perfect let's",
-            "ok let's", "alright let's", "yeah let's",
-            "sounds right", "that's right", "exactly",
-            "green light", "approved", "sign off",
-            "lock it in", "finalize", "confirm",
+            "proceed", "ship it", "approved", "looks good",
+            "that works", "go with that", "green light",
         )
-        if any(p in lower for p in _execution_phrases):
+        if msg_len < 10 and any(p in lower for p in _approval_phrases):
             if self._conversation_phase == ConversationPhase.CONVERGING:
                 return TurnType.SYNTHESIS
             return TurnType.ANALYSIS
 
-        # ── 5. Synthesis: deliverable / output language ──
-        # User wants a produced artifact — memo, report, summary, etc.
+        # Synthesis: deliverable requests
         _synthesis_phrases = (
-            # Document types
-            "write", "draft", "prepare", "compose", "author",
-            "memo", "report", "brief", "deck", "presentation",
-            "document", "narrative", "writeup", "write-up",
-            "executive summary", "one-pager", "one pager",
-            "tearsheet", "tear sheet", "fact sheet",
-            # Summarization
-            "summarize", "summarise", "sum up", "recap",
-            "pull together", "put together", "compile",
-            "consolidate", "synthesize", "synthesise",
-            # Communication
-            "send to", "email", "share with", "forward to",
-            "package", "bundle", "export",
-            # Formal output
-            "final version", "clean version", "polished",
-            "ready to send", "ready to share", "for the board",
-            "for the lp", "for the partners", "for the team",
-            "investor update", "lp update", "board update",
+            "write", "draft", "prepare", "memo", "report",
+            "deck", "presentation", "executive summary",
+            "summarize", "compile", "investor update",
         )
         if any(p in lower for p in _synthesis_phrases):
             return TurnType.SYNTHESIS
 
-        # ── 6. Status: quick fact/metric lookups ──
-        # Short questions seeking a single data point. The key is
-        # brevity — a long question with "what's" is probably analysis.
+        # Status: quick metric lookups
         if msg_len < 15 and self._RE_STATUS.match(lower):
             return TurnType.STATUS
 
-        # Also catch direct metric references without question words
-        _metric_patterns = (
-            r"\b(dpi|tvpi|irr|moic|nav|aum|mrr|arr|burn|runway|"
-            r"revenue|ebitda|margin|ltv|cac|churn|nrr|grr)\b",
-        )
-        if msg_len < 8 and any(re.search(p, lower) for p in _metric_patterns):
-            return TurnType.STATUS
-
-        # ── 7. Analysis signals: complex investigation ──
-        # Multi-faceted questions, comparisons, scenario work.
+        # Analysis signals
         _analysis_phrases = (
-            "compare", "contrast", "versus", " vs ", " vs.",
-            "analyze", "analyse", "assess", "evaluate", "review",
-            "deep dive", "dig into", "drill down", "look into",
-            "investigate", "research", "explore", "examine",
-            "benchmark", "stress test", "sensitivity",
-            "scenario", "upside", "downside", "base case",
-            "bull case", "bear case", "risk",
-            "how does .* compare", "what drives", "why is",
-            "break down the", "walk me through",
-            "implications", "impact of", "effect of",
-            "correlation", "relationship between",
-            "trend", "trajectory", "outlook",
-            "diligence", "due diligence", "dd",
+            "compare", "analyze", "assess", "evaluate",
+            "deep dive", "scenario", "what drives", "why is",
+            "how does", "should i", "should we", "recommend",
+            "tell me about", "what stands out", "health check",
+            "levers", "opportunities", "forecast", "model",
+            "what's going on", "how are we doing",
         )
         if any(p in lower for p in _analysis_phrases):
             return TurnType.ANALYSIS
 
-        # ── 8. Retrieval signals: fetch-and-present ──
+        # Retrieval signals
         _retrieval_phrases = (
-            "show me", "pull up", "get me", "find", "look up",
-            "fetch", "grab", "bring up", "load", "open",
-            "list", "display", "see the", "view",
-            "check on", "check the", "status of",
-            "where can i find", "do we have", "is there a",
+            "show me", "pull up", "get me", "find", "list",
+            "display", "look up", "fetch",
         )
         if any(p in lower for p in _retrieval_phrases):
             return TurnType.RETRIEVAL
 
-        # ── 9. Default: length-based heuristic ──
-        # Short messages with no strong signal → probably looking something up.
-        # Long messages → user is describing something complex.
-        if msg_len < 15:
+        # Default
+        if msg_len < 8:
             return TurnType.RETRIEVAL
         return TurnType.ANALYSIS
+
+    async def _llm_classify_turn(self, prompt: str, msg_len: int) -> Optional[TurnType]:
+        """Cheap LLM call (Haiku-class) for ambiguous turn classification.
+
+        Only called when keywords don't produce a clear match.  Includes
+        the last assistant message for context on follow-ups.
+        """
+        prev_turn = self._prev_turn_type.value if self._prev_turn_type else "none"
+        prev_had_tools = bool(self._prev_tool_calls)
+        phase = self._conversation_phase.value if self._conversation_phase else "exploring"
+
+        # Get last assistant message for context (truncated)
+        last_assistant = ""
+        for msg in reversed(self._conversation_history):
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    last_assistant = content[:300]
+                elif isinstance(content, list):
+                    text_parts = [b.get("text", "") for b in content if b.get("type") == "text"]
+                    last_assistant = " ".join(text_parts)[:300]
+                break
+
+        classify_prompt = (
+            f"Classify this user message into exactly one turn type. Return JSON only.\n\n"
+            f"User message: {prompt[:500]}\n"
+            f"Previous turn type: {prev_turn}\n"
+            f"Tools ran last turn: {prev_had_tools}\n"
+            f"Conversation phase: {phase}\n"
+            f"Word count: {msg_len}\n"
+        )
+        if last_assistant:
+            classify_prompt += f"Last assistant response (truncated): {last_assistant}\n"
+
+        classify_prompt += (
+            "\nTurn types (pick ONE):\n"
+            "- phatic: Social glue only — 'thanks', 'ok', 'hey'. Never for questions.\n"
+            "- status: Single-metric lookup, < 8 words. 'What's our burn?' 'Current ARR?'\n"
+            "- retrieval: Fetch & present existing data. 'Show me the P&L.' 'Pull up the cap table.'\n"
+            "- iteration: Tweak a parameter from previous result. 'What if 50M instead?' 'Try 30%.' ONLY after recent work.\n"
+            "- steering: Adjust format/scope of previous output. 'Just top 3.' 'More detail.' ONLY after recent work.\n"
+            "- analysis: ANY strategic question, investigation, recommendation, forecast, scenario, or multi-step reasoning. "
+            "This is the DEFAULT for substantive questions. 'What levers should I pull?' 'Forecast revenue.' "
+            "'Compare our burn to benchmarks.' 'Tell me about our financial health.'\n"
+            "- synthesis: Produce a formal deliverable — memo, deck, report. 'Write a board memo.' 'Draft investor update.'\n\n"
+            "Critical rules:\n"
+            "- 'forecast', 'model', 'analyze', 'compare', 'what should I', 'tell me about' → analysis (NOT retrieval)\n"
+            "- Action verbs like 'build', 'generate', 'create' + a topic → analysis (they're asking for work, not confirming)\n"
+            "- iteration/steering ONLY if prev turn had tools or was analysis/synthesis/retrieval\n"
+            "- When in doubt → analysis. It's the safest default.\n"
+            "- Short confirmations like 'do it', 'go ahead', 'approved' after recent work → analysis (let the agent decide next steps)\n\n"
+            'Return: {"turn_type": "<type>"}'
+        )
+
+        result = await self.model_router.get_completion(
+            prompt=classify_prompt,
+            system_prompt="Classify conversational turns. Return valid JSON only. No markdown fences.",
+            capability=ModelCapability.FAST,
+            max_tokens=40,
+            temperature=0.0,
+            caller_context="turn_classification",
+        )
+
+        response_text = result.get("response", "") if isinstance(result, dict) else str(result)
+        response_text = response_text.strip()
+        if response_text.startswith("```"):
+            response_text = response_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+        import json as _json
+        parsed = _json.loads(response_text)
+        turn_str = parsed.get("turn_type", "").lower().strip()
+
+        type_map = {t.value: t for t in TurnType}
+        turn_type = type_map.get(turn_str)
+
+        if turn_type is None:
+            logger.warning(f"[CADENCE] LLM returned unknown turn type: {turn_str}")
+            return None
+
+        # Guard: iteration/steering only valid after recent work
+        _recent_work = bool(self._prev_tool_calls) or self._prev_turn_type in (
+            TurnType.ANALYSIS, TurnType.SYNTHESIS, TurnType.RETRIEVAL,
+        )
+        if turn_type in (TurnType.ITERATION, TurnType.STEERING) and not _recent_work:
+            logger.info(f"[CADENCE] LLM said {turn_str} but no recent work — upgrading to analysis")
+            turn_type = TurnType.ANALYSIS
+
+        logger.info(f"[CADENCE] LLM classified: {turn_type.value}")
+        return turn_type
 
     def _detect_phase(self) -> ConversationPhase:
         """Detect conversational phase from recent turn history.
@@ -4682,13 +4684,26 @@ class UnifiedMCPOrchestrator:
                 yield {"type": "session_handoff", "handoff": handoff}
 
         # ── 2. Classify this turn & detect conversation phase ──
-        turn_type = self._classify_turn(prompt)
+        turn_type = await self._classify_turn(prompt)
         self._turn_type_history.append(turn_type)
         if len(self._turn_type_history) > 10:
             self._turn_type_history = self._turn_type_history[-10:]
         self._conversation_phase = self._detect_phase()
 
         max_tokens = TURN_BUDGETS[turn_type] or self._prev_turn_budget or 2048
+
+        # ── Emit classification event so frontend can show intent/mode ──
+        _response_mode = (
+            "reply" if turn_type in (TurnType.PHATIC, TurnType.STATUS) else
+            "action" if turn_type in (TurnType.RETRIEVAL, TurnType.ITERATION, TurnType.STEERING) else
+            "task"
+        )
+        yield {
+            "type": "classification",
+            "intent": turn_type.value,
+            "response_mode": _response_mode,
+            "confidence": 1.0,
+        }
 
         logger.info(
             f"[CADENCE] turn={turn_type.value} phase={self._conversation_phase.value} "
@@ -4851,6 +4866,8 @@ class UnifiedMCPOrchestrator:
         messages.append({"role": "user", "content": prompt})
 
         max_tool_rounds = 10
+        max_tokens_retries = 0          # how many times we've doubled for truncation
+        MAX_TOKENS_RETRY_LIMIT = 2      # cap: original → 2x → 4x
         all_text_parts: List[str] = []
         tool_calls_made: List[Dict[str, Any]] = []
 
@@ -4866,22 +4883,36 @@ class UnifiedMCPOrchestrator:
         for round_num in range(max_tool_rounds):
             yield {
                 "type": "progress",
-                "stage": "thinking" if round_num == 0 else "tool_execution",
+                "stage": "thinking" if round_num == 0 else "executing",
                 "message": (
                     "Thinking..." if round_num == 0
                     else f"Processing tool results (round {round_num})"
                 ),
             }
 
+            # ── Stream LLM response (yields text deltas as they arrive) ──
+            # Buffer text deltas so truncation retries can discard without
+            # sending duplicate tokens to the frontend.
+            text_delta_buffer: List[str] = []
+            text_parts: List[str] = []
+            tool_calls: List[Dict[str, Any]] = []
+            stop_reason = "end_turn"
+
             try:
-                result = await self.model_router.get_completion_with_tools(
+                async for event in self.model_router.stream_completion_with_tools(
                     messages=messages,
                     system_prompt=system_prompt,
                     tools=tools,
                     max_tokens=max_tokens,
-                    temperature=0.7,
+                    temperature=0.3,
                     caller_context=caller_context,
-                )
+                ):
+                    if event["type"] == "text_delta":
+                        text_delta_buffer.append(event["text"])
+                    elif event["type"] == "done":
+                        text_parts = event.get("text_parts", [])
+                        tool_calls = event.get("tool_calls", [])
+                        stop_reason = event.get("stop_reason", "end_turn")
             except Exception as e:
                 logger.error(f"[CONV_LOOP] LLM call failed round {round_num}: {e}")
                 yield {"type": "error", "error": str(e)}
@@ -4891,14 +4922,22 @@ class UnifiedMCPOrchestrator:
                 }
                 return
 
-            text_parts = result.get("text_parts", [])
-            tool_calls = result.get("tool_calls", [])
-            stop_reason = result.get("stop_reason", "end_turn")
+            # ── Detect truncation: stop_reason == "max_tokens" ──
+            if stop_reason == "max_tokens" and max_tokens_retries < MAX_TOKENS_RETRY_LIMIT:
+                max_tokens_retries += 1
+                max_tokens = min(max_tokens * 2, 16384)
+                logger.warning(
+                    f"[CONV_LOOP] Response truncated (max_tokens). "
+                    f"Retry {max_tokens_retries}/{MAX_TOKENS_RETRY_LIMIT} with budget={max_tokens}"
+                )
+                # Discard buffered text, retry the same round
+                continue
 
+            # Flush buffered text deltas to frontend
+            for delta_text in text_delta_buffer:
+                yield {"type": "token", "content": delta_text}
             if text_parts:
-                for text in text_parts:
-                    all_text_parts.append(text)
-                    yield {"type": "token", "content": text}
+                all_text_parts.extend(text_parts)
 
             if not tool_calls or stop_reason != "tool_use":
                 break
@@ -4916,119 +4955,127 @@ class UnifiedMCPOrchestrator:
                 })
             messages.append({"role": "assistant", "content": assistant_content})
 
-            tool_result_blocks: List[Dict[str, Any]] = []
+            # ── Execute tool calls in parallel (asyncio.gather) ──
+            # Emit all tool_call events first so frontend shows spinners
             for tc in tool_calls:
-                tool_name = tc["name"]
-                tool_input = tc["input"]
-                tool_id = tc["id"]
-
                 yield {
                     "type": "tool_call",
-                    "tool": tool_name,
-                    "inputs": tool_input,
-                    "tool_call_id": tool_id,
+                    "tool": tc["name"],
+                    "inputs": tc["input"],
+                    "tool_call_id": tc["id"],
                 }
 
+            async def _run_tool(tc: Dict[str, Any]) -> Dict[str, Any]:
+                """Execute a single tool, returning result dict."""
                 try:
-                    tool_output = await self._execute_tool(tool_name, tool_input)
-
-                    if SessionState:
-                        _ss = SessionState(self.shared_data)
-                        _ss.mark_dirty()
-
-                    output_str = json.dumps(tool_output, default=str)[:8000]
-
-                    tool_result_blocks.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_id,
-                        "content": output_str,
-                    })
-                    tool_calls_made.append({
-                        "tool": tool_name,
-                        "input": tool_input,
-                        "output_preview": output_str[:200],
-                    })
-                    yield {
-                        "type": "tool_result",
-                        "tool": tool_name,
-                        "tool_call_id": tool_id,
-                        "result": tool_output,
-                    }
-
-                    # ── Extract structured data from tool output ──
-                    # Mirrors _run_agent_loop (lines 14773-14799)
-                    if isinstance(tool_output, dict):
-                        if "memo_sections" in tool_output:
-                            for ms in tool_output["memo_sections"]:
-                                if "id" not in ms:
-                                    ms["id"] = f"auto_{len(_memo_sections)}"
-                                _memo_sections.append(ms)
-                                yield {"type": "memo_section", "section": ms}
-                        _cd_list = tool_output.get("chart_data") or tool_output.get("charts")
-                        _branch_id = tool_output.get("branch_id")
-                        _is_branch_modifier = tool_name in {"adjust_driver", "adjust_drivers", "funding_injection", "update_chart"}
-                        if isinstance(_cd_list, list):
-                            # If this is a branch-modifying tool re-running on a branch
-                            # that already has charts, emit chart_rebuild instead of new charts
-                            _existing = self.chart_registry.get_charts_for_branch(_branch_id) if _branch_id and _is_branch_modifier else []
-                            if _existing and len(_existing) == len(_cd_list):
-                                # Same branch, same chart count → rebuild in place
-                                for _old, cd in zip(_existing, _cd_list):
-                                    cd["id"] = _old["id"]
-                                    cd["bound_to_branch"] = _branch_id
-                                    self.chart_registry.update_chart_data(_old["id"], cd)
-                                    _charts.append(cd)
-                                    yield {"type": "chart_rebuild", "chart_id": _old["id"], "chart": cd}
-                            else:
-                                # New charts — assign fresh IDs
-                                for cd in _cd_list:
-                                    cid = self.chart_registry.record_chart(
-                                        chart_type=cd.get("type", "chart"),
-                                        title=cd.get("title", ""),
-                                        series_names=[ds.get("name", "") for ds in cd.get("datasets", [])],
-                                        bound_to_branch=_branch_id,
-                                        chart_data=cd,
-                                    )
-                                    cd["id"] = cid
-                                    cd["bound_to_branch"] = _branch_id
-                                    _charts.append(cd)
-                                    yield {"type": "chart_data", "chart": cd}
-                        if "grid_command" in tool_output:
-                            _grid_commands.append(tool_output["grid_command"])
-                        if "grid_commands" in tool_output and isinstance(tool_output["grid_commands"], list):
-                            _grid_commands.extend(tool_output["grid_commands"])
-                        if "chart_config" in tool_output:
-                            cc = tool_output["chart_config"]
-                            cid = self.chart_registry.record_chart(
-                                chart_type=cc.get("type", "chart"),
-                                title=cc.get("title", ""),
-                                bound_to_branch=cc.get("branch_id"),
-                                chart_data=cc,
-                            )
-                            cc["id"] = cid
-                            _charts.append(cc)
-                            yield {"type": "chart_data", "chart": cc}
-                        if "suggestion" in tool_output:
-                            _suggestions.append(tool_output["suggestion"])
-                        if "todo" in tool_output:
-                            _todo_items.append(tool_output["todo"])
-                        if tool_name in _fpa_write_tools:
-                            _pnl_refresh = True
-
+                    output = await self._execute_tool(tc["name"], tc["input"])
+                    return {"tool": tc["name"], "input": tc["input"], "id": tc["id"], "output": output, "error": None}
                 except Exception as e:
-                    logger.error(f"[CONV_LOOP] Tool {tool_name} failed: {e}")
+                    logger.error(f"[CONV_LOOP] Tool {tc['name']} failed: {e}")
+                    return {"tool": tc["name"], "input": tc["input"], "id": tc["id"], "output": None, "error": str(e)}
+
+            gather_results = await asyncio.gather(
+                *[_run_tool(tc) for tc in tool_calls],
+                return_exceptions=False,
+            )
+
+            if SessionState:
+                _ss = SessionState(self.shared_data)
+                _ss.mark_dirty()
+
+            # Process results: build tool_result_blocks + extract structured data
+            tool_result_blocks: List[Dict[str, Any]] = []
+            for tr in gather_results:
+                t_name, t_input, t_id = tr["tool"], tr["input"], tr["id"]
+                if tr["error"]:
                     tool_result_blocks.append({
                         "type": "tool_result",
-                        "tool_use_id": tool_id,
-                        "content": f"Error: {str(e)}",
+                        "tool_use_id": t_id,
+                        "content": f"Error: {tr['error']}",
                         "is_error": True,
                     })
                     yield {
                         "type": "tool_result",
-                        "tool": tool_name,
-                        "tool_call_id": tool_id,
-                        "result": {"error": str(e)},
+                        "tool": t_name,
+                        "tool_call_id": t_id,
+                        "result": {"error": tr["error"]},
                     }
+                    continue
+
+                tool_output = tr["output"]
+                output_str = json.dumps(tool_output, default=str)[:8000]
+
+                tool_result_blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": t_id,
+                    "content": output_str,
+                })
+                tool_calls_made.append({
+                    "tool": t_name,
+                    "input": t_input,
+                    "output_preview": output_str[:200],
+                })
+                yield {
+                    "type": "tool_result",
+                    "tool": t_name,
+                    "tool_call_id": t_id,
+                    "result": tool_output,
+                }
+
+                # ── Extract structured data from tool output ──
+                if isinstance(tool_output, dict):
+                    if "memo_sections" in tool_output:
+                        for ms in tool_output["memo_sections"]:
+                            if "id" not in ms:
+                                ms["id"] = f"auto_{len(_memo_sections)}"
+                            _memo_sections.append(ms)
+                            yield {"type": "memo_section", "section": ms}
+                    _cd_list = tool_output.get("chart_data") or tool_output.get("charts")
+                    _branch_id = tool_output.get("branch_id")
+                    _is_branch_modifier = t_name in {"adjust_driver", "adjust_drivers", "funding_injection", "update_chart"}
+                    if isinstance(_cd_list, list):
+                        _existing = self.chart_registry.get_charts_for_branch(_branch_id) if _branch_id and _is_branch_modifier else []
+                        if _existing and len(_existing) == len(_cd_list):
+                            for _old, cd in zip(_existing, _cd_list):
+                                cd["id"] = _old["id"]
+                                cd["bound_to_branch"] = _branch_id
+                                self.chart_registry.update_chart_data(_old["id"], cd)
+                                _charts.append(cd)
+                                yield {"type": "chart_rebuild", "chart_id": _old["id"], "chart": cd}
+                        else:
+                            for cd in _cd_list:
+                                cid = self.chart_registry.record_chart(
+                                    chart_type=cd.get("type", "chart"),
+                                    title=cd.get("title", ""),
+                                    series_names=[ds.get("name", "") for ds in cd.get("datasets", [])],
+                                    bound_to_branch=_branch_id,
+                                    chart_data=cd,
+                                )
+                                cd["id"] = cid
+                                cd["bound_to_branch"] = _branch_id
+                                _charts.append(cd)
+                                yield {"type": "chart_data", "chart": cd}
+                    if "grid_command" in tool_output:
+                        _grid_commands.append(tool_output["grid_command"])
+                    if "grid_commands" in tool_output and isinstance(tool_output["grid_commands"], list):
+                        _grid_commands.extend(tool_output["grid_commands"])
+                    if "chart_config" in tool_output:
+                        cc = tool_output["chart_config"]
+                        cid = self.chart_registry.record_chart(
+                            chart_type=cc.get("type", "chart"),
+                            title=cc.get("title", ""),
+                            bound_to_branch=cc.get("branch_id"),
+                            chart_data=cc,
+                        )
+                        cc["id"] = cid
+                        _charts.append(cc)
+                        yield {"type": "chart_data", "chart": cc}
+                    if "suggestion" in tool_output:
+                        _suggestions.append(tool_output["suggestion"])
+                    if "todo" in tool_output:
+                        _todo_items.append(tool_output["todo"])
+                    if t_name in _fpa_write_tools:
+                        _pnl_refresh = True
 
             messages.append({"role": "user", "content": tool_result_blocks})
 
@@ -5053,31 +5100,59 @@ class UnifiedMCPOrchestrator:
                 for tc in tool_calls_made
             ]
 
-        # ── Safety net: if tools ran but model produced no text, force a synthesis ──
-        if not all_text_parts and tool_calls_made:
-            logger.warning("[CONV_LOOP] Tools ran but no text produced — forcing synthesis")
-            try:
-                tool_summary = json.dumps([
-                    {"tool": tc["tool"], "output": tc.get("output_preview", "")[:1000]}
-                    for tc in tool_calls_made
-                ], default=str)
-                synth_result = await self.model_router.get_completion(
-                    prompt=(
-                        f"User asked: {prompt}\n\nTool results:\n{tool_summary}\n\n"
-                        "Summarize the findings. Lead with the key numbers. Be direct, 2-5 sentences."
-                    ),
-                    system_prompt="You are a CFO agent. Summarize tool results concisely. No preamble.",
-                    capability=ModelCapability.FAST,
-                    max_tokens=500,
-                    temperature=0.3,
-                    caller_context="conv_loop_empty_synth",
-                )
-                synth_text = synth_result.get("response", "") if isinstance(synth_result, dict) else str(synth_result)
-                if synth_text:
-                    all_text_parts.append(synth_text)
-                    yield {"type": "token", "content": synth_text}
-            except Exception as e:
-                logger.error(f"[CONV_LOOP] Forced synthesis failed: {e}")
+        # ── Safety net: NEVER return an empty response ──
+        if not all_text_parts:
+            if tool_calls_made:
+                logger.warning("[CONV_LOOP] Tools ran but no text produced — forcing synthesis")
+                try:
+                    tool_summary = json.dumps([
+                        {"tool": tc["tool"], "output": tc.get("output_preview", "")[:1000]}
+                        for tc in tool_calls_made
+                    ], default=str)
+                    synth_result = await self.model_router.get_completion(
+                        prompt=(
+                            f"User asked: {prompt}\n\nTool results:\n{tool_summary}\n\n"
+                            "Summarize the findings. Lead with the key numbers. Be direct, 2-5 sentences."
+                        ),
+                        system_prompt="You are a CFO agent. Summarize tool results concisely. No preamble.",
+                        capability=ModelCapability.FAST,
+                        max_tokens=500,
+                        temperature=0.3,
+                        caller_context="conv_loop_empty_synth",
+                    )
+                    synth_text = synth_result.get("response", "") if isinstance(synth_result, dict) else str(synth_result)
+                    if synth_text:
+                        all_text_parts.append(synth_text)
+                        yield {"type": "token", "content": synth_text}
+                except Exception as e:
+                    logger.error(f"[CONV_LOOP] Forced synthesis failed: {e}")
+            else:
+                logger.warning("[CONV_LOOP] No text AND no tools — empty LLM response, retrying once")
+                try:
+                    retry_result = await self.model_router.get_completion(
+                        prompt=prompt,
+                        system_prompt=(
+                            "You are a CFO agent. The user is asking a question. "
+                            "Respond directly and helpfully. 2-5 sentences."
+                        ),
+                        capability=ModelCapability.FAST,
+                        max_tokens=500,
+                        temperature=0.5,
+                        caller_context="conv_loop_empty_retry",
+                    )
+                    retry_text = retry_result.get("response", "") if isinstance(retry_result, dict) else str(retry_result)
+                    if retry_text:
+                        all_text_parts.append(retry_text)
+                        yield {"type": "token", "content": retry_text}
+                except Exception as e:
+                    logger.error(f"[CONV_LOOP] Empty-response retry failed: {e}")
+
+            # Absolute last resort: if still empty after all retries, yield a fallback
+            if not all_text_parts:
+                fallback = "I wasn't able to generate a response. Could you try rephrasing your question?"
+                all_text_parts.append(fallback)
+                yield {"type": "token", "content": fallback}
+                logger.error("[CONV_LOOP] All recovery attempts failed — returned hardcoded fallback")
 
         self._turn_result = {
             "full_text": "\n".join(all_text_parts),
@@ -5147,7 +5222,7 @@ class UnifiedMCPOrchestrator:
         if plan_steps:
             yield {
                 "type": "progress",
-                "stage": "plan_ready",
+                "stage": "planning",
                 "plan_steps": plan_steps,
             }
 
@@ -5318,7 +5393,7 @@ class UnifiedMCPOrchestrator:
             if plan_steps:
                 yield {
                     "type": "progress",
-                    "stage": "plan_ready",
+                    "stage": "planning",
                     "plan_steps": plan_steps,
                 }
 
@@ -16432,7 +16507,7 @@ JSON — pick one:
             parallel_label = " + ".join(tc["tool"] for tc in tool_calls)
             yield {
                 "type": "progress",
-                "stage": "agent_step",
+                "stage": "executing",
                 "message": f"{parallel_label}: {reasoning}" if len(tool_calls) > 1 else reasoning,
                 "plan_steps": plan_steps,
             }
@@ -16577,7 +16652,7 @@ JSON — pick one:
 
             yield {
                 "type": "progress",
-                "stage": "agent_step",
+                "stage": "executing",
                 "message": f"{parallel_label} complete" if len(tool_calls) > 1 else f"{last_tool_name} complete",
                 "plan_steps": plan_steps,
             }
@@ -16854,7 +16929,7 @@ ABSOLUTE RULES:
                 memo_svc = LightweightMemoService(model_router=self.model_router, shared_data=self.shared_data)
                 yield {
                     "type": "progress",
-                    "stage": "memo_generation",
+                    "stage": "generating memo",
                     "message": "Generating investment memo narratives...",
                 }
                 memo_result = await asyncio.wait_for(
@@ -17108,7 +17183,12 @@ ABSOLUTE RULES:
                 "memo_artifacts", "fund_context", "fund_metrics",
                 "session_corrections", "agent_context", "grid_mode",
                 "system_prompt_override", "classification",
-                "_conversation_history",
+                "_conversation_history", "company_fpa_context",
+                "fpa_pnl_result", "fpa_balance_sheet_result",
+                "fpa_variance_result", "fpa_forecast_result",
+                "fpa_cash_flow_result", "fpa_scenario_tree",
+                "fpa_scenario_compare", "fpa_regression_result",
+                "fpa_seasonal_forecast",
             }
             _stale = [k for k in list(self.shared_data.keys()) if k not in _persist_keys]
             for k in _stale:
@@ -17140,6 +17220,10 @@ ABSOLUTE RULES:
                     if agent_ctx:
                         self.shared_data['agent_context'] = agent_ctx
                         logger.info(f"[AGENT_CONTEXT] Stored agent context: {list(agent_ctx.keys())}")
+                    # Company FPA context for CFO/PNL mode fingerprint
+                    company_fpa = context.get('company_fpa_context') or context.get('companyContext')
+                    if company_fpa and isinstance(company_fpa, dict):
+                        self.shared_data['company_fpa_context'] = company_fpa
                     # Memo artifacts from frontend toggle — user chose to include them as context
                     memo_arts_from_frontend = context.get('memo_artifacts')
                     if memo_arts_from_frontend and isinstance(memo_arts_from_frontend, list):

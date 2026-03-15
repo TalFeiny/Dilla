@@ -6,7 +6,7 @@ Handles multiple LLM providers with automatic failover
 import os
 import asyncio
 import logging
-from typing import Dict, Any, Optional, List, Tuple
+from typing import AsyncGenerator, Dict, Any, Optional, List, Tuple
 from enum import Enum
 import time
 import random
@@ -2118,6 +2118,228 @@ class ModelRouter:
                 self._release_slot(model_name)
 
         raise Exception(f"All tool-use models failed{context_info}") from last_error
+
+    async def stream_completion_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        system_prompt: str,
+        tools: List[Dict[str, Any]],
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+        caller_context: Optional[str] = None,
+        preferred_models: Optional[List[str]] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Streaming variant of get_completion_with_tools.
+
+        Yields events as they arrive from the model:
+        - {"type": "text_delta", "text": "..."}        — individual text tokens
+        - {"type": "tool_use_start", "id": ..., "name": ...} — tool call begins
+        - {"type": "tool_use_delta", "id": ..., "json": ...}  — tool input JSON fragment
+        - {"type": "done", "text_parts": [...], "tool_calls": [...], "stop_reason": ..., "usage": ..., "model": ..., "cost": ...}
+
+        Falls back to non-streaming for non-Anthropic providers.
+        """
+        if self._active_budget and self._active_budget.exhausted:
+            raise Exception(
+                f"Request budget exhausted (${self._active_budget.total_cost:.2f} / "
+                f"${self._active_budget.max_cost:.2f})."
+            )
+
+        await self._init_clients_if_needed()
+
+        if not preferred_models and caller_context:
+            preferred_models = self.preferred_models_for_task(caller_context)
+        if not preferred_models:
+            preferred_models = ["claude-sonnet-4-6", "claude-haiku-4-5"]
+
+        models = self._get_model_order(ModelCapability.ANALYSIS, preferred_models)
+        context_info = f" (called by: {caller_context})" if caller_context else ""
+        logger.info(f"[MODEL_ROUTER] stream_completion_with_tools{context_info} tools={len(tools)}")
+
+        last_error = None
+        for idx, model_name in enumerate(models):
+            model_config = self.model_configs.get(model_name)
+            if not model_config:
+                continue
+            provider = model_config["provider"]
+            if not self._is_model_ready(model_name):
+                continue
+            is_last = idx == len(models) - 1
+            if self._is_circuit_broken(model_name) and not is_last:
+                continue
+            elif self._is_circuit_broken(model_name) and is_last:
+                self.reset_circuit_breakers(model_name)
+
+            await self._wait_for_slot(model_name)
+            try:
+                start_time = time.time()
+                await self._apply_rate_limit(model_name)
+
+                if provider == ModelProvider.ANTHROPIC and self.anthropic_client:
+                    # True streaming path for Anthropic
+                    async for event in self._stream_anthropic_with_tools(
+                        model=model_config["model"],
+                        messages=messages,
+                        system_prompt=system_prompt,
+                        tools=tools,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    ):
+                        if event["type"] == "done":
+                            # Enrich final event with cost/latency
+                            latency = time.time() - start_time
+                            input_tokens = event["usage"].get("input_tokens", 0)
+                            output_tokens = event["usage"].get("output_tokens", 0)
+                            cost = self._calculate_cost(model_config, input_tokens, output_tokens)
+                            self.error_counts[model_name] = 0
+                            if self._active_budget:
+                                self._active_budget.record(input_tokens, output_tokens, cost, model_name)
+                            event["model"] = model_name
+                            event["cost"] = cost
+                            event["latency"] = latency
+                            event["provider"] = provider.value
+                            logger.info(
+                                f"[MODEL_ROUTER] stream SUCCESS {model_name} "
+                                f"latency={latency:.2f}s cost=${cost:.4f} "
+                                f"in={input_tokens} out={output_tokens} "
+                                f"stop={event['stop_reason']}"
+                            )
+                        yield event
+                    return  # Success — don't try next model
+
+                else:
+                    # Non-streaming fallback for other providers
+                    caller_fn = {
+                        ModelProvider.OPENAI: self._call_openai_with_tools,
+                        ModelProvider.GOOGLE: self._call_google_with_tools,
+                        ModelProvider.GROQ: self._call_openai_compatible_with_tools,
+                        ModelProvider.TOGETHER: self._call_openai_compatible_with_tools,
+                    }.get(provider)
+                    if not caller_fn:
+                        continue
+                    result = await asyncio.wait_for(
+                        caller_fn(
+                            model=model_config["model"],
+                            messages=messages,
+                            system_prompt=system_prompt,
+                            tools=tools,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                        ),
+                        timeout=120,
+                    )
+                    latency = time.time() - start_time
+                    input_tokens = result["usage"].get("input_tokens", 0)
+                    output_tokens = result["usage"].get("output_tokens", 0)
+                    cost = self._calculate_cost(model_config, input_tokens, output_tokens)
+                    self.error_counts[model_name] = 0
+                    if self._active_budget:
+                        self._active_budget.record(input_tokens, output_tokens, cost, model_name)
+                    # Emit text as a single chunk then done
+                    for text in result.get("text_parts", []):
+                        yield {"type": "text_delta", "text": text}
+                    yield {
+                        "type": "done",
+                        "text_parts": result.get("text_parts", []),
+                        "tool_calls": result.get("tool_calls", []),
+                        "stop_reason": result.get("stop_reason", "end_turn"),
+                        "usage": result.get("usage", {}),
+                        "model": model_name,
+                        "cost": cost,
+                        "latency": latency,
+                        "provider": provider.value,
+                    }
+                    return
+
+            except asyncio.TimeoutError:
+                logger.warning(f"[MODEL_ROUTER] {model_name} stream timed out")
+                last_error = TimeoutError(f"{model_name} timed out")
+            except Exception as e:
+                logger.error(f"[MODEL_ROUTER] {model_name} stream error: {e}")
+                last_error = e
+                self._increment_error_count(model_name)
+            finally:
+                self._release_slot(model_name)
+
+        raise Exception(f"All streaming models failed{context_info}") from last_error
+
+    async def _stream_anthropic_with_tools(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        system_prompt: str,
+        tools: List[Dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream from Anthropic Messages API. Yields text deltas and tool calls."""
+        if not self.anthropic_client:
+            raise ValueError("Anthropic client not initialized")
+
+        cacheable_system = [
+            {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+        ]
+
+        async with self.anthropic_client.messages.stream(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=cacheable_system,
+            messages=messages,
+            tools=ToolAdapter.to_anthropic(tools),
+        ) as stream:
+            # Track tool_use blocks being built
+            current_tool_id = None
+            current_tool_name = None
+            current_tool_json = ""
+
+            async for event in stream:
+                event_type = getattr(event, "type", None)
+
+                if event_type == "content_block_start":
+                    block = getattr(event, "content_block", None)
+                    if block and getattr(block, "type", None) == "tool_use":
+                        current_tool_id = getattr(block, "id", None)
+                        current_tool_name = getattr(block, "name", None)
+                        current_tool_json = ""
+                        yield {
+                            "type": "tool_use_start",
+                            "id": current_tool_id,
+                            "name": current_tool_name,
+                        }
+
+                elif event_type == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    if delta:
+                        delta_type = getattr(delta, "type", None)
+                        if delta_type == "text_delta":
+                            text = getattr(delta, "text", "")
+                            if text:
+                                yield {"type": "text_delta", "text": text}
+                        elif delta_type == "input_json_delta":
+                            json_frag = getattr(delta, "partial_json", "")
+                            if json_frag:
+                                current_tool_json += json_frag
+
+                elif event_type == "content_block_stop":
+                    # If we were building a tool_use block, it's done
+                    if current_tool_id:
+                        current_tool_id = None
+                        current_tool_name = None
+                        current_tool_json = ""
+
+            # Get final message with full parsed content
+            final_message = await stream.get_final_message()
+
+        # Parse final message for canonical output
+        result = ToolAdapter.parse_anthropic_response(final_message)
+        yield {
+            "type": "done",
+            "text_parts": result["text_parts"],
+            "tool_calls": result["tool_calls"],
+            "stop_reason": result["stop_reason"],
+            "usage": result["usage"],
+        }
 
     # ── Per-provider tool-use callers ─────────────────────────────────
     # Each returns canonical format:

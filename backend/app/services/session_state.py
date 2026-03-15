@@ -246,45 +246,264 @@ class SessionState:
         return self._cached_fingerprint
 
     def _build_fingerprint(self) -> str:
-        """Build a dense state summary by reading whatever columns the grid has.
+        """Build a dense mode-aware state summary for LLM context.
 
-        Grid-agnostic: discovers columns dynamically. Shows + for present data,
-        - for missing. ~300-500 tokens — enough for the agent to see its own progress.
+        Dispatches to mode-specific fingerprints so the LLM gets relevant
+        situational awareness regardless of which mode the user is in.
         """
+        grid_mode = self._data.get("grid_mode", "portfolio")
+
+        if grid_mode == "pnl":
+            return self._fingerprint_pnl()
+        elif grid_mode == "legal":
+            return self._fingerprint_legal()
+        else:
+            return self._fingerprint_portfolio()
+
+    # ── PNL / CFO fingerprint ─────────────────────────────────────────
+
+    def _fingerprint_pnl(self) -> str:
+        """Actual P&L grid state for CFO agent situational awareness."""
         lines: list[str] = []
 
-        # ── Merge all row knowledge: grid + enriched ────────────────────
-        row_map: dict[str, dict] = {}  # name → merged data
+        # ── Read grid data (primary: grid_rows, fallback: fpa_pnl_result) ──
+        pnl_result = self._data.get("fpa_pnl_result")
+        pnl_periods: list = []
+        forecast_start_idx: int = 0
+        if pnl_result and isinstance(pnl_result, dict) and not pnl_result.get("error"):
+            pnl_periods = pnl_result.get("periods", [])
+            forecast_start_idx = pnl_result.get("forecastStartIndex", len(pnl_periods))
 
-        # 1. Grid rows (matrix context)
+        items: list[tuple[str, dict[str, float], bool]] = []
         for row in self.grid_rows:
-            name = (
-                row.get("companyName") or row.get("company_name")
-                or row.get("rowName") or row.get("name") or ""
-            )
+            name = row.get("rowName") or row.get("companyName") or row.get("name") or ""
             if not name:
                 continue
             cells = row.get("cells") or row.get("cellValues") or {}
-            merged = row_map.setdefault(name, {"_source": "grid"})
-            for k, v in cells.items():
-                val = v.get("value", v) if isinstance(v, dict) else v
-                if _is_real_value(val):
-                    merged[k.lower()] = val
+            computed = bool(row.get("isComputed") or row.get("computed"))
+            vals: dict[str, float] = {}
+            for k, cell in cells.items():
+                v = cell.get("value", cell) if isinstance(cell, dict) else cell
+                if v is not None:
+                    try:
+                        vals[k] = float(v)
+                    except (TypeError, ValueError):
+                        pass
+            if vals or computed:
+                items.append((name, vals, computed))
 
-        # 2. Enriched data from shared_data["companies"]
-        for c in self.companies:
-            name = c.get("company") or c.get("name") or ""
-            if not name:
-                continue
-            merged = row_map.setdefault(name, {"_source": "enriched"})
-            merged["_source"] = "enriched"
-            for k, v in c.items():
-                if k.startswith("_"):
+        # Fallback to pnl_result rows
+        if not items and pnl_result and isinstance(pnl_result, dict):
+            for row in pnl_result.get("rows", []):
+                name = row.get("id") or row.get("category") or row.get("label") or ""
+                if not name:
                     continue
-                if _is_real_value(v):
-                    merged[k] = v
+                computed = bool(row.get("isComputed") or row.get("computed"))
+                raw = row.get("values") or row.get("data") or {}
+                vals = {}
+                if isinstance(raw, dict):
+                    for k, v in raw.items():
+                        if v is not None:
+                            try:
+                                vals[k] = float(v)
+                            except (TypeError, ValueError):
+                                pass
+                elif isinstance(raw, list) and pnl_periods:
+                    for i, v in enumerate(raw):
+                        if i < len(pnl_periods) and v is not None:
+                            try:
+                                vals[pnl_periods[i]] = float(v)
+                            except (TypeError, ValueError):
+                                pass
+                if vals or computed:
+                    items.append((name, vals, computed))
 
+        if not items:
+            lines.append("P&L GRID: empty — no line items loaded")
+            lines.append("CHARTS: use generate_chart (line, bar, waterfall, sankey, probability_cloud, heatmap, bubble)")
+            return "\n".join(lines)
+
+        # ── Ordered periods + actuals/forecast split ─────────────────
+        all_p: set[str] = set()
+        for _, v, _ in items:
+            all_p.update(v.keys())
+        ordered = [p for p in pnl_periods if p in all_p] if pnl_periods else []
+        ordered += sorted(all_p - set(ordered))
+
+        actual_set = set(pnl_periods[:forecast_start_idx]) if pnl_periods and forecast_start_idx > 0 else set(ordered)
+        forecast_set = set(pnl_periods[forecast_start_idx:]) if pnl_periods and forecast_start_idx > 0 else set()
+
+        _MONTHS = {"01": "Jan", "02": "Feb", "03": "Mar", "04": "Apr", "05": "May", "06": "Jun",
+                    "07": "Jul", "08": "Aug", "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dec"}
+
+        def _pl(p: str) -> str:
+            s = p.split("-")
+            return f"{_MONTHS[s[1]]}'{s[0][2:]}" if len(s) >= 2 and s[1] in _MONTHS else p[:7]
+
+        # ── Grid: line items × months ────────────────────────────────
+        filled = sum(len(v) for _, v, _ in items)
+        lines.append(f"P&L GRID ({len(items)} items × {len(ordered)} months, {filled}/{len(items) * len(ordered)} cells)")
+        for name, vals, computed in items:
+            parts = [f"{_pl(p)} {_fmt_money(vals[p])}" if p in vals else f"{_pl(p)} -" for p in ordered]
+            if len(parts) > 8:
+                parts = parts[:6] + ["..."] + parts[-2:]
+            lines.append(f"  {name}: {' | '.join(parts)}{' (computed)' if computed else ''}")
+
+        # ── Boundary ─────────────────────────────────────────────────
+        a, f = sorted(actual_set), sorted(forecast_set)
+        b = []
+        if a:
+            b.append(f"ACTUALS: {_pl(a[0])}-{_pl(a[-1])}")
+        b.append(f"FORECAST: {_pl(f[0])}-{_pl(f[-1])}" if f else "FORECAST: empty")
+        lines.append(" | ".join(b))
+
+        # ── Forecast methodology (how & why) ─────────────────────────
+        fc = self._data.get("fpa_forecast_result")
+        if fc and isinstance(fc, dict) and not fc.get("error"):
+            method = fc.get("method", "?")
+            reasoning = fc.get("method_reasoning", "")
+            explanation = fc.get("explanation", "")
+            seeds = fc.get("seeded_from", {})
+
+            method_line = f"FORECAST METHOD: {method}"
+            if reasoning:
+                method_line += f" — {reasoning}"
+            lines.append(method_line)
+
+            seed_parts = []
+            for k in ("revenue", "growth_rate", "burn_rate", "cash_balance"):
+                sv = seeds.get(k)
+                if sv is not None:
+                    if k == "growth_rate":
+                        try:
+                            seed_parts.append(f"{k}={float(sv):.0%}")
+                        except (TypeError, ValueError):
+                            pass
+                    else:
+                        seed_parts.append(f"{k}={_fmt_money(sv)}")
+            if seed_parts:
+                lines.append(f"  Seeds: {', '.join(seed_parts)}")
+            if explanation:
+                lines.append(f"  Why: {explanation[:200]}")
+
+            drivers = fc.get("driver_impacts")
+            if drivers and isinstance(drivers, list):
+                lines.append(f"  Drivers: {' | '.join(f'{d.get('driver','?')}: {d.get('impact','?')}' for d in drivers[:3])}")
+
+        # ── Charts ───────────────────────────────────────────────────
+        lines.append("CHARTS: use generate_chart (line, bar, waterfall, sankey, probability_cloud, heatmap, bubble)")
+
+        return "\n".join(lines)
+
+    # ── Legal fingerprint ─────────────────────────────────────────────
+
+    def _fingerprint_legal(self) -> str:
+        """Contract register + extracted clauses/obligations for legal reasoning."""
+        lines: list[str] = []
+
+        # ── Legal column mapping (normalized key → display key) ──────
+        _COL_MAP = {
+            "documentname": "name", "contracttype": "type",
+            "party": "party", "counterparty": "counterparty",
+            "status": "status", "effectivedate": "effective",
+            "expirydate": "expiry", "totalvalue": "totalValue",
+            "annualvalue": "annualValue", "keyterms": "keyTerms",
+            "flags": "flags", "obligations": "obligations",
+            "nextdeadline": "nextDeadline", "reasoning": "reasoning",
+        }
+
+        # ── Extract contracts from grid rows ─────────────────────────
+        contracts: list[dict[str, str]] = []
+        for row in self.grid_rows:
+            row_name = row.get("rowName") or row.get("companyName") or row.get("name") or ""
+            cells = row.get("cells") or row.get("cellValues") or {}
+            c: dict[str, str] = {"_row_name": row_name}
+            for cell_key, cell_val in cells.items():
+                val = cell_val.get("value", cell_val) if isinstance(cell_val, dict) else cell_val
+                norm = cell_key.lower().replace(" ", "").replace("_", "")
+                if norm in _COL_MAP and _is_real_value(val):
+                    c[_COL_MAP[norm]] = str(val)
+            contracts.append(c)
+
+        # Fallback: row_map
+        if not contracts or all(len(c) <= 1 for c in contracts):
+            for name, data in self._build_row_map().items():
+                c = {"_row_name": name}
+                for raw, mapped in _COL_MAP.items():
+                    val = data.get(raw) or data.get(mapped)
+                    if _is_real_value(val):
+                        c[mapped] = str(val)
+                contracts.append(c)
+
+        if not contracts or all(len(c) <= 1 for c in contracts):
+            lines.append("CONTRACTS: none loaded")
+            lines.append("CHARTS: use generate_chart (bar, sankey, heatmap, waterfall)")
+            return "\n".join(lines)
+
+        # ── Contract register ────────────────────────────────────────
+        total = len(contracts)
+        filled = sum(len(c) - 1 for c in contracts)
+        lines.append(f"CONTRACTS ({total}, {filled}/{total * len(_COL_MAP)} fields)")
+
+        deadlines: list[str] = []
+        total_annual: float = 0.0
+
+        for c in contracts:
+            doc = c.get("name") or c.get("_row_name") or "Unknown"
+            ctype = c.get("type", "")
+            if ctype:
+                doc = f"{doc} ({ctype})"
+
+            parts: list[str] = []
+            cp = c.get("counterparty") or c.get("party")
+            if cp:
+                parts.append(f"{'Counterparty' if c.get('counterparty') else 'Party'}: {cp}")
+            if c.get("status"):
+                parts.append(c["status"])
+            if c.get("expiry"):
+                parts.append(f"Expires: {c['expiry']}")
+            if c.get("annualValue"):
+                parts.append(f"{_fmt_money(c['annualValue'])}/yr")
+                try:
+                    total_annual += float(str(c["annualValue"]).replace("$", "").replace(",", ""))
+                except (TypeError, ValueError):
+                    pass
+            elif c.get("totalValue"):
+                parts.append(f"Total: {_fmt_money(c['totalValue'])}")
+            if c.get("keyTerms"):
+                parts.append(f"TERMS: {c['keyTerms'][:120]}")
+            if c.get("flags"):
+                parts.append(f"FLAGS: {c['flags']}")
+            if c.get("obligations"):
+                parts.append(f"OBLIGATIONS: {c['obligations'][:120]}")
+
+            lines.append(f"  {doc} — {' | '.join(parts)}" if parts else f"  {doc}")
+
+            if c.get("nextDeadline"):
+                deadlines.append(f"{doc}: {c['nextDeadline']}")
+            elif c.get("expiry"):
+                deadlines.append(f"{doc}: expires {c['expiry']}")
+
+        # ── Deadlines + exposure ─────────────────────────────────────
+        if deadlines:
+            lines.append(f"DEADLINES: {' | '.join(deadlines[:5])}")
+        if total_annual > 0:
+            lines.append(f"EXPOSURE: {_fmt_money(total_annual)}/yr total")
+
+        # ── Charts ───────────────────────────────────────────────────
+        lines.append("CHARTS: use generate_chart (bar, sankey, heatmap, waterfall)")
+
+        return "\n".join(lines)
+
+    # ── Portfolio fingerprint (original logic) ────────────────────────
+
+    def _fingerprint_portfolio(self) -> str:
+        """State summary for portfolio mode — grid rows, field checklist, fund metrics."""
+        lines: list[str] = []
+
+        row_map = self._build_row_map()
         total = len(row_map)
+
         if not total:
             lines.append("STATE: empty — no rows in grid or shared_data")
             return "\n".join(lines)
@@ -296,31 +515,25 @@ class SessionState:
                 if not k.startswith("_"):
                     all_columns.add(k)
 
-        # Remove noise columns
         skip_cols = {"company", "name", "company_name", "row_name"}
         display_cols = sorted(all_columns - skip_cols)
 
         # ── Per-row field status ───────────────────────────────────────
         lines.append(f"ROWS ({total}) — Legend: +=has data, -=missing")
 
-        # Column header (truncated to fit)
         col_labels = [c[:8] for c in display_cols[:20]]
         header = f"  {'name':<20} " + " ".join(f"{l:<8}" for l in col_labels)
         lines.append(header)
 
-        # Aggregation accumulators
         jurisdiction_counts: dict[str, list[str]] = {}
         currencies_seen: dict[str, int] = {}
         missing_per_col: dict[str, int] = {c: 0 for c in display_cols[:20]}
-        numeric_totals: dict[str, float] = {}
 
         for name, data in row_map.items():
-            # Field status markers for each column
             markers: list[str] = []
             for col in display_cols[:20]:
                 val = data.get(col)
                 if val is not None and _is_real_value(val):
-                    # Check if inferred
                     inferred_val = data.get(f"inferred_{col}")
                     if inferred_val and val == inferred_val:
                         markers.append("~")
@@ -332,16 +545,6 @@ class SessionState:
                     markers.append("-")
                     missing_per_col[col] = missing_per_col.get(col, 0) + 1
 
-            # Track numeric totals for monetary-looking columns
-            for col in display_cols[:20]:
-                val = data.get(col)
-                if val is not None:
-                    try:
-                        numeric_totals[col] = numeric_totals.get(col, 0) + float(val)
-                    except (TypeError, ValueError):
-                        pass
-
-            # Jurisdiction
             jur = _infer_jurisdiction(data)
             ccy = (data.get("currency") or data.get("reporting_currency") or "").upper()
             if not ccy and jur:
@@ -351,7 +554,6 @@ class SessionState:
             if ccy:
                 currencies_seen[ccy] = currencies_seen.get(ccy, 0) + 1
 
-            # Build the row line
             marker_str = " ".join(f"{m:<8}" for m in markers)
             lines.append(f"  {name:<20} {marker_str}")
 
@@ -406,6 +608,40 @@ class SessionState:
                 lines.append(f"FUND: {', '.join(fm_parts)}")
 
         return "\n".join(lines)
+
+    # ── Shared: build row map from grid + enriched ────────────────────
+
+    def _build_row_map(self) -> dict[str, dict]:
+        """Merge grid rows + shared_data companies into a unified row map."""
+        row_map: dict[str, dict] = {}
+
+        for row in self.grid_rows:
+            name = (
+                row.get("companyName") or row.get("company_name")
+                or row.get("rowName") or row.get("name") or ""
+            )
+            if not name:
+                continue
+            cells = row.get("cells") or row.get("cellValues") or {}
+            merged = row_map.setdefault(name, {"_source": "grid"})
+            for k, v in cells.items():
+                val = v.get("value", v) if isinstance(v, dict) else v
+                if _is_real_value(val):
+                    merged[k.lower()] = val
+
+        for c in self.companies:
+            name = c.get("company") or c.get("name") or ""
+            if not name:
+                continue
+            merged = row_map.setdefault(name, {"_source": "enriched"})
+            merged["_source"] = "enriched"
+            for k, v in c.items():
+                if k.startswith("_"):
+                    continue
+                if _is_real_value(v):
+                    merged[k] = v
+
+        return row_map
 
     # -- Intelligence gates ------------------------------------------------
 

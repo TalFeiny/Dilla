@@ -354,7 +354,64 @@ def ingest_time_series(
         on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
     ).execute()
 
-    return len(rows)
+    # ── Compute derived parent categories per period ──
+    # Group all upserted rows by period to compute gross_profit, opex_total, ebitda, net_income
+    period_buckets: Dict[str, Dict[str, float]] = {}  # period → {category: amount}
+    for row in rows:
+        if row["subcategory"]:
+            continue  # only use parent-level rows
+        pb = period_buckets.setdefault(row["period"], {})
+        # Sum if multiple sources wrote the same category in the same period
+        pb[row["category"]] = pb.get(row["category"], 0) + row["amount"]
+
+    derived_rows = []
+    for period_str, cats in period_buckets.items():
+        revenue = cats.get("revenue", 0)
+        cogs = cats.get("cogs", 0)
+
+        # opex_total = sum of opex sub-categories
+        opex_total = sum(v for k, v in cats.items() if k.startswith("opex_"))
+        if not opex_total:
+            opex_total = cats.get("opex_total", 0)
+
+        gross_profit = revenue - cogs
+        ebitda = gross_profit - opex_total
+
+        # Below-the-line items (D&A, interest, tax) if available
+        below_line = cats.get("below_line", 0)
+        net_income = ebitda - below_line
+
+        for cat, val in [
+            ("gross_profit", gross_profit),
+            ("opex_total", opex_total),
+            ("ebitda", ebitda),
+            ("net_income", net_income),
+        ]:
+            if val == 0 and cat not in ("opex_total",):
+                # Skip zero derived values unless we have at least one input
+                if not revenue and not cogs and not opex_total:
+                    continue
+            derived_rows.append({
+                "company_id": company_id,
+                "fund_id": fund_id,
+                "document_id": document_id,
+                "period": period_str,
+                "category": cat,
+                "subcategory": "",
+                "hierarchy_path": cat,
+                "amount": val,
+                "source": source,
+            })
+
+    if derived_rows:
+        sb.table("fpa_actuals").upsert(
+            derived_rows,
+            on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+        ).execute()
+        logger.info(f"[ACTUALS] Computed {len(derived_rows)} derived categories "
+                    f"(gross_profit, opex_total, ebitda, net_income) for {len(period_buckets)} periods")
+
+    return len(rows) + len(derived_rows)
 
 
 def get_actuals_for_forecast(
