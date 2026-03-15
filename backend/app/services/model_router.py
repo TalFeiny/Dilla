@@ -1602,7 +1602,8 @@ class ModelRouter:
     async def _ensure_session(self):
         """Ensure aiohttp session is initialized"""
         if not self.session:
-            self.session = aiohttp.ClientSession()
+            timeout = aiohttp.ClientTimeout(total=60, connect=10)
+            self.session = aiohttp.ClientSession(timeout=timeout)
     
     async def _call_together(self, model: str, prompt: str, system: Optional[str], max_tokens: int, temp: float) -> str:
         """Call Together AI API"""
@@ -1735,7 +1736,7 @@ class ModelRouter:
         # If no preference specified, rotate default order by user affinity
         # so concurrent users hit different providers first.
         if not preferred:
-            default_order = ["kimi-k2.5", "qwen3.5-plus", "qwen3.5-flash", "deepseek-r1", "deepseek-v3.2", "claude-sonnet-4-6", "gpt-5.2", "gpt-5-mini", "claude-haiku-4-5", "gemini-2.5-flash"]
+            default_order = ["claude-sonnet-4-6", "claude-haiku-4-5", "gpt-5-mini", "gpt-5.2", "gemini-2.5-flash", "gemini-2.5-pro", "deepseek-v3.2", "deepseek-r1", "qwen3.5-plus", "qwen3.5-flash", "kimi-k2.5"]
             preferred_available = [m for m in default_order if m in capable_models]
             other_models = [m for m in capable_models if m not in default_order]
             base = preferred_available + other_models
@@ -2018,10 +2019,10 @@ class ModelRouter:
 
     # Preferred model fallback chains per tier
     _TIER_MODEL_CHAINS: Dict["ModelTier", List[str]] = {
-        ModelTier.TRIVIAL: ["qwen3.5-flash", "claude-haiku-4-5", "gemini-2.5-flash", "gpt-5-mini", "mixtral-8x7b"],
-        ModelTier.CHEAP:   ["qwen3.5-plus", "deepseek-v3.2", "gpt-5-mini", "claude-haiku-4-5", "gemini-2.5-flash"],
-        ModelTier.QUALITY: ["kimi-k2.5", "qwen3.5-plus", "claude-sonnet-4-6", "deepseek-r1", "gemini-2.5-pro"],
-        ModelTier.PREMIUM: ["deepseek-r1", "qwen3-max-thinking", "claude-sonnet-4-6", "gpt-5.2", "gemini-2.5-pro"],
+        ModelTier.TRIVIAL: ["claude-haiku-4-5", "gpt-5-mini", "gemini-2.5-flash", "qwen3.5-flash", "mixtral-8x7b"],
+        ModelTier.CHEAP:   ["claude-haiku-4-5", "gpt-5-mini", "gemini-2.5-flash", "qwen3.5-plus", "deepseek-v3.2"],
+        ModelTier.QUALITY: ["claude-sonnet-4-6", "gpt-5.2", "gemini-2.5-pro", "kimi-k2.5", "deepseek-r1"],
+        ModelTier.PREMIUM: ["claude-sonnet-4-6", "gpt-5.2", "gemini-2.5-pro", "deepseek-r1", "qwen3-max-thinking"],
     }
 
     def preferred_models_for_task(self, caller_context: Optional[str] = None) -> Optional[List[str]]:
