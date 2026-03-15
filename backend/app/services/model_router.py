@@ -56,6 +56,7 @@ class ModelProvider(Enum):
     TOGETHER = "together"
     PERPLEXITY = "perplexity"
     ANYSCALE = "anyscale"
+    OPENROUTER = "openrouter"
 
 
 class ModelCapability(Enum):
@@ -523,6 +524,7 @@ class ModelRouter:
         self.together_key = os.getenv("TOGETHER_API_KEY")  # Not in settings yet, keeping os.getenv
         self.perplexity_key = os.getenv("PERPLEXITY_API_KEY")  # Not in settings yet, keeping os.getenv
         self.anyscale_key = os.getenv("ANYSCALE_API_KEY")  # Not in settings yet, keeping os.getenv
+        self.openrouter_key = os.getenv("OPENROUTER_API_KEY")
         
         # VERIFY INITIALIZATION: Log which API keys are available
         logger.info(f"[MODEL_ROUTER_INIT] 🚀 Initializing ModelRouter...")
@@ -532,6 +534,7 @@ class ModelRouter:
         logger.info(f"[MODEL_ROUTER_INIT]   - Groq: {'✅ Present' if self.groq_key else '❌ Missing'}")
         logger.info(f"[MODEL_ROUTER_INIT]   - Google: {'✅ Present' if self.google_key else '❌ Missing'}")
         logger.info(f"[MODEL_ROUTER_INIT]   - Together: {'✅ Present' if self.together_key else '❌ Missing'}")
+        logger.info(f"[MODEL_ROUTER_INIT]   - OpenRouter: {'✅ Present' if self.openrouter_key else '❌ Missing'}")
         logger.info(f"[MODEL_ROUTER_INIT]   - Perplexity: {'✅ Present' if self.perplexity_key else '❌ Missing'}")
         logger.info(f"[MODEL_ROUTER_INIT]   - Anyscale: {'✅ Present' if self.anyscale_key else '❌ Missing'}")
         
@@ -556,6 +559,7 @@ class ModelRouter:
                 ("Google", self.google_key),
                 ("Groq", self.groq_key),
                 ("Together", self.together_key),
+                ("OpenRouter", self.openrouter_key),
                 ("Perplexity", self.perplexity_key),
                 ("Anyscale", self.anyscale_key)
             ] if key
@@ -683,6 +687,68 @@ class ModelRouter:
                     "cost_per_1k_output": 0.00079,   # corrected from 0.0009
                     "tier": ModelTier.CHEAP,
                     "priority": 3,
+                },
+
+                # ── OpenRouter Models (Chinese models) ────────────────
+                "qwen3-max-thinking": {
+                    "provider": ModelProvider.OPENROUTER,
+                    "model": "qwen/qwen3-max-thinking",
+                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.STRUCTURED, ModelCapability.CREATIVE],
+                    "max_tokens": 8192,
+                    "cost_per_1k_input": 0.00078,
+                    "cost_per_1k_output": 0.0039,
+                    "tier": ModelTier.PREMIUM,
+                    "priority": 2,
+                },
+                "qwen3.5-plus": {
+                    "provider": ModelProvider.OPENROUTER,
+                    "model": "qwen/qwen3.5-plus-02-15",
+                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.CODE, ModelCapability.STRUCTURED, ModelCapability.FAST, ModelCapability.CHEAP],
+                    "max_tokens": 4096,
+                    "cost_per_1k_input": 0.00026,
+                    "cost_per_1k_output": 0.00156,
+                    "tier": ModelTier.QUALITY,
+                    "priority": 2,
+                },
+                "qwen3.5-flash": {
+                    "provider": ModelProvider.OPENROUTER,
+                    "model": "qwen/qwen3.5-flash-02-23",
+                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.STRUCTURED, ModelCapability.FAST, ModelCapability.CHEAP],
+                    "max_tokens": 4096,
+                    "cost_per_1k_input": 0.0001,
+                    "cost_per_1k_output": 0.0004,
+                    "tier": ModelTier.TRIVIAL,
+                    "priority": 2,
+                },
+                "kimi-k2.5": {
+                    "provider": ModelProvider.OPENROUTER,
+                    "model": "moonshotai/kimi-k2.5",
+                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.CODE, ModelCapability.STRUCTURED, ModelCapability.CREATIVE],
+                    "max_tokens": 8192,
+                    "cost_per_1k_input": 0.00045,
+                    "cost_per_1k_output": 0.0022,
+                    "tier": ModelTier.QUALITY,
+                    "priority": 2,
+                },
+                "deepseek-v3.2": {
+                    "provider": ModelProvider.OPENROUTER,
+                    "model": "deepseek/deepseek-v3.2",
+                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.CODE, ModelCapability.STRUCTURED, ModelCapability.FAST, ModelCapability.CHEAP],
+                    "max_tokens": 8192,
+                    "cost_per_1k_input": 0.00026,
+                    "cost_per_1k_output": 0.00038,
+                    "tier": ModelTier.CHEAP,
+                    "priority": 1,
+                },
+                "deepseek-r1": {
+                    "provider": ModelProvider.OPENROUTER,
+                    "model": "deepseek/deepseek-r1",
+                    "capabilities": [ModelCapability.ANALYSIS, ModelCapability.CODE, ModelCapability.STRUCTURED, ModelCapability.CREATIVE],
+                    "max_tokens": 8192,
+                    "cost_per_1k_input": 0.0007,
+                    "cost_per_1k_output": 0.0025,
+                    "tier": ModelTier.QUALITY,
+                    "priority": 2,
                 },
 
                 # ── Ollama Local Models (free but slower) ─────────────
@@ -1106,6 +1172,8 @@ class ModelRouter:
             return await self._call_gemini(model_name, prompt, system_prompt, max_tokens, temperature)
         elif provider == ModelProvider.TOGETHER:
             return await self._call_together(model_name, prompt, system_prompt, max_tokens, temperature)
+        elif provider == ModelProvider.OPENROUTER:
+            return await self._call_openrouter(model_name, prompt, system_prompt, max_tokens, temperature, json_mode)
         elif provider == ModelProvider.OLLAMA:
             return await self._call_ollama(model_name, prompt, system_prompt, max_tokens, temperature)
         else:
@@ -1570,7 +1638,47 @@ class ModelRouter:
                 usage["input_tokens"] = result["usage"].get("prompt_tokens", 0)
                 usage["output_tokens"] = result["usage"].get("completion_tokens", 0)
             return text, usage
-    
+
+    async def _call_openrouter(self, model: str, prompt: str, system: Optional[str], max_tokens: int, temp: float, json_mode: bool = False) -> str:
+        """Call OpenRouter API (OpenAI-compatible)"""
+        await self._ensure_session()
+
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        headers = {
+            "Authorization": f"Bearer {self.openrouter_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://dilla.ai",
+            "X-Title": "Dilla AI",
+        }
+
+        data = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temp,
+        }
+        if json_mode:
+            data["response_format"] = {"type": "json_object"}
+
+        async with self.session.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=data,
+        ) as response:
+            result = await response.json()
+            if "error" in result:
+                raise Exception(f"OpenRouter API error: {result['error']}")
+            text = result["choices"][0]["message"]["content"]
+            usage = {"input_tokens": 0, "output_tokens": 0}
+            if "usage" in result:
+                usage["input_tokens"] = result["usage"].get("prompt_tokens", 0)
+                usage["output_tokens"] = result["usage"].get("completion_tokens", 0)
+            return text, usage
+
     async def _call_ollama(self, model: str, prompt: str, system: Optional[str], max_tokens: int, temp: float) -> str:
         """Call local Ollama API"""
         await self._ensure_session()
@@ -1627,7 +1735,7 @@ class ModelRouter:
         # If no preference specified, rotate default order by user affinity
         # so concurrent users hit different providers first.
         if not preferred:
-            default_order = ["claude-sonnet-4-6", "gpt-5.2", "gpt-5-mini", "claude-haiku-4-5", "gemini-2.5-flash"]
+            default_order = ["kimi-k2.5", "qwen3.5-plus", "qwen3.5-flash", "deepseek-r1", "deepseek-v3.2", "claude-sonnet-4-6", "gpt-5.2", "gpt-5-mini", "claude-haiku-4-5", "gemini-2.5-flash"]
             preferred_available = [m for m in default_order if m in capable_models]
             other_models = [m for m in capable_models if m not in default_order]
             base = preferred_available + other_models
@@ -1806,6 +1914,8 @@ class ModelRouter:
             return True
         if provider == ModelProvider.TOGETHER:
             return bool(self.together_key)
+        if provider == ModelProvider.OPENROUTER:
+            return bool(self.openrouter_key)
         if provider == ModelProvider.PERPLEXITY:
             return bool(self.perplexity_key)
         if provider == ModelProvider.ANYSCALE:
@@ -1908,10 +2018,10 @@ class ModelRouter:
 
     # Preferred model fallback chains per tier
     _TIER_MODEL_CHAINS: Dict["ModelTier", List[str]] = {
-        ModelTier.TRIVIAL: ["claude-haiku-4-5", "gemini-2.5-flash", "gpt-5-mini", "mixtral-8x7b", "claude-sonnet-4-6"],
-        ModelTier.CHEAP:   ["gpt-5-mini", "claude-haiku-4-5", "gemini-2.5-flash", "claude-sonnet-4-6"],
-        ModelTier.QUALITY: ["claude-sonnet-4-6", "gemini-2.5-pro", "gpt-5-mini", "gpt-5.2"],
-        ModelTier.PREMIUM: ["claude-sonnet-4-6", "gpt-5.2", "gemini-2.5-pro"],
+        ModelTier.TRIVIAL: ["qwen3.5-flash", "claude-haiku-4-5", "gemini-2.5-flash", "gpt-5-mini", "mixtral-8x7b"],
+        ModelTier.CHEAP:   ["qwen3.5-plus", "deepseek-v3.2", "gpt-5-mini", "claude-haiku-4-5", "gemini-2.5-flash"],
+        ModelTier.QUALITY: ["kimi-k2.5", "qwen3.5-plus", "claude-sonnet-4-6", "deepseek-r1", "gemini-2.5-pro"],
+        ModelTier.PREMIUM: ["deepseek-r1", "qwen3-max-thinking", "claude-sonnet-4-6", "gpt-5.2", "gemini-2.5-pro"],
     }
 
     def preferred_models_for_task(self, caller_context: Optional[str] = None) -> Optional[List[str]]:
@@ -2045,6 +2155,7 @@ class ModelRouter:
             ModelProvider.GOOGLE: self._call_google_with_tools,
             ModelProvider.GROQ: self._call_openai_compatible_with_tools,
             ModelProvider.TOGETHER: self._call_openai_compatible_with_tools,
+            ModelProvider.OPENROUTER: self._call_openrouter_with_tools,
         }
 
         last_error = None
@@ -2214,6 +2325,7 @@ class ModelRouter:
                         ModelProvider.GOOGLE: self._call_google_with_tools,
                         ModelProvider.GROQ: self._call_openai_compatible_with_tools,
                         ModelProvider.TOGETHER: self._call_openai_compatible_with_tools,
+                        ModelProvider.OPENROUTER: self._call_openrouter_with_tools,
                     }.get(provider)
                     if not caller_fn:
                         continue
@@ -2589,6 +2701,115 @@ class ModelRouter:
 
         return ToolAdapter.parse_openai_response(response)
 
+    async def _call_openrouter_with_tools(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        system_prompt: str,
+        tools: List[Dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+    ) -> Dict[str, Any]:
+        """Call OpenRouter API with function calling (OpenAI-compatible format)."""
+        await self._ensure_session()
+
+        oai_messages = [{"role": "system", "content": system_prompt}]
+        for msg in messages:
+            role = msg["role"]
+            content = msg.get("content")
+            if role == "user" and isinstance(content, list):
+                tool_results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+                if tool_results:
+                    for tr in tool_results:
+                        oai_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tr["tool_use_id"],
+                            "content": tr.get("content", ""),
+                        })
+                else:
+                    text = " ".join(
+                        b["text"] if isinstance(b, dict) and "text" in b else str(b)
+                        for b in content
+                    )
+                    oai_messages.append({"role": "user", "content": text})
+            elif role == "assistant" and isinstance(content, list):
+                text_parts = []
+                tool_calls = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(block["text"])
+                        elif block.get("type") == "tool_use":
+                            tool_calls.append({
+                                "id": block["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": block["name"],
+                                    "arguments": json.dumps(block["input"]),
+                                },
+                            })
+                assistant_msg: Dict[str, Any] = {"role": "assistant"}
+                assistant_msg["content"] = "\n".join(text_parts) if text_parts else None
+                if tool_calls:
+                    assistant_msg["tool_calls"] = tool_calls
+                oai_messages.append(assistant_msg)
+            else:
+                oai_messages.append({"role": role, "content": content})
+
+        headers = {
+            "Authorization": f"Bearer {self.openrouter_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://dilla.ai",
+            "X-Title": "Dilla AI",
+        }
+
+        data = {
+            "model": model,
+            "messages": oai_messages,
+            "tools": ToolAdapter.to_openai_compatible(tools),
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        async with self.session.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=data,
+        ) as response:
+            result = await response.json()
+            if "error" in result:
+                raise Exception(f"OpenRouter API error: {result['error']}")
+
+        # Parse the OpenAI-compatible response into Anthropic-style format
+        choice = result["choices"][0]
+        msg = choice["message"]
+        content_blocks = []
+
+        if msg.get("content"):
+            content_blocks.append({"type": "text", "text": msg["content"]})
+
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                content_blocks.append({
+                    "type": "tool_use",
+                    "id": tc["id"],
+                    "name": tc["function"]["name"],
+                    "input": json.loads(tc["function"]["arguments"]),
+                })
+
+        stop_reason = "end_turn"
+        if msg.get("tool_calls"):
+            stop_reason = "tool_use"
+
+        return {
+            "content": content_blocks,
+            "stop_reason": stop_reason,
+            "usage": {
+                "input_tokens": result.get("usage", {}).get("prompt_tokens", 0),
+                "output_tokens": result.get("usage", {}).get("completion_tokens", 0),
+            },
+        }
+
     # ------------------------------------------------------------------
     # Provider-level routing for concurrent multi-doc processing
     # ------------------------------------------------------------------
@@ -2604,6 +2825,7 @@ class ModelRouter:
             "google": bool(self.google_key),
             "groq": bool(self.groq_key),
             "together": bool(self.together_key),
+            "openrouter": bool(self.openrouter_key),
         }
         available: list[str] = []
         for provider, has_key in provider_key_map.items():
