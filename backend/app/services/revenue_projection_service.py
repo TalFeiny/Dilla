@@ -314,6 +314,9 @@ class RevenueProjectionService:
                     tam_decay_multiplier = 1.03
 
             # Calculate total decay multiplier from all factors
+            # Cap the compound multiplier to [0.75, 1.50] to prevent extreme stacking.
+            # Without this, best-case stacking (0.95*0.95*0.85*0.90*0.95*1.0*1.0 = 0.62)
+            # makes decay so slow that 100%+ growth barely decelerates.
             total_decay_multiplier = (
                 stage_decay_multiplier
                 * market_conditions_multiplier
@@ -323,6 +326,7 @@ class RevenueProjectionService:
                 * age_decay_multiplier
                 * tam_decay_multiplier
             )
+            total_decay_multiplier = max(0.75, min(1.50, total_decay_multiplier))
             
             # FIX: Apply multipliers to base_decay_rate first, then apply quality adjustment
             # This ensures multipliers affect the base rate before quality score adjustment
@@ -349,7 +353,9 @@ class RevenueProjectionService:
                 year_growth = previous_growth * decay_rate
             
             # Floor at 0% growth — mature companies can plateau
+            # Cap at 200% — no realistic company sustains >200% YoY beyond year 1
             year_growth = max(year_growth, 0.0)
+            year_growth = min(year_growth, 2.0)
             previous_growth = year_growth  # Store for next iteration
             
             # Revenue compounds with the decaying growth rate
@@ -547,9 +553,14 @@ class RevenueProjectionService:
             if m > 0:
                 current_revenue = current_revenue * (1 + mg)
 
-            # Margin expansion over time (same logic as annual)
+            # Margin expansion over time — diminishing returns (sigmoid-like)
+            # Expansion slows as margin approaches sector ceiling
             margin_month_factor = m / 12.0
-            gross_margin = min(0.90, base_gross_margin + 0.015 * margin_month_factor)
+            max_margin = min(0.85, base_gross_margin + 0.15)  # max 15pp above base, capped at 85%
+            margin_headroom = max_margin - base_gross_margin
+            # Diminishing expansion: most improvement in first 2 years, plateaus after
+            expansion = margin_headroom * (1 - 1 / (1 + 0.5 * margin_month_factor))
+            gross_margin = base_gross_margin + expansion
 
             projections.append({
                 "period": period_str,

@@ -480,7 +480,7 @@ def query_contract_attribution(
     if doc_ids:
         clauses_result = (
             sb.table("document_clauses")
-            .select("document_id, clause_type, extracted_value")
+            .select("document_id, clause_type, clause_text, obligation_desc, obligation_deadline, annual_value, monthly_amount, flags, metadata")
             .in_("document_id", doc_ids)
             .in_("clause_type", [
                 "auto_renewal", "termination", "minimum_commitment",
@@ -492,7 +492,14 @@ def query_contract_attribution(
         for c in (clauses_result.data or []):
             clause_meta[c["document_id"]].append({
                 "type": c["clause_type"],
-                "value": c.get("extracted_value"),
+                "value": {
+                    "text": c.get("clause_text"),
+                    "obligation": c.get("obligation_desc"),
+                    "deadline": c.get("obligation_deadline"),
+                    "annual_value": c.get("annual_value"),
+                    "monthly_amount": c.get("monthly_amount"),
+                    "flags": c.get("flags", []),
+                },
             })
 
     # 6. Build output
@@ -610,7 +617,7 @@ def query_contract_lifecycle(
     clause_meta: Dict[str, List[Dict]] = defaultdict(list)
     clause_q = (
         sb.table("document_clauses")
-        .select("document_id, clause_type, extracted_value")
+        .select("document_id, clause_type, clause_text, obligation_desc, obligation_deadline, annual_value, monthly_amount, flags, metadata")
         .in_("document_id", doc_ids)
     )
     if clause_type:
@@ -619,7 +626,14 @@ def query_contract_lifecycle(
     for c in (clauses_result.data or []):
         clause_meta[c["document_id"]].append({
             "type": c["clause_type"],
-            "value": c.get("extracted_value"),
+            "value": {
+                "text": c.get("clause_text"),
+                "obligation": c.get("obligation_desc"),
+                "deadline": c.get("obligation_deadline"),
+                "annual_value": c.get("annual_value"),
+                "monthly_amount": c.get("monthly_amount"),
+                "flags": c.get("flags", []),
+            },
         })
 
     # 4. Filter and build output

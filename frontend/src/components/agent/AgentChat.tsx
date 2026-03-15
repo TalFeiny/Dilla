@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 // import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Textarea } from '@/components/ui/textarea';
+import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/hover-card';
 import {
   ArrowUp,
   ArrowRight,
@@ -1437,8 +1438,7 @@ export default function AgentChat({
     }
   };
 
-  /** Inline suggestion card — compact by default, expands on click to show full detail */
-  const [expandedSuggestionId, setExpandedSuggestionId] = useState<string | null>(null);
+  /** Compact suggestion card — same tiny size, hover popover shows full detail */
   const renderSuggestionCard = (s: DocumentSuggestion) => {
     const row = matrixData?.rows?.find((r) => r.id === s.rowId);
     const col = matrixData?.columns?.find((c) => c.id === s.columnId);
@@ -1447,122 +1447,89 @@ export default function AgentChat({
     const currentStr = formatSuggestionValue(s.currentValue, s.columnId);
     const suggestedStr = formatSuggestionValue(s.suggestedValue, s.columnId);
     const hasReasoning = s.reasoning?.trim().length > 0;
-    const isExpanded = expandedSuggestionId === s.id;
     const isLegalClause = typeof s.suggestedValue === 'object' && s.suggestedValue !== null && !Array.isArray(s.suggestedValue);
     const clauseObj = isLegalClause ? s.suggestedValue as Record<string, unknown> : null;
     const sourceLabel = s.sourceDocumentName || (s.sourceService ? s.sourceService.replace(/[._]/g, ' ') : 'Unknown');
 
     return (
-      <div
-        key={s.id}
-        className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 min-w-0 text-xs overflow-hidden"
-        onMouseEnter={() => onHighlightCell?.(s.rowId, s.columnId)}
-        onMouseLeave={() => onHighlightCell?.('', '')}
-      >
-        {/* Compact header — always visible */}
-        <button
-          type="button"
-          className="w-full text-left px-2.5 py-2 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
-          onClick={() => setExpandedSuggestionId(isExpanded ? null : s.id)}
-        >
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-medium text-foreground truncate">{companyName}</span>
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0 shrink-0 capitalize">
-              {s.source === 'service' ? (s.sourceService?.replace(/[._]/g, ' ') ?? 'service') : 'document'}
-            </Badge>
-          </div>
-          <div className="flex items-center gap-1.5 mt-1 text-[11px]">
-            <span className="text-muted-foreground">{colName}:</span>
+      <HoverCard key={s.id} openDelay={200} closeDelay={100}>
+        <HoverCardTrigger asChild>
+          <div
+            className="flex items-center gap-1.5 rounded border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-2 py-1 min-w-0 text-[11px] cursor-default"
+            onMouseEnter={() => onHighlightCell?.(s.rowId, s.columnId)}
+            onMouseLeave={() => onHighlightCell?.('', '')}
+          >
+            <span className="truncate text-foreground font-medium min-w-0">{companyName}</span>
+            <span className="text-muted-foreground shrink-0">{colName}:</span>
             {currentStr !== 'N/A' && (
               <>
-                <span className="text-muted-foreground line-through">{currentStr}</span>
-                <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                <span className="text-muted-foreground line-through shrink-0">{currentStr}</span>
+                <ArrowRight className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
               </>
             )}
-            <span className="font-semibold text-foreground">
+            <span className="font-semibold text-foreground truncate">
               {isLegalClause ? (clauseObj?.title as string ?? clauseObj?.clauseType as string ?? suggestedStr) : suggestedStr}
             </span>
-          </div>
-        </button>
-
-        {/* Expanded detail */}
-        {isExpanded && (
-          <div className="border-t border-gray-100 dark:border-gray-800">
-            {/* Legal clause detail */}
-            {isLegalClause && clauseObj && (
-              <div className="px-2.5 py-2 space-y-1.5 bg-gray-50/50 dark:bg-gray-800/30">
-                {clauseObj.title && (
-                  <div><span className="text-muted-foreground text-[10px] uppercase tracking-wide">Title</span><p className="text-xs font-medium">{String(clauseObj.title)}</p></div>
-                )}
-                {clauseObj.text && (
-                  <div><span className="text-muted-foreground text-[10px] uppercase tracking-wide">Clause</span><p className="text-xs leading-relaxed">{String(clauseObj.text)}</p></div>
-                )}
-                {clauseObj.party && (
-                  <div><span className="text-muted-foreground text-[10px] uppercase tracking-wide">Party</span><p className="text-xs">{String(clauseObj.party)}</p></div>
-                )}
-                {clauseObj.clauseType && (
-                  <div><span className="text-muted-foreground text-[10px] uppercase tracking-wide">Type</span><p className="text-xs">{String(clauseObj.clauseType)}</p></div>
-                )}
-                {clauseObj.flags && (
-                  <div><span className="text-muted-foreground text-[10px] uppercase tracking-wide">Flags</span><p className="text-xs">{String(clauseObj.flags)}</p></div>
-                )}
-              </div>
-            )}
-
-            {/* Source */}
-            <div className="px-2.5 py-1.5 flex items-center gap-1.5 border-t border-gray-100 dark:border-gray-800">
-              <FileTextIcon className="w-3 h-3 text-muted-foreground shrink-0" />
-              <span className="text-[11px] text-muted-foreground">Source:</span>
-              <span className="text-[11px] font-medium truncate">{sourceLabel}</span>
-              {s.confidence != null && (
-                <span className="text-[10px] text-muted-foreground ml-auto shrink-0">{Math.round(s.confidence * 100)}% conf</span>
-              )}
-            </div>
-
-            {/* Reasoning */}
-            {hasReasoning && (
-              <div className="px-2.5 py-1.5 border-t border-gray-100 dark:border-gray-800">
-                <span className="text-muted-foreground text-[10px] uppercase tracking-wide">Reasoning</span>
-                <p className="text-xs text-foreground mt-0.5 leading-relaxed whitespace-pre-wrap">{s.reasoning}</p>
-              </div>
-            )}
-
-            {/* Actions */}
-            <div className="flex gap-1.5 px-2.5 py-2 border-t border-gray-100 dark:border-gray-800">
-              <button
-                type="button"
-                onClick={() => onSuggestionReject?.(s.id)}
-                className="flex-1 flex items-center justify-center gap-1 py-1 rounded text-[11px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-              >
-                <X className="w-3 h-3" /> Dismiss
+            <div className="flex items-center gap-0.5 shrink-0 ml-auto">
+              <button type="button" onClick={(e) => { e.stopPropagation(); onSuggestionReject?.(s.id); }} className="p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive" aria-label="Reject">
+                <X className="h-3 w-3" />
               </button>
-              {s.source === 'service' && onRetrySuggestion && (
-                <button
-                  type="button"
-                  onClick={() => onRetrySuggestion(s)}
-                  className="flex items-center justify-center gap-1 px-2 py-1 rounded text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                >
-                  <RotateCcw className="w-3 h-3" /> Retry
-                </button>
-              )}
               <button
                 type="button"
-                onClick={async () => {
+                onClick={async (e) => {
+                  e.stopPropagation();
                   if (!onSuggestionAccept) return;
-                  try {
-                    await Promise.resolve(onSuggestionAccept(s.id, { rowId: s.rowId, columnId: s.columnId, suggestedValue: s.suggestedValue, sourceDocumentId: s.sourceDocumentId }));
-                  } catch (err) {
-                    console.warn('Suggestion accept failed:', err);
-                  }
+                  try { await Promise.resolve(onSuggestionAccept(s.id, { rowId: s.rowId, columnId: s.columnId, suggestedValue: s.suggestedValue, sourceDocumentId: s.sourceDocumentId })); } catch {}
                 }}
-                className="flex-1 flex items-center justify-center gap-1 py-1 rounded text-[11px] font-medium text-primary hover:bg-primary/10 transition-colors"
+                className="p-0.5 rounded hover:bg-primary/20 text-muted-foreground hover:text-primary"
+                aria-label="Accept"
               >
-                <Check className="w-3 h-3" /> Accept
+                <Check className="h-3 w-3" />
               </button>
             </div>
           </div>
-        )}
-      </div>
+        </HoverCardTrigger>
+        <HoverCardContent side="left" align="start" className="w-[320px] p-0 text-xs">
+          {/* Value change */}
+          <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-800">
+            <div className="font-medium text-foreground">{companyName} — {colName}</div>
+            <div className="flex items-center gap-1.5 mt-1 text-[11px]">
+              {currentStr !== 'N/A' && (
+                <>
+                  <span className="text-muted-foreground line-through">{currentStr}</span>
+                  <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                </>
+              )}
+              <span className="font-semibold">{isLegalClause ? (clauseObj?.title as string ?? suggestedStr) : suggestedStr}</span>
+              {s.confidence != null && (
+                <span className="text-[10px] text-muted-foreground ml-auto">{Math.round(s.confidence * 100)}%</span>
+              )}
+            </div>
+          </div>
+          {/* Legal clause detail */}
+          {isLegalClause && clauseObj && (
+            <div className="px-3 py-2 space-y-1.5 border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30">
+              {clauseObj.text && (<div><span className="text-muted-foreground text-[10px] uppercase tracking-wide">Clause</span><p className="text-xs leading-relaxed mt-0.5">{String(clauseObj.text)}</p></div>)}
+              {clauseObj.party && (<div><span className="text-muted-foreground text-[10px] uppercase tracking-wide">Party</span><p className="text-xs mt-0.5">{String(clauseObj.party)}</p></div>)}
+              {clauseObj.clauseType && (<div><span className="text-muted-foreground text-[10px] uppercase tracking-wide">Type</span><p className="text-xs mt-0.5">{String(clauseObj.clauseType)}</p></div>)}
+              {clauseObj.flags && (<div><span className="text-muted-foreground text-[10px] uppercase tracking-wide">Flags</span><p className="text-xs mt-0.5">{String(clauseObj.flags)}</p></div>)}
+            </div>
+          )}
+          {/* Source */}
+          <div className="px-3 py-1.5 flex items-center gap-1.5 border-b border-gray-100 dark:border-gray-800">
+            <FileTextIcon className="w-3 h-3 text-muted-foreground shrink-0" />
+            <span className="text-[11px] text-muted-foreground">Source:</span>
+            <span className="text-[11px] font-medium truncate">{sourceLabel}</span>
+          </div>
+          {/* Reasoning */}
+          {hasReasoning && (
+            <div className="px-3 py-2">
+              <span className="text-muted-foreground text-[10px] uppercase tracking-wide">Reasoning</span>
+              <p className="text-xs text-foreground mt-0.5 leading-relaxed">{s.reasoning}</p>
+            </div>
+          )}
+        </HoverCardContent>
+      </HoverCard>
     );
   };
 
@@ -2268,7 +2235,7 @@ export default function AgentChat({
                       )}
                     </button>
                     {!suggestionsCollapsed && suggestions.length > 0 && (
-                      <div className="px-2.5 pb-1.5 space-y-1 max-h-[220px] overflow-y-auto border-t border-gray-100 dark:border-gray-800">
+                      <div className="px-2.5 pb-1.5 space-y-1 border-t border-gray-100 dark:border-gray-800">
                         {suggestionsError && (
                           <p className="text-xs text-destructive py-1">{suggestionsError}</p>
                         )}

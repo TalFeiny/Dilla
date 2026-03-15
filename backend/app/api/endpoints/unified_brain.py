@@ -448,6 +448,24 @@ async def process_unified_stream(request: UnifiedRequest, raw_request: Request):
                         result = convert_numpy_to_native(result)
                     cleaned = clean_for_json({"type": "complete", "success": True, "result": result, "metadata": clean_for_json(event.get("metadata", {}))})
                     yield _json.dumps(cleaned) + "\n"
+                # Gap 6 fix: forward event types the agent loop emits
+                # that were previously silently dropped
+                elif event_type == "thinking":
+                    yield _json.dumps({"type": "thinking", "iteration": event.get("iteration"), "reasoning": event.get("reasoning", ""), "action": event.get("action", ""), "tool": event.get("tool")}) + "\n"
+                elif event_type == "tool_start":
+                    yield _json.dumps({"type": "tool_start", "tool": event.get("tool"), "cost_tier": event.get("cost_tier"), "iteration": event.get("iteration")}) + "\n"
+                elif event_type == "tool_end":
+                    yield _json.dumps({"type": "tool_end", "tool": event.get("tool"), "success": event.get("success"), "duration_ms": event.get("duration_ms"), "iteration": event.get("iteration")}) + "\n"
+                elif event_type == "checkpoint":
+                    yield _json.dumps({"type": "checkpoint", "summary": event.get("summary", ""), "next_steps": event.get("next_steps", [])}) + "\n"
+                elif event_type == "clarification_needed":
+                    yield _json.dumps({"type": "clarification_needed", "question": event.get("question", ""), "options": event.get("options", [])}) + "\n"
+                elif event_type == "status":
+                    yield _json.dumps({"type": "status", "stage": event.get("stage"), "message": event.get("message")}) + "\n"
+                elif event_type == "chart_rebuild":
+                    yield _json.dumps({"type": "chart_rebuild", "chart_id": event.get("chart_id"), "chart": clean_for_json(event.get("chart", {}))}) + "\n"
+                elif event_type == "session_handoff":
+                    yield _json.dumps({"type": "session_handoff", "handoff": clean_for_json(event.get("handoff", {}))}) + "\n"
                 elif event_type == "error":
                     yield _json.dumps({"type": "error", "error": event.get("error")}) + "\n"
         except Exception as e:

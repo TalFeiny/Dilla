@@ -117,7 +117,8 @@ class CashFlowPlanningService:
 
         stage = company_data.get("stage", "Series A")
         sector = company_data.get("sector", "saas")
-        growth_rate = company_data.get("growth_rate") or company_data.get("inferred_growth_rate") or 1.0
+        growth_rate = company_data.get("growth_rate") or company_data.get("inferred_growth_rate") or 0.30
+        growth_rate = max(0.0, min(growth_rate, 3.0))  # Cap to 0-300%
 
         # Get revenue projections from RevenueProjectionService
         if growth_overrides:
@@ -169,8 +170,8 @@ class CashFlowPlanningService:
             cogs = revenue * (1 - gross_margin)
             gross_profit = revenue * gross_margin
 
-            # OpEx with efficiency improvement over time
-            eff = 1 - (OPEX_EFFICIENCY_RATE * i)
+            # OpEx with compounding efficiency improvement over time
+            eff = (1 - OPEX_EFFICIENCY_RATE) ** i
             rd_spend = revenue * opex_bench["rd_pct"] * eff if revenue > 0 else burn_monthly * 12 * opex_bench["rd_pct"]
             sm_spend = revenue * opex_bench["sm_pct"] * eff if revenue > 0 else burn_monthly * 12 * opex_bench["sm_pct"]
             ga_spend = revenue * opex_bench["ga_pct"] * eff if revenue > 0 else burn_monthly * 12 * opex_bench["ga_pct"]
@@ -378,7 +379,9 @@ class CashFlowPlanningService:
         )
 
         stage = company_data.get("stage", "Series A")
-        growth_rate = company_data.get("growth_rate") or company_data.get("inferred_growth_rate") or 1.0
+        growth_rate = company_data.get("growth_rate") or company_data.get("inferred_growth_rate") or 0.30
+        # Cap initial growth rate to prevent runaway forecasts
+        growth_rate = max(0.0, min(growth_rate, 3.0))  # 0% to 300% max
 
         # Get monthly revenue projections (growth-rate model)
         rev_projections = RevenueProjectionService.project_revenue_monthly(
@@ -407,12 +410,22 @@ class CashFlowPlanningService:
         opex_bench = OPEX_BENCHMARKS.get(stage, OPEX_BENCHMARKS["Series A"])
         override_margin = company_data.get("gross_margin")
 
-        # ── New driver inputs ──────────────────────────────────────────
+        # ── New driver inputs (with bounds validation) ─────────────────
         churn_rate = company_data.get("churn_rate")              # monthly churn
         nrr = company_data.get("nrr")                            # e.g. 1.10
         pricing_pct = company_data.get("pricing_pct_change")     # e.g. 0.10
         new_cust_growth = company_data.get("new_customer_growth_rate")
         acv = company_data.get("acv_override")
+
+        # Validate driver inputs to prevent runaway forecasts
+        if churn_rate is not None:
+            churn_rate = max(0.0, min(churn_rate, 0.20))  # 0-20% monthly churn
+        if nrr is not None:
+            nrr = max(0.50, min(nrr, 1.60))  # 50%-160% NRR (160% = best-in-class like Snowflake)
+        if pricing_pct is not None:
+            pricing_pct = max(-0.20, min(pricing_pct, 0.30))  # -20% to +30% annual pricing change
+        if new_cust_growth is not None:
+            new_cust_growth = max(0.0, min(new_cust_growth, 0.15))  # 0-15% monthly new customer growth
         cac = company_data.get("cac_override")
         sales_cycle = company_data.get("sales_cycle_months") or 0
         cost_per_head = company_data.get("cost_per_head") or 15_000
@@ -477,8 +490,10 @@ class CashFlowPlanningService:
             cogs = revenue * (1 - gross_margin)
             gross_profit = revenue * gross_margin
 
-            # ── OpEx with efficiency improvement ───────────────────────
-            eff = 1 - (OPEX_EFFICIENCY_RATE * (i / 12.0))
+            # ── OpEx with compounding efficiency improvement ────────────
+            # Compound decay instead of linear: costs as % of revenue shrink
+            # geometrically, allowing EBITDA to turn positive at scale
+            eff = (1 - OPEX_EFFICIENCY_RATE) ** (i / 12.0)
 
             # CAC-driven S&M: if CAC is set, derive from new_customers * CAC
             if cac is not None and new_customers_pipeline:
@@ -831,7 +846,8 @@ class CashFlowPlanningService:
         )
         stage = company_data.get("stage", "Series A")
         sector = company_data.get("sector", "saas")
-        growth_rate = company_data.get("growth_rate") or company_data.get("inferred_growth_rate") or 1.0
+        growth_rate = company_data.get("growth_rate") or company_data.get("inferred_growth_rate") or 0.30
+        growth_rate = max(0.0, min(growth_rate, 3.0))
 
         # Scenario adjustment
         if scenario == "bull": growth_rate *= 1.5

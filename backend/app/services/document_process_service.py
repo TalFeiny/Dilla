@@ -1446,6 +1446,245 @@ def _normalize_extraction(d: Dict[str, Any], document_type: Optional[str] = None
     return out
 
 
+# ---------------------------------------------------------------------------
+# Direct upsert of extracted clauses → document_clauses (structured columns)
+# ---------------------------------------------------------------------------
+
+def _enrich_clause_flags(
+    clause: Dict[str, Any],
+    extracted_data: Dict[str, Any],
+) -> list:
+    """Dynamically detect risk flags from extracted clause data.
+
+    Goes beyond the template flags the LLM returns (above_market, auto_renew_risk)
+    by actually inspecting the data for concrete risks.
+    """
+    flags = list(clause.get("flags") or [])
+    clause_type = (clause.get("clause_type") or "").lower()
+    obligations = clause.get("obligations") or []
+    xrefs = clause.get("cross_references") or []
+    key_dates = extracted_data.get("key_dates") or []
+
+    # 1. Deadline proximity — obligation due within 90 days
+    from datetime import datetime as _dt, timedelta as _td
+    now = _dt.utcnow()
+    for ob in obligations:
+        deadline_str = ob.get("deadline")
+        if not deadline_str:
+            continue
+        try:
+            deadline = _dt.fromisoformat(str(deadline_str).replace("Z", "+00:00").replace("+00:00", ""))
+        except (ValueError, TypeError):
+            continue
+        days_out = (deadline - now).days
+        if 0 < days_out <= 90 and "deadline_approaching" not in flags:
+            flags.append("deadline_approaching")
+        elif days_out <= 0 and "deadline_passed" not in flags:
+            flags.append("deadline_passed")
+
+    # 2. Auto-renewal trap — auto_renewal clause without termination_for_convenience
+    if clause_type in ("auto_renewal", "renewal"):
+        has_convenience_termination = any(
+            c.get("clause_type") == "termination" and "convenience" in (c.get("text") or "").lower()
+            for c in (extracted_data.get("clauses") or [])
+        )
+        if not has_convenience_termination and "auto_renew_no_exit" not in flags:
+            flags.append("auto_renew_no_exit")
+
+    # 3. Exposure detection — uncapped liability, personal guarantees, cross-defaults
+    if clause_type == "liability_cap":
+        text = (clause.get("text") or "").lower()
+        if "unlimited" in text or "uncapped" in text or "no limit" in text:
+            if "uncapped_liability" not in flags:
+                flags.append("uncapped_liability")
+    if clause_type in ("personal_guarantee", "parent_guarantee"):
+        if "personal_exposure" not in flags:
+            flags.append("personal_exposure")
+    if clause_type == "cross_default":
+        if "cross_default_risk" not in flags:
+            flags.append("cross_default_risk")
+
+    # 4. Key dates approaching — from document-level key_dates
+    for kd in key_dates:
+        kd_date_str = kd.get("date")
+        auto_action = kd.get("auto_action")
+        if not kd_date_str:
+            continue
+        try:
+            kd_date = _dt.fromisoformat(str(kd_date_str).replace("Z", "+00:00").replace("+00:00", ""))
+        except (ValueError, TypeError):
+            continue
+        days_out = (kd_date - now).days
+        if 0 < days_out <= 60 and auto_action == "auto_renew" and "auto_renew_imminent" not in flags:
+            flags.append("auto_renew_imminent")
+        elif 0 < days_out <= 30 and auto_action == "terminate" and "termination_imminent" not in flags:
+            flags.append("termination_imminent")
+
+    # 5. High-value cross-references — flags clauses that define financial engine inputs
+    for xref in xrefs:
+        relationship = (xref.get("relationship") or "").lower()
+        if relationship in ("defines", "overrides") and "financial_impact" not in flags:
+            flags.append("financial_impact")
+            break
+
+    return flags
+
+
+def _upsert_clauses_to_document_clauses(
+    *,
+    extracted_data: Dict[str, Any],
+    document_id: str,
+    document_name: str,
+    company_id: Optional[str],
+    fund_id: Optional[str],
+    document_type: str,
+) -> int:
+    """Upsert extracted clauses directly into document_clauses with structured columns.
+
+    This is the real fix: obligations, deadlines, amounts, flags go into actual
+    SQL columns — not into a JSONB blob in pending_suggestions.
+    The orchestrator, legal grid, debt/legal context queries all read from
+    document_clauses, so this makes extracted data immediately queryable.
+    """
+    clauses = extracted_data.get("clauses")
+    if not isinstance(clauses, list) or not clauses:
+        return 0
+
+    erp = extracted_data.get("erp_attribution") or {}
+    parties = extracted_data.get("parties") or []
+    value_explanations = extracted_data.get("value_explanations") or {}
+    red_flags = extracted_data.get("red_flags") or []
+
+    from app.core.supabase_client import get_supabase_client
+    sb = get_supabase_client()
+    if not sb:
+        logger.warning("[CLAUSE_UPSERT] Supabase unavailable — clauses not persisted")
+        return 0
+
+    rows = []
+    for clause in clauses:
+        if not isinstance(clause, dict):
+            continue
+        clause_id = clause.get("id", "")
+        if not clause_id:
+            continue
+
+        # Enrich flags with dynamic detection
+        enriched_flags = _enrich_clause_flags(clause, extracted_data)
+
+        # Primary obligation
+        obligations = clause.get("obligations") or []
+        primary_ob = obligations[0] if obligations else {}
+
+        # Primary cross-reference
+        xrefs = clause.get("cross_references") or []
+        primary_xref = xrefs[0] if xrefs else {}
+
+        # Party from obligation or document-level
+        party = primary_ob.get("party", "")
+        if not party and parties:
+            party = parties[0].get("name", "")
+
+        # Parse obligation_deadline as a date string (YYYY-MM-DD) or None
+        deadline_raw = primary_ob.get("deadline")
+        deadline_date = None
+        if deadline_raw:
+            try:
+                # Accept ISO formats
+                from datetime import datetime as _dt
+                parsed = _dt.fromisoformat(str(deadline_raw).replace("Z", "+00:00").replace("+00:00", ""))
+                deadline_date = parsed.strftime("%Y-%m-%d")
+            except (ValueError, TypeError):
+                # If it's already YYYY-MM-DD, keep it
+                if re.match(r"^\d{4}-\d{2}-\d{2}$", str(deadline_raw)):
+                    deadline_date = str(deadline_raw)
+
+        # Build reasoning from value_explanations
+        explanation = value_explanations.get(clause.get("clause_type", ""), "")
+        clause_text = (clause.get("text") or "")[:500]
+        reasoning_parts = []
+        if clause_text:
+            reasoning_parts.append(f'"{clause_text[:120]}..."')
+        if enriched_flags:
+            reasoning_parts.append(f"Flags: {', '.join(enriched_flags)}")
+        if explanation:
+            reasoning_parts.append(explanation)
+        reasoning = " → ".join(reasoning_parts) if reasoning_parts else ""
+
+        # Confidence — flagged clauses get higher confidence
+        confidence = 0.80
+        risk_flags = {"unfavorable", "above_market", "non_standard", "auto_renew_risk",
+                      "missing", "uncapped_liability", "personal_exposure", "cross_default_risk",
+                      "deadline_approaching", "deadline_passed", "auto_renew_no_exit",
+                      "auto_renew_imminent", "termination_imminent"}
+        if any(f in risk_flags for f in enriched_flags):
+            confidence = 0.92
+        elif any(f in ("material", "favorable", "financial_impact") for f in enriched_flags):
+            confidence = 0.85
+
+        row = {
+            "fund_id": fund_id or _UNLINKED,
+            "company_id": company_id or _UNLINKED,
+            "document_id": document_id,
+            "document_name": document_name or f"doc:{document_id}",
+            "clause_id": clause_id,
+            "title": clause.get("title", ""),
+            "clause_type": clause.get("clause_type", "other"),
+            "clause_text": clause_text,
+            "party": party,
+            "flags": enriched_flags,  # TEXT[] — real array, not comma-separated
+            "obligation_desc": primary_ob.get("description", "") or "",
+            "obligation_deadline": deadline_date,
+            "cross_ref_service": primary_xref.get("to_service", "") or "",
+            "cross_ref_field": primary_xref.get("field", "") or "",
+            "cross_ref_value": str(primary_xref.get("value", "")) if primary_xref.get("value") is not None else "",
+            "erp_category": erp.get("category") or "",
+            "erp_subcategory": erp.get("subcategory") or "",
+            "annual_value": _ensure_numeric(erp.get("annual_value")),
+            "monthly_amount": _ensure_numeric(erp.get("monthly_amount")),
+            "reasoning": reasoning,
+            "confidence": confidence,
+            "source_service": f"document:{document_id}",
+            "metadata": {
+                "document_type": document_type,
+                "parent_clause_id": clause.get("parent_id"),
+                "children_clause_ids": clause.get("children", []),
+                "all_obligations": obligations,
+                "all_cross_references": xrefs,
+                "red_flags": red_flags,
+                "enriched_flags": [f for f in enriched_flags if f not in (clause.get("flags") or [])],
+            },
+        }
+        rows.append(row)
+
+    if not rows:
+        return 0
+
+    try:
+        sb.table("document_clauses").upsert(
+            rows,
+            on_conflict="fund_id,company_id,clause_id,document_id",
+        ).execute()
+        logger.info(
+            "[CLAUSE_UPSERT] Wrote %d clauses to document_clauses for doc %s (type=%s)",
+            len(rows), document_id, document_type,
+        )
+        return len(rows)
+    except Exception as e:
+        logger.warning("[CLAUSE_UPSERT] Batch upsert failed for %s: %s — falling back to individual", document_id, e)
+        written = 0
+        for row in rows:
+            try:
+                sb.table("document_clauses").upsert(
+                    row,
+                    on_conflict="fund_id,company_id,clause_id,document_id",
+                ).execute()
+                written += 1
+            except Exception as e2:
+                logger.warning("[CLAUSE_UPSERT] Individual write failed for %s.%s: %s", document_id, row["clause_id"], e2)
+        return written
+
+
 def run_post_extraction_pipeline(
     *,
     extracted_data: Dict[str, Any],
@@ -1504,6 +1743,24 @@ def run_post_extraction_pipeline(
                 logger.info("Emitted %d legal clause suggestions from document %s", n, document_id)
         except Exception as e:
             logger.warning("Failed to emit legal suggestions for %s: %s", document_id, e, exc_info=True)
+
+        # ── Structured upsert → document_clauses (real columns, not JSON blobs) ──
+        try:
+            nc = _upsert_clauses_to_document_clauses(
+                extracted_data=extracted_data,
+                document_id=document_id,
+                document_name=document_name,
+                company_id=company_id,
+                fund_id=fund_id,
+                document_type=doc_type_for_routing,
+            )
+            if nc:
+                logger.info(
+                    "[DOC_PROCESS] Upserted %d clauses to document_clauses for doc %s",
+                    nc, document_id,
+                )
+        except Exception as e:
+            logger.warning("Failed to upsert document_clauses for %s: %s", document_id, e, exc_info=True)
 
     # ── Contract → P&L bridge (ERP attribution) ──
     if extracted_data and extracted_data.get("erp_attribution"):

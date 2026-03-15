@@ -4588,6 +4588,18 @@ class UnifiedMCPOrchestrator:
             "- For complex multi-step work, outline your plan first, then execute.\n"
             "- When you call a tool, explain what you're doing and why.\n\n"
 
+            "## OUTPUT SURFACES\n"
+            "- **Chat**: your primary output. ALWAYS produce a substantive text response with your findings after using tools.\n"
+            "- **Memo**: only when the user explicitly asks for a memo, report, or formal deliverable. Do NOT auto-generate memos.\n"
+            "- **Grid**: use suggest_grid_edit / bulk_write_grid to push structured data to the spreadsheet.\n"
+            "- **Charts**: include chart_data in tool output when visual data helps — comparisons, trends, distributions.\n\n"
+
+            "## FORMAT RULES\n"
+            "- Financial comparisons → always include a chart.\n"
+            "- Time series → line or area chart.\n"
+            "- After tools complete, summarize findings in chat text: key numbers, what they mean, and what to do next.\n"
+            "- Never finish a tool-use sequence silently. The user must always get a text response.\n\n"
+
             "## DATA ACCURACY\n"
             "1. COUNT before you claim. Get exact numbers right.\n"
             "2. NEVER dismiss available data. Work with what you have.\n"
@@ -4697,8 +4709,12 @@ class UnifiedMCPOrchestrator:
             and self._last_crystal is not None
         ):
             handler = self._steer_execution(prompt, context, turn_type)
-        elif turn_type in (TurnType.PHATIC, TurnType.STATUS, TurnType.STEERING):
+        elif turn_type in (TurnType.PHATIC, TurnType.STEERING):
             handler = self._fast_reply(prompt, context, turn_type)
+        elif turn_type == TurnType.STATUS:
+            # Gap 5 fix: STATUS turns need tool access so the model can
+            # look up real data instead of hallucinating from history
+            handler = self._conversational_loop(prompt, context, turn_type)
         elif (
             turn_type == TurnType.SYNTHESIS
             and self._conversation_phase in (
@@ -5037,6 +5053,32 @@ class UnifiedMCPOrchestrator:
                 for tc in tool_calls_made
             ]
 
+        # ── Safety net: if tools ran but model produced no text, force a synthesis ──
+        if not all_text_parts and tool_calls_made:
+            logger.warning("[CONV_LOOP] Tools ran but no text produced — forcing synthesis")
+            try:
+                tool_summary = json.dumps([
+                    {"tool": tc["tool"], "output": tc.get("output_preview", "")[:1000]}
+                    for tc in tool_calls_made
+                ], default=str)
+                synth_result = await self.model_router.get_completion(
+                    prompt=(
+                        f"User asked: {prompt}\n\nTool results:\n{tool_summary}\n\n"
+                        "Summarize the findings. Lead with the key numbers. Be direct, 2-5 sentences."
+                    ),
+                    system_prompt="You are a CFO agent. Summarize tool results concisely. No preamble.",
+                    capability=ModelCapability.FAST,
+                    max_tokens=500,
+                    temperature=0.3,
+                    caller_context="conv_loop_empty_synth",
+                )
+                synth_text = synth_result.get("response", "") if isinstance(synth_result, dict) else str(synth_result)
+                if synth_text:
+                    all_text_parts.append(synth_text)
+                    yield {"type": "token", "content": synth_text}
+            except Exception as e:
+                logger.error(f"[CONV_LOOP] Forced synthesis failed: {e}")
+
         self._turn_result = {
             "full_text": "\n".join(all_text_parts),
             "tool_calls_made": tool_calls_made,
@@ -5156,6 +5198,15 @@ class UnifiedMCPOrchestrator:
             "extra_result_fields": agent_result_fields,
         }
 
+        # Gap 4a fix: enrich _last_crystal with execution results so
+        # _steer_execution has context about what happened
+        if self._last_crystal:
+            self._last_crystal["execution_results"] = {
+                "tools_called": [tc.get("tool", "?") for tc in tool_calls_made],
+                "working_memory": agent_result_fields.get("working_memory", []),
+                "synthesis": "\n".join(full_text_parts)[:1000],
+            }
+
     async def _steer_execution(
         self,
         prompt: str,
@@ -5186,10 +5237,23 @@ class UnifiedMCPOrchestrator:
         old_prompt = crystal.get("synthesized_prompt", "")
         old_constraints = crystal.get("constraints", [])
 
+        # Gap 4b fix: inject prior execution context into steering prompt
+        execution_results = crystal.get("execution_results", {})
+        execution_context_str = ""
+        if execution_results:
+            tools_called = ", ".join(execution_results.get("tools_called", []))
+            prev_synthesis = execution_results.get("synthesis", "")[:500]
+            execution_context_str = (
+                f"\n\nPrevious execution results:\n"
+                f"- Tools called: {tools_called}\n"
+                f"- Synthesis: {prev_synthesis}\n"
+            )
+
         steer_prompt = (
             "The user previously requested this task:\n"
             f'"{old_prompt}"\n\n'
             f"Constraints: {json.dumps(old_constraints)}\n\n"
+            f"{execution_context_str}"
             f'Now the user says: "{prompt}"\n\n'
             "Produce an updated synthesized_prompt that incorporates "
             "the user's change. Keep everything from the original that "
@@ -5312,8 +5376,14 @@ class UnifiedMCPOrchestrator:
         self._prev_tool_calls = tool_calls_made
 
         # Update conversation history
+        # Gap 3 fix: prefix assistant content with tool summary so the next
+        # conversational turn's model knows what tools ran and what data was retrieved
+        assistant_content = full_text
+        if tool_calls_made:
+            tools_used = ", ".join(tc.get("tool", "?") for tc in tool_calls_made[:10])
+            assistant_content = f"[Tools used: {tools_used}]\n\n{full_text}"
         self._conversation_history.append({"role": "user", "content": prompt})
-        self._conversation_history.append({"role": "assistant", "content": full_text})
+        self._conversation_history.append({"role": "assistant", "content": assistant_content})
 
         # Safety-net trim (summarization is the smart path)
         if len(self._conversation_history) > self._max_history_turns * 2:
@@ -5324,6 +5394,15 @@ class UnifiedMCPOrchestrator:
         # Persist for cross-request recovery
         async with self.shared_data_lock:
             self.shared_data["_conversation_history"] = self._conversation_history
+
+            # Gap 1 fix: persist working_memory from agent loop so next turn
+            # can restore prior tool results via shared_data
+            extra = self._turn_result.get("extra_result_fields", {})
+            wm = extra.get("working_memory")
+            if wm:
+                agent_ctx = self.shared_data.get("agent_context", {})
+                agent_ctx["working_memory"] = wm
+                self.shared_data["agent_context"] = agent_ctx
 
     # ------------------------------------------------------------------
     # Session health & handoff
@@ -10897,9 +10976,11 @@ Return JSON with ONLY these fields (use null if unknown):
                 assumptions=monthly_overrides,
             )
 
-            # Generate explanation
+            # Generate explanation, drivers, and per-line derivations
             explainer = ForecastExplainer()
             explanation = explainer.explain_forecast(method, company_data, forecast)
+            driver_impacts = explainer.explain_drivers(company_data, monthly_overrides or {})
+            line_derivations = explainer.generate_line_derivations(method, company_data, forecast)
 
             result = {
                 "company_id": company_id,
@@ -10914,6 +10995,8 @@ Return JSON with ONLY these fields (use null if unknown):
                 },
                 "forecast": forecast,
                 "explanation": explanation,
+                "driver_impacts": driver_impacts,
+                "line_derivations": line_derivations,
             }
 
             # Auto-save to DB
@@ -12341,7 +12424,7 @@ Return JSON with ONLY these fields (use null if unknown):
             ]
             clauses_result = (
                 sb.table("document_clauses")
-                .select("document_id, clause_type, extracted_value")
+                .select("document_id, clause_type, clause_id, title, clause_text, party, flags, obligation_desc, obligation_deadline, annual_value, monthly_amount, cross_ref_service, cross_ref_field, cross_ref_value, reasoning, metadata")
                 .in_("document_id", doc_ids)
                 .in_("clause_type", debt_types)
                 .execute()
@@ -12350,10 +12433,26 @@ Return JSON with ONLY these fields (use null if unknown):
             facilities = []
             covenants = []
             for c in (clauses_result.data or []):
+                details = {
+                    "clause_id": c.get("clause_id"),
+                    "title": c.get("title"),
+                    "text": c.get("clause_text"),
+                    "party": c.get("party"),
+                    "flags": c.get("flags", []),
+                    "obligation": c.get("obligation_desc"),
+                    "deadline": c.get("obligation_deadline"),
+                    "annual_value": c.get("annual_value"),
+                    "monthly_amount": c.get("monthly_amount"),
+                    "cross_ref": {
+                        "service": c.get("cross_ref_service"),
+                        "field": c.get("cross_ref_field"),
+                        "value": c.get("cross_ref_value"),
+                    } if c.get("cross_ref_service") else None,
+                }
                 entry = {
                     "clause_type": c["clause_type"],
                     "source_doc": doc_name_map.get(c["document_id"], c["document_id"]),
-                    "details": c.get("extracted_value", {}),
+                    "details": details,
                 }
                 if c["clause_type"] == "covenant":
                     covenants.append(entry)
@@ -12389,7 +12488,7 @@ Return JSON with ONLY these fields (use null if unknown):
             ]
             clauses_result = (
                 sb.table("document_clauses")
-                .select("document_id, clause_type, extracted_value")
+                .select("document_id, clause_type, clause_id, title, clause_text, party, flags, obligation_desc, obligation_deadline, annual_value, monthly_amount, cross_ref_service, cross_ref_field, cross_ref_value, reasoning, metadata")
                 .in_("document_id", doc_ids)
                 .in_("clause_type", legal_types)
                 .execute()
@@ -12397,10 +12496,26 @@ Return JSON with ONLY these fields (use null if unknown):
 
             clauses = []
             for c in (clauses_result.data or []):
+                details = {
+                    "clause_id": c.get("clause_id"),
+                    "title": c.get("title"),
+                    "text": c.get("clause_text"),
+                    "party": c.get("party"),
+                    "flags": c.get("flags", []),
+                    "obligation": c.get("obligation_desc"),
+                    "deadline": c.get("obligation_deadline"),
+                    "annual_value": c.get("annual_value"),
+                    "monthly_amount": c.get("monthly_amount"),
+                    "cross_ref": {
+                        "service": c.get("cross_ref_service"),
+                        "field": c.get("cross_ref_field"),
+                        "value": c.get("cross_ref_value"),
+                    } if c.get("cross_ref_service") else None,
+                }
                 clauses.append({
                     "clause_type": c["clause_type"],
                     "source_doc": doc_name_map.get(c["document_id"], c["document_id"]),
-                    "details": c.get("extracted_value", {}),
+                    "details": details,
                 })
 
             return {"clauses": clauses}
@@ -16559,17 +16674,30 @@ JSON — pick one:
         _priority_tools = {"run_valuation", "run_scenario", "generate_memo", "source_companies",
                            "run_portfolio_health", "run_exit_modeling", "run_round_modeling",
                            "run_bull_bear_base", "run_scenario_tree", "run_followon_strategy",
-                           "portfolio_comparison", "calculate_fund_metrics"}
+                           "portfolio_comparison", "calculate_fund_metrics",
+                           "fpa_forecast"}
+        # FPA tools return huge payloads (line_derivations, grid_suggestions, full
+        # forecast arrays) that the synthesizer doesn't need — the frontend already
+        # received them via streamed side effects. Strip to key metrics only.
+        _FPA_STRIP_KEYS = {"line_derivations", "grid_suggestions", "chart_data",
+                           "memo_updates", "memo_sections"}
         for r in tool_results:
             tool_name = r.get("tool", "")
             if tool_name in ("fetch_company_data", "resolve_data_gaps", "build_company_list", "lightweight_diligence"):
                 # Company data is already in _synth_company_data from shared_data
                 continue
+            output = r.get("output", {})
+            # For FPA forecast: strip fields the frontend already received via
+            # streaming (line_derivations ~12K, grid_suggestions ~17K, charts,
+            # memo_updates). Keeps full forecast array for the synthesizer.
+            # This is synthesis-prompt-only — does NOT affect tool output or grid/memo.
+            if tool_name == "fpa_forecast" and isinstance(output, dict):
+                output = {k: v for k, v in output.items() if k not in _FPA_STRIP_KEYS}
             # Priority tools (valuations, scenarios, sourcing) get more room
             limit = 8000 if tool_name in _priority_tools else 4000
             _non_company_results.append({
                 "tool": tool_name,
-                "output": self._truncate(json.dumps(r.get("output", {})), limit),
+                "output": self._truncate(json.dumps(output, default=str), limit),
             })
 
         # Also pull valuations and sourcing results from shared_data if tools wrote there
@@ -16612,7 +16740,15 @@ JSON — pick one:
         if _response_mode in ("reply", "action"):
             logger.info(f"[AGENT_LOOP] {_response_mode} mode — skipping memo generation")
             # Short synthesis: 1-3 sentence confirmation, no structured memo
-            _short_synth_prompt = f"User asked: {prompt}\nTool results:\n{json.dumps([{{'tool': r.get('tool',''), 'output': self._truncate(json.dumps(r.get('output',{{}})),2000)}} for r in tool_results])}\n\nRespond in 1-3 concise sentences. No preamble. No 'based on'. Just the answer or confirmation."
+            # Compact tool results — strip verbose FPA fields to avoid mid-JSON truncation
+            _short_tool_results = []
+            for r in tool_results:
+                _t_name = r.get("tool", "")
+                _t_out = r.get("output", {})
+                if _t_name == "fpa_forecast" and isinstance(_t_out, dict):
+                    _t_out = {k: v for k, v in _t_out.items() if k not in _FPA_STRIP_KEYS}
+                _short_tool_results.append({"tool": _t_name, "output": self._truncate(json.dumps(_t_out, default=str), 2000)})
+            _short_synth_prompt = f"User asked: {prompt}\nTool results:\n{json.dumps(_short_tool_results)}\n\nRespond in 1-3 concise sentences. No preamble. No 'based on'. Just the answer or confirmation."
             _short_response = await self.model_router.get_completion(
                 prompt=_short_synth_prompt,
                 system_prompt="You are a CFO agent. Give short, direct answers. Lead with the number or confirmation. No filler.",
@@ -16901,11 +17037,23 @@ ABSOLUTE RULES:
         _fpa_write_tools = {"fpa_cell_edit", "fpa_upload_actuals", "fpa_apply_forecast", "fpa_forecast"}
         _pnl_refresh = any(r.get("tool") in _fpa_write_tools for r in tool_results)
 
+        # Gap 2 fix: export tool_calls so _crystallize_and_execute can
+        # populate _turn_result["tool_calls_made"] for the classifier
+        _tool_calls_for_event = [
+            {
+                "tool": r.get("tool", "unknown"),
+                "input": r.get("input", {}),
+                "output_preview": str(json.dumps(r.get("output", {}), default=str))[:200],
+            }
+            for r in tool_results
+        ]
+
         yield {
             "type": "complete",
             "result": {
                 "content": synthesis,
                 "format": detected_format,
+                "tool_calls": _tool_calls_for_event,
                 **extra_result_fields,
                 "grid_commands": grid_commands,
                 "suggestions": suggestions,
