@@ -665,6 +665,17 @@ AGENT_TOOLS: list[AgentTool] = [
         input_schema={"query": "str", "filters": "dict?", "columns": "list[str]?"},
     ),
     AgentTool(
+        name="query_grid",
+        description=(
+            "Read the current grid data. Works in ALL modes: portfolio (companies), "
+            "PNL (line items), legal (contracts/clauses). Returns rows with cell values. "
+            "Use this FIRST to see what data exists before doing analysis."
+        ),
+        handler="_tool_query_grid",
+        input_schema={"query": "str?", "row_name": "str?", "column": "str?"},
+        cost_tier="free",
+    ),
+    AgentTool(
         name="query_documents",
         description="Search uploaded fund documents by keyword or metric.",
         handler="_tool_query_documents",
@@ -2687,8 +2698,9 @@ _INTERNAL_TOOLS: set[str] = {
     "generate_comparison_report",
     "generate_plan_memo",
     # Meta-dispatchers
-    "run_skill",
     "run_report",
+    # NOTE: run_skill removed — legal_analysis needs it for
+    # term-sheet-comparator, redline-impact-analyzer, negotiation-analyzer
     # Internal reasoning step
     "reason_company_list",
 }
@@ -2752,6 +2764,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
 
     # --- Analysis ---
     "valuation": [
+        "query_grid",               # READ THE GRID — see current data before valuing
         "run_valuation",            # primary action (auto-fetches company)
         "cap_table_evolution",      # ownership context
         "run_scenario",             # exit scenarios
@@ -2760,6 +2773,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "analyze_financials",       # financial detail
     ],
     "scenario": [
+        "query_grid",               # READ THE GRID — see current state before modeling
         "run_scenario",             # primary action
         "run_scenario_tree",        # branching scenario trees
         "run_bull_bear_base",       # bull/bear/base scenarios
@@ -2784,6 +2798,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "query_portfolio",          # portfolio context
     ],
     "forecast": [
+        "query_grid",               # READ THE GRID — see P&L line items, actuals, forecasts
         "run_fpa",                  # primary: FP&A forecast, stress test
         "fpa_forecast",             # generate forecast from actuals (persists to DB)
         "fpa_pnl",                  # P&L waterfall view (actuals + forecast)
@@ -2893,6 +2908,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
 
     # --- KPI ---
     "kpi": [
+        "query_grid",                  # READ THE GRID — see current data before computing KPIs
         "fpa_kpi_dashboard",           # primary: compute KPIs with time series
         "fpa_pnl",                     # P&L context
         "fpa_balance_sheet",           # balance sheet for liquidity/solvency KPIs
@@ -2916,6 +2932,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
 
     # --- Strategic ---
     "strategy": [
+        "query_grid",                   # READ THE GRID — see current state before strategizing
         "strategic_analysis",           # primary: cross-domain CFO reasoning
         "fpa_kpi_dashboard",            # KPI context
         "fpa_pnl",                      # P&L waterfall view
@@ -2932,10 +2949,16 @@ INTENT_TOOLS: dict[str, list[str]] = {
 
     # --- Legal Intelligence ---
     "legal_analysis": [
+        "query_grid",               # READ THE GRID — see contracts, clauses, obligations, flags
         "run_skill",                # dispatches to term-sheet-comparator, redline-impact-analyzer, negotiation-analyzer
         "query_portfolio",          # read company/document context
+        "query_documents",          # search uploaded contracts/documents
+        "strategic_analysis",       # cross-domain reasoning (risk, compliance)
+        "suggest_grid_edit",        # push findings back to grid
+        "bulk_write_grid",          # batch write findings
         "generate_memo",            # render results as memo
         "generate_chart",           # waterfall, bar charts for impact
+        "web_search",               # legal research, precedent lookup
     ],
 
     # --- Specialized ---
@@ -2948,6 +2971,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
 
     # --- Fallback: intentionally broader but still curated ---
     "general": [
+        "query_grid",               # READ THE GRID FIRST — works in all modes
         "fetch_company_data",       # most common need
         "query_portfolio",          # read state
         "bulk_write_grid",          # batch write to grid
@@ -3103,7 +3127,7 @@ def filter_tools_by_response_mode(tools: list[AgentTool], response_mode: str) ->
     """Gate tools by response_mode to reduce prompt noise and prevent over-action.
 
     - "reply": free-tier tools + metatools (allows 1 lookup)
-    - "action": free-tier tools + metatools
+    - "action": free + cheap tier tools (can read/act, but skip expensive ops)
     - "task": full tool set
     All tools remain callable via _execute_tool() and wiring regardless —
     this only controls what appears in the agent prompt.
@@ -3111,7 +3135,7 @@ def filter_tools_by_response_mode(tools: list[AgentTool], response_mode: str) ->
     if response_mode == "reply":
         return [t for t in tools if t.cost_tier == "free" or t.name in _ALWAYS_LOADED_TOOLS]
     if response_mode == "action":
-        return [t for t in tools if t.cost_tier == "free" or t.name in _ALWAYS_LOADED_TOOLS]
+        return [t for t in tools if t.cost_tier in ("free", "cheap") or t.name in _ALWAYS_LOADED_TOOLS]
     return tools  # "task" gets everything
 
 
@@ -4464,19 +4488,35 @@ class UnifiedMCPOrchestrator:
     # The model gets system prompt + fingerprint + tools + history, and
     # decides on its own whether to talk or call tools.
 
-    def _build_tool_definitions(self) -> List[Dict[str, Any]]:
+    def _build_tool_definitions(
+        self,
+        intent: Optional[str] = None,
+        response_mode: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Convert AGENT_VISIBLE_TOOLS to canonical tool-use definitions.
 
         Canonical format (Anthropic style):
         {"name": str, "description": str, "input_schema": {JSON Schema}}
+
+        When *intent* and/or *response_mode* are supplied, the tool list is
+        scoped via get_tools_for_intent + filter_tools_by_response_mode so the
+        model receives a focused set (typically 15-40 tools) instead of the
+        full 150+ catalog.
 
         ToolAdapter converts from here to OpenAI/Google/etc as needed.
         """
         if not ToolAdapter:
             return []
 
+        if intent is not None:
+            scoped = get_tools_for_intent(intent)
+            if response_mode is not None:
+                scoped = filter_tools_by_response_mode(scoped, response_mode)
+        else:
+            scoped = AGENT_VISIBLE_TOOLS
+
         defs = []
-        for tool in AGENT_VISIBLE_TOOLS:
+        for tool in scoped:
             schema = ToolAdapter.informal_to_json_schema(tool.input_schema or {})
             defs.append({
                 "name": tool.name,
@@ -4639,6 +4679,13 @@ class UnifiedMCPOrchestrator:
             fingerprint = _session_state.fingerprint()
             if fingerprint:
                 prompt += f"## CURRENT SESSION STATE\n{fingerprint}\n\n"
+                logger.info(f"[FINGERPRINT] Injected {len(fingerprint)} chars into system prompt")
+            else:
+                logger.warning(f"[FINGERPRINT] Empty — shared_data keys: {list(self.shared_data.keys())}, "
+                             f"matrix_context={'present' if self.shared_data.get('matrix_context') else 'MISSING'}, "
+                             f"grid_mode={self.shared_data.get('grid_mode', 'unknown')}")
+        else:
+            logger.error(f"[FINGERPRINT] SessionState is None — import failed: {NON_CRITICAL_IMPORT_ERRORS.get('SessionState', 'no error')}")
 
         # ── Session corrections (user feedback) ──
         corrections = self.shared_data.get("session_corrections", [])
@@ -4672,9 +4719,9 @@ class UnifiedMCPOrchestrator:
 
         Classifies the turn, checks context health, then routes to one
         of three handler paths:
-        - _fast_reply: PHATIC / STATUS / STEERING — single LLM call, no tools
+        - _fast_reply: PHATIC only — single LLM call, no tools (greetings/acks)
         - _crystallize_and_execute: SYNTHESIS in CONVERGING/EXECUTING with 4+ exchanges
-        - _conversational_loop: everything else — standard tool-use loop
+        - _conversational_loop: everything else (incl. STATUS, STEERING) — standard tool-use loop
         """
         # ── 1. Check context health — offer handoff if clogged ──
         health = self._check_context_health()
@@ -4724,11 +4771,13 @@ class UnifiedMCPOrchestrator:
             and self._last_crystal is not None
         ):
             handler = self._steer_execution(prompt, context, turn_type)
-        elif turn_type in (TurnType.PHATIC, TurnType.STEERING):
+        elif turn_type == TurnType.PHATIC:
             handler = self._fast_reply(prompt, context, turn_type)
-        elif turn_type == TurnType.STATUS:
-            # Gap 5 fix: STATUS turns need tool access so the model can
-            # look up real data instead of hallucinating from history
+        elif turn_type in (TurnType.STATUS, TurnType.STEERING):
+            # Gap 5/6 fix: STATUS and STEERING turns need tool access so the
+            # model can look up real data instead of hallucinating from history.
+            # STEERING often follows substantive work — the user wants to
+            # refine output, not lose access to the data layer.
             handler = self._conversational_loop(prompt, context, turn_type)
         elif (
             turn_type == TurnType.SYNTHESIS
@@ -4792,10 +4841,11 @@ class UnifiedMCPOrchestrator:
         context: Optional[Dict[str, Any]],
         turn_type: TurnType,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Single LLM call, no tool loop.  For PHATIC / STATUS / STEERING.
+        """Single LLM call, no tool loop.  For PHATIC only.
 
-        Builds a lightweight, turn-type-aware system prompt and fires one
-        completion.  No tool definitions are sent — the model just talks.
+        Builds a lightweight system prompt and fires one completion.
+        No tool definitions are sent — the model just talks.
+        Only used for genuine greetings/acks (≤5 words matching phatic regex).
         """
         system_prompt = self._build_conversational_prompt(
             context, turn_type=turn_type, phase=self._conversation_phase,
@@ -4858,7 +4908,25 @@ class UnifiedMCPOrchestrator:
                 f"{self._history_summary}\n"
             )
 
-        tools = self._build_tool_definitions()
+        # Scope tools by grid mode + turn type so the model sees a focused set
+        # (~15-40) instead of the full 150+ catalog (causes tool-selection paralysis).
+        _grid_mode = self.shared_data.get("grid_mode", "portfolio")
+        _mode_intent_map = {
+            "pnl": "forecast",
+            "legal": "legal_analysis",
+            "portfolio": "general",
+        }
+        _intent = _mode_intent_map.get(_grid_mode, "general")
+        _resp_mode = (
+            "reply" if turn_type in (TurnType.PHATIC, TurnType.STATUS) else
+            "action" if turn_type in (TurnType.RETRIEVAL, TurnType.ITERATION, TurnType.STEERING) else
+            "task"
+        )
+        tools = self._build_tool_definitions(intent=_intent, response_mode=_resp_mode)
+        logger.info(
+            f"[CONV_LOOP] Tool scoping: grid_mode={_grid_mode} intent={_intent} "
+            f"response_mode={_resp_mode} tools={len(tools)}"
+        )
         max_tokens = TURN_BUDGETS[turn_type] or self._prev_turn_budget or 2048
         caller_context = f"conversational_{turn_type.value}"
 
@@ -5215,8 +5283,18 @@ class UnifiedMCPOrchestrator:
             "message": "Building execution plan...",
         }
 
+        # Build a task-mode classification so _run_agent_loop gets full
+        # tool access and iteration budget. Without this, it defaults to
+        # "reply" mode which strips most tools and caps iterations to 2.
+        _crystal_classification = QueryClassification(
+            complexity="complex",
+            intent=crystal.get("intent", "analysis"),
+            response_mode="task",
+            needs_portfolio=True,
+        )
+
         plan_steps = await self._generate_cheap_plan(
-            synthesized_prompt, classification=None,
+            synthesized_prompt, classification=_crystal_classification,
         )
 
         if plan_steps:
@@ -5237,6 +5315,7 @@ class UnifiedMCPOrchestrator:
                 context={"plan_steps": plan_steps} if plan_steps else {},
                 approved_plan=True,
                 entities=entities,
+                classification=_crystal_classification,
             ):
                 evt_type = event.get("type")
 
@@ -5386,8 +5465,16 @@ class UnifiedMCPOrchestrator:
                 "message": "Rebuilding execution plan with changes...",
             }
 
+            # Task-mode classification for full tool access in steered re-execution
+            _steer_classification = QueryClassification(
+                complexity="complex",
+                intent=crystal.get("intent", "analysis"),
+                response_mode="task",
+                needs_portfolio=True,
+            )
+
             plan_steps = await self._generate_cheap_plan(
-                synthesized_prompt, classification=None,
+                synthesized_prompt, classification=_steer_classification,
             )
 
             if plan_steps:
@@ -5406,6 +5493,7 @@ class UnifiedMCPOrchestrator:
                 context={"plan_steps": plan_steps} if plan_steps else {},
                 approved_plan=True,
                 entities=entities,
+                classification=_steer_classification,
             ):
                 evt_type = event.get("type")
                 if evt_type == "complete":
@@ -7431,6 +7519,103 @@ Answer using specific company names and numbers from the portfolio grid above.""
             return {"summary": "No portfolio data found. Ensure the grid is loaded or database is connected.", "rows": []}
         except Exception as e:
             logger.warning(f"[TOOL] query_portfolio failed: {e}")
+            return {"summary": f"Query failed: {e}", "rows": []}
+
+    async def _tool_query_grid(self, inputs: dict) -> dict:
+        """Universal grid reader. Works for portfolio, PNL, and legal modes."""
+        try:
+            grid_mode = self.shared_data.get("grid_mode", "portfolio")
+            matrix_ctx = self.shared_data.get("matrix_context") or {}
+            grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
+            grid_rows = (
+                grid_snapshot.get("rows", [])
+                if isinstance(grid_snapshot, dict)
+                else grid_snapshot if isinstance(grid_snapshot, list)
+                else []
+            )
+            query = (inputs.get("query") or "").lower()
+            row_name_filter = (inputs.get("row_name") or "").lower()
+            column_filter = (inputs.get("column") or "").lower()
+
+            if not grid_rows:
+                # Fallback: for PNL mode, try fpa_actuals via shared_data
+                if grid_mode == "pnl":
+                    pnl = self.shared_data.get("fpa_pnl_result")
+                    if pnl and isinstance(pnl, dict) and pnl.get("rows"):
+                        return {
+                            "grid_mode": grid_mode,
+                            "rows": pnl["rows"][:50],
+                            "periods": pnl.get("periods", []),
+                            "summary": f"P&L: {len(pnl['rows'])} line items",
+                            "source": "fpa_pnl_result",
+                        }
+                return {
+                    "grid_mode": grid_mode,
+                    "rows": [],
+                    "summary": f"Grid empty — no data loaded in {grid_mode} mode.",
+                }
+
+            # Build rows with mode-aware labeling
+            _MODE_LABELS = {
+                "portfolio": ("companyName", "companies"),
+                "pnl": ("rowName", "line items"),
+                "legal": ("rowName", "contracts/clauses"),
+            }
+            name_key, label = _MODE_LABELS.get(grid_mode, ("rowName", "rows"))
+
+            rows_out = []
+            for row in grid_rows[:50]:
+                name = (
+                    row.get("companyName") or row.get("rowName")
+                    or row.get("company_name") or row.get("name") or ""
+                )
+                # Filter by row_name if provided
+                if row_name_filter and row_name_filter not in name.lower():
+                    continue
+                # Filter by query (search across name + cell values)
+                cells = row.get("cells") or row.get("cellValues") or {}
+                if query:
+                    searchable = name.lower() + " " + " ".join(
+                        str(c.get("value", c) if isinstance(c, dict) else c)
+                        for c in cells.values()
+                    ).lower()
+                    if query not in searchable:
+                        continue
+
+                # Filter columns if requested
+                if column_filter:
+                    cells = {
+                        k: v for k, v in cells.items()
+                        if column_filter in k.lower()
+                    }
+
+                row_out = {
+                    "rowId": row.get("rowId") or row.get("row_id") or row.get("id") or "",
+                    name_key: name,
+                    "cells": dict(list(cells.items())[:25]),
+                }
+                # Legal: include document/clause IDs
+                if grid_mode == "legal":
+                    if row.get("documentId"):
+                        row_out["documentId"] = row["documentId"]
+                    rid = row.get("rowId") or row.get("id") or ""
+                    if rid.startswith("legal:"):
+                        row_out["clauseId"] = rid.replace("legal:", "")
+                rows_out.append(row_out)
+
+            columns = matrix_ctx.get("columns") or []
+            col_names = [c.get("name") or c.get("id") for c in columns[:25]] if columns else []
+
+            logger.info(f"[TOOL] query_grid mode={grid_mode}: {len(rows_out)} {label}")
+            return {
+                "grid_mode": grid_mode,
+                "rows": rows_out,
+                "columns": col_names,
+                "summary": f"{grid_mode.upper()} grid: {len(rows_out)} {label}, {len(col_names)} columns",
+                "source": "grid_context",
+            }
+        except Exception as e:
+            logger.warning(f"[TOOL] query_grid failed: {e}")
             return {"summary": f"Query failed: {e}", "rows": []}
 
     async def _tool_query_documents(self, inputs: dict) -> dict:
@@ -17264,6 +17449,7 @@ ABSOLUTE RULES:
                 "system_prompt_override", "classification",
                 "_conversation_history", "session_corrections",
                 "memo_artifacts", "company_id",
+                "matrix_context",  # Grid data — persist so fingerprint survives across turns
             }
             _current_mode = self.shared_data.get("grid_mode", "portfolio")
             if _current_mode == "pnl":
