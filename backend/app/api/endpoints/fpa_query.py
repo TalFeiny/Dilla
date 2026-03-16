@@ -1103,6 +1103,14 @@ async def upload_actuals_csv(
                 raise HTTPException(status_code=400, detail=err)
             is_transposed = True
 
+        # Log period detection for debugging
+        logger.info(
+            "[upload-actuals] Period columns detected: %s",
+            {col_idx: [(p, d) for p, d in tuples] for col_idx, tuples in period_cols.items()}
+            if not is_transposed else "transposed"
+        )
+        logger.info("[upload-actuals] Headers: %s", headers)
+
         _update_job({"step": "detecting_categories", "message": f"Detected {'transposed' if is_transposed else 'standard'} orientation"})
 
         # --- Tracking for detailed response ---
@@ -1420,8 +1428,26 @@ async def upload_actuals_csv(
             dedup[key] = row  # last write wins
         actuals_rows = list(dedup.values())
 
-        # --- Upsert into fpa_actuals ---
+        # --- Clear stale csv_upload rows for this company, then upsert ---
+        # Previous uploads may have stored rows with different hierarchy_path
+        # or subcategory values that won't be overwritten by the new upsert.
+        # Delete old csv_upload rows for the periods we're about to write.
+        # Log a sample of what we're about to write
+        sample = actuals_rows[:10]
+        logger.info(
+            "[upload-actuals] Sample rows to upsert (first 10): %s",
+            [(r["category"], r.get("subcategory", ""), r["period"], r["amount"]) for r in sample]
+        )
         _update_job({"step": "upserting", "message": f"Upserting {len(actuals_rows)} rows into fpa_actuals"})
+
+        upload_periods = sorted(set(r["period"] for r in actuals_rows))
+        for period_val in upload_periods:
+            sb.table("fpa_actuals") \
+                .delete() \
+                .eq("company_id", company_id) \
+                .eq("period", period_val) \
+                .eq("source", "csv_upload") \
+                .execute()
 
         sb.table("fpa_actuals").upsert(
             actuals_rows,
@@ -1462,6 +1488,16 @@ async def upload_actuals_csv(
             "completed_at": datetime.utcnow().isoformat(),
         })
 
+        # Build period_columns_debug so frontend/logs can show what was detected
+        period_columns_debug = []
+        for col_idx, tuples in sorted(period_cols.items()):
+            header_label = headers[col_idx] if col_idx < len(headers) else f"col{col_idx}"
+            period_columns_debug.append({
+                "column": col_idx,
+                "header": header_label,
+                "periods": [{"period": p, "divisor": d} for p, d in tuples],
+            })
+
         return {
             "ingested": len(actuals_rows),
             "job_id": job_id,
@@ -1477,6 +1513,7 @@ async def upload_actuals_csv(
             },
             "warnings": warnings,
             "grid_commands": grid_commands,
+            "period_columns": period_columns_debug,
         }
 
     except HTTPException:

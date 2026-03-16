@@ -190,9 +190,10 @@ class PnlBuilder:
             logger.warning("Supabase client unavailable — cannot fetch actuals")
             return {}, []
 
-        # Need source column when contract filtering is active
+        # Always include hierarchy_path for correct key resolution.
+        # Include source when contract filtering is active.
         has_contract_filters = excluded_sources or source_multipliers or terminated_sources
-        select_cols = "period, category, subcategory, hierarchy_path, amount, source" if has_contract_filters else "period, category, subcategory, amount"
+        select_cols = "period, category, subcategory, hierarchy_path, amount, source" if has_contract_filters else "period, category, subcategory, hierarchy_path, amount"
 
         query = sb.table("fpa_actuals").select(select_cols)
         if self.company_id:
@@ -598,6 +599,9 @@ class PnlBuilder:
             sec = item.get("section", "other")
             by_section.setdefault(sec, []).append(item)
 
+        # Track section data rows so totals can sum them (avoids double-counting)
+        section_data_rows: Dict[str, List[Dict[str, Any]]] = {}
+
         for section in SECTION_ORDER:
             items = by_section.get(section, [])
             if not items and section not in ("gross_profit", "ebitda"):
@@ -614,6 +618,7 @@ class PnlBuilder:
             })
 
             # Data rows for this section
+            data_rows_for_section: List[Dict[str, Any]] = []
             for item in items:
                 row_id = item["id"]
                 values: Dict[str, Optional[float]] = {}
@@ -638,53 +643,85 @@ class PnlBuilder:
                 if item.get("isTotal"):
                     row["isTotal"] = True
                 rows.append(row)
+                data_rows_for_section.append(row)
 
-            # Section subtotals
+            section_data_rows[section] = data_rows_for_section
+
+            # Section subtotals — sum the displayed data rows to avoid
+            # double-counting from overlapping actuals keys
             if section == "revenue":
-                rows.append(self._computed_row(
-                    "total_revenue", "Total Revenue", section, all_periods,
-                    actuals, forecast
+                rows.append(self._sum_data_rows_total(
+                    "total_revenue", "Total Revenue", section,
+                    data_rows_for_section, all_periods, actuals, forecast
                 ))
             elif section == "cogs":
-                rows.append(self._computed_row(
-                    "total_cogs", "Total COGS", section, all_periods,
-                    actuals, forecast
+                rows.append(self._sum_data_rows_total(
+                    "total_cogs", "Total COGS", section,
+                    data_rows_for_section, all_periods, actuals, forecast
                 ))
                 # Insert Gross Profit after COGS
                 rows.append(self._inline_computed_row(
                     "gross_profit", "Gross Profit", "gross_profit", all_periods,
-                    actuals, forecast, compute_fn=self._compute_gross_profit
+                    actuals, forecast, compute_fn=lambda p, a, f: self._compute_gross_profit(p, a, f)
                 ))
             elif section == "opex":
-                rows.append(self._computed_row(
-                    "total_opex", "Total OpEx", section, all_periods,
-                    actuals, forecast
+                rows.append(self._sum_data_rows_total(
+                    "total_opex", "Total OpEx", section,
+                    data_rows_for_section, all_periods, actuals, forecast
                 ))
             elif section == "ebitda":
                 # EBITDA is computed: gross_profit - total_opex
                 rows.append(self._inline_computed_row(
                     "ebitda", "EBITDA", "ebitda", all_periods,
-                    actuals, forecast, compute_fn=self._compute_ebitda
+                    actuals, forecast, compute_fn=lambda p, a, f: self._compute_ebitda(p, a, f)
                 ))
+
+        # Store section totals for gross_profit / ebitda computation
+        self._section_totals = {}
+        for row in rows:
+            if row.get("isTotal"):
+                self._section_totals[row["id"]] = row["values"]
 
         return rows
 
-    def _computed_row(
+    def _sum_data_rows_total(
         self,
         row_id: str,
         label: str,
         section: str,
+        data_rows: List[Dict[str, Any]],
         periods: List[str],
         actuals: Dict[str, Dict[str, float]],
         forecast: Dict[str, Dict[str, float]],
     ) -> Dict[str, Any]:
-        """Build a total/subtotal row from actuals or forecast."""
+        """Build a total row by summing the displayed data rows for this section.
+
+        This avoids double-counting — we only sum what's actually shown in the grid.
+        Falls through to forecast only if no data rows had values for a period.
+        """
         values: Dict[str, Optional[float]] = {}
         for p in periods:
+            # 1. Try direct key first (e.g. if "total_revenue" is stored explicitly)
             val = actuals.get(row_id, {}).get(p)
-            if val is None:
-                val = forecast.get(p, {}).get(row_id)
-            values[p] = val
+            if val is not None:
+                values[p] = val
+                continue
+
+            # 2. Sum displayed data rows for this section
+            total = 0.0
+            found = False
+            for dr in data_rows:
+                cell_val = dr.get("values", {}).get(p)
+                if cell_val is not None:
+                    total += cell_val
+                    found = True
+            if found:
+                values[p] = total
+                continue
+
+            # 3. Fall through to forecast
+            values[p] = forecast.get(p, {}).get(row_id)
+
         return {
             "id": row_id,
             "label": label,
@@ -949,30 +986,37 @@ class PnlBuilder:
             logger.debug(f"Computed metrics skipped: {e}")
             return rows
 
-    @staticmethod
+    def _get_section_total(self, total_id: str, period: str) -> Optional[float]:
+        """Get a previously computed section total."""
+        return getattr(self, "_section_totals", {}).get(total_id, {}).get(period)
+
     def _compute_gross_profit(
+        self,
         period: str,
         actuals: Dict[str, Dict[str, float]],
         forecast: Dict[str, Dict[str, float]],
     ) -> Optional[float]:
-        rev = actuals.get("total_revenue", {}).get(period)
+        # Use section totals computed from displayed rows
+        rev = self._get_section_total("total_revenue", period)
         if rev is None:
             rev = forecast.get(period, {}).get("total_revenue")
-        cogs = actuals.get("total_cogs", {}).get(period)
+        cogs = self._get_section_total("total_cogs", period)
         if cogs is None:
             cogs = forecast.get(period, {}).get("total_cogs")
         if rev is not None and cogs is not None:
             return rev - cogs
+        if rev is not None:
+            return rev
         return None
 
-    @staticmethod
     def _compute_ebitda(
+        self,
         period: str,
         actuals: Dict[str, Dict[str, float]],
         forecast: Dict[str, Dict[str, float]],
     ) -> Optional[float]:
-        gp = PnlBuilder._compute_gross_profit(period, actuals, forecast)
-        opex = actuals.get("total_opex", {}).get(period)
+        gp = self._compute_gross_profit(period, actuals, forecast)
+        opex = self._get_section_total("total_opex", period)
         if opex is None:
             opex = forecast.get(period, {}).get("total_opex")
         if gp is not None and opex is not None:
