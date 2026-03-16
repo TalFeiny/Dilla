@@ -432,7 +432,7 @@ async def get_budget_lines(budget_id: str):
 # Month header patterns: "Jan", "January", "2025-01", "Jan-25", "Jan 2025", "1/2025"
 _MONTH_NAMES = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    "jul": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
     "january": 1, "february": 2, "march": 3, "april": 4,
     "june": 6, "july": 7, "august": 8, "september": 9,
     "october": 10, "november": 11, "december": 12,
@@ -518,6 +518,8 @@ def _clean_header(raw: str) -> str:
     h = raw.strip()
     # Remove trailing parenthetical: (Est.), (Actual), (Budget), (Forecast)
     h = re.sub(r"\s*\((?:Est\.?|Actual|Budget|Forecast|Projected|Plan)\)\s*$", "", h, flags=re.I)
+    # Remove period after abbreviated month names: "Jan." → "Jan", "Sept." → "Sept"
+    h = re.sub(r"^([A-Za-z]{3,5})\.\s*", r"\1 ", h)
     return h.strip()
 
 
@@ -547,6 +549,20 @@ def _parse_period_header(header: str) -> Optional[List[tuple]]:
 
     # "1/2025", "01/2025"
     m = re.match(r"^(\d{1,2})/(\d{4})$", h)
+    if m:
+        month_num = int(m.group(1))
+        if 1 <= month_num <= 12:
+            return [(f"{m.group(2)}-{month_num:02d}", 1)]
+
+    # "01-2025", "1-2025" (digit-month with dash)
+    m = re.match(r"^(\d{1,2})-(\d{4})$", h)
+    if m:
+        month_num = int(m.group(1))
+        if 1 <= month_num <= 12:
+            return [(f"{m.group(2)}-{month_num:02d}", 1)]
+
+    # "01/01/2025", "1/1/2025" (MM/DD/YYYY — use month only)
+    m = re.match(r"^(\d{1,2})/\d{1,2}/(\d{4})$", h)
     if m:
         month_num = int(m.group(1))
         if 1 <= month_num <= 12:
@@ -599,6 +615,57 @@ def _parse_period_header(header: str) -> Optional[List[tuple]]:
             return [(f"{year}-{start + i:02d}", count) for i in range(count)]
 
     return None
+
+
+def _parse_month_only(header: str) -> Optional[int]:
+    """Parse a bare month name with no year (e.g. 'January', 'Feb', 'Sept').
+    Returns month number (1-12) or None."""
+    h = _clean_header(header).lower().strip()
+    return _MONTH_NAMES.get(h)
+
+
+def _infer_year_for_month_headers(headers: List[str], period_cols: Dict[int, List[tuple]]) -> Dict[int, List[tuple]]:
+    """Fallback: if regular _parse_period_header found very few columns but many
+    headers are bare month names, infer the year from any successfully parsed column
+    or default to the current year.
+
+    This handles CSVs like: Category | January | February | March | ...
+    """
+    from datetime import date
+
+    # Count how many non-first headers are bare month names
+    month_only_cols: Dict[int, int] = {}  # col_index → month_num
+    for i, h in enumerate(headers):
+        if i == 0:
+            continue
+        if i in period_cols:
+            continue  # already detected
+        mn = _parse_month_only(h)
+        if mn:
+            month_only_cols[i] = mn
+
+    # Only apply if month-only columns outnumber already-detected period columns
+    if not month_only_cols or len(month_only_cols) <= len(period_cols):
+        return period_cols
+
+    # Infer year: from an already-detected period column, or current year
+    inferred_year = str(date.today().year)
+    for tuples in period_cols.values():
+        if tuples:
+            inferred_year = tuples[0][0][:4]
+            break
+
+    logger.info(
+        "[upload-actuals] Inferred year %s for %d bare month-name headers: %s",
+        inferred_year, len(month_only_cols),
+        {i: headers[i] for i in month_only_cols},
+    )
+
+    # Merge month-only columns into period_cols
+    merged = dict(period_cols)
+    for col_idx, mn in month_only_cols.items():
+        merged[col_idx] = [(f"{inferred_year}-{mn:02d}", 1)]
+    return merged
 
 
 def _parse_month_header(header: str) -> Optional[str]:
@@ -667,12 +734,15 @@ _ACCOUNT_COL_NAMES = {"account", "account_number", "account_no", "acct", "acct_n
 _PARENT_COL_NAMES = {"parent_account", "parent_id", "parent_account_id", "parent_acct"}
 _LEVEL_COL_NAMES = {"level", "depth", "indent_level", "hierarchy_level"}
 _LABEL_COL_NAMES = {"name", "label", "description", "account_name", "line_item"}
+_SUBCATEGORY_COL_NAMES = {"subcategory", "sub_category", "sub-category", "line_item", "detail",
+                           "sub", "item", "description", "memo"}
+_CATEGORY_COL_NAMES = {"category", "type", "account_type", "group", "section"}
 
 
 def _detect_hierarchy_columns(headers: List[str]) -> Dict[str, Any]:
     """Scan CSV headers to detect ERP hierarchy strategy.
 
-    Precedence: parent_id > level_column > account_number > indent (default).
+    Precedence: explicit_subcategory > parent_id > level_column > account_number > indent (default).
     """
     lower_headers = [h.lower().strip() for h in headers]
     result: Dict[str, Any] = {"strategy": "indent"}
@@ -681,6 +751,8 @@ def _detect_hierarchy_columns(headers: List[str]) -> Dict[str, Any]:
     parent_col = None
     level_col = None
     label_col = 0  # default to first column
+    subcategory_col = None
+    category_col = None
 
     for i, h in enumerate(lower_headers):
         if h in _ACCOUNT_COL_NAMES:
@@ -689,10 +761,20 @@ def _detect_hierarchy_columns(headers: List[str]) -> Dict[str, Any]:
             parent_col = i
         elif h in _LEVEL_COL_NAMES:
             level_col = i
+        elif h in _CATEGORY_COL_NAMES:
+            category_col = i
+        elif h in _SUBCATEGORY_COL_NAMES and subcategory_col is None:
+            subcategory_col = i
         elif h in _LABEL_COL_NAMES:
             label_col = i
 
-    if parent_col is not None and account_col is not None:
+    # Explicit Category + Subcategory columns (e.g. "Category, Subcategory, Jan-25, ...")
+    # This is highest priority — the CSV explicitly names the relationship.
+    if category_col is not None and subcategory_col is not None:
+        result = {"strategy": "explicit_subcategory", "category_col": category_col,
+                  "subcategory_col": subcategory_col, "label_col": category_col}
+        logger.info("[upload-actuals] Detected explicit Category/Subcategory columns: cat=%d, sub=%d", category_col, subcategory_col)
+    elif parent_col is not None and account_col is not None:
         result = {"strategy": "parent_id", "account_col": account_col,
                   "parent_col": parent_col, "label_col": label_col}
     elif level_col is not None:
@@ -925,6 +1007,8 @@ _SECTION_HEADER_PATTERNS = [
     (re.compile(r"^(?:r\s*&?\s*d|research\s*(?:&|and)\s*development)$", re.I), "opex_rd"),
     (re.compile(r"^(?:s\s*&?\s*m|sales\s*(?:&|and)\s*marketing)$", re.I), "opex_sm"),
     (re.compile(r"^(?:g\s*&?\s*a|general\s*(?:&|and)\s*admin(?:istrative)?)$", re.I), "opex_ga"),
+    # Operational metrics section
+    (re.compile(r"^key\s*metrics?|^operational\s*metrics?|^kpis?$", re.I), "headcount"),
     # Balance Sheet section headers
     (re.compile(r"^(?:current\s+)?assets$", re.I), "bs_cash"),
     (re.compile(r"^non[\s-]*current\s+assets?$", re.I), "bs_ppe"),
@@ -941,6 +1025,8 @@ _SECTION_TO_PARENT = {
     "opex_rd": "opex_rd",
     "opex_sm": "opex_sm",
     "opex_ga": "opex_ga",
+    # Operational metrics
+    "headcount": "headcount",
     # BS sections — child rows under these headers inherit the parent
     "bs_cash": "bs_cash",
     "bs_ppe": "bs_ppe",
@@ -1079,6 +1165,38 @@ async def upload_actuals_csv(
             if periods:
                 period_cols[i] = periods
 
+        # Fallback: if only 0-1 period columns detected, check for bare month names
+        # (e.g. "January", "Feb") and infer year from context
+        period_cols = _infer_year_for_month_headers(headers, period_cols)
+
+        # --- Remove redundant aggregate columns (FY/quarterly) when monthly data exists ---
+        # If we have monthly columns (divisor=1) for specific periods, drop any
+        # annual/quarterly columns (divisor>1) whose periods overlap — they would
+        # overwrite the precise monthly values with averaged totals in dedup.
+        monthly_periods = set()
+        for tuples in period_cols.values():
+            for period, divisor in tuples:
+                if divisor == 1:
+                    monthly_periods.add(period)
+
+        if monthly_periods:
+            cols_to_remove = []
+            for col_idx, tuples in period_cols.items():
+                if any(d > 1 for _, d in tuples):
+                    # This is an aggregate column — check if its periods overlap with monthly
+                    expanded = {p for p, _ in tuples}
+                    if expanded & monthly_periods:
+                        cols_to_remove.append(col_idx)
+                        logger.info(
+                            "[upload-actuals] Dropping aggregate column %d (%s) — "
+                            "monthly columns already cover %d of its %d periods",
+                            col_idx, headers[col_idx] if col_idx < len(headers) else f"col{col_idx}",
+                            len(expanded & monthly_periods), len(expanded),
+                        )
+            for col_idx in cols_to_remove:
+                del period_cols[col_idx]
+                warnings.append(f"Skipped aggregate column '{headers[col_idx]}' — monthly data takes priority")
+
         is_transposed = False
         cat_cols: Dict[int, str] = {}
 
@@ -1104,11 +1222,23 @@ async def upload_actuals_csv(
             is_transposed = True
 
         # Log period detection for debugging
-        logger.info(
-            "[upload-actuals] Period columns detected: %s",
-            {col_idx: [(p, d) for p, d in tuples] for col_idx, tuples in period_cols.items()}
-            if not is_transposed else "transposed"
-        )
+        if not is_transposed:
+            undetected = [
+                (i, headers[i]) for i in range(1, len(headers))
+                if i not in period_cols
+            ]
+            logger.info(
+                "[upload-actuals] Period columns detected (%d/%d): %s",
+                len(period_cols), len(headers) - 1,
+                {col_idx: [(p, d) for p, d in tuples] for col_idx, tuples in period_cols.items()},
+            )
+            if undetected:
+                logger.warning(
+                    "[upload-actuals] Undetected headers (not parsed as periods): %s",
+                    undetected,
+                )
+        else:
+            logger.info("[upload-actuals] Orientation: transposed")
         logger.info("[upload-actuals] Headers: %s", headers)
 
         _update_job({"step": "detecting_categories", "message": f"Detected {'transposed' if is_transposed else 'standard'} orientation"})
@@ -1197,6 +1327,7 @@ async def upload_actuals_csv(
             # =============================================
             row_info = []
             current_section_parent = None
+            is_explicit_subcategory = hierarchy_info["strategy"] == "explicit_subcategory"
 
             for idx_row, row in enumerate(data_rows):
                 if not row:
@@ -1209,6 +1340,96 @@ async def upload_actuals_csv(
                     skipped_separators += 1
                     continue
 
+                # --- Explicit Subcategory strategy ---
+                # CSV has named Category + Subcategory columns (e.g. "Revenue", "DOE Grants")
+                if is_explicit_subcategory:
+                    cat_col_idx = hierarchy_info["category_col"]
+                    sub_col_idx = hierarchy_info["subcategory_col"]
+                    raw_cat = row[cat_col_idx].strip() if cat_col_idx < len(row) else ""
+                    raw_sub = row[sub_col_idx].strip() if sub_col_idx < len(row) else ""
+
+                    if not raw_cat:
+                        row_info.append({"skip": "empty"})
+                        skipped_empty += 1
+                        continue
+
+                    has_amounts = any(
+                        _parse_amount(row[ci]) is not None
+                        for ci in period_cols
+                        if ci < len(row)
+                    )
+
+                    cleaned_cat, _, original_cat = _clean_label(raw_cat)
+
+                    # Match the category column against known P&L categories
+                    # (No unconditional skip — Pass 2 handles computed row dedup
+                    # conditionally. Rows like Gross Profit, Net Loss are real metrics.)
+                    cat = _match_category(cleaned_cat) or _match_category(original_cat)
+                    if not cat:
+                        fuzzy = _fuzzy_match_category(cleaned_cat)
+                        if fuzzy:
+                            cat = fuzzy[0]
+                            warnings.append(f"Fuzzy-matched '{original_cat}' → {cat} (score: {fuzzy[1]})")
+                        elif current_section_parent:
+                            # Category like "Other" doesn't match directly but section
+                            # header "Other Income / (Expense)" set current_section_parent
+                            cat = current_section_parent
+                        else:
+                            row_info.append({"skip": "unmapped", "raw_label": raw_cat})
+                            unmapped_labels.append(f"{raw_cat}: {raw_sub}" if raw_sub else raw_cat)
+                            continue
+
+                    # Determine subcategory — use the explicit column value
+                    sub_name = raw_sub if raw_sub else None
+                    depth = 1 if sub_name else 0
+
+                    # Section header: category with no subcategory and no amounts
+                    is_section_hdr = (not sub_name and not has_amounts)
+
+                    # Track section context for child rows
+                    if is_section_hdr:
+                        current_section_parent = cat
+                    elif not sub_name:
+                        # Standalone metric row (Gross Profit, Net Loss, etc.) — reset section
+                        if cat in _SECTION_TO_PARENT:
+                            current_section_parent = _SECTION_TO_PARENT[cat]
+                        else:
+                            current_section_parent = None
+
+                    # Build hierarchy_path directly for explicit subcategory rows
+                    if sub_name:
+                        h_path = f"{cat}/{sub_name}"
+                    else:
+                        h_path = cat
+
+                    info = {
+                        "skip": None,
+                        "raw_label": raw_cat,
+                        "cleaned": cleaned_cat,
+                        "depth": depth,
+                        "original": f"{original_cat}: {raw_sub}" if raw_sub else original_cat,
+                        "category": cat if not is_section_hdr else None,
+                        "subcategory": sub_name,
+                        "match_type": "explicit_subcategory" if sub_name else "regex",
+                        "is_section_header": is_section_hdr,
+                        "has_amounts": has_amounts,
+                        "hierarchy_path": h_path if not is_section_hdr else "",
+                    }
+
+                    if sub_name and sub_name not in subcategories_created:
+                        subcategories_created.append(sub_name)
+                    if not is_section_hdr:
+                        mapped_categories.append({
+                            "label": f"{raw_cat} / {raw_sub}" if raw_sub else raw_cat,
+                            "category": cat,
+                            "match": "explicit_subcategory",
+                            **({"subcategory": sub_name} if sub_name else {}),
+                        })
+
+                    row_info.append(info)
+                    continue
+
+                # --- Non-explicit strategies (indent, account_number, etc.) ---
                 label_col_idx = hierarchy_info.get("label_col", 0) if hierarchy_info["strategy"] != "indent" else 0
                 raw_label = row[label_col_idx] if label_col_idx < len(row) else (row[0] if row else "")
                 if not raw_label.strip():
@@ -1313,9 +1534,12 @@ async def upload_actuals_csv(
 
             # =============================================
             # PASS 1.5: Build hierarchy_path for each row using path stack
+            # (Skipped for rows that already have hierarchy_path set, e.g. explicit_subcategory)
             # =============================================
             path_stack: List[tuple] = []
             for ri in row_info:
+                if ri.get("hierarchy_path"):
+                    continue  # already set (e.g. explicit_subcategory strategy)
                 if ri.get("skip"):
                     ri["hierarchy_path"] = ""
                     continue
@@ -1659,6 +1883,76 @@ async def upload_budget_csv(
 
 
 # ---------------------------------------------------------------------------
+# Forecast chart builder
+# ---------------------------------------------------------------------------
+
+def _build_forecast_charts(rows: list, boundary_index: int = 0) -> list:
+    """Build chart payloads from forecast/rolling-forecast rows."""
+    if not rows:
+        return []
+
+    periods = [r.get("period", "") for r in rows]
+    charts = []
+
+    # Revenue & EBITDA line chart
+    rev = [r.get("revenue", 0) for r in rows]
+    ebitda = [r.get("ebitda", 0) for r in rows]
+    if any(v for v in rev):
+        charts.append({
+            "type": "line",
+            "title": "Revenue & EBITDA Forecast",
+            "renderType": "tableau",
+            "data": {
+                "labels": periods,
+                "datasets": [
+                    {"label": "Revenue", "data": rev},
+                    {"label": "EBITDA", "data": ebitda},
+                ],
+                "boundary_index": boundary_index,
+            },
+        })
+
+    # Cash balance & runway
+    cash = [r.get("cash_balance", 0) for r in rows]
+    runway = [r.get("runway_months", 0) for r in rows]
+    if any(v for v in cash):
+        charts.append({
+            "type": "line",
+            "title": "Cash Balance & Runway",
+            "renderType": "tableau",
+            "data": {
+                "labels": periods,
+                "datasets": [
+                    {"label": "Cash Balance", "data": cash},
+                    {"label": "Runway (months)", "data": runway, "yAxis": "right"},
+                ],
+                "boundary_index": boundary_index,
+            },
+        })
+
+    # OpEx breakdown stacked bar
+    rd = [r.get("rd_spend", 0) for r in rows]
+    sm = [r.get("sm_spend", 0) for r in rows]
+    ga = [r.get("ga_spend", 0) for r in rows]
+    if any(v for v in rd) or any(v for v in sm) or any(v for v in ga):
+        charts.append({
+            "type": "stacked_bar",
+            "title": "OpEx Breakdown",
+            "renderType": "tableau",
+            "data": {
+                "labels": periods,
+                "datasets": [
+                    {"label": "R&D", "data": rd},
+                    {"label": "S&M", "data": sm},
+                    {"label": "G&A", "data": ga},
+                ],
+            },
+        })
+
+    return charts
+
+
+# ---------------------------------------------------------------------------
 # Rolling forecast endpoint
 # ---------------------------------------------------------------------------
 
@@ -1689,6 +1983,10 @@ async def get_rolling_forecast(
                 status_code=400,
                 detail="No actuals or forecast data available. Upload financials first.",
             )
+        result["charts"] = _build_forecast_charts(
+            result.get("rows", []),
+            boundary_index=result.get("boundary_index", 0),
+        )
         return result
     except HTTPException:
         raise
@@ -1766,12 +2064,37 @@ async def get_scenario_tree(
 ):
     """
     Get the scenario branch tree for a company.
-    With enrich=true, includes computed metrics (revenue, EBITDA, cash, runway) per branch.
+    Always includes base_forecast (rolling forecast) so the scenarios view
+    has the base case to display. With enrich=true, includes computed
+    metrics (revenue, EBITDA, cash, runway) per branch.
     """
+    # Always fetch the rolling forecast as the base scenario
+    from app.services.rolling_forecast_service import RollingForecastService
+
+    base_forecast = []
+    base_charts = []
+    base_boundary_index = 0
+    try:
+        rf_svc = RollingForecastService()
+        rf_result = rf_svc.build_rolling_view(
+            company_id=company_id,
+            window_months=forecast_months + 12,
+            granularity="monthly",
+        )
+        base_forecast = rf_result.get("rows", [])
+        base_boundary_index = rf_result.get("boundary_index", 0)
+        base_charts = _build_forecast_charts(base_forecast, base_boundary_index)
+    except Exception as e:
+        logger.warning("Could not load base forecast for scenario tree: %s", e)
+
     if enrich:
         from app.services.scenario_branch_service import ScenarioBranchService
         svc = ScenarioBranchService()
-        return svc.get_enriched_tree(company_id, forecast_months)
+        tree = svc.get_enriched_tree(company_id, forecast_months)
+        tree["base_forecast"] = base_forecast
+        tree["charts"] = base_charts
+        tree["boundary_index"] = base_boundary_index
+        return tree
 
     from app.core.supabase_client import get_supabase_client
 
@@ -1792,7 +2115,13 @@ async def get_scenario_tree(
         else:
             roots.append(node)
 
-    return {"company_id": company_id, "branches": roots}
+    return {
+        "company_id": company_id,
+        "branches": roots,
+        "base_forecast": base_forecast,
+        "charts": base_charts,
+        "boundary_index": base_boundary_index,
+    }
 
 
 @router.post("/scenarios/compare")
@@ -2300,6 +2629,7 @@ async def generate_forecast(request: FPAForecastRequest):
                 "stage": company_data.get("stage"),
                 "gross_margin": company_data.get("gross_margin"),
             },
+            "charts": _build_forecast_charts(forecast, boundary_index=0),
         }
     except HTTPException:
         raise

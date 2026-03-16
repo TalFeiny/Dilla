@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { getClientBackendUrl } from '@/lib/backend-url';
 import type { ChartConfig } from '@/components/matrix/ChartViewport';
 
@@ -105,6 +105,11 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
       setLoading(false);
     }
   }, [companyId, backendUrl]);
+
+  // Auto-load tree when companyId becomes available
+  useEffect(() => {
+    if (companyId) loadTree();
+  }, [companyId, loadTree]);
 
   // ----- refreshComparison -----
   const refreshComparison = useCallback(async () => {

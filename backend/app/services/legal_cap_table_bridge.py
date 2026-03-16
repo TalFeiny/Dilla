@@ -359,18 +359,25 @@ class LegalCapTableBridge:
         company_id: str,
         fund_id: str,
         trigger_document_id: Optional[str] = None,
+        document_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Main entry point. Loads all cap-table-relevant documents for a company,
         resolves terms, builds the cap table, and persists.
 
+        When document_ids is provided (legal mode), loads those specific documents
+        directly instead of querying by company_id — supports untethered legal flow.
+
         Returns dict with share_entries, ownership, reconciliation_log, etc.
         """
         try:
-            # Step 1: Load documents
-            docs = self._load_documents(company_id)
+            # Step 1: Load documents — prefer document_ids if provided
+            if document_ids:
+                docs = self._load_documents_by_ids(document_ids)
+            else:
+                docs = self._load_documents(company_id)
             if not docs:
-                logger.info("[CAP_BRIDGE] No cap-table docs for company %s", company_id)
+                logger.info("[CAP_BRIDGE] No cap-table docs for company %s (doc_ids=%s)", company_id, bool(document_ids))
                 return {"success": False, "reason": "no_documents"}
 
             # Step 2+3: Aggregate and resolve
@@ -601,6 +608,38 @@ class LegalCapTableBridge:
             return resp.data or []
         except Exception as e:
             logger.warning("[CAP_BRIDGE] Failed to load docs for %s: %s", company_id, e)
+            return []
+
+    def _load_documents_by_ids(self, document_ids: List[str]) -> List[Dict]:
+        """Load specific documents by ID — for legal mode where company_id may be absent.
+
+        Filters to cap-table-relevant types after loading by ID.
+        """
+        sb = self._get_sb()
+        if not sb or not document_ids:
+            return []
+
+        cap_doc_types = [
+            "sha", "term_sheet", "side_letter", "option_agreement",
+            "warrant_agreement", "convertible_note", "safe", "spa",
+            "subscription_agreement", "articles_of_association",
+            "spv_agreement", "pro_rata_agreement", "amendment",
+        ]
+
+        try:
+            resp = (
+                sb.table("processed_documents")
+                .select("id, document_type, extracted_data, created_at, document_name")
+                .in_("id", document_ids)
+                .order("created_at", desc=False)
+                .execute()
+            )
+            # Filter to cap-table-relevant types
+            docs = [d for d in (resp.data or []) if d.get("document_type") in cap_doc_types]
+            logger.info("[CAP_BRIDGE] Loaded %d/%d docs by ID (cap-table relevant)", len(docs), len(resp.data or []))
+            return docs
+        except Exception as e:
+            logger.warning("[CAP_BRIDGE] Failed to load docs by IDs: %s", e)
             return []
 
     def _aggregate_and_resolve(self, docs: List[Dict]) -> ResolvedCapTableTerms:

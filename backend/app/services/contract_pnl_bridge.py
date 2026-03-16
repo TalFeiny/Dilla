@@ -393,11 +393,15 @@ def query_contract_attribution(
     category: Optional[str] = None,
     period_start: Optional[str] = None,
     period_end: Optional[str] = None,
+    document_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Show which contracts drive each P&L line — both revenue and cost side.
 
     Returns per-contract P&L breakdown with lifecycle metadata from
     processed_documents, plus a by_category summary.
+
+    When document_ids is provided (legal mode), also queries UNLINKED rows
+    that match those document sources.
     """
     sb = _get_supabase_client()
     if not sb:
@@ -410,6 +414,21 @@ def query_contract_attribution(
         .eq("company_id", company_id)
         .like("source", "document:%")
     )
+    # Also pick up UNLINKED rows if we have document_ids (legacy legal writes)
+    unlinked_rows: list = []
+    if document_ids:
+        source_filters = [f"document:{did}" for did in document_ids]
+        try:
+            unlinked_q = (
+                sb.table("fpa_actuals")
+                .select("period, category, subcategory, hierarchy_path, amount, source")
+                .eq("company_id", _UNLINKED)
+                .in_("source", source_filters)
+            )
+            unlinked_result = unlinked_q.execute()
+            unlinked_rows = unlinked_result.data or []
+        except Exception:
+            pass  # non-critical — just skip UNLINKED recovery
     if fund_id:
         q = q.eq("fund_id", fund_id)
     if category:
@@ -420,7 +439,16 @@ def query_contract_attribution(
         q = q.lte("period", f"{period_end}-01")
 
     result = q.order("period").execute()
-    if not result.data:
+    # Merge UNLINKED rows (deduped by source+period to avoid doubles)
+    all_rows = list(result.data or [])
+    if unlinked_rows:
+        seen = {(r["source"], r["period"]) for r in all_rows}
+        for ur in unlinked_rows:
+            key = (ur["source"], ur["period"])
+            if key not in seen:
+                all_rows.append(ur)
+                seen.add(key)
+    if not all_rows:
         return {"contracts": [], "by_category": {}}
 
     # 2. Group by source (contract) → category/subcategory
@@ -430,7 +458,7 @@ def query_contract_attribution(
     cat_totals: Dict[str, float] = defaultdict(float)
     cat_contract_totals: Dict[str, float] = defaultdict(float)
 
-    for row in result.data:
+    for row in all_rows:
         source = row["source"]
         cat = row["category"]
         sub = row.get("subcategory") or ""

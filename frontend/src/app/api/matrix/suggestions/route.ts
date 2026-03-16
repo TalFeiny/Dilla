@@ -1712,6 +1712,31 @@ export async function POST(request: NextRequest) {
           try { rawSuggested = JSON.parse(rawSuggested); } catch { /* keep as-is */ }
         }
 
+        // Cap table suggestions → persist to company_cap_tables
+        const isCapTable = typeof pendingRow.column_id === 'string' && pendingRow.column_id.startsWith('cap_table:');
+        if (isCapTable) {
+          const sv = typeof rawSuggested === 'object' && rawSuggested !== null ? rawSuggested as Record<string, unknown> : {};
+          const meta = typeof pendingRow.metadata === 'object' && pendingRow.metadata !== null ? pendingRow.metadata as Record<string, unknown> : {};
+          // Upsert the cap table data
+          const { error: capErr } = await supabaseService
+            .from('company_cap_tables')
+            .upsert({
+              portfolio_id: fundId,
+              company_id: pendingRow.company_id,
+              company_name: sv.shareholder ?? '',
+              cap_table_json: sv,
+              source: 'accepted_suggestion',
+              funding_data_source: meta.document_id ? `document:${meta.document_id}` : pendingRow.source_service,
+            }, { onConflict: 'portfolio_id,company_id' });
+          if (capErr) {
+            console.error('[suggestions] company_cap_tables upsert failed:', capErr);
+            return NextResponse.json(
+              { success: false, error: 'Failed to persist accepted cap table' },
+              { status: 500 }
+            );
+          }
+        }
+
         // Legal clause suggestions → persist to document_clauses (dedicated table)
         const isLegalClause = typeof pendingRow.column_id === 'string' && pendingRow.column_id.startsWith('legal:');
         if (isLegalClause) {
@@ -1753,7 +1778,7 @@ export async function POST(request: NextRequest) {
               { status: 500 }
             );
           }
-        } else {
+        } else if (!isCapTable) {
           // Standard cell-edit: write to company record
           const newValue = typeof rawSuggested === 'object' && rawSuggested !== null && 'value' in rawSuggested
             ? (rawSuggested as { value: unknown }).value

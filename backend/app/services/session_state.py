@@ -266,6 +266,18 @@ class SessionState:
         """Actual P&L grid state for CFO agent situational awareness."""
         lines: list[str] = []
 
+        # ── Company UUID — tools need this, not a name ──
+        company_id = self._data.get("company_id")
+        if company_id:
+            lines.append(f"COMPANY_ID: {company_id}")
+
+        # ── Company snapshot from company_fpa_context ──
+        cfpa = self._data.get("company_fpa_context")
+        if cfpa and isinstance(cfpa, dict):
+            cname = cfpa.get("companyName") or cfpa.get("company_name")
+            if cname:
+                lines.append(f"COMPANY: {cname}")
+
         # ── Read grid data (primary: grid_rows, fallback: fpa_pnl_result) ──
         pnl_result = self._data.get("fpa_pnl_result")
         pnl_periods: list = []
@@ -398,8 +410,27 @@ class SessionState:
     # ── Legal fingerprint ─────────────────────────────────────────────
 
     def _fingerprint_legal(self) -> str:
-        """Contract register + extracted clauses/obligations for legal reasoning."""
+        """Contract register + extracted clauses/obligations for legal reasoning.
+
+        Emits: COMPANY_ID (if resolved), DOCUMENTS (id→clause mapping),
+        per-clause contract register with terms/flags/obligations.
+        """
         lines: list[str] = []
+
+        # ── Company UUID — may have been resolved from document records ──
+        company_id = self._data.get("company_id")
+        if company_id:
+            lines.append(f"COMPANY_ID: {company_id}")
+
+        # ── Document → Clause mapping — tools need these IDs ─────────
+        doc_ids = self._data.get("legal_document_ids") or []
+        clause_ids = self._data.get("legal_clause_ids") or []
+        doc_clause_map = self._data.get("legal_doc_clause_map") or {}
+        if doc_ids:
+            lines.append(f"DOCUMENTS ({len(doc_ids)}, {len(clause_ids)} clauses)")
+            for did in doc_ids[:10]:
+                clauses = doc_clause_map.get(did, [])
+                lines.append(f"  doc:{did[:12]}… → {len(clauses)} clauses")
 
         # ── Legal column mapping (normalized key → display key) ──────
         _COL_MAP = {
@@ -418,6 +449,13 @@ class SessionState:
             row_name = row.get("rowName") or row.get("companyName") or row.get("name") or ""
             cells = row.get("cells") or row.get("cellValues") or {}
             c: dict[str, str] = {"_row_name": row_name}
+            # Carry clause_id and document_id from the row
+            rid = row.get("rowId") or row.get("id") or ""
+            if rid.startswith("legal:"):
+                c["_clause_id"] = rid.replace("legal:", "")
+            did = row.get("documentId") or ""
+            if did:
+                c["_document_id"] = did
             for cell_key, cell_val in cells.items():
                 val = cell_val.get("value", cell_val) if isinstance(cell_val, dict) else cell_val
                 norm = cell_key.lower().replace(" ", "").replace("_", "")
@@ -442,8 +480,8 @@ class SessionState:
 
         # ── Contract register ────────────────────────────────────────
         total = len(contracts)
-        filled = sum(len(c) - 1 for c in contracts)
-        lines.append(f"CONTRACTS ({total}, {filled}/{total * len(_COL_MAP)} fields)")
+        filled = sum(1 for c in contracts for k in c if not k.startswith("_"))
+        lines.append(f"CLAUSES ({total}, {filled}/{total * len(_COL_MAP)} fields)")
 
         deadlines: list[str] = []
         total_annual: float = 0.0
@@ -453,6 +491,11 @@ class SessionState:
             ctype = c.get("type", "")
             if ctype:
                 doc = f"{doc} ({ctype})"
+
+            # Prefix with clause_id so agent can reference specific clauses
+            clause_prefix = ""
+            if c.get("_clause_id"):
+                clause_prefix = f"[{c['_clause_id'][:8]}…] "
 
             parts: list[str] = []
             cp = c.get("counterparty") or c.get("party")
@@ -477,7 +520,7 @@ class SessionState:
             if c.get("obligations"):
                 parts.append(f"OBLIGATIONS: {c['obligations'][:120]}")
 
-            lines.append(f"  {doc} — {' | '.join(parts)}" if parts else f"  {doc}")
+            lines.append(f"  {clause_prefix}{doc} — {' | '.join(parts)}" if parts else f"  {clause_prefix}{doc}")
 
             if c.get("nextDeadline"):
                 deadlines.append(f"{doc}: {c['nextDeadline']}")
@@ -489,6 +532,14 @@ class SessionState:
             lines.append(f"DEADLINES: {' | '.join(deadlines[:5])}")
         if total_annual > 0:
             lines.append(f"EXPOSURE: {_fmt_money(total_annual)}/yr total")
+
+        # ── Bridge results if available ──────────────────────────────
+        cap_result = self._data.get("legal_cap_table_result")
+        if cap_result and isinstance(cap_result, dict) and cap_result.get("success"):
+            lines.append(f"CAP TABLE BRIDGE: built ({cap_result.get('share_count', '?')} entries)")
+        pnl_result = self._data.get("contract_pnl_result")
+        if pnl_result and isinstance(pnl_result, dict) and not pnl_result.get("error"):
+            lines.append(f"PNL BRIDGE: {pnl_result.get('periods_written', '?')} periods attributed")
 
         # ── Charts ───────────────────────────────────────────────────
         lines.append("CHARTS: use generate_chart (bar, sankey, heatmap, waterfall)")

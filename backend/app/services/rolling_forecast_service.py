@@ -60,6 +60,16 @@ class RollingForecastService:
         actuals_monthly = self._load_actuals_monthly(company_id)
         num_actuals = len(actuals_monthly)
 
+        # Capture data boundaries for frontend column generation
+        actuals_start = actuals_monthly[0]["period"] if actuals_monthly else None
+        actuals_end = actuals_monthly[-1]["period"] if actuals_monthly else None
+
+        # Auto-expand window if actuals span exceeds half the window
+        if num_actuals > 0:
+            actual_span = num_actuals
+            if actual_span > window_months // 2:
+                window_months = max(window_months, actual_span + 12)
+
         # --- 2. Determine forecast start ---
         if actuals_monthly:
             last_actual_period = actuals_monthly[-1]["period"]
@@ -104,7 +114,61 @@ class RollingForecastService:
         boundary_index = len(actuals_monthly)
         boundary_period = forecast_start if forecast_monthly else None
 
-        # --- 5. Aggregate if needed ---
+        # --- 5. Compute metrics for each period ---
+        from app.services.computed_metrics import ComputedMetrics
+
+        metric_derivations_by_period: Dict[str, Dict[str, str]] = {}
+        for row in combined:
+            seed = {
+                "revenue": row.get("revenue", 0),
+                "burn_rate": row.get("cogs", 0) + row.get("total_opex", 0),
+                "cash_balance": row.get("cash_balance", 0),
+                "gross_margin": row.get("gross_margin", 0),
+                "growth_rate": row.get("growth_rate_annual", 0),
+                "headcount": row.get("headcount", 0),
+                "net_burn": (row.get("cogs", 0) + row.get("total_opex", 0)) - row.get("revenue", 0),
+            }
+            metrics = ComputedMetrics.compute_all(seed)
+            row["gross_burn_rate"] = metrics.get("gross_burn_rate")
+            row["net_burn_rate"] = metrics.get("net_burn_rate")
+            row["runway_months"] = metrics.get("runway_months") or row.get("runway_months")
+            row["rule_of_40"] = metrics.get("rule_of_40")
+            # Store metric derivations for hover explanations
+            period = row.get("period", "")
+            if period:
+                metric_derivations_by_period[period] = metrics.get("_derivations", {})
+
+        # --- 6. Generate per-cell derivations for hover explanations ---
+        cell_derivations = {}
+        try:
+            from app.services.forecast_explainer import ForecastExplainer
+
+            explainer = ForecastExplainer()
+            seed_data = seed_forecast_from_actuals(company_id) if actuals_monthly else {}
+            method = seed_data.get("_forecast_method", "growth_rate")
+            # Generate derivations for forecast cells
+            for i, row in enumerate(combined):
+                period = row.get("period", "")
+                is_forecast = row.get("source") == "forecast"
+                for key, val in row.items():
+                    if key in ("period", "source") or not isinstance(val, (int, float)):
+                        continue
+                    if is_forecast:
+                        derivation = explainer.explain_cell(
+                            key, period, val, method, seed_data,
+                            month_index=i - boundary_index,
+                        )
+                    else:
+                        derivation = f"{key} {period}: ${val:,.0f} (actual — from uploaded financials)"
+                    cell_derivations[f"{period}|{key}"] = derivation
+            # Merge computed metric derivations (burn rate, runway, rule of 40)
+            for period, derivs in metric_derivations_by_period.items():
+                for metric_key, derivation in derivs.items():
+                    cell_derivations[f"{period}|{metric_key}"] = derivation
+        except Exception as e:
+            logger.debug(f"Failed to generate cell derivations: {e}")
+
+        # --- 7. Aggregate if needed ---
         if granularity != "monthly":
             combined, boundary_index, boundary_period = self._aggregate(
                 combined, granularity
@@ -121,6 +185,9 @@ class RollingForecastService:
             "granularity": granularity,
             "actuals_count": sum(1 for r in combined if r.get("source") == "actual"),
             "forecast_count": sum(1 for r in combined if r.get("source") == "forecast"),
+            "actuals_start": actuals_start,
+            "actuals_end": actuals_end,
+            "cell_derivations": cell_derivations,
         }
 
     # ------------------------------------------------------------------

@@ -194,6 +194,9 @@ export function AGGridMatrix({
   const [gridApi, setGridApi] = useState<GridApi | null>(null);
   const gridApiRef = useRef<GridApi | null>(null);
   const [dragOverCell, setDragOverCell] = useState<{ rowId: string; columnId: string } | null>(null);
+  // Cell explanation tooltip state
+  const [cellTooltip, setCellTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const cellTooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // P&L tree: tracks which header rows are collapsed (all expanded by default)
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const toggleSection = useCallback((rowId: string) => {
@@ -1150,11 +1153,32 @@ export function AGGridMatrix({
                     columnId: params.colDef.field,
                   });
                 }
+                // Cell explanation tooltip
+                if (cellTooltipTimer.current) clearTimeout(cellTooltipTimer.current);
+                const field = params.colDef?.field;
+                if (field && params.data) {
+                  const cellObj = params.data[`_${field}_cell`] as MatrixCell | undefined;
+                  const explanation = cellObj?.metadata?.explanation;
+                  if (explanation) {
+                    cellTooltipTimer.current = setTimeout(() => {
+                      const event = params.event as MouseEvent | undefined;
+                      setCellTooltip({
+                        text: explanation,
+                        x: event?.clientX ?? 0,
+                        y: event?.clientY ?? 0,
+                      });
+                    }, 400);
+                  } else {
+                    setCellTooltip(null);
+                  }
+                }
               }}
               onCellMouseOut={() => {
                 // Clear after a short delay — if another cell fires mouseOver it will
                 // overwrite this, but if the mouse leaves the grid entirely we avoid stale state.
                 setTimeout(() => setDragOverCell(null), 150);
+                if (cellTooltipTimer.current) clearTimeout(cellTooltipTimer.current);
+                setCellTooltip(null);
               }}
               onRowGroupOpened={(params) => {
                 // Handle group expansion
@@ -1163,6 +1187,22 @@ export function AGGridMatrix({
           </div>
         </div>
       </div>
+      {/* Cell explanation tooltip */}
+      {cellTooltip && (
+        <div
+          style={{
+            position: 'fixed',
+            left: cellTooltip.x + 12,
+            top: cellTooltip.y - 8,
+            zIndex: 9999,
+            maxWidth: 360,
+            pointerEvents: 'none',
+          }}
+          className="rounded-md border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md"
+        >
+          {cellTooltip.text}
+        </div>
+      )}
     </div>
   );
 }

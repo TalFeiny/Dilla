@@ -264,7 +264,15 @@ export default function MatrixControlPanel() {
             metadata: { dataSource: `fpa-${pnlView}`, lastUpdated: new Date().toISOString() },
           });
         } else {
-          setMatrixData(data);
+          // Merge charts from API into metadata so UnifiedMatrix can push them to memo
+          if (data.charts?.length) {
+            setMatrixData({
+              ...data,
+              metadata: { ...data.metadata, charts: data.charts },
+            });
+          } else {
+            setMatrixData(data);
+          }
         }
         setPnlViewLoading(false);
       })

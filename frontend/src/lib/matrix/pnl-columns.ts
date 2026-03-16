@@ -13,6 +13,8 @@ export interface PnlColumnOptions {
   granularity?: Granularity;
   trailing?: number;
   forward?: number;
+  startPeriod?: string;  // "YYYY-MM" — override trailing calculation
+  endPeriod?: string;    // "YYYY-MM" — override forward calculation
 }
 
 function monthLabel(d: Date): string {
@@ -24,16 +26,32 @@ function quarterLabel(year: number, q: number): string {
 }
 
 export function buildPnlColumns(options?: PnlColumnOptions): MatrixColumn[] {
-  const { granularity = 'monthly', trailing = 6, forward = 6 } = options || {};
+  const { granularity = 'monthly', trailing = 6, forward = 6, startPeriod, endPeriod } = options || {};
   const now = new Date();
   const cols: MatrixColumn[] = [
     { id: 'lineItem', name: 'Line Item', type: 'text', width: 220, editable: false },
   ];
 
+  // Data-driven mode: use explicit start/end periods instead of relative trailing/forward
+  if (startPeriod && endPeriod && granularity === 'monthly') {
+    const [sy, sm] = startPeriod.split('-').map(Number);
+    const [ey, em] = endPeriod.split('-').map(Number);
+    let y = sy, m = sm;
+    while (y < ey || (y === ey && m <= em)) {
+      const d = new Date(y, m - 1, 1);
+      const mm = String(m).padStart(2, '0');
+      cols.push({ id: `${y}-${mm}`, name: monthLabel(d), type: 'currency', width: 110, editable: true });
+      m++;
+      if (m > 12) { m = 1; y++; }
+    }
+    return cols;
+  }
+
   if (granularity === 'annual') {
-    const currentYear = now.getFullYear();
-    for (let i = -trailing; i < forward; i++) {
-      const year = currentYear + i;
+    const baseYear = startPeriod ? parseInt(startPeriod.slice(0, 4)) : now.getFullYear();
+    const endYear = endPeriod ? parseInt(endPeriod.slice(0, 4)) : baseYear + forward - 1;
+    const startYear = startPeriod ? baseYear : now.getFullYear() - trailing;
+    for (let year = startYear; year <= endYear; year++) {
       cols.push({ id: `${year}`, name: `${year}`, type: 'currency', width: 110, editable: true });
     }
   } else if (granularity === 'quarterly') {
@@ -48,7 +66,7 @@ export function buildPnlColumns(options?: PnlColumnOptions): MatrixColumn[] {
       cols.push({ id, name: quarterLabel(y, q), type: 'currency', width: 110, editable: true });
     }
   } else {
-    // monthly (default)
+    // monthly (default) — relative to now
     for (let i = -trailing; i < forward; i++) {
       const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
       const yyyy = d.getFullYear();
@@ -186,6 +204,9 @@ export function buildCashFlowSkeletonRows(): import('@/components/matrix/Unified
     row('debt_service', 'Debt Service', {}),
     row('free_cash_flow', 'Free Cash Flow', { isComputed: true }),
     row('cash_balance', 'Cash Balance', {}),
+    row('gross_burn_rate', 'Gross Burn Rate', { isComputed: true }),
+    row('net_burn_rate', 'Net Burn Rate', { isComputed: true }),
     row('runway_months', 'Runway (months)', {}),
+    row('rule_of_40', 'Rule of 40', { isComputed: true }),
   ];
 }

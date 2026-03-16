@@ -22,10 +22,22 @@ type CellMap = Record<string, { value: unknown; source: string; metadata?: Recor
 
 function buildCells(values: Record<string, unknown>, cellMeta: Record<string, unknown>): CellMap {
   const cells: CellMap = {};
+  // Build hover explanation: reasoning + source document attribution
+  const reasoning = values.reasoning as string | undefined;
+  const docName = cellMeta.document_name as string | undefined;
+  const sourceService = cellMeta.source_service as string | undefined;
+  const confidence = cellMeta.confidence as number | undefined;
+  const explanationParts: string[] = [];
+  if (reasoning) explanationParts.push(reasoning);
+  if (docName) explanationParts.push(`Source: ${docName}`);
+  if (sourceService) explanationParts.push(`Service: ${sourceService}`);
+  if (confidence != null) explanationParts.push(`Confidence: ${(confidence * 100).toFixed(0)}%`);
+  const explanation = explanationParts.length > 0 ? explanationParts.join(' · ') : undefined;
+  const baseMeta = explanation ? { ...cellMeta, explanation } : cellMeta;
   for (const field of CLAUSE_FIELDS) {
     const val = values[field];
     if (val !== undefined && val !== null && val !== '') {
-      cells[field] = { value: val, source: 'document', metadata: cellMeta };
+      cells[field] = { value: val, source: 'document', metadata: baseMeta };
     }
   }
   return cells;

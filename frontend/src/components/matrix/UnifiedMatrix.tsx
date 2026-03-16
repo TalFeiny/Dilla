@@ -517,6 +517,29 @@ export function UnifiedMatrix({
     }, 800);
     return () => { if (memoSaveTimer.current) clearTimeout(memoSaveTimer.current); };
   }, [memoSections, fundId]);
+
+  // Push forecast/scenario charts into memo when matrixData.metadata.charts changes
+  const lastChartHashRef = useRef<string>('');
+  useEffect(() => {
+    const charts = matrixData?.metadata?.charts;
+    if (!charts?.length) return;
+    // Deduplicate: only append if charts are new (hash by titles)
+    const hash = charts.map((c: any) => c.title || c.type).join('|');
+    if (hash === lastChartHashRef.current) return;
+    lastChartHashRef.current = hash;
+
+    const chartSections: DocumentSection[] = charts.map((c: any) => ({
+      type: 'chart' as const,
+      chart: { type: c.type, title: c.title, data: c.data, renderType: c.renderType || 'tableau' },
+    }));
+    setMemoSections(prev => {
+      // Remove old forecast charts (replace, don't duplicate)
+      const withoutOldCharts = prev.filter(s => s.type !== 'chart' || !s.chart?.renderType);
+      return [...withoutOldCharts, ...chartSections];
+    });
+    setMemoPanelExpanded(true);
+  }, [matrixData?.metadata?.charts]);
+
   const [valuationPicker, setValuationPicker] = useState<{ rowId: string; columnId: string; rowData: any; matrixData: MatrixData } | null>(null);
   const [uploadDocumentTarget, setUploadDocumentTarget] = useState<{ rowId: string; columnId: string } | null>(null);
   const uploadFileInputRef = useRef<HTMLInputElement>(null);
@@ -717,7 +740,7 @@ export function UnifiedMatrix({
           companyNames: matrixData.rows.slice(0, 50).map((r) => r.companyName || r.id),
           columns: (matrixData.columns || []).slice(0, 30).map((c) => ({ id: c.id, name: c.name || c.id })),
           fundId,
-          gridSnapshot: buildGridSnapshot(matrixData),
+          gridSnapshot: buildGridSnapshot(matrixData, 5000, mode),
         }
       : undefined;
     try {

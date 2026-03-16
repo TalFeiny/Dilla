@@ -240,6 +240,10 @@ const FORECAST_LINE_ITEMS = [
   { key: 'debt_service', label: 'Interest / Debt Service', section: 'below_line', depth: 0 },
   { key: 'tax_expense', label: 'Tax', section: 'below_line', depth: 0 },
   { key: 'net_income', label: 'Net Income', section: 'below_line', depth: 0, isComputed: true },
+  { key: 'gross_burn_rate', label: 'Gross Burn Rate', section: 'metrics', depth: 0, isComputed: true },
+  { key: 'net_burn_rate', label: 'Net Burn Rate', section: 'metrics', depth: 0, isComputed: true },
+  { key: 'runway_months', label: 'Runway (months)', section: 'metrics', depth: 0, isComputed: true },
+  { key: 'rule_of_40', label: 'Rule of 40', section: 'metrics', depth: 0, isComputed: true },
 ];
 
 export function transformForecastRows(
@@ -250,6 +254,7 @@ export function transformForecastRows(
   const periods = rawRows.map((r: any) => r.period);
   const boundaryIndex: number = data.boundary_index ?? periods.length;
   const columns = buildForecastColumns(periods, boundaryIndex, granularity);
+  const derivations: Record<string, string> = data.cell_derivations || {};
 
   // Pivot: service returns one object per period, we need one row per line item
   const rows: MatrixRow[] = FORECAST_LINE_ITEMS.map((item) => {
@@ -258,11 +263,13 @@ export function transformForecastRows(
     };
     rawRows.forEach((periodRow: any, idx: number) => {
       const isForecast = idx >= boundaryIndex;
+      const derivationKey = `${periodRow.period}|${item.key}`;
+      const explanation = derivations[derivationKey] || undefined;
       cells[periodRow.period] = cell(periodRow[item.key] ?? null, {
         source: isForecast ? 'formula' : 'api',
-        displayValue: isForecast ? undefined : undefined,
         metadata: {
           generated_by: isForecast ? 'forecast' : 'actual',
+          explanation,
         },
       });
     });
@@ -278,7 +285,13 @@ export function transformForecastRows(
   return {
     columns,
     rows,
-    meta: { boundaryIndex, boundaryPeriod: data.boundary_period, granularity },
+    meta: {
+      boundaryIndex,
+      boundaryPeriod: data.boundary_period,
+      granularity,
+      actualsStart: data.actuals_start,
+      actualsEnd: data.actuals_end,
+    },
   };
 }
 
@@ -534,10 +547,15 @@ export interface PnlViewFetchParams {
   end?: string;
 }
 
+export interface PnlViewResult extends MatrixData {
+  /** Charts returned by the backend for rendering in the memo */
+  charts?: Array<{ type: string; title?: string; data: any; renderType?: string }>;
+}
+
 /**
  * Fetch data for a P&L view and transform into MatrixData.
  */
-export async function fetchPnlView(params: PnlViewFetchParams): Promise<MatrixData> {
+export async function fetchPnlView(params: PnlViewFetchParams): Promise<PnlViewResult> {
   const { view, companyId, fundId, granularity = 'monthly', budgetId, start, end } = params;
   const config = PNL_VIEW_CONFIGS[view];
 
@@ -650,5 +668,6 @@ export async function fetchPnlView(params: PnlViewFetchParams): Promise<MatrixDa
       forecastStartIndex: result.meta.forecastStartIndex ?? result.meta.boundaryIndex,
       ...result.meta,
     },
+    charts: data.charts ?? undefined,
   };
 }

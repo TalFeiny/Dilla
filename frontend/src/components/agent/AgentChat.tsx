@@ -202,9 +202,9 @@ const TOOL_ICONS: Record<string, React.ElementType> = {
 };
 
 /** Build compressed matrix context for backend (< 5KB) with optional gridSnapshot for cell values */
-function buildMatrixContext(matrixData: MatrixData | null | undefined, fundId?: string): MatrixContext | undefined {
+function buildMatrixContext(matrixData: MatrixData | null | undefined, fundId?: string, gridMode?: string): MatrixContext | undefined {
   if (!matrixData?.rows?.length) return undefined;
-  const gridSnapshot = buildGridSnapshot(matrixData);
+  const gridSnapshot = buildGridSnapshot(matrixData, 5000, gridMode || 'portfolio');
   return {
     rowIds: matrixData.rows.slice(0, 50).map((r) => r.id),
     companyNames: matrixData.rows.slice(0, 50).map((r) => r.companyName || r.id),
@@ -622,7 +622,7 @@ export default function AgentChat({
 
       // Always use unified-brain route (proxies to backend). Send grid when available so the agent can read it and resolve @mentions to rowIds for grid-run-* and grid_commands.
       const matrixContext = matrixData && (matrixData.rows?.length > 0 || matrixData.columns?.length > 0)
-        ? buildMatrixContext(matrixData, fundId)
+        ? buildMatrixContext(matrixData, fundId, mode)
         : undefined;
 
       // Extract @mentions — supports multi-word names like @Safe Intelligence, @QC Design
@@ -1066,6 +1066,8 @@ export default function AgentChat({
       // Detect scenario branch operations from agent response
       if (result.branch && onScenarioBranchCreated) {
         onScenarioBranchCreated(result);
+        // Refresh the grid so scenarios view picks up the new branch
+        window.dispatchEvent(new CustomEvent('refreshPnl'));
       }
       if (result.comparisons && result.charts && onScenarioComparisonReady) {
         onScenarioComparisonReady(result);

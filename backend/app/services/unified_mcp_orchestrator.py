@@ -10861,15 +10861,62 @@ Return JSON with ONLY these fields (use null if unknown):
     # FPA direct tools — CFO agent wiring to real services
     # ------------------------------------------------------------------
 
+    def _resolve_company_id(self, inputs: dict) -> str | None:
+        """Resolve company_id from inputs → shared_data → fund_context → legal docs.
+
+        The LLM often passes garbage (e.g. "current", a company name) or nothing.
+        This cascade ensures FPA tools always get the real UUID when the session
+        has one, regardless of what the LLM hallucinates.
+
+        Legal mode fallback: if no company_id found but legal_document_ids exist,
+        look up company_id from the document record in processed_documents.
+        """
+        cid = inputs.get("company_id") or ""
+        # Quick UUID-ish check: valid UUIDs are 36 chars with hyphens
+        if cid and len(cid) == 36 and cid.count("-") == 4:
+            return cid
+        # Fallback: shared_data (set during context unpacking)
+        cid = self.shared_data.get("company_id") or ""
+        if cid and len(cid) == 36 and cid.count("-") == 4:
+            return cid
+        # Fallback: fund_context (raw context from frontend)
+        fund_ctx = self.shared_data.get("fund_context", {})
+        for key in ("company_id", "companyId", "active_company_id"):
+            cid = fund_ctx.get(key) or ""
+            if cid and len(cid) == 36 and cid.count("-") == 4:
+                return cid
+        # Fallback: agent_context
+        agent_ctx = self.shared_data.get("agent_context", {})
+        cid = agent_ctx.get("company_id") or ""
+        if cid and len(cid) == 36 and cid.count("-") == 4:
+            return cid
+        # Fallback: legal mode — resolve from document records
+        doc_ids = self.shared_data.get("legal_document_ids") or []
+        if doc_ids:
+            try:
+                from app.core.supabase_client import get_supabase
+                sb = get_supabase()
+                resp = sb.table("processed_documents").select("company_id").in_("id", doc_ids[:5]).execute()
+                for row in (resp.data or []):
+                    _dcid = row.get("company_id") or ""
+                    if _dcid and len(_dcid) == 36 and _dcid.count("-") == 4:
+                        # Cache it so we don't query again
+                        self.shared_data["company_id"] = _dcid
+                        logger.info(f"[LEGAL_RESOLVE] Resolved company_id {_dcid} from document record")
+                        return _dcid
+            except Exception as e:
+                logger.warning(f"[LEGAL_RESOLVE] Failed to resolve company_id from documents: {e}")
+        return None
+
     async def _tool_fpa_pnl(self, inputs: dict) -> dict:
         """Full P&L waterfall (actuals + forecast) via PnlBuilder."""
         try:
             from app.services.pnl_builder import PnlBuilder
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             fund_id = inputs.get("fund_id") or self.shared_data.get("fund_context", {}).get("fundId")
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             months = inputs.get("months", 24)
             builder = PnlBuilder(company_id, fund_id=fund_id)
@@ -10909,9 +10956,9 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.services.balance_sheet_builder import BalanceSheetBuilder
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             builder = BalanceSheetBuilder(company_id)
             result = builder.build(
@@ -10960,9 +11007,9 @@ Return JSON with ONLY these fields (use null if unknown):
             from app.services.budget_variance_service import get_variance_report
             from datetime import date as date_type
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             budget_id = inputs.get("budget_id")  # optional — service defaults to approved branch
             start = inputs.get("start")
@@ -11014,9 +11061,9 @@ Return JSON with ONLY these fields (use null if unknown):
             from app.services.forecast_persistence_service import ForecastPersistenceService
             from app.services.forecast_explainer import ForecastExplainer
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             months = inputs.get("months", 24)
             monthly_overrides = inputs.get("monthly_overrides")
@@ -11164,9 +11211,9 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.services.forecast_persistence_service import ForecastPersistenceService
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             # Get last forecast from shared_data
             fpa_result = self.shared_data.get("fpa_forecast_result")
@@ -11194,9 +11241,9 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.services.forecast_persistence_service import ForecastPersistenceService
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             fps = ForecastPersistenceService()
             forecasts = fps.list_forecasts(company_id)
@@ -11342,7 +11389,7 @@ Return JSON with ONLY these fields (use null if unknown):
             from app.services.forecast_persistence_service import ForecastPersistenceService
 
             branch_id = inputs.get("branch_id")
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not branch_id or not company_id:
                 return {"error": "branch_id and company_id are required"}
 
@@ -11380,9 +11427,9 @@ Return JSON with ONLY these fields (use null if unknown):
             from app.services.actuals_ingestion import seed_forecast_from_actuals
             from app.services.forecast_explainer import ForecastExplainer
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             branch_id = inputs.get("branch_id")
             user_drivers = inputs.get("drivers", {})
@@ -11409,9 +11456,9 @@ Return JSON with ONLY these fields (use null if unknown):
             from app.services.cash_flow_planning_service import CashFlowPlanningService
             from app.services.actuals_ingestion import seed_forecast_from_actuals
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             months = inputs.get("months", 24)
             monthly_overrides = inputs.get("monthly_overrides")
@@ -11512,7 +11559,7 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.core.supabase_client import get_supabase_client
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             name = inputs.get("name")
             assumptions = inputs.get("assumptions", {})
             if not company_id or not name:
@@ -11578,7 +11625,7 @@ Return JSON with ONLY these fields (use null if unknown):
             from app.services.driver_registry import drivers_to_assumptions
 
             branch_id = inputs.get("branch_id")
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             drivers = inputs.get("drivers", {})
             if not branch_id or not company_id or not drivers:
                 return {"error": "branch_id, company_id, and drivers are required"}
@@ -11651,9 +11698,9 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.services.scenario_branch_service import ScenarioBranchService
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             forecast_months = inputs.get("forecast_months", 12)
             svc = ScenarioBranchService()
@@ -11672,7 +11719,7 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.services.scenario_branch_service import ScenarioBranchService
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             branch_ids = inputs.get("branch_ids", [])
             if not company_id or not branch_ids:
                 return {"error": "company_id and branch_ids are required"}
@@ -11698,9 +11745,9 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.services.actuals_ingestion import get_company_actuals
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             metric = inputs.get("metric", "revenue")
             analysis_type = (inputs.get("type") or "linear").lower()
@@ -11761,9 +11808,9 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.core.supabase_client import get_supabase_client
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             sb = get_supabase_client()
             if not sb:
@@ -11804,9 +11851,9 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.services.actuals_ingestion import get_company_actuals
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             result = get_company_actuals(company_id, inputs.get("start"), inputs.get("end"))
             return result
@@ -11819,7 +11866,7 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.core.supabase_client import get_supabase_client
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             name = inputs.get("name")
             fiscal_year = inputs.get("fiscal_year")
             if not company_id or not name or not fiscal_year:
@@ -11850,7 +11897,7 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.core.supabase_client import get_supabase_client
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             category = inputs.get("category")
             period = inputs.get("period", "").strip()
             amount = inputs.get("amount")
@@ -11894,7 +11941,7 @@ Return JSON with ONLY these fields (use null if unknown):
         """
         from datetime import datetime
 
-        company_id = inputs.get("company_id")
+        company_id = self._resolve_company_id(inputs)
         time_series = inputs.get("time_series")
         if not company_id or not time_series:
             return {"error": "company_id and time_series are required"}
@@ -12029,9 +12076,9 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.services.rolling_forecast_service import RollingForecastService
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             granularity = inputs.get("granularity", "monthly")
             if granularity not in ("monthly", "quarterly", "annual"):
@@ -12055,9 +12102,9 @@ Return JSON with ONLY these fields (use null if unknown):
             from app.core.supabase_client import get_supabase_client
             from app.services.xero_service import sync_xero_data
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             months = inputs.get("months", 24)
 
@@ -12096,9 +12143,9 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.services.kpi_engine import KPIEngine, snapshot_to_dict
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             engine = KPIEngine()
             snapshot = engine.compute(
@@ -12122,9 +12169,9 @@ Return JSON with ONLY these fields (use null if unknown):
                 StrategicIntelligenceService,
             )
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             svc = StrategicIntelligenceService(model_router=self.model_router)
             analysis = await svc.analyze(
@@ -12267,10 +12314,10 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             import asyncio
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             query = inputs.get("query", "")
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             branch_id = inputs.get("branch_id")
             trigger_driver = inputs.get("trigger_driver")
@@ -12599,7 +12646,11 @@ Return JSON with ONLY these fields (use null if unknown):
             return {"error": str(e)}
 
     async def _get_equity_context(self, company_id: str) -> dict:
-        """Pull cap table, anti-dilution provisions, conversion triggers, liq prefs."""
+        """Pull cap table, anti-dilution provisions, conversion triggers, liq prefs.
+
+        In legal mode, company_id may have been resolved from document records.
+        Also passes document_ids so the bridge can query by document scope.
+        """
         try:
             from app.services.legal_cap_table_bridge import LegalCapTableBridge
 
@@ -12608,13 +12659,20 @@ Return JSON with ONLY these fields (use null if unknown):
                 or (self.shared_data.get("matrix_context") or {}).get("fundId")
                 or ""
             )
+            doc_ids = self.shared_data.get("legal_document_ids") or []
             bridge = LegalCapTableBridge()
-            result = bridge.build_from_documents(
-                company_id=company_id, fund_id=fund_id
-            )
+            build_kwargs: dict = {"company_id": company_id, "fund_id": fund_id}
+            if doc_ids:
+                build_kwargs["document_ids"] = doc_ids
+            result = bridge.build_from_documents(**build_kwargs)
 
             if not result.get("success"):
                 return {"cap_table": [], "note": "No equity data found"}
+
+            # Store in shared_data — legal fingerprint shows bridge status,
+            # and downstream tools (scenarios, waterfall) can reuse it
+            async with self.shared_data_lock:
+                self.shared_data["legal_cap_table_result"] = result
 
             # Extract key equity features
             rounds = result.get("rounds", [])
@@ -12905,9 +12963,9 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.services.monte_carlo_engine import MonteCarloEngine, result_to_dict
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             engine = MonteCarloEngine()
             result = engine.simulate(
@@ -12935,9 +12993,9 @@ Return JSON with ONLY these fields (use null if unknown):
                 from app.services.driver_impact_service import DriverImpactService
                 svc = DriverImpactService()
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             metric_a = inputs.get("metric_a")
             metric_b = inputs.get("metric_b")
@@ -12981,9 +13039,9 @@ Return JSON with ONLY these fields (use null if unknown):
                 from app.services.driver_impact_service import DriverImpactService
                 svc = DriverImpactService()
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             target_metric = inputs.get("target_metric")
             if not target_metric:
@@ -13064,9 +13122,9 @@ Return JSON with ONLY these fields (use null if unknown):
                 from app.services.driver_impact_service import DriverImpactService
                 svc = DriverImpactService()
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             trigger = inputs.get("trigger")
             delta = inputs.get("delta")
@@ -13116,9 +13174,9 @@ Return JSON with ONLY these fields (use null if unknown):
                 from app.services.company_health_scorer import CompanyHealthScorer
                 svc = CompanyHealthScorer()
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             # Build company dict from grid snapshot + shared data
             company_data = self._resolve_company_data(company_id)
@@ -13177,9 +13235,9 @@ Return JSON with ONLY these fields (use null if unknown):
                 from app.services.company_health_scorer import CompanyHealthScorer
                 svc = CompanyHealthScorer()
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             company_data = self._resolve_company_data(company_id)
             if not company_data:
@@ -13329,9 +13387,9 @@ Return JSON with ONLY these fields (use null if unknown):
                 from app.services.seasonality_engine import SeasonalityEngine
                 svc = SeasonalityEngine()
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             metric = inputs.get("metric", "revenue")
             pattern = svc.detect_pattern(company_id=company_id, metric=metric)
@@ -13383,9 +13441,9 @@ Return JSON with ONLY these fields (use null if unknown):
                 from app.services.seasonality_engine import SeasonalityEngine
                 svc = SeasonalityEngine()
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             metric = inputs.get("metric", "revenue")
 
@@ -13449,9 +13507,9 @@ Return JSON with ONLY these fields (use null if unknown):
     async def _tool_fpa_computed_metrics(self, inputs: dict) -> dict:
         """Compute all unit economics and SaaS metrics."""
         try:
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             # Get seed data from actuals
             from app.services.actuals_ingestion import seed_forecast_from_actuals
@@ -13611,9 +13669,9 @@ Return JSON with ONLY these fields (use null if unknown):
                 from app.services.far_analysis_service import FARAnalysisService
                 svc = FARAnalysisService(llm_fn=getattr(self, '_llm_call', None))
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             results = await svc.infer_group_profiles(company_id)
             return {
@@ -13715,10 +13773,10 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.services.tp_document_service import TPDocumentService
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             report_type = inputs.get("report_type", "benchmark")
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             service = TPDocumentService(llm_fn=self._llm_call)
 
@@ -13770,9 +13828,9 @@ Return JSON with ONLY these fields (use null if unknown):
         try:
             from app.core.database import supabase_service
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             client = supabase_service.get_client()
 
@@ -16594,6 +16652,18 @@ JSON — pick one:
                         grid_commands.append(t_result["grid_command"])
                     if "grid_commands" in t_result and isinstance(t_result["grid_commands"], list):
                         grid_commands.extend(t_result["grid_commands"])
+                    # FPA forecast grid_suggestions → promote to grid_commands
+                    # so cell values + reasoning flow through the normal path.
+                    if "grid_suggestions" in t_result and isinstance(t_result["grid_suggestions"], list):
+                        for gs in t_result["grid_suggestions"]:
+                            grid_commands.append({
+                                "action": "edit",
+                                "rowId": gs.get("rowId"),
+                                "columnId": gs.get("columnId"),
+                                "value": gs.get("value"),
+                                "reasoning": gs.get("reasoning"),
+                                "source_service": "fpa_forecast",
+                            })
                     if "chart_config" in t_result:
                         charts.append(t_result["chart_config"])
                         yield {"type": "chart_data", "chart": t_result["chart_config"]}
@@ -16752,22 +16822,32 @@ JSON — pick one:
                            "portfolio_comparison", "calculate_fund_metrics",
                            "fpa_forecast"}
         # FPA tools return huge payloads (line_derivations, grid_suggestions, full
-        # forecast arrays) that the synthesizer doesn't need — the frontend already
-        # received them via streamed side effects. Strip to key metrics only.
+        # forecast arrays). Strip side-effect-only fields; reorder so explanation,
+        # driver_impacts, method_reasoning land before the big forecast array —
+        # that way truncation clips trailing forecast months, not the reasoning.
         _FPA_STRIP_KEYS = {"line_derivations", "grid_suggestions", "chart_data",
                            "memo_updates", "memo_sections"}
+        # Fields the synthesizer needs most — ordered first so they survive truncation.
+        # The big forecast array goes last; if truncation clips it, we lose trailing
+        # months but keep the reasoning the LLM needs to write a useful response.
+        _FPA_PRIORITY_KEYS = ("company_id", "method", "method_reasoning",
+                              "explanation", "driver_impacts", "seeded_from",
+                              "months", "forecast_id", "persisted")
         for r in tool_results:
             tool_name = r.get("tool", "")
             if tool_name in ("fetch_company_data", "resolve_data_gaps", "build_company_list", "lightweight_diligence"):
                 # Company data is already in _synth_company_data from shared_data
                 continue
             output = r.get("output", {})
-            # For FPA forecast: strip fields the frontend already received via
-            # streaming (line_derivations ~12K, grid_suggestions ~17K, charts,
-            # memo_updates). Keeps full forecast array for the synthesizer.
-            # This is synthesis-prompt-only — does NOT affect tool output or grid/memo.
             if tool_name == "fpa_forecast" and isinstance(output, dict):
-                output = {k: v for k, v in output.items() if k not in _FPA_STRIP_KEYS}
+                # Strip side-effect fields, then reorder: small important fields
+                # first so they survive truncation, forecast array last.
+                stripped = {k: v for k, v in output.items() if k not in _FPA_STRIP_KEYS}
+                output = {k: stripped[k] for k in _FPA_PRIORITY_KEYS if k in stripped}
+                # Append remaining keys (forecast array, etc.) at the end
+                for k, v in stripped.items():
+                    if k not in output:
+                        output[k] = v
             # Priority tools (valuations, scenarios, sourcing) get more room
             limit = 8000 if tool_name in _priority_tools else 4000
             _non_company_results.append({
@@ -16821,7 +16901,11 @@ JSON — pick one:
                 _t_name = r.get("tool", "")
                 _t_out = r.get("output", {})
                 if _t_name == "fpa_forecast" and isinstance(_t_out, dict):
-                    _t_out = {k: v for k, v in _t_out.items() if k not in _FPA_STRIP_KEYS}
+                    _stripped = {k: v for k, v in _t_out.items() if k not in _FPA_STRIP_KEYS}
+                    _t_out = {k: _stripped[k] for k in _FPA_PRIORITY_KEYS if k in _stripped}
+                    for k, v in _stripped.items():
+                        if k not in _t_out:
+                            _t_out[k] = v
                 _short_tool_results.append({"tool": _t_name, "output": self._truncate(json.dumps(_t_out, default=str), 2000)})
             _short_synth_prompt = f"User asked: {prompt}\nTool results:\n{json.dumps(_short_tool_results)}\n\nRespond in 1-3 concise sentences. No preamble. No 'based on'. Just the answer or confirmation."
             _short_response = await self.model_router.get_completion(
@@ -17172,24 +17256,48 @@ ABSOLUTE RULES:
             # CLEAR per turn: stale caches that shouldn't leak across queries
             self._tavily_cache.clear()
             self._company_cache.clear()
-            # PERSIST across turns (the fingerprint reads from these):
-            #   companies, cap_table_history, scenario_analysis, revenue_projections,
-            #   exit_modeling, followon_strategy, memo_artifacts, fund_context,
-            #   fund_metrics, session_corrections, agent_context
+            # PERSIST across turns — mode-aware so portfolio keys don't leak
+            # into PNL sessions and vice versa.
             # REFRESH each turn: matrix_context (frontend sends fresh copy)
-            _persist_keys = {
-                "companies", "cap_table_history", "scenario_analysis",
-                "revenue_projections", "exit_modeling", "followon_strategy",
-                "memo_artifacts", "fund_context", "fund_metrics",
-                "session_corrections", "agent_context", "grid_mode",
+            _common_keys = {
+                "fund_context", "agent_context", "grid_mode",
                 "system_prompt_override", "classification",
-                "_conversation_history", "company_fpa_context",
-                "fpa_pnl_result", "fpa_balance_sheet_result",
-                "fpa_variance_result", "fpa_forecast_result",
-                "fpa_cash_flow_result", "fpa_scenario_tree",
-                "fpa_scenario_compare", "fpa_regression_result",
-                "fpa_seasonal_forecast",
+                "_conversation_history", "session_corrections",
+                "memo_artifacts", "company_id",
             }
+            _current_mode = self.shared_data.get("grid_mode", "portfolio")
+            if _current_mode == "pnl":
+                _mode_keys = {
+                    "company_fpa_context",
+                    "fpa_pnl_result", "fpa_balance_sheet_result",
+                    "fpa_variance_result", "fpa_forecast_result",
+                    "fpa_cash_flow_result", "fpa_scenario_tree",
+                    "fpa_scenario_compare", "fpa_regression_result",
+                    "fpa_seasonal_forecast",
+                }
+            elif _current_mode == "legal":
+                # Legal has its own session state — contracts, clauses,
+                # bridge results, and document_ids persist between turns.
+                # company_id is in _common_keys so it survives mode switches.
+                _mode_keys = {
+                    "legal_document_ids",        # document UUIDs from grid rows
+                    "legal_clause_ids",          # clause UUIDs from grid rows
+                    "legal_doc_clause_map",      # document_id → [clause_ids] mapping
+                    "legal_contracts",           # extracted contract register
+                    "legal_clauses_result",      # clause query results
+                    "legal_cap_table_result",    # cap table bridge output
+                    "contract_pnl_result",       # contract → P&L bridge output
+                    "company_fpa_context",       # needed if bridging to PnL
+                    "fpa_pnl_result",            # PnL data if bridge populates it
+                }
+            else:
+                # portfolio / lp / custom
+                _mode_keys = {
+                    "companies", "cap_table_history", "scenario_analysis",
+                    "revenue_projections", "exit_modeling", "followon_strategy",
+                    "fund_metrics",
+                }
+            _persist_keys = _common_keys | _mode_keys
             _stale = [k for k in list(self.shared_data.keys()) if k not in _persist_keys]
             for k in _stale:
                 del self.shared_data[k]
@@ -17224,6 +17332,69 @@ ABSOLUTE RULES:
                     company_fpa = context.get('company_fpa_context') or context.get('companyContext')
                     if company_fpa and isinstance(company_fpa, dict):
                         self.shared_data['company_fpa_context'] = company_fpa
+                    # Extract company_id and store for FPA tool fallback
+                    # Cascade: direct key → agent_context → company_fpa_context → matrix rows
+                    _cid = (
+                        context.get('company_id') or context.get('companyId')
+                        or context.get('active_company_id')
+                    )
+                    if not _cid and agent_ctx:
+                        _cid = agent_ctx.get('company_id') or agent_ctx.get('active_company_id')
+                    if not _cid and company_fpa and isinstance(company_fpa, dict):
+                        _cid = company_fpa.get('company_id') or company_fpa.get('companyId')
+                    if not _cid and matrix_ctx and isinstance(matrix_ctx, dict):
+                        # P&L grid: rows may carry companyId
+                        for _row in (matrix_ctx.get('rows') or matrix_ctx.get('gridSnapshot') or []):
+                            if isinstance(_row, dict):
+                                _cid = _row.get('companyId') or _row.get('company_id')
+                                if _cid:
+                                    break
+                    if _cid and isinstance(_cid, str) and len(_cid) == 36 and _cid.count('-') == 4:
+                        self.shared_data['company_id'] = _cid
+                        logger.info(f"[CONTEXT] Stored company_id: {_cid}")
+                    # ── Legal mode: extract document_ids and clause_ids from grid rows ──
+                    # Grid rows in legal mode: id="legal:{clause_id}", cells carry
+                    # document_id in metadata. Hierarchy: document → clauses → terms.
+                    if grid_mode == "legal" and matrix_ctx and isinstance(matrix_ctx, dict):
+                        _gs = matrix_ctx.get('gridSnapshot') or {}
+                        _gs_rows = _gs.get('rows', []) if isinstance(_gs, dict) else _gs if isinstance(_gs, list) else []
+                        _doc_ids: set[str] = set()
+                        _clause_ids: set[str] = set()
+                        _doc_clause_map: dict[str, list[str]] = {}  # document_id → [clause_ids]
+                        for _row in _gs_rows:
+                            if not isinstance(_row, dict):
+                                continue
+                            # Clause ID from row id (format: "legal:{clause_id}")
+                            _rid = _row.get('rowId') or _row.get('id') or ''
+                            _clause_id = _rid.replace('legal:', '') if _rid.startswith('legal:') else ''
+                            if _clause_id:
+                                _clause_ids.add(_clause_id)
+                            # Document ID from row-level key (set by buildGridSnapshot)
+                            _did = _row.get('documentId') or ''
+                            if not _did:
+                                # Fallback: scan cell metadata for document_id
+                                for _cell in (_row.get('cells') or {}).values():
+                                    if isinstance(_cell, dict):
+                                        _meta = _cell.get('metadata') or {}
+                                        if isinstance(_meta, dict) and _meta.get('document_id'):
+                                            _did = str(_meta['document_id'])
+                                            break
+                            if _did:
+                                _doc_ids.add(_did)
+                                if _clause_id:
+                                    _doc_clause_map.setdefault(_did, []).append(_clause_id)
+                            # Also try companyId from the row (legal rows may carry it)
+                            _row_cid = _row.get('companyId') or _row.get('company_id') or ''
+                            if _row_cid and isinstance(_row_cid, str) and len(_row_cid) == 36 and _row_cid.count('-') == 4:
+                                if not self.shared_data.get('company_id'):
+                                    self.shared_data['company_id'] = _row_cid
+                        if _doc_ids:
+                            self.shared_data['legal_document_ids'] = sorted(_doc_ids)
+                            logger.info(f"[LEGAL_CONTEXT] Extracted {len(_doc_ids)} document_ids, {len(_clause_ids)} clause_ids")
+                        if _doc_clause_map:
+                            self.shared_data['legal_doc_clause_map'] = _doc_clause_map
+                        if _clause_ids:
+                            self.shared_data['legal_clause_ids'] = sorted(_clause_ids)
                     # Memo artifacts from frontend toggle — user chose to include them as context
                     memo_arts_from_frontend = context.get('memo_artifacts')
                     if memo_arts_from_frontend and isinstance(memo_arts_from_frontend, list):
@@ -41351,17 +41522,25 @@ Return your analysis with inline citations for ALL factual claims.
         try:
             from app.services.contract_pnl_bridge import query_contract_attribution
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
-            return query_contract_attribution(
+            # Pass document_ids for legal mode — picks up UNLINKED rows too
+            doc_ids = self.shared_data.get("legal_document_ids") or []
+            result = query_contract_attribution(
                 company_id=company_id,
                 fund_id=inputs.get("fund_id"),
                 category=inputs.get("category"),
                 period_start=inputs.get("period_start"),
                 period_end=inputs.get("period_end"),
+                document_ids=doc_ids if doc_ids else None,
             )
+            # Store in shared_data so legal fingerprint shows bridge status
+            if result and not result.get("error"):
+                async with self.shared_data_lock:
+                    self.shared_data["contract_pnl_result"] = result
+            return result
         except Exception as e:
             logger.error(f"[TOOL] contract_pnl_attribution failed: {e}")
             return {"error": f"Contract P&L attribution failed: {e}"}
@@ -41371,9 +41550,9 @@ Return your analysis with inline citations for ALL factual claims.
         try:
             from app.services.contract_pnl_bridge import query_contract_lifecycle
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             return query_contract_lifecycle(
                 company_id=company_id,
@@ -41399,10 +41578,10 @@ Return your analysis with inline citations for ALL factual claims.
             from app.services.pnl_builder import PnlBuilder
             from app.core.supabase_client import get_supabase_client
 
-            company_id = inputs.get("company_id")
+            company_id = self._resolve_company_id(inputs)
             changes = inputs.get("changes", [])
             if not company_id:
-                return {"error": "company_id is required"}
+                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
             if not changes:
                 return {"error": "changes list is required"}
 

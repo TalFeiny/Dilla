@@ -122,44 +122,87 @@ export async function copyCompressedContextToClipboard(
 
 /**
  * Build a compact grid snapshot for agent context (< 5KB).
- * Per-row: rowId, companyName, and key column values (ARR, valuation, burn, etc.)
+ * Mode-aware: portfolio → key financial columns, legal → clause-level columns,
+ * pnl → all period columns (handled by session_state from fpa_pnl_result).
  */
 export function buildGridSnapshot(
   matrixData: MatrixData,
-  maxSizeBytes: number = 5000
-): { rows: Array<{ rowId: string; companyName: string; cells: Record<string, unknown> }>; columns: Array<{ id: string; name: string }> } | undefined {
+  maxSizeBytes: number = 5000,
+  gridMode: string = 'portfolio'
+): { rows: Array<{ rowId: string; companyName: string; cells: Record<string, unknown>; documentId?: string; clauseId?: string }>; columns: Array<{ id: string; name: string }> } | undefined {
   if (!matrixData?.rows?.length) return undefined;
 
-  const keyColumns = ['arr', 'valuation', 'burnRate', 'runway', 'grossMargin', 'ownership', 'sector', 'stage', 'documents'];
+  const isLegal = gridMode === 'legal';
+
+  // Legal mode: pass all legal clause columns; portfolio: key financial columns
+  const legalColumns = [
+    'documentName', 'contractType', 'party', 'counterparty', 'status',
+    'effectiveDate', 'expiryDate', 'totalValue', 'annualValue',
+    'keyTerms', 'flags', 'obligations', 'nextDeadline', 'reasoning',
+  ];
+  const portfolioColumns = ['arr', 'valuation', 'burnRate', 'runway', 'grossMargin', 'ownership', 'sector', 'stage', 'documents'];
+
+  const keyColumns = isLegal ? legalColumns : portfolioColumns;
+  const columnFilter = isLegal
+    ? (c: { id: string }) => keyColumns.includes(c.id) || /document|contract|party|counter|status|effective|expiry|value|annual|terms|flags|obligation|deadline|reasoning/i.test(c.id)
+    : (c: { id: string }) => keyColumns.includes(c.id) || /arr|valuation|burn|runway|sector|stage|documents/i.test(c.id);
+
   const columns = (matrixData.columns || [])
-    .filter((c) => keyColumns.includes(c.id) || /arr|valuation|burn|runway|sector|stage|documents/i.test(c.id))
+    .filter(columnFilter)
     .slice(0, 20)
     .map((c) => ({ id: c.id, name: c.name || c.id }));
 
-  const rows: Array<{ rowId: string; companyName: string; cells: Record<string, unknown> }> = [];
+  // If no columns matched (legal grid columns might not be in matrixData.columns),
+  // fall back to passing ALL cell keys from the first row
+  if (columns.length === 0 && matrixData.rows[0]?.cells) {
+    const firstRowKeys = Object.keys(matrixData.rows[0].cells).slice(0, 20);
+    for (const k of firstRowKeys) {
+      columns.push({ id: k, name: k });
+    }
+  }
+
+  const rows: Array<{ rowId: string; companyName: string; cells: Record<string, unknown>; documentId?: string; clauseId?: string }> = [];
   let currentSize = 0;
 
   for (const row of matrixData.rows.slice(0, 50)) {
     const cells: Record<string, unknown> = {};
+    // In legal mode, extract document_id and clause_id from cell metadata
+    let documentId: string | undefined;
+    let clauseId: string | undefined;
+
     for (const col of columns) {
       const cell = row.cells?.[col.id];
+      if (!cell) continue;
       let val = cell?.displayValue ?? cell?.value ?? (col.id === 'company' ? row.companyName : undefined);
       if (col.id === 'documents' && Array.isArray(val)) {
-        // Compact document list for agent: [{ id, name }] so agent can read/link documents
         val = (val as Array<{ id?: string; name?: string; title?: string }>).slice(0, 10).map((d) => ({
           id: d.id ?? null,
           name: d.name ?? d.title ?? 'Document',
         }));
       }
       if (val !== undefined && val !== null) {
-        cells[col.id] = typeof val === 'number' && val > 1e6 ? val : val;
+        cells[col.id] = val;
+      }
+      // Extract document_id / clause metadata from any cell's metadata
+      if (isLegal && !documentId && cell?.metadata) {
+        const meta = cell.metadata as Record<string, unknown>;
+        if (meta.document_id) documentId = String(meta.document_id);
       }
     }
-    const entry = {
+
+    // Clause ID from the row id (format: "legal:{clause_id}")
+    if (isLegal && row.id?.startsWith('legal:')) {
+      clauseId = row.id.replace('legal:', '');
+    }
+
+    const entry: { rowId: string; companyName: string; cells: Record<string, unknown>; documentId?: string; clauseId?: string } = {
       rowId: row.id,
       companyName: row.companyName || row.cells?.['company']?.value || row.id,
       cells,
     };
+    if (documentId) entry.documentId = documentId;
+    if (clauseId) entry.clauseId = clauseId;
+
     const entrySize = new Blob([JSON.stringify(entry)]).size;
     if (currentSize + entrySize > maxSizeBytes && rows.length > 0) break;
     rows.push(entry);

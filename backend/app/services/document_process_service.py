@@ -1744,23 +1744,9 @@ def run_post_extraction_pipeline(
         except Exception as e:
             logger.warning("Failed to emit legal suggestions for %s: %s", document_id, e, exc_info=True)
 
-        # ── Structured upsert → document_clauses (real columns, not JSON blobs) ──
-        try:
-            nc = _upsert_clauses_to_document_clauses(
-                extracted_data=extracted_data,
-                document_id=document_id,
-                document_name=document_name,
-                company_id=company_id,
-                fund_id=fund_id,
-                document_type=doc_type_for_routing,
-            )
-            if nc:
-                logger.info(
-                    "[DOC_PROCESS] Upserted %d clauses to document_clauses for doc %s",
-                    nc, document_id,
-                )
-        except Exception as e:
-            logger.warning("Failed to upsert document_clauses for %s: %s", document_id, e, exc_info=True)
+        # NOTE: Direct upsert to document_clauses removed — suggestions-first flow.
+        # Clauses go through pending_suggestions (via emit_legal_suggestions above).
+        # User reviews and accepts; acceptance handler in frontend upserts to document_clauses.
 
     # ── Contract → P&L bridge (ERP attribution) ──
     if extracted_data and extracted_data.get("erp_attribution"):
@@ -1880,28 +1866,26 @@ def run_post_extraction_pipeline(
                     cap_service = PrePostCapTable()
                     cap_result = cap_service.calculate_full_cap_table_history(cap_data)
 
+                    # Emit as suggestion instead of direct upsert — suggestions-first flow
+                    try:
+                        from app.services.micro_skills.suggestion_emitter import emit_cap_table_suggestions
+                        emit_cap_table_suggestions(
+                            cap_table_result=cap_result,
+                            company_id=company_id,
+                            fund_id=fund_id,
+                            document_id=document_id,
+                            document_name=document_name,
+                        )
+                        logger.info("[DOC_CAP_TABLE] Emitted cap table suggestion for company %s from document %s", company_id, document_id)
+                    except Exception as e_emit:
+                        logger.warning("[DOC_CAP_TABLE] Cap table suggestion emission failed: %s", e_emit)
+
+                    # Founder ownership suggestion (already goes through suggestions)
                     from app.core.database import get_supabase_service
                     sb = get_supabase_service()
                     if sb:
                         client = sb.get_client() if hasattr(sb, 'get_client') else sb
                         if client:
-                            source = "extracted" if extracted_data.get("total_funding") else "synthetic"
-                            client.table("company_cap_tables").upsert({
-                                "portfolio_id": fund_id or _UNLINKED,
-                                "company_id": company_id or _UNLINKED,
-                                "company_name": extracted_data.get("company_name", ""),
-                                "cap_table_json": cap_result.get("current_cap_table", {}),
-                                "sankey_data": cap_result.get("sankey_data"),
-                                "waterfall_data": cap_result.get("waterfall_data"),
-                                "ownership_summary": cap_result.get("ownership_summary"),
-                                "founder_ownership": cap_result.get("founder_ownership"),
-                                "total_raised": cap_result.get("total_raised"),
-                                "num_rounds": cap_result.get("num_rounds"),
-                                "source": source,
-                                "funding_data_source": f"document:{document_id}",
-                            }, on_conflict="portfolio_id,company_id").execute()
-                            logger.info("[DOC_CAP_TABLE] Persisted cap table for company %s from document %s", company_id, document_id)
-
                             founder_own = cap_result.get("founder_ownership")
                             if founder_own is not None:
                                 client.table("pending_suggestions").upsert({
