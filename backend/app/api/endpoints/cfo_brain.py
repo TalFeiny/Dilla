@@ -63,18 +63,75 @@ def _build_cfo_system_prompt(company_context: Optional[Dict] = None) -> str:
             return f"${n / 1e3:.0f}K"
         return f"${n:.0f}"
 
-    snapshot_parts = [
-        fmt(ctx.get("currentARR") or ctx.get("current_arr")) and f"ARR: {fmt(ctx.get('currentARR') or ctx.get('current_arr'))}",
-        fmt(ctx.get("currentBurn") or ctx.get("current_burn")) and f"Monthly burn: {fmt(ctx.get('currentBurn') or ctx.get('current_burn'))}",
-        fmt(ctx.get("cashBalance") or ctx.get("cash_balance")) and f"Cash: {fmt(ctx.get('cashBalance') or ctx.get('cash_balance'))}",
-        ctx.get("runwayMonths") or ctx.get("runway_months") and f"Runway: {ctx.get('runwayMonths') or ctx.get('runway_months')} months",
-        ctx.get("headcount") and f"Headcount: {ctx.get('headcount')}",
-    ]
-    snapshot = ", ".join([p for p in snapshot_parts if p])
+    # Build P&L snapshot from actuals + ForecastMethodRouter when company_id available
+    pnl_snapshot = ""
+    methodology_note = ""
+    company_id = ctx.get("company_id") or ctx.get("companyId")
+    if company_id:
+        try:
+            from app.services.actuals_ingestion import seed_forecast_from_actuals
+            from app.services.forecast_method_router import ForecastMethodRouter
+
+            seed = seed_forecast_from_actuals(company_id)
+            parts = []
+            if seed.get("revenue"):
+                parts.append(f"Last month revenue: {fmt(seed['revenue'])}")
+            if seed.get("gross_margin") is not None:
+                parts.append(f"Gross margin: {seed['gross_margin']:.0%}")
+            if seed.get("burn_rate"):
+                parts.append(f"Monthly burn: {fmt(seed['burn_rate'])}")
+            if seed.get("net_burn"):
+                parts.append(f"Net burn: {fmt(seed['net_burn'])}")
+            if seed.get("cash_balance"):
+                parts.append(f"Cash: {fmt(seed['cash_balance'])}")
+            if seed.get("runway_months"):
+                parts.append(f"Runway: {seed['runway_months']:.0f} months")
+            if seed.get("headcount"):
+                parts.append(f"Headcount: {int(seed['headcount'])}")
+
+            dq = seed.get("_data_quality", {})
+            rev_months = dq.get("revenue_months", 0)
+            if rev_months:
+                parts.append(f"Actuals: {rev_months} months of data")
+            if dq.get("has_opex_breakdown"):
+                parts.append("OpEx breakdown available (R&D/S&M/G&A)")
+            if dq.get("growth_trend") and dq["growth_trend"] != "unknown":
+                parts.append(f"Growth trend: {dq['growth_trend']}")
+
+            if parts:
+                pnl_snapshot = "Current P&L snapshot: " + ", ".join(parts) + "."
+
+            # Tell agent what forecast method the router auto-selected and why
+            router = ForecastMethodRouter()
+            method, reasoning = router.auto_select_method(company_id, seed)
+            methodology_note = (
+                f"\n\nForecast methodology: {method}. {reasoning}. "
+                "You can re-run with a different method using fpa_forecast, "
+                "adjust individual drivers using run_scenario or fpa_scenario_update, "
+                "run Monte Carlo simulations using fpa_regression, "
+                "and create scenario branches to compare alternatives."
+            )
+        except Exception:
+            pnl_snapshot = ""
+
+    # Fall back to legacy KPIs only if no P&L data from actuals
+    if pnl_snapshot:
+        snapshot = pnl_snapshot + methodology_note
+    else:
+        snapshot_parts = [
+            fmt(ctx.get("currentARR") or ctx.get("current_arr")) and f"ARR: {fmt(ctx.get('currentARR') or ctx.get('current_arr'))}",
+            fmt(ctx.get("currentBurn") or ctx.get("current_burn")) and f"Monthly burn: {fmt(ctx.get('currentBurn') or ctx.get('current_burn'))}",
+            fmt(ctx.get("cashBalance") or ctx.get("cash_balance")) and f"Cash: {fmt(ctx.get('cashBalance') or ctx.get('cash_balance'))}",
+            ctx.get("runwayMonths") or ctx.get("runway_months") and f"Runway: {ctx.get('runwayMonths') or ctx.get('runway_months')} months",
+            ctx.get("headcount") and f"Headcount: {ctx.get('headcount')}",
+        ]
+        snapshot = ", ".join([p for p in snapshot_parts if p])
+        if snapshot:
+            snapshot = "Current snapshot: " + snapshot + "."
 
     return (
         f"You are the CFO of {company}, a {stage} company.\n"
-        f"{('Current snapshot: ' + snapshot + '.') if snapshot else ''}\n\n"
+        f"{snapshot}\n\n"
 
         "## WHO YOU ARE\n"
         "You're an opinionated, direct CFO who's been through 3 downturns and 2 IPOs. "
@@ -198,6 +255,9 @@ async def process_cfo_request(request: CFORequest, raw_request: Request):
 
         # Inject CFO system prompt override — this is what makes it a CFO agent
         company_ctx = merged_context.get("company_fpa_context") or merged_context.get("companyContext") or {}
+        # Ensure company_id flows through so system prompt can pull real P&L data
+        if not company_ctx.get("company_id"):
+            company_ctx["company_id"] = merged_context.get("company_id") or merged_context.get("companyId")
         merged_context["system_prompt_override"] = _build_cfo_system_prompt(company_ctx)
 
         # Process through the same orchestrator

@@ -674,6 +674,8 @@ export default function AgentChat({
           matrixContext,
           // Grid mode: tells backend what the user is looking at (portfolio, pnl, lp, custom)
           gridMode: mode || 'portfolio',
+          // Pass company_id for PNL mode — extracted from matrix row metadata
+          company_id: mode === 'pnl' && matrixData?.rows?.find((r: any) => r.companyId)?.companyId || undefined,
           fundId,
           // Pass plan steps back so backend can execute the approved plan
           plan_steps: planStepsToSend.length > 0 ? planStepsToSend : undefined,
@@ -1069,8 +1071,11 @@ export default function AgentChat({
         // Refresh the grid so scenarios view picks up the new branch
         window.dispatchEvent(new CustomEvent('refreshPnl'));
       }
-      if (result.comparisons && result.charts && onScenarioComparisonReady) {
-        onScenarioComparisonReady(result);
+      if (onScenarioComparisonReady && norm.charts?.length) {
+        // Route scenario/forecast charts to grid ChartViewport —
+        // works for comparison results, PNL scenario forecasts,
+        // and streamed chart_data from tool results
+        onScenarioComparisonReady({ charts: norm.charts, ...result });
       }
 
       // Forward grid_suggestions from FPA tools → suggestions accept/reject flow

@@ -240,8 +240,11 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
 
   // ----- setChartsFromComparison -----
   const setChartsFromComparison = useCallback((result: any) => {
-    if (result.charts) {
-      setCharts(result.charts.map((c: any) => ({ ...c, source: 'mcp' as const })));
+    // Accept charts from comparison results, scenario tool chart_data,
+    // or PNL scenario forecast results
+    const incoming = result.charts || result.chart_data;
+    if (incoming?.length) {
+      setCharts(incoming.map((c: any) => ({ ...c, source: 'mcp' as const })));
     }
   }, []);
 

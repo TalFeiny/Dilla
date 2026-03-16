@@ -376,10 +376,23 @@ class PnlBuilder:
             today = date.today()
             forecast_start = f"{today.year:04d}-{today.month:02d}"
 
-        svc = CashFlowPlanningService()
-        monthly = svc.build_monthly_cash_flow_model(
-            company_data, months=months, start_period=forecast_start
+        # Route through ForecastMethodRouter to auto-select the best of 7 methods
+        # (driver_based, advanced_regression, seasonal, regression, budget_pct,
+        #  growth_rate, manual) instead of always using raw growth_rate decay.
+        from app.services.forecast_method_router import ForecastMethodRouter
+        router = ForecastMethodRouter()
+        method, reasoning = router.auto_select_method(self.company_id, company_data)
+        monthly, provenance = router.build_forecast(
+            company_id=self.company_id,
+            method=method,
+            seed_data=company_data,
+            months=months,
+            start_period=forecast_start,
         )
+        # Store provenance so agent can explain methodology
+        company_data["_forecast_method"] = method
+        company_data["_forecast_reasoning"] = reasoning
+        company_data["_forecast_provenance"] = provenance
 
         forecast: Dict[str, Dict[str, float]] = {}
         forecast_periods: List[str] = []

@@ -479,21 +479,9 @@ GRID_ACTION_MAP: Dict[str, Tuple[str, str]] = {
     "grid-run-nav-company": ("nav.calculate_company", "valuation"),
     "grid-run-nav-portfolio": ("nav.calculate_portfolio", "value"),
     "grid-run-nav-timeseries": ("nav.timeseries_company", "valuation"),
-    # Fund & portfolio (fund-level)
-    "grid-run-fund-metrics": ("fund_metrics.calculate", "value"),
-    "grid-run-followon": ("followon_strategy.recommend", "value"),
-    "grid-run-portfolio-nav": ("portfolio.total_nav", "value"),
-    "grid-run-portfolio-invested": ("portfolio.total_invested", "value"),
-    "grid-run-dpi": ("portfolio.dpi", "value"),
-    "grid-run-tvpi": ("portfolio.tvpi", "value"),
-    "grid-run-dpi-sankey": ("portfolio.dpi_sankey", "value"),
-    "grid-run-portfolio-optimize": ("portfolio.optimize", "value"),
-    "grid-run-nav-timeseries-fund": ("nav.timeseries", "value"),
-    "grid-run-nav-forecast": ("nav.forecast", "value"),
-    # Market
+    # REMOVED: fund_metrics, followon, portfolio.*, nav fund-level — legacy investor tools
+    # Market (kept: comparables is CFO-useful)
     "grid-find-comparables": ("market.find_comparables", "value"),
-    "grid-run-market-timing": ("market.timing_analysis", "value"),
-    "grid-run-investment-readiness": ("market.investment_readiness", "value"),
     "grid-run-sector-landscape": ("market.sector_landscape", "value"),
     # Document
     "grid-run-document-extract": ("document.extract", "value"),
@@ -526,10 +514,8 @@ GRID_ACTION_MAP: Dict[str, Tuple[str, str]] = {
     "grid-run-exit-modeling": ("skill.exit_modeling", "value"),
     "grid-run-deck": ("skill.deck_storytelling", "value"),
     "grid-run-excel": ("skill.excel_generation", "value"),
-    "grid-run-memo": ("skill.memo_generation", "value"),
+    # REMOVED: grid-run-memo, grid-run-portfolio-analysis, grid-run-fund-metrics-skill — legacy investor
     "grid-run-skill-chart": ("skill.chart_generation", "value"),
-    "grid-run-portfolio-analysis": ("skill.portfolio_analysis", "value"),
-    "grid-run-fund-metrics-skill": ("skill.fund_metrics_calculator", "value"),
     "grid-run-stage-analysis": ("skill.stage_analysis", "value"),
     # Scoring & gap filler
     "grid-run-scoring": ("scoring.score_company", "value"),
@@ -541,12 +527,7 @@ GRID_ACTION_MAP: Dict[str, Tuple[str, str]] = {
     "grid-run-gap-fund-fit": ("gap_filler.fund_fit", "value"),
     # Scenario
     "grid-run-scenario-compose": ("scenario.compose", "value"),
-    # Round modeling & report generation (delegated to orchestrator skills)
-    "grid-run-round-modeling": ("skill.round_modeler", "value"),
-    "grid-run-report": ("skill.report_generator", "value"),
-    # Portfolio scenario & health
-    "grid-run-portfolio-scenarios": ("skill.portfolio_scenario_modeler", "value"),
-    "grid-run-company-health": ("skill.company_health_dashboard", "value"),
+    # REMOVED: round-modeling, report, portfolio-scenarios, company-health — legacy investor tools
 }
 
 # Trigger keywords for each grid skill (prompt substring match when matrix_context present)
@@ -567,21 +548,8 @@ GRID_TRIGGER_MAP: Dict[str, List[str]] = {
     "grid-run-chart": ["generate chart", "chart from data"],
     "grid-run-nav": ["nav", "calculate nav", "net asset value"],
     "grid-run-nav-company": ["company nav"],
-    "grid-run-nav-portfolio": ["portfolio nav", "calculate portfolio nav"],
-    "grid-run-nav-timeseries": ["nav timeseries", "nav over time"],
-    "grid-run-fund-metrics": ["fund metrics", "dpi", "tvpi", "irr"],
-    "grid-run-followon": ["follow-on", "followon", "follow on strategy", "should we follow on", "extension", "sell", "pro rata", "pro-rata", "dilution"],
-    "grid-run-portfolio-nav": ["portfolio nav", "total nav"],
-    "grid-run-portfolio-invested": ["total invested", "invested capital"],
-    "grid-run-dpi": ["dpi", "distributed to paid"],
-    "grid-run-tvpi": ["tvpi", "total value to paid"],
-    "grid-run-dpi-sankey": ["dpi sankey", "sankey"],
-    "grid-run-portfolio-optimize": ["portfolio optimize", "optimize portfolio"],
-    "grid-run-nav-timeseries-fund": ["nav timeseries", "nav over time"],
-    "grid-run-nav-forecast": ["nav forecast"],
+    # REMOVED: nav-portfolio, fund-metrics, followon, portfolio-*, dpi, tvpi, market-timing, investment-readiness — legacy investor
     "grid-find-comparables": ["comparables", "comps", "find comps"],
-    "grid-run-market-timing": ["market timing", "timing analysis"],
-    "grid-run-investment-readiness": ["investment readiness"],
     "grid-run-sector-landscape": ["sector landscape"],
     "grid-run-document-extract": ["extract document", "extract document for", "parse document", "document extract"],
     "grid-run-document-analyze": ["analyze document", "document analyze"],
@@ -609,23 +577,18 @@ GRID_TRIGGER_MAP: Dict[str, List[str]] = {
     "grid-run-exit-modeling": ["exit modeling", "exit model"],
     "grid-run-deck": ["generate deck", "deck", "presentation"],
     "grid-run-excel": ["excel", "spreadsheet", "generate excel"],
-    "grid-run-memo": ["memo", "investment memo", "generate memo"],
+    # REMOVED: memo, portfolio-analysis, fund-metrics-skill — legacy investor
     "grid-run-skill-chart": ["skill chart", "chart generation"],
-    "grid-run-portfolio-analysis": ["portfolio analysis"],
-    "grid-run-fund-metrics-skill": ["fund metrics calculator"],
     "grid-run-stage-analysis": ["stage analysis"],
     "grid-run-scoring": ["score company", "score companies"],
-    "grid-run-portfolio-dashboard": ["portfolio dashboard", "dashboard"],
+    # REMOVED: portfolio-dashboard — legacy investor
     "grid-run-gap-impact": ["ai impact", "gap impact"],
     "grid-run-gap-filler": ["gap fill", "infer", "fill gaps", "ai valuation"],
     "grid-run-gap-market": ["market opportunity", "gap market"],
     "grid-run-gap-momentum": ["momentum", "company momentum"],
     "grid-run-gap-fund-fit": ["fund fit", "fund fit scoring"],
     "grid-run-scenario-compose": ["scenario compose", "what if", "what happens", "stress test", "scenario"],
-    "grid-run-portfolio-scenarios": ["portfolio scenarios", "fund scenarios", "fund return scenarios", "what if portfolio"],
-    "grid-run-company-health": ["company health", "portfolio health", "health dashboard", "growth decay", "runway analysis"],
-    "grid-run-round-modeling": ["series d", "series c", "next round", "model round", "round modeling"],
-    "grid-run-report": ["generate report", "lp report", "follow-on memo", "gp deck", "quarterly report"],
+    # REMOVED: portfolio-scenarios, company-health, round-modeling, report — legacy investor
 }
 
 
@@ -658,12 +621,7 @@ class ExplainedEdit:
 
 
 AGENT_TOOLS: list[AgentTool] = [
-    AgentTool(
-        name="query_portfolio",
-        description="Filter/aggregate portfolio grid data by column, company, or metric.",
-        handler="_tool_query_portfolio",
-        input_schema={"query": "str", "filters": "dict?", "columns": "list[str]?"},
-    ),
+    # REMOVED: query_portfolio — legacy investor tool (moved to legacy_investor_tools.py)
     AgentTool(
         name="query_grid",
         description=(
@@ -682,12 +640,7 @@ AGENT_TOOLS: list[AgentTool] = [
         input_schema={"query": "str", "company_id": "str?", "doc_type": "str?"},
         cost_tier="free",
     ),
-    AgentTool(
-        name="calculate_fund_metrics",
-        description="Calculate fund-level NAV, IRR, DPI, TVPI, pacing.",
-        handler="_tool_fund_metrics",
-        input_schema={"metrics": "list[str]", "fund_id": "str?"},
-    ),
+    # REMOVED: calculate_fund_metrics — legacy investor tool
     AgentTool(
         name="run_valuation",
         description="Run PWERM/DCF/OPM/comparables valuation for a company.",
@@ -741,14 +694,7 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     # REMOVED: duplicate write_to_memo — canonical definition is at line ~1396
     # with richer schema (section_title, text, chart_type, chart_data, table).
-    AgentTool(
-        name="fetch_company_data",
-        description="Fetch company data from web (Tavily + extraction). Use for any company name — fetches funding, revenue, team, market data.",
-        handler="_tool_fetch_company",
-        input_schema={"company_name": "str"},
-        cost_tier="expensive",
-        timeout_ms=90_000,
-    ),
+    # REMOVED: fetch_company_data — legacy investor tool
     AgentTool(
         name="run_fpa",
         description="Run FP&A: forecast, stress test, sensitivity, regression.",
@@ -781,14 +727,7 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="expensive",
         timeout_ms=120_000,
     ),
-    AgentTool(
-        name="generate_memo",
-        description="Generate memo/report from data already in shared_data. Types: ic_memo, followon, lp_report, gp_strategy, comparison, bespoke_lp, fund_analysis, ownership_analysis, plan_memo. Auto-detects type from prompt if not specified.",
-        handler="_tool_generate_memo",
-        input_schema={"memo_type": "str?", "prompt": "str?"},
-        cost_tier="expensive",
-        timeout_ms=90_000,
-    ),
+    # REMOVED: generate_memo — legacy investor memo formats
     AgentTool(
         name="draft_contract",
         description="Draft a legal contract from template. Types: nda, employment, sha, vendor, service_agreement, contract_review. Auto-fills with company data from DB. For contract_review, include document_clauses in shared_data first.",
@@ -799,48 +738,13 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="run_skill",
-        description="Run a registered analysis skill by name. Available: valuation-engine, cap-table-generator, exit-modeler, scenario-generator, portfolio-analyzer, fund-metrics-calculator, followon-strategy, regression-analyzer, monte-carlo-simulator, sensitivity-analyzer, competitive-intelligence, market-sourcer, deck-quality-validator, formula-evaluator, arithmetic-engine, company-history-analyzer, waterfall-calculator, debt-converter, market-landscape, revenue-projector, compliance-checker, ma-modeler.",
+        description="Run a registered analysis skill by name. Available: valuation-engine, cap-table-generator, exit-modeler, scenario-generator, regression-analyzer, monte-carlo-simulator, sensitivity-analyzer, competitive-intelligence, market-sourcer, deck-quality-validator, formula-evaluator, arithmetic-engine, waterfall-calculator, debt-converter, revenue-projector, compliance-checker, ma-modeler.",
         handler="_tool_run_skill",
         input_schema={"skill": "str", "inputs": "dict?"},
         cost_tier="expensive",
         timeout_ms=90_000,
     ),
-    # ------------------------------------------------------------------
-    # Dedicated tools — surface key services directly for the LLM router
-    # so it doesn't need the run_skill indirection for common tasks.
-    # ------------------------------------------------------------------
-    AgentTool(
-        name="run_portfolio_health",
-        description="Portfolio health dashboard: growth decay, burn/runway, funding trajectory, signals for every company.",
-        handler="_tool_portfolio_health",
-        input_schema={"fund_id": "str?"},
-        cost_tier="expensive",
-        timeout_ms=90_000,
-    ),
-    AgentTool(
-        name="run_followon_strategy",
-        description="Analyze follow-on / pro-rata / extend-or-sell decisions for portfolio companies.",
-        handler="_tool_followon",
-        input_schema={"company": "str?", "fund_id": "str?"},
-        cost_tier="expensive",
-        timeout_ms=60_000,
-    ),
-    AgentTool(
-        name="run_round_modeling",
-        description="Model next funding round: dilution, waterfall, valuation step-up, capital required.",
-        handler="_tool_round_modeling",
-        input_schema={"company": "str", "round_type": "str?", "raise_amount": "float?"},
-        cost_tier="expensive",
-        timeout_ms=60_000,
-    ),
-    AgentTool(
-        name="run_exit_modeling",
-        description="Model exit scenarios with fund ownership impact: IPO, M&A, secondary at various multiples.",
-        handler="_tool_exit_modeling",
-        input_schema={"company": "str", "exit_values": "list[float]?"},
-        cost_tier="expensive",
-        timeout_ms=60_000,
-    ),
+    # REMOVED: run_portfolio_health, run_followon_strategy, run_round_modeling, run_exit_modeling — legacy investor tools
     AgentTool(
         name="run_regression",
         description="Run regression, Monte Carlo, sensitivity, or time-series forecast. Set type param.",
@@ -849,22 +753,7 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="cheap",
         timeout_ms=45_000,
     ),
-    AgentTool(
-        name="generate_plan_memo",
-        description="Generate a plan memo — resumable context document capturing research findings, execution steps, and data snapshot for cross-session use.",
-        handler="_tool_generate_plan_memo",
-        input_schema={"prompt": "str?"},
-        cost_tier="expensive",
-        timeout_ms=90_000,
-    ),
-    AgentTool(
-        name="run_report",
-        description="Generate LP quarterly report, follow-on investment memo, or GP strategy report.",
-        handler="_tool_report",
-        input_schema={"type": "str", "fund_id": "str?", "company": "str?"},
-        cost_tier="expensive",
-        timeout_ms=90_000,
-    ),
+    # REMOVED: generate_plan_memo, run_report — legacy investor tools
 
     # ------------------------------------------------------------------
     # Phase 8: Proactive enrichment, search/extract combos, projections
@@ -1051,14 +940,7 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="cheap",
         timeout_ms=30_000,
     ),
-    AgentTool(
-        name="portfolio_snapshot",
-        description="Get probability-weighted portfolio state (NAV, DPI, TVPI, per-company revenue) at a specific future year from scenario analysis.",
-        handler="_tool_portfolio_snapshot",
-        input_schema={"year": "int"},
-        cost_tier="cheap",
-        timeout_ms=15_000,
-    ),
+    # REMOVED: portfolio_snapshot — legacy investor tool (NAV, DPI, TVPI)
     AgentTool(
         name="three_scenario_cash_flow",
         description="Build bull/base/bear P&L models side by side for a company.",
@@ -1069,14 +951,7 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
 
     # --- Portfolio Operations ---
-    AgentTool(
-        name="add_company_to_portfolio",
-        description="Fetch, validate, and suggest adding a company to portfolio (requires approval).",
-        handler="_tool_add_company",
-        input_schema={"company_name": "str", "stage": "str?", "check_size": "float?"},
-        cost_tier="expensive",
-        timeout_ms=90_000,
-    ),
+    # REMOVED: add_company_to_portfolio — legacy investor tool
     AgentTool(
         name="bulk_operation",
         description="Batch valuations, health checks, or data refreshes across portfolio.",
@@ -1085,48 +960,7 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="expensive",
         timeout_ms=120_000,
     ),
-    AgentTool(
-        name="portfolio_comparison",
-        description="Side-by-side comparison of N companies on specified metrics.",
-        handler="_tool_portfolio_comparison",
-        input_schema={"companies": "list[str]", "metrics": "list[str]?"},
-        cost_tier="cheap",
-        timeout_ms=45_000,
-    ),
-    AgentTool(
-        name="graduation_rates",
-        description="Stage progression analysis: how companies move through funding stages.",
-        handler="_tool_graduation_rates",
-        input_schema={"fund_id": "str?"},
-        cost_tier="cheap",
-        timeout_ms=30_000,
-    ),
-
-    # --- Market & Intelligence ---
-    AgentTool(
-        name="market_landscape",
-        description="Competitive landscape mapping: sector, geography, stage, timing, competitors.",
-        handler="_tool_market_landscape",
-        input_schema={"sector": "str", "geography": "str?", "stage": "str?"},
-        cost_tier="expensive",
-        timeout_ms=60_000,
-    ),
-    AgentTool(
-        name="market_timing",
-        description="Assess market timing for entry/exit: hot, cooling, cold, or emerging.",
-        handler="_tool_market_timing",
-        input_schema={"sector": "str", "geography": "str?"},
-        cost_tier="cheap",
-        timeout_ms=30_000,
-    ),
-    AgentTool(
-        name="company_history",
-        description="Full company history analysis with funding rounds, investors, DPI Sankey.",
-        handler="_tool_company_history",
-        input_schema={"company": "str", "fund_id": "str?"},
-        cost_tier="expensive",
-        timeout_ms=60_000,
-    ),
+    # REMOVED: portfolio_comparison, graduation_rates, market_landscape, market_timing, company_history — legacy investor tools
 
     # --- Financial Modeling ---
     AgentTool(
@@ -1137,14 +971,7 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="cheap",
         timeout_ms=30_000,
     ),
-    AgentTool(
-        name="fund_deployment_model",
-        description="Model fund J-curve, pacing, reserve allocation, and deployment strategy.",
-        handler="_tool_fund_deployment",
-        input_schema={"fund_id": "str?", "scenarios": "list[dict]?"},
-        cost_tier="expensive",
-        timeout_ms=60_000,
-    ),
+    # REMOVED: fund_deployment_model — legacy investor tool
     AgentTool(
         name="financial_calculator",
         description="On-demand NPV, IRR, PMT, PV, FV calculations. Specify function and inputs.",
@@ -1180,47 +1007,7 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=60_000,
     ),
 
-    # --- Generation (varying types) ---
-    AgentTool(
-        name="generate_ic_memo",
-        description="Generate investment committee memo: thesis, market, financials, cap table, risks.",
-        handler="_tool_generate_ic_memo",
-        input_schema={"company": "str", "prompt": "str?"},
-        cost_tier="expensive",
-        timeout_ms=90_000,
-    ),
-    AgentTool(
-        name="generate_followon_memo",
-        description="Generate follow-on investment analysis: position, performance, pro-rata, recommendation.",
-        handler="_tool_generate_followon_memo",
-        input_schema={"company": "str", "prompt": "str?"},
-        cost_tier="expensive",
-        timeout_ms=90_000,
-    ),
-    AgentTool(
-        name="generate_lp_report",
-        description="Generate quarterly LP report: portfolio summary, per-company updates, fund metrics.",
-        handler="_tool_generate_lp_report",
-        input_schema={"fund_id": "str?", "quarter": "str?"},
-        cost_tier="expensive",
-        timeout_ms=90_000,
-    ),
-    AgentTool(
-        name="generate_gp_update",
-        description="Generate GP strategy update: deployment pacing, pipeline, market views.",
-        handler="_tool_generate_gp_update",
-        input_schema={"fund_id": "str?"},
-        cost_tier="expensive",
-        timeout_ms=90_000,
-    ),
-    AgentTool(
-        name="generate_comparison_report",
-        description="Generate side-by-side investment comparison report for 2+ companies.",
-        handler="_tool_generate_comparison_report",
-        input_schema={"companies": "list[str]", "prompt": "str?"},
-        cost_tier="expensive",
-        timeout_ms=90_000,
-    ),
+    # REMOVED: generate_ic_memo, generate_followon_memo, generate_lp_report, generate_gp_update, generate_comparison_report — legacy investor memos
 
     # ------------------------------------------------------------------
     # Lightweight diligence & portfolio enrichment
@@ -1295,40 +1082,7 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
 
     # ------------------------------------------------------------------
-    # Granular company search tools — 1 Tavily search each, auto-suggest
-    # ------------------------------------------------------------------
-    AgentTool(
-        name="search_company_funding",
-        description="Search for a company's funding history, valuation, investors, stage. 1 focused web search + extraction. Auto-suggests grid edits.",
-        handler="_tool_search_company_funding",
-        input_schema={"company_name": "str"},
-        cost_tier="cheap",
-        timeout_ms=30_000,
-    ),
-    AgentTool(
-        name="search_company_product",
-        description="Search for a company's product, business model, pricing, target market. 1 focused web search + extraction. Auto-suggests grid edits.",
-        handler="_tool_search_company_product",
-        input_schema={"company_name": "str"},
-        cost_tier="cheap",
-        timeout_ms=30_000,
-    ),
-    AgentTool(
-        name="search_company_team",
-        description="Search for a company's founders, leadership, team size, headcount. 1 focused web search + extraction. Auto-suggests grid edits.",
-        handler="_tool_search_company_team",
-        input_schema={"company_name": "str"},
-        cost_tier="cheap",
-        timeout_ms=30_000,
-    ),
-    AgentTool(
-        name="search_company_market",
-        description="Search for a company's competitors, TAM, market position, industry trends. 1 focused web search + extraction. Auto-suggests grid edits.",
-        handler="_tool_search_company_market",
-        input_schema={"company_name": "str"},
-        cost_tier="cheap",
-        timeout_ms=30_000,
-    ),
+    # REMOVED: search_company_funding, search_company_product, search_company_team, search_company_market — legacy investor tools
     AgentTool(
         name="analyze_financials",
         description="Infer/compute financial metrics: gross margin, burn rate, runway, growth projection, Rule of 40, capital efficiency. Uses stage benchmarks + available data. Auto-suggests grid edits.",
@@ -1341,14 +1095,7 @@ AGENT_TOOLS: list[AgentTool] = [
     # ------------------------------------------------------------------
     # Batch operations — parallel execution across multiple companies
     # ------------------------------------------------------------------
-    AgentTool(
-        name="batch_valuate",
-        description="Run valuations across multiple companies in parallel batches of 5. Faster than individual run_valuation calls.",
-        handler="_tool_batch_valuate",
-        input_schema={"companies": "list[str]", "method": "str?"},
-        cost_tier="expensive",
-        timeout_ms=120_000,
-    ),
+    # REMOVED: batch_valuate — legacy investor tool
     AgentTool(
         name="batch_enrich",
         description="Enrich multiple companies in parallel: benchmarks + web search + gap fill. Wrapper around resolve_data_gaps for explicit batch calls.",
@@ -1415,35 +1162,7 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=5_000,
     ),
 
-    # ------------------------------------------------------------------
-    # Micro-skill tools — self-contained, agent-callable portfolio loops
-    # ------------------------------------------------------------------
-    AgentTool(
-        name="run_followon_analysis",
-        description=(
-            "Loop every company in the portfolio grid and flag who needs follow-on capital. "
-            "Checks runway vs burn against stage benchmarks. Companies with <9mo runway are "
-            "flagged URGENT; 9-15mo flagged WATCH. Auto-persists suggestions to grid badges. "
-            "Use when asked 'who needs capital', 'runway check', or 'follow-on'."
-        ),
-        handler="_tool_run_followon_analysis",
-        input_schema={"fund_id": "str?", "runway_threshold_months": "int?"},
-        cost_tier="cheap",
-        timeout_ms=60_000,
-    ),
-    AgentTool(
-        name="run_benchmark_scan",
-        description=(
-            "Run stage benchmark analysis across ALL portfolio companies: stage fit, ARR vs benchmark, "
-            "burn rate, growth outliers, valuation coherence. Emits per-company grid suggestions for "
-            "any field that is missing or significantly out of range. Use for 'fill in missing data', "
-            "'benchmark all companies', or 'what fields are missing from my portfolio'."
-        ),
-        handler="_tool_run_portfolio_health",
-        input_schema={"fund_id": "str?", "fields": "list[str]?"},
-        cost_tier="cheap",
-        timeout_ms=60_000,
-    ),
+    # REMOVED: run_followon_analysis, run_benchmark_scan — legacy investor tools
     AgentTool(
         name="enrich_sparse_companies",
         description=(
@@ -1874,45 +1593,7 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=45_000,
     ),
 
-    # --- Company Health & Portfolio Analytics ---
-    AgentTool(
-        name="company_health_score",
-        description=(
-            "Compute a rich analytical profile for a portfolio company: growth trajectory "
-            "with decay projections, burn & runway estimation, funding trajectory prediction, "
-            "valuation context, benchmark comparisons (ARR, growth, burn vs stage peers), "
-            "and factual signals (runway alerts, down round risk, stale pricing). "
-            "Use to answer 'how is this company doing?' or 'flag concerns in the portfolio.'"
-        ),
-        handler="_tool_company_health_score",
-        input_schema={"company_id": "str"},
-        cost_tier="cheap",
-        timeout_ms=15_000,
-    ),
-    AgentTool(
-        name="company_return_metrics",
-        description=(
-            "Compute per-company return metrics: MOIC, IRR (Newton-Raphson on dated cash flows), "
-            "holding period, unrealized gain, cost basis per %. Requires fund investment data. "
-            "Use to answer 'what's our return on this company?' or 'IRR on our portfolio.'"
-        ),
-        handler="_tool_company_return_metrics",
-        input_schema={"company_id": "str"},
-        cost_tier="cheap",
-        timeout_ms=15_000,
-    ),
-    AgentTool(
-        name="portfolio_health_analysis",
-        description=(
-            "Run health scoring + return metrics across ALL companies in the portfolio. "
-            "Returns per-company analytics, per-company returns (where investment data exists), "
-            "and fund-level aggregates: total invested, total NAV, portfolio MOIC, weighted IRR."
-        ),
-        handler="_tool_portfolio_health_analysis",
-        input_schema={},
-        cost_tier="expensive",
-        timeout_ms=60_000,
-    ),
+    # REMOVED: company_health_score, company_return_metrics, portfolio_health_analysis — legacy investor tools
 
     # --- Seasonality Detection & Application ---
     AgentTool(
@@ -2875,21 +2556,18 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "web_search",               # supplemental research
     ],
 
-    # --- Portfolio & fund ---
+    # --- Portfolio (cleaned — legacy fund metrics removed) ---
     "portfolio": [
-        "query_portfolio",          # primary read
-        "run_portfolio_health",     # health dashboard
-        "calculate_fund_metrics",   # DPI, TVPI, IRR
+        "query_grid",               # primary read
         "enrich_portfolio",         # fill missing data
         "bulk_write_grid",          # batch write to grid
         "generate_chart",           # portfolio charts
-        "run_followon_strategy",    # follow-on analysis
         "emit_todo",                # action items
     ],
     "sourcing": [
         "generate_rubric",          # thesis → weights + filters (call first)
         "source_companies",         # primary action — DB query + web discovery + scoring
-        "query_portfolio",          # portfolio context
+        "query_grid",               # grid context
         "bulk_write_grid",          # batch write sourced data to grid
         "generate_chart",           # visualize results
         "suggest_grid_edit",        # push to grid
@@ -2897,9 +2575,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "add_company_to_matrix",    # add sourced company to portfolio grid
     ],
     "market": [
-        "market_landscape",         # primary action
         "source_companies",         # fast DB lookup for market mapping
-        "market_timing",            # market timing analysis
         "web_search",               # supplemental research
         "search_and_extract",       # structured extraction
         "lightweight_diligence",    # quick company scans
@@ -2916,7 +2592,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "fpa_forecast",                # generate forecast from actuals
         "fpa_cell_edit",               # edit a single P&L cell
         "generate_chart",              # visualize KPI trends
-        "query_portfolio",             # company context
+        "query_grid",                  # company context
     ],
 
     # --- Transfer Pricing ---
@@ -3637,31 +3313,23 @@ class PlanContext:
 # Plan templates: optional guidance for the LLM, not rigid constraints.
 # Keys are common intent patterns; values are suggested tool chains.
 PLAN_TEMPLATES: Dict[str, List[str]] = {
-    "company_research": ["fetch_company_data", "run_valuation", "generate_chart"],
-    "portfolio_overview": ["query_portfolio", "run_portfolio_health", "calculate_fund_metrics", "generate_chart"],
-    "company_deep_dive": ["query_portfolio", "run_portfolio_health", "run_valuation", "run_exit_modeling", "generate_chart"],
-    "ic_memo": ["fetch_company_data", "run_valuation", "cap_table_evolution", "generate_ic_memo"],
-    "comparison": ["fetch_company_data", "run_valuation", "portfolio_comparison", "generate_comparison_report"],
-    "stress_test": ["query_portfolio", "stress_test_portfolio", "run_regression", "generate_chart"],
-    "exit_analysis": ["query_portfolio", "run_exit_modeling", "liquidation_waterfall", "generate_chart"],
-    "deck_generation": ["fetch_company_data", "run_valuation", "cap_table_evolution", "generate_deck"],
-    "lp_report": ["query_portfolio", "calculate_fund_metrics", "run_portfolio_health", "generate_lp_report"],
-    "round_modeling": ["query_portfolio", "run_round_modeling", "anti_dilution_modeling", "generate_chart"],
-    "followon_decision": ["query_portfolio", "run_followon_strategy", "run_round_modeling", "generate_followon_memo"],
-    "fund_metrics": ["calculate_fund_metrics", "query_portfolio", "generate_chart"],
-    # Phase 3: New plan templates using new tools
-    "cap_table_analysis": ["fetch_company_data", "cap_table_evolution", "liquidation_waterfall", "generate_chart"],
-    "ma_analysis": ["fetch_company_data", "ma_workflow", "run_valuation", "generate_chart"],
-    "market_research": ["market_landscape", "market_timing", "web_search", "generate_chart"],
-    "fund_deployment": ["calculate_fund_metrics", "fund_deployment_model", "revenue_projection", "generate_chart"],
-    "compliance_review": ["compliance_check", "query_portfolio", "generate_report"],
-    "scenario_analysis": ["fetch_company_data", "world_model_scenario", "sensitivity_matrix", "generate_chart"],
-    "portfolio_stress": ["query_portfolio", "stress_test_portfolio", "monte_carlo_portfolio", "generate_chart"],
-    "gp_update": ["query_portfolio", "calculate_fund_metrics", "fund_deployment_model", "generate_gp_update"],
+    "company_research": ["web_search", "run_valuation", "generate_chart"],
+    # REMOVED: portfolio_overview, ic_memo, lp_report, fund_metrics, fund_deployment, gp_update, followon_decision, round_modeling — legacy investor
+    "company_deep_dive": ["query_grid", "run_valuation", "generate_chart"],
+    "comparison": ["query_grid", "run_valuation", "generate_chart"],
+    "stress_test": ["query_grid", "stress_test_portfolio", "run_regression", "generate_chart"],
+    "exit_analysis": ["query_grid", "liquidation_waterfall", "generate_chart"],
+    "deck_generation": ["query_grid", "run_valuation", "cap_table_evolution", "generate_deck"],
+    "cap_table_analysis": ["query_grid", "cap_table_evolution", "liquidation_waterfall", "generate_chart"],
+    "ma_analysis": ["query_grid", "ma_workflow", "run_valuation", "generate_chart"],
+    "market_research": ["web_search", "generate_chart"],
+    "compliance_review": ["compliance_check", "query_grid"],
+    "scenario_analysis": ["query_grid", "world_model_scenario", "sensitivity_matrix", "generate_chart"],
+    "portfolio_stress": ["query_grid", "stress_test_portfolio", "monte_carlo_portfolio", "generate_chart"],
     # Phase 8: New plan templates
     "proactive_enrichment": ["enrich_company_proactive", "suggest_grid_edit", "generate_chart"],
-    "company_list_building": ["build_company_list", "run_valuation", "generate_memo"],
-    "projection_analysis": ["query_portfolio", "run_projection", "generate_chart"],
+    "company_list_building": ["source_companies", "run_valuation"],
+    "projection_analysis": ["query_grid", "run_projection", "generate_chart"],
     "forecast_analysis": ["run_fpa", "run_regression", "run_projection", "sensitivity_matrix", "generate_chart"],
     "revenue_forecast": ["query_portfolio", "run_fpa", "run_projection", "generate_chart"],
     "monte_carlo_analysis": ["query_portfolio", "monte_carlo_portfolio", "generate_chart"],
@@ -5780,11 +5448,7 @@ class UnifiedMCPOrchestrator:
                 "handler": self._execute_excel_generation,
                 "description": "Spreadsheet creation"
             },
-            "memo-writer": {
-                "category": SkillCategory.GENERATION,
-                "handler": self._execute_memo_generation,
-                "description": "Document generation"
-            },
+            # REMOVED: memo-writer — legacy investor skill
             "chart-generator": {
                 "category": SkillCategory.GENERATION,
                 "handler": self._execute_chart_generation,
@@ -5797,16 +5461,7 @@ class UnifiedMCPOrchestrator:
                 "handler": self._execute_cap_table_generation,
                 "description": "Generate cap tables with ownership"
             },
-            "portfolio-analyzer": {
-                "category": SkillCategory.ANALYSIS,
-                "handler": self._execute_portfolio_analysis,
-                "description": "Analyze fund portfolio performance"
-            },
-            "fund-metrics-calculator": {
-                "category": SkillCategory.ANALYSIS,
-                "handler": self._execute_fund_metrics,
-                "description": "Calculate DPI, TVPI, IRR"
-            },
+            # REMOVED: portfolio-analyzer, fund-metrics-calculator — legacy investor skills
             "stage-analyzer": {
                 "category": SkillCategory.ANALYSIS,
                 "handler": self._execute_stage_analysis,
@@ -7538,7 +7193,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
             column_filter = (inputs.get("column") or "").lower()
 
             if not grid_rows:
-                # Fallback: for PNL mode, try fpa_actuals via shared_data
+                # Fallback: for PNL mode, try cached result then fetch from DB
                 if grid_mode == "pnl":
                     pnl = self.shared_data.get("fpa_pnl_result")
                     if pnl and isinstance(pnl, dict) and pnl.get("rows"):
@@ -7549,6 +7204,126 @@ Answer using specific company names and numbers from the portfolio grid above.""
                             "summary": f"P&L: {len(pnl['rows'])} line items",
                             "source": "fpa_pnl_result",
                         }
+
+                    # Fetch from DB using company_id
+                    company_id = self.shared_data.get("company_id")
+                    if company_id:
+                        try:
+                            from app.services.rolling_forecast_service import RollingForecastService
+                            svc = RollingForecastService()
+                            rolling = svc.build_rolling_view(company_id)
+
+                            # Cache for subsequent calls
+                            self.shared_data["fpa_pnl_result"] = rolling
+                            self.shared_data["fpa_rolling_forecast"] = rolling
+
+                            actuals_count = rolling.get("actuals_count", 0)
+                            forecast_count = rolling.get("forecast_count", 0)
+                            boundary = rolling.get("boundary_period", "unknown")
+
+                            # Format rows for agent readability
+                            rows_summary = []
+                            for row in rolling.get("rows", []):
+                                rows_summary.append({
+                                    "period": row.get("period", ""),
+                                    "source": row.get("source", ""),
+                                    "revenue": row.get("revenue"),
+                                    "cogs": row.get("cogs"),
+                                    "gross_profit": row.get("gross_profit"),
+                                    "gross_margin": row.get("gross_margin"),
+                                    "rd_spend": row.get("rd_spend"),
+                                    "sm_spend": row.get("sm_spend"),
+                                    "ga_spend": row.get("ga_spend"),
+                                    "total_opex": row.get("total_opex"),
+                                    "ebitda": row.get("ebitda"),
+                                    "cash_balance": row.get("cash_balance"),
+                                })
+
+                            # Pre-compute chart data for _tool_chart
+                            if rolling.get("rows"):
+                                self.shared_data["pnl_chart_data"] = {
+                                    "periods": rolling.get("periods", []),
+                                    "revenue": [r.get("revenue", 0) for r in rolling["rows"]],
+                                    "ebitda": [r.get("ebitda", 0) for r in rolling["rows"]],
+                                    "cash_balance": [r.get("cash_balance", 0) for r in rolling["rows"]],
+                                    "sources": [r.get("source", "") for r in rolling["rows"]],
+                                    "boundary_index": rolling.get("boundary_index"),
+                                }
+
+                            # Surface forecast methodology + assumptions so agent can discuss/adjust
+                            from app.services.actuals_ingestion import seed_forecast_from_actuals
+                            try:
+                                seed = seed_forecast_from_actuals(company_id)
+                                dq = seed.get("_data_quality", {})
+                                self.shared_data["forecast_seed"] = seed
+                            except Exception:
+                                seed = {}
+                                dq = {}
+
+                            forecast_method = dq.get("recommended_method", "growth_rate")
+                            forecast_methodology = {
+                                "method": forecast_method,
+                                "growth_rate_annual": seed.get("growth_rate"),
+                                "trailing_3m": seed.get("_trailing_growth_3m"),
+                                "trailing_6m": seed.get("_trailing_growth_6m"),
+                                "growth_trend": seed.get("_growth_trend", "unknown"),
+                                "base_revenue": seed.get("revenue"),
+                                "gross_margin": seed.get("gross_margin"),
+                                "burn_rate": seed.get("burn_rate"),
+                                "net_burn": seed.get("net_burn"),
+                                "runway_months": seed.get("runway_months"),
+                                "data_quality": dq,
+                            }
+                            # Add driver data if detected
+                            if seed.get("_detected_customer_count"):
+                                forecast_methodology["detected_customers"] = seed["_detected_customer_count"]
+                            if seed.get("_detected_acv"):
+                                forecast_methodology["detected_acv"] = seed["_detected_acv"]
+                            if seed.get("_detected_churn_rate"):
+                                forecast_methodology["detected_churn"] = seed["_detected_churn_rate"]
+                            if seed.get("_rd_spend"):
+                                forecast_methodology["opex_breakdown"] = {
+                                    "rd": seed.get("_rd_spend"),
+                                    "sm": seed.get("_sm_spend"),
+                                    "ga": seed.get("_ga_spend"),
+                                }
+
+                            # Available analytical capabilities
+                            capabilities = ["fpa_forecast (re-run with different method: growth_rate, driver_based, regression, seasonal)"]
+                            if dq.get("revenue_months", 0) >= 3:
+                                capabilities.append("fpa_regression (regression, Monte Carlo simulation, sensitivity tornado)")
+                            if dq.get("has_customer_data") or dq.get("has_arr_data"):
+                                capabilities.append("driver_based forecast (adjust customer count, ACV, churn, expansion)")
+                            capabilities.extend([
+                                "run_scenario / fpa_scenario_create (what-if: adjust any driver, see full P&L impact)",
+                                "fpa_variance (budget vs actuals variance analysis)",
+                                "fpa_cash_flow (monthly cash flow model with adjustable assumptions)",
+                                "generate_chart (pnl_forecast, pnl_waterfall, sensitivity_tornado, monte_carlo_histogram)",
+                            ])
+
+                            return {
+                                "grid_mode": "pnl",
+                                "company_id": company_id,
+                                "rows": rows_summary,
+                                "periods": rolling.get("periods", []),
+                                "actuals_months": actuals_count,
+                                "forecast_months": forecast_count,
+                                "boundary_period": boundary,
+                                "summary": f"P&L: {actuals_count} months actuals + {forecast_count} months forecast. Boundary at {boundary}.",
+                                "source": "rolling_forecast_db",
+                                "forecast_methodology": forecast_methodology,
+                                "capabilities": capabilities,
+                                "hint": (
+                                    "You have the full P&L with actuals and forecast. "
+                                    "The forecast was built using the '" + forecast_method + "' method. "
+                                    "You can explain the methodology, adjust assumptions, re-run with different methods, "
+                                    "create scenario branches, run Monte Carlo simulations, and generate charts. "
+                                    "Use your full analytical toolset — don't just read the numbers."
+                                ),
+                            }
+                        except Exception as e:
+                            logger.warning(f"[TOOL] query_grid PNL DB fallback failed: {e}")
+
                 return {
                     "grid_mode": grid_mode,
                     "rows": [],
@@ -8041,6 +7816,42 @@ Answer using specific company names and numbers from the portfolio grid above.""
                     except Exception as bridge_err:
                         logger.warning(f"[TOOL] scenario macro→micro bridge failed: {bridge_err}")
 
+                # ── PNL mode: build scenario forecast via ForecastMethodRouter ──
+                # The base forecast is the base branch. Scenario driver deltas
+                # modify the seed data and re-run through the same router to
+                # produce a comparison forecast with charts.
+                pnl_company_id = self.shared_data.get("company_id") or inputs.get("company_id")
+                if self.shared_data.get("grid_mode") == "pnl" and pnl_company_id and all_driver_deltas:
+                    try:
+                        from app.services.actuals_ingestion import seed_forecast_from_actuals
+                        from app.services.forecast_method_router import ForecastMethodRouter
+                        from app.services.scenario_branch_service import build_forecast_charts
+
+                        company_data = seed_forecast_from_actuals(pnl_company_id)
+                        # Apply scenario deltas on top of actuals-derived seed
+                        for did, delta in all_driver_deltas.items():
+                            company_data[did] = delta
+
+                        router = ForecastMethodRouter()
+                        method = company_data.get("_forecast_method", "growth_rate")
+                        scenario_forecast, prov = router.build_forecast(
+                            company_id=pnl_company_id,
+                            method=method,
+                            seed_data=company_data,
+                            months=12,
+                        )
+                        # Generate charts from the scenario forecast
+                        scenario_charts = build_forecast_charts(scenario_forecast)
+                        if scenario_charts:
+                            branch_charts.extend(scenario_charts)
+
+                        # Store so grid and downstream tools can pick it up
+                        async with self.shared_data_lock:
+                            self.shared_data["scenario_forecast"] = scenario_forecast
+                            self.shared_data["scenario_provenance"] = prov
+                    except Exception as pnl_err:
+                        logger.warning(f"[TOOL] scenario PNL forecast failed: {pnl_err}")
+
                 try:
                     wm_result = await nl_composer.compose_scenario_to_world_model(
                         composed_scenario=composed,
@@ -8059,6 +7870,10 @@ Answer using specific company names and numbers from the portfolio grid above.""
                             result["driver_deltas"] = all_driver_deltas
                         if branch_charts:
                             result["chart_data"] = branch_charts
+                        # Attach PNL scenario forecast if it was built
+                        if self.shared_data.get("scenario_forecast"):
+                            result["scenario_forecast"] = self.shared_data["scenario_forecast"]
+                            result["scenario_provenance"] = self.shared_data.get("scenario_provenance", {})
                         # Persist to shared_data (don't overwrite richer PWERM data)
                         async with self.shared_data_lock:
                             if not self.shared_data.get("scenario_analysis"):
@@ -14839,14 +14654,7 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
         cost_tier="cheap",
         timeout_ms=30_000,
     ),
-    AgentTool(
-        name="portfolio_snapshot",
-        description="Get probability-weighted portfolio state (NAV, DPI, TVPI, per-company revenue) at a specific future year from scenario analysis.",
-        handler="_tool_portfolio_snapshot",
-        input_schema={"year": "int"},
-        cost_tier="cheap",
-        timeout_ms=15_000,
-    ),
+    # REMOVED: portfolio_snapshot — legacy investor tool (NAV, DPI, TVPI)
     AgentTool(
         name="three_scenario_cash_flow",
         description="Build bull/base/bear P&L models side by side for a company.",
