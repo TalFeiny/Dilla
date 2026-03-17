@@ -1,0 +1,169 @@
+'use client';
+
+import React, { useMemo, useState, useCallback } from 'react';
+import dynamic from 'next/dynamic';
+import { MemoSectionWrapper } from '../MemoSectionWrapper';
+import { useMemoContext, type NarrativeCard } from '../MemoContext';
+import { Button } from '@/components/ui/button';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import { Loader2, Play, Heart } from 'lucide-react';
+import { getClientBackendUrl } from '@/lib/backend-url';
+
+const TableauLevelCharts = dynamic(
+  () => import('@/components/charts/TableauLevelCharts'),
+  { ssr: false, loading: () => <div className="h-[300px] animate-pulse bg-muted rounded" /> }
+);
+
+type ChartMode = 'radar_comparison' | 'bar' | 'heatmap';
+
+interface HealthDimension {
+  id: string;
+  label: string;
+  score: number;       // 0-100
+  weight: number;
+  grade: 'A' | 'B' | 'C' | 'D' | 'F';
+  detail?: string;
+}
+
+interface HealthResult {
+  overall_score: number;
+  overall_grade: string;
+  dimensions: HealthDimension[];
+}
+
+const gradeColors = {
+  A: 'text-emerald-600 bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800',
+  B: 'text-blue-600 bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800',
+  C: 'text-amber-600 bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800',
+  D: 'text-orange-600 bg-orange-50 dark:bg-orange-950/20 border-orange-200 dark:border-orange-800',
+  F: 'text-red-600 bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800',
+} as const;
+
+export interface HealthScoreSectionProps {
+  onDelete?: () => void;
+  readOnly?: boolean;
+}
+
+export function HealthScoreSection({ onDelete, readOnly = false }: HealthScoreSectionProps) {
+  const ctx = useMemoContext();
+  const backendUrl = getClientBackendUrl();
+  const [chartMode, setChartMode] = useState<ChartMode>('radar_comparison');
+  const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
+  const [result, setResult] = useState<HealthResult | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleRunHealth = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${backendUrl}/api/advanced-analytics/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          company_id: ctx.companyId,
+          analysis_type: 'health_score',
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setResult(data);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [backendUrl, ctx.companyId]);
+
+  const chartData = useMemo(() => {
+    if (!result?.dimensions) return [];
+    return result.dimensions.map(d => ({
+      name: d.label,
+      value: d.score,
+      weight: d.weight,
+      grade: d.grade,
+    }));
+  }, [result]);
+
+  const collapsedSummary = result
+    ? `Health: ${result.overall_grade} (${result.overall_score}/100) | ${result.dimensions.length} dimensions`
+    : 'Health Score — run analysis';
+
+  const aiContext = useMemo(() => ({
+    result,
+  }), [result]);
+
+  const configBar = (
+    <>
+      <div className="flex items-center gap-1.5">
+        <span className="text-muted-foreground">Chart:</span>
+        <Select value={chartMode} onValueChange={(v) => setChartMode(v as ChartMode)}>
+          <SelectTrigger className="h-6 w-[120px] text-[11px]"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="radar_comparison">Radar</SelectItem>
+            <SelectItem value="bar">Bar</SelectItem>
+            <SelectItem value="heatmap">Heatmap</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {!readOnly && (
+        <Button variant="outline" size="sm" className="h-6 text-[11px] gap-1 ml-auto" onClick={handleRunHealth} disabled={loading}>
+          {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+          Score Health
+        </Button>
+      )}
+    </>
+  );
+
+  return (
+    <MemoSectionWrapper
+      sectionType="health_score"
+      title="Company Health Score"
+      collapsedSummary={collapsedSummary}
+      configContent={configBar}
+      narrativeCards={narrativeCards}
+      onNarrativeCardsChange={setNarrativeCards}
+      aiDataContext={aiContext}
+      onDelete={onDelete}
+      readOnly={readOnly}
+    >
+      {/* Overall score badge */}
+      {result && (
+        <div className="flex items-center gap-3 mb-3">
+          <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 ${gradeColors[result.overall_grade as keyof typeof gradeColors] || gradeColors.C}`}>
+            <Heart className="h-4 w-4" />
+            <span className="text-2xl font-bold tabular-nums">{result.overall_score}</span>
+            <span className="text-lg font-semibold">{result.overall_grade}</span>
+          </div>
+          <span className="text-xs text-muted-foreground">{result.dimensions.length} dimensions evaluated</span>
+        </div>
+      )}
+
+      {/* Dimension cards */}
+      {result?.dimensions && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 mb-3">
+          {result.dimensions.map(dim => (
+            <div key={dim.id} className={`rounded-md border p-2 ${gradeColors[dim.grade] || gradeColors.C}`}>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-medium uppercase tracking-wider">{dim.label}</span>
+                <span className="text-xs font-bold">{dim.grade}</span>
+              </div>
+              <div className="text-sm font-semibold tabular-nums">{dim.score}/100</div>
+              {dim.detail && <p className="text-[10px] opacity-70 mt-0.5">{dim.detail}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Radar chart */}
+      <div className="w-full" style={{ height: 260 }}>
+        {chartData.length > 0 ? (
+          <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={240} />
+        ) : (
+          <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
+            Run health score analysis to evaluate company dimensions
+          </div>
+        )}
+      </div>
+    </MemoSectionWrapper>
+  );
+}

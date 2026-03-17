@@ -4,8 +4,53 @@ import React, { useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { Button } from '@/components/ui/button';
 import {
-  Heading2, Bold, List, Download, Loader2, Table, X, Trash2
+  Heading2, Bold, List, Download, Loader2, Table, X, Trash2,
+  BarChart3, LineChart, DollarSign, Sliders, Activity,
+  GitBranch, Link2, PieChart, TrendingUp, Gauge, Calculator,
+  Users, Sparkles, Brain, ChevronDown as ChevronDownIcon,
+  Play, Zap, FileText, MessageSquare, Send,
 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { useMemoContextSafe } from './MemoContext';
+import { getClientBackendUrl } from '@/lib/backend-url';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  DropdownMenuLabel,
+} from '@/components/ui/dropdown-menu';
+
+// Interactive section components — lazy loaded
+import { PnlSection } from './sections/PnlSection';
+import { BalanceSheetSection } from './sections/BalanceSheetSection';
+import { CashFlowSection } from './sections/CashFlowSection';
+import { DriversSection } from './sections/DriversSection';
+import { MetricsSection } from './sections/MetricsSection';
+import { ScenarioSection } from './sections/ScenarioSection';
+import { CascadeSection } from './sections/CascadeSection';
+import { CapTableSection } from './sections/CapTableSection';
+import { WaterfallSection } from './sections/WaterfallSection';
+import { ValuationSection } from './sections/ValuationSection';
+import { MonteCarloSection } from './sections/MonteCarloSection';
+import { SensitivitySection } from './sections/SensitivitySection';
+import { ForecastMethodSection } from './sections/ForecastMethodSection';
+import { BudgetVarianceSection } from './sections/BudgetVarianceSection';
+import { HealthScoreSection } from './sections/HealthScoreSection';
+import { CostOfCapitalSection } from './sections/CostOfCapitalSection';
+import { StakeholderSection } from './sections/StakeholderSection';
+import { AINarrativeSection } from './sections/AINarrativeSection';
+
+/** Check if a section type is an interactive (non-text) section */
+function isInteractiveSection(type: string): boolean {
+  return [
+    'pnl', 'balance_sheet', 'cash_flow', 'drivers', 'metrics', 'scenario', 'cascade',
+    'cap_table', 'waterfall', 'valuation', 'monte_carlo', 'sensitivity',
+    'forecast_method', 'budget_variance', 'health_score', 'cost_of_capital',
+    'stakeholder', 'ai_narrative',
+  ].includes(type);
+}
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -28,7 +73,11 @@ export interface SkillChainStep {
 }
 
 export interface DocumentSection {
-  type: 'heading1' | 'heading2' | 'heading3' | 'paragraph' | 'chart' | 'list' | 'quote' | 'code' | 'image' | 'table' | 'todo_list' | 'skill_chain' | 'redline';
+  type: 'heading1' | 'heading2' | 'heading3' | 'paragraph' | 'chart' | 'list' | 'quote' | 'code' | 'image' | 'table' | 'todo_list' | 'skill_chain' | 'redline'
+    | 'pnl' | 'balance_sheet' | 'cash_flow' | 'drivers' | 'metrics' | 'scenario' | 'cascade'
+    | 'cap_table' | 'waterfall' | 'valuation' | 'monte_carlo' | 'sensitivity'
+    | 'forecast_method' | 'budget_variance' | 'health_score' | 'cost_of_capital'
+    | 'stakeholder' | 'ai_narrative';
   content?: string;
   chart?: {
     type: string;
@@ -150,6 +199,88 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
     setSelectedIdx(Math.max(0, idx - 1));
   }, [sections, onChange]);
 
+  // ---- Backend-connected actions via MemoContext ----
+  const ctx = useMemoContextSafe();
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+
+  /** Build Forecast — calls backend with chosen method, fills grid, auto-populates memo sections */
+  const handleBuildForecast = useCallback(async (method: string = 'auto') => {
+    if (!ctx) return;
+    setActionLoading('forecast');
+    try {
+      await ctx.buildForecast({ method });
+      // Auto-populate: add key sections so user sees results immediately
+      const autoSections: DocumentSection[] = [
+        { type: 'forecast_method' },
+        { type: 'pnl' },
+        { type: 'drivers' },
+        { type: 'metrics' },
+      ];
+      const existingTypes = new Set(sections.map(s => s.type));
+      const newSections = autoSections.filter(s => !existingTypes.has(s.type));
+      if (newSections.length > 0) {
+        onChange([...sections, ...newSections]);
+      }
+    } finally {
+      setActionLoading(null);
+    }
+  }, [ctx, sections, onChange]);
+
+  /** Fork Scenario — adds scenario section with NL input for "what if..." */
+  const handleForkScenario = useCallback(() => {
+    addSection(safeIdx, { type: 'scenario' });
+  }, [addSection, safeIdx]);
+
+  /** Adjust Drivers — adds interactive driver sliders connected to grid */
+  const handleAdjustDrivers = useCallback(() => {
+    addSection(safeIdx, { type: 'drivers' });
+  }, [addSection, safeIdx]);
+
+  /** Run Model — recomputes everything from current grid state + drivers */
+  const handleRunModel = useCallback(async () => {
+    if (!ctx) return;
+    setActionLoading('model');
+    try {
+      await ctx.buildForecast({ method: 'driver-based', recompute: true });
+    } finally {
+      setActionLoading(null);
+    }
+  }, [ctx]);
+
+  /** Board Summary — generates AI executive summary from all grid + memo data */
+  const handleBoardSummary = useCallback(async () => {
+    if (!ctx) return;
+    setActionLoading('summary');
+    try {
+      const pnlRows = ctx.getPnlRows();
+      const cols = ctx.matrixData.columns.filter(c => c.id !== 'lineItem');
+      const latestCol = cols[cols.length - 1];
+      const summary: Record<string, any> = {};
+      if (latestCol) {
+        for (const row of pnlRows) {
+          if (row.cells[latestCol.id]) {
+            summary[row.id] = row.cells[latestCol.id].value;
+          }
+        }
+      }
+      const narrative = await ctx.requestNarrative('board_summary', {
+        pnlSummary: summary,
+        metrics: ctx.metrics,
+        branchCount: ctx.activeBranches.length,
+        periodCount: cols.length,
+      });
+      // Add AI narrative section with the generated content
+      addSection(safeIdx, { type: 'ai_narrative', content: narrative });
+    } finally {
+      setActionLoading(null);
+    }
+  }, [ctx, addSection, safeIdx]);
+
+  /** Compare Scenarios — triggers scenario comparison chart */
+  const handleCompareScenarios = useCallback(() => {
+    addSection(safeIdx, { type: 'scenario' });
+  }, [addSection, safeIdx]);
+
   return (
     <div className={`flex flex-col h-full memo-editor ${compact ? 'text-xs' : 'text-sm'}`}>
       {/* Google Docs-level styling + print styles */}
@@ -210,9 +341,10 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
         }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
       `}</style>
-      {/* Toolbar */}
+      {/* Toolbar — Section Catalog */}
       {!readOnly && (
         <div data-toolbar className="flex items-center gap-1 px-2 py-1 border-b shrink-0 flex-wrap print:hidden">
+          {/* Text sections */}
           <Button variant="ghost" size="sm" className="h-6 w-6 p-0" title="Add heading" onClick={() => addSection(safeIdx, { type: 'heading2', content: 'New Section' })}>
             <Heading2 className="h-3 w-3" />
           </Button>
@@ -225,6 +357,154 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
           <Button variant="ghost" size="sm" className="h-6 w-6 p-0" title="Add table" onClick={() => addSection(safeIdx, { type: 'table', table: { headers: ['Column 1', 'Column 2'], rows: [['', '']], caption: '' } })}>
             <Table className="h-3 w-3" />
           </Button>
+
+          <div className="w-px h-4 bg-border mx-0.5" />
+
+          {/* Financial sections */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 gap-1 text-[11px] px-1.5">
+                <BarChart3 className="h-3 w-3" /> Financial <ChevronDownIcon className="h-2.5 w-2.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-48">
+              <DropdownMenuLabel className="text-[10px]">Financial Statements</DropdownMenuLabel>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'pnl' })}>
+                <BarChart3 className="h-3 w-3 mr-2" /> P&L
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'balance_sheet' })}>
+                <DollarSign className="h-3 w-3 mr-2" /> Balance Sheet
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'cash_flow' })}>
+                <LineChart className="h-3 w-3 mr-2" /> Cash Flow
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'metrics' })}>
+                <Activity className="h-3 w-3 mr-2" /> Metrics
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="text-[10px]">Forecasting</DropdownMenuLabel>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'forecast_method' })}>
+                <Brain className="h-3 w-3 mr-2" /> Forecast Method
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'budget_variance' })}>
+                <TrendingUp className="h-3 w-3 mr-2" /> Budget Variance
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'health_score' })}>
+                <Gauge className="h-3 w-3 mr-2" /> Health Score
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Analysis sections */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 gap-1 text-[11px] px-1.5">
+                <Sliders className="h-3 w-3" /> Analysis <ChevronDownIcon className="h-2.5 w-2.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-48">
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'drivers' })}>
+                <Sliders className="h-3 w-3 mr-2" /> Drivers
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'sensitivity' })}>
+                <Activity className="h-3 w-3 mr-2" /> Sensitivity
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'monte_carlo' })}>
+                <TrendingUp className="h-3 w-3 mr-2" /> Monte Carlo
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="text-[10px]">Scenarios</DropdownMenuLabel>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'scenario' })}>
+                <GitBranch className="h-3 w-3 mr-2" /> Scenario (What if...)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'cascade' })}>
+                <Link2 className="h-3 w-3 mr-2" /> Cascade
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Capital sections */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 gap-1 text-[11px] px-1.5">
+                <PieChart className="h-3 w-3" /> Capital <ChevronDownIcon className="h-2.5 w-2.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-48">
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'cap_table' })}>
+                <PieChart className="h-3 w-3 mr-2" /> Cap Table
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'waterfall' })}>
+                <BarChart3 className="h-3 w-3 mr-2" /> Waterfall
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'valuation' })}>
+                <DollarSign className="h-3 w-3 mr-2" /> Valuation
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'cost_of_capital' })}>
+                <Calculator className="h-3 w-3 mr-2" /> Cost of Capital
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'stakeholder' })}>
+                <Users className="h-3 w-3 mr-2" /> Stakeholder
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Actions — backend-connected operations that sync with AG Grid */}
+          {ctx && (
+            <>
+              <div className="w-px h-4 bg-border mx-0.5" />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm" className="h-6 gap-1 text-[11px] px-1.5">
+                    <Zap className="h-3 w-3" /> Actions <ChevronDownIcon className="h-2.5 w-2.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-52">
+                  <DropdownMenuLabel className="text-[10px]">Build Forecast</DropdownMenuLabel>
+                  <DropdownMenuItem onClick={() => handleBuildForecast('auto')} disabled={!!actionLoading}>
+                    {actionLoading === 'forecast' ? <Loader2 className="h-3 w-3 mr-2 animate-spin" /> : <Play className="h-3 w-3 mr-2" />}
+                    Auto (best fit)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleBuildForecast('driver-based')} disabled={!!actionLoading}>
+                    <Sliders className="h-3 w-3 mr-2" /> Driver-based
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleBuildForecast('regression')} disabled={!!actionLoading}>
+                    <TrendingUp className="h-3 w-3 mr-2" /> Regression
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleBuildForecast('seasonal')} disabled={!!actionLoading}>
+                    <Activity className="h-3 w-3 mr-2" /> Seasonal
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="text-[10px]">Model</DropdownMenuLabel>
+                  <DropdownMenuItem onClick={handleRunModel} disabled={!!actionLoading}>
+                    {actionLoading === 'model' ? <Loader2 className="h-3 w-3 mr-2 animate-spin" /> : <Zap className="h-3 w-3 mr-2" />}
+                    Run Model (recompute)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleAdjustDrivers}>
+                    <Sliders className="h-3 w-3 mr-2" /> Adjust Drivers
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="text-[10px]">Scenarios</DropdownMenuLabel>
+                  <DropdownMenuItem onClick={handleForkScenario}>
+                    <GitBranch className="h-3 w-3 mr-2" /> Fork Scenario
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleCompareScenarios}>
+                    <LineChart className="h-3 w-3 mr-2" /> Compare Scenarios
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="text-[10px]">Reports</DropdownMenuLabel>
+                  <DropdownMenuItem onClick={handleBoardSummary} disabled={actionLoading === 'summary'}>
+                    {actionLoading === 'summary' ? <Loader2 className="h-3 w-3 mr-2 animate-spin" /> : <FileText className="h-3 w-3 mr-2" />}
+                    Board Summary
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => addSection(safeIdx, { type: 'ai_narrative' })}>
+                    <Sparkles className="h-3 w-3 mr-2" /> AI Narrative
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </>
+          )}
+
           <div className="flex-1" />
           {sections.length > 1 && (
             <Button
@@ -609,6 +889,26 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
                 )}
               </div>
             )}
+
+            {/* Interactive sections — rendered by dedicated components */}
+            {section.type === 'pnl' && <PnlSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'balance_sheet' && <BalanceSheetSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'cash_flow' && <CashFlowSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'drivers' && <DriversSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'metrics' && <MetricsSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'scenario' && <ScenarioSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'cascade' && <CascadeSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'cap_table' && <CapTableSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'waterfall' && <WaterfallSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'valuation' && <ValuationSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'monte_carlo' && <MonteCarloSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'sensitivity' && <SensitivitySection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'forecast_method' && <ForecastMethodSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'budget_variance' && <BudgetVarianceSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'health_score' && <HealthScoreSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'cost_of_capital' && <CostOfCapitalSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'stakeholder' && <StakeholderSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
+            {section.type === 'ai_narrative' && <AINarrativeSection onDelete={() => removeSection(idx)} readOnly={readOnly} />}
 
             {/* Citations */}
             {section.citations?.length ? (

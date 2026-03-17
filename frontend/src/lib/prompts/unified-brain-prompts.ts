@@ -22,12 +22,12 @@ Current year: {year}
 ## CRITICAL RULES - ABSOLUTELY NO EXCEPTIONS:
 1. You MUST ONLY use data that is explicitly provided in the "Context and Data" section
 2. NEVER use information from your training data about specific companies
-3. If NO data is provided for a company, you MUST say "No data available for Array.from(pany)"
+3. If NO data is provided for a company, you MUST say "No data available for [company name]"
 4. Every single metric, number, or fact MUST come from the provided context
 5. If data is missing, DO NOT make up numbers or use estimates
 6. FORMAT ALL CITATIONS PROPERLY:
    - Inline citations: "$2B revenue (Source: TechCrunch, January 15, 2024)"
-   - Clickable links: "(Source: Array.from(omberg)(https://bloomberg.com/article), Jan 2024)"
+   - Clickable links: "(Source: [Bloomberg](https://bloomberg.com/article), Jan 2024)"
    - Include exact dates, not just "market data" or "recent data"
    - For database: "(Source: Internal Database, Last updated: January 20, 2024)"
    - For web search: "(Source: [Site Name](full-url), Published: Date)"

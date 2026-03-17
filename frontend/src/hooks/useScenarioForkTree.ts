@@ -54,8 +54,8 @@ export interface ForkTreeState {
 
 export interface UseScenarioForkTreeReturn extends ForkTreeState {
   loadTree: () => Promise<void>;
-  createFork: (name: string, parentBranchId: string | null, forkPeriod: string | null, assumptions: Record<string, any>) => Promise<void>;
-  updateFork: (branchId: string, drivers: Record<string, any>) => Promise<void>;
+  createFork: (name: string, parentBranchId: string | null, forkPeriod: string | null, assumptions: Record<string, any>) => Promise<{ branch: ScenarioBranch; forecast: ForecastMonth[] } | undefined>;
+  updateFork: (branchId: string, drivers: Record<string, any>) => Promise<ForecastMonth[] | undefined>;
   deleteFork: (branchId: string) => Promise<void>;
   setActiveBranch: (branchId: string | null) => void;
   refreshComparison: () => Promise<void>;
@@ -141,8 +141,8 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
     parentBranchId: string | null,
     forkPeriod: string | null,
     assumptions: Record<string, any>,
-  ) => {
-    if (!companyId) return;
+  ): Promise<{ branch: ScenarioBranch; forecast: ForecastMonth[] } | undefined> => {
+    if (!companyId) return undefined;
     setLoading(true);
     setError(null);
     try {
@@ -160,21 +160,24 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
       if (!res.ok) throw new Error(`Failed to create fork: ${res.status}`);
       const data = await res.json();
       const branch: ScenarioBranch = data.branch ?? data;
+      const forecast: ForecastMonth[] = data.forecast ?? [];
       setBranches(prev => [...prev, branch]);
-      if (data.forecast) {
-        setForecasts(prev => ({ ...prev, [branch.id]: data.forecast }));
+      if (forecast.length) {
+        setForecasts(prev => ({ ...prev, [branch.id]: forecast }));
       }
       await refreshComparison();
+      return { branch, forecast };
     } catch (err: any) {
       setError(err.message ?? 'Failed to create scenario fork');
+      return undefined;
     } finally {
       setLoading(false);
     }
   }, [companyId, backendUrl, refreshComparison]);
 
   // ----- updateFork -----
-  const updateFork = useCallback(async (branchId: string, drivers: Record<string, any>) => {
-    if (!companyId) return;
+  const updateFork = useCallback(async (branchId: string, drivers: Record<string, any>): Promise<ForecastMonth[] | undefined> => {
+    if (!companyId) return undefined;
     setLoading(true);
     setError(null);
     try {
@@ -185,14 +188,17 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
       });
       if (!res.ok) throw new Error(`Failed to update fork: ${res.status}`);
       const data = await res.json();
+      const forecast: ForecastMonth[] = data.forecast ?? [];
       // Update branch in list
       setBranches(prev => prev.map(b => b.id === branchId ? { ...b, ...data.branch ?? data } : b));
-      if (data.forecast) {
-        setForecasts(prev => ({ ...prev, [branchId]: data.forecast }));
+      if (forecast.length) {
+        setForecasts(prev => ({ ...prev, [branchId]: forecast }));
       }
       await refreshComparison();
+      return forecast;
     } catch (err: any) {
       setError(err.message ?? 'Failed to update scenario fork');
+      return undefined;
     } finally {
       setLoading(false);
     }

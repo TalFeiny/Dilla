@@ -56,6 +56,59 @@ class ScenarioBranchService:
         self._cfp = CashFlowPlanningService()
 
     # ------------------------------------------------------------------
+    # Active forecast loading
+    # ------------------------------------------------------------------
+
+    def _load_active_forecast_data(
+        self, company_id: str
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Try to load the active persisted forecast as a monthly dict list.
+
+        Returns the same shape as CashFlowPlanningService output so it can
+        be used as a drop-in replacement for base_forecast.
+        """
+        try:
+            from app.services.forecast_persistence_service import (
+                ForecastPersistenceService,
+                FORECAST_KEY_TO_CATEGORY,
+            )
+            fps = ForecastPersistenceService()
+            active = fps.get_active_forecast(company_id)
+            if not active:
+                return None
+
+            full = fps.load_forecast(active["id"])
+            if not full or not full.get("lines"):
+                return None
+
+            # Invert the key→category mapping
+            cat_to_key = {v: k for k, v in FORECAST_KEY_TO_CATEGORY.items()}
+
+            # Group lines by period
+            by_period: Dict[str, Dict[str, float]] = {}
+            for line in full["lines"]:
+                period = line.get("period", "")[:7]
+                cat = line.get("category", "")
+                amt = line.get("amount", 0) or 0
+                key = cat_to_key.get(cat, cat)
+                by_period.setdefault(period, {"period": period})[key] = amt
+
+            if not by_period:
+                return None
+
+            forecast = [by_period[p] for p in sorted(by_period)]
+            logger.info(
+                "Loaded active forecast (%s) with %d periods for company %s",
+                active.get("name", active["id"]),
+                len(forecast),
+                company_id,
+            )
+            return forecast
+        except Exception as e:
+            logger.warning("Failed to load active forecast: %s", e)
+            return None
+
+    # ------------------------------------------------------------------
     # Parent chain walk
     # ------------------------------------------------------------------
 
@@ -198,10 +251,14 @@ class ScenarioBranchService:
         fork_idx = self._period_to_index(fork_period, start_period) if fork_period else 0
         fork_idx = max(0, min(fork_idx, forecast_months - 1))
 
-        # Full base projection (used for the shared parent segment and deltas)
-        base_forecast = self._cfp.build_monthly_cash_flow_model(
-            base_data, months=forecast_months, start_period=start_period,
-        )
+        # Full base projection — prefer active persisted forecast, fall back to computing
+        base_forecast = self._load_active_forecast_data(company_id)
+        if base_forecast and len(base_forecast) >= forecast_months:
+            base_forecast = base_forecast[:forecast_months]
+        else:
+            base_forecast = self._cfp.build_monthly_cash_flow_model(
+                base_data, months=forecast_months, start_period=start_period,
+            )
 
         # Pre-compute contract change params for P&L builder if applicable
         contract_changes = merged.get("contract_changes", [])
@@ -309,9 +366,14 @@ class ScenarioBranchService:
         if not base_data.get("revenue"):
             return {"error": "No actuals data. Upload financials first."}
 
-        base_forecast = self._cfp.build_monthly_cash_flow_model(
-            base_data, months=forecast_months, start_period=start_period,
-        )
+        # Prefer active persisted forecast, fall back to computing
+        base_forecast = self._load_active_forecast_data(company_id)
+        if base_forecast and len(base_forecast) >= forecast_months:
+            base_forecast = base_forecast[:forecast_months]
+        else:
+            base_forecast = self._cfp.build_monthly_cash_flow_model(
+                base_data, months=forecast_months, start_period=start_period,
+            )
 
         comparisons: List[Dict[str, Any]] = [{
             "branch_id": None,

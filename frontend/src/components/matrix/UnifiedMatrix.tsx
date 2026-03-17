@@ -78,6 +78,7 @@ import { AGGridMatrix } from './AGGridMatrix';
 import ReactMarkdown from 'react-markdown';
 import dynamic from 'next/dynamic';
 import { MemoEditor, type DocumentSection } from '@/components/memo/MemoEditor';
+import { MemoProvider } from '@/components/memo/MemoContext';
 
 const TableauLevelCharts = dynamic(() => import('@/components/charts/TableauLevelCharts'), { ssr: false });
 import { CellActionProvider } from './CellActionContext';
@@ -5010,6 +5011,7 @@ export function UnifiedMatrix({
   }, [matrixData, mode, fundId, getDefaultMatrixData]);
 
   return (
+    <MemoProvider companyId={companyId || ''} matrixData={matrixData} setMatrixData={setMatrixData} forkTree={forkTree}>
     <div className="flex flex-col h-full space-y-2">
       {/* Hidden file input for PnL CSV upload — lives outside dropdown so it isn't unmounted when menu closes */}
       <input
@@ -5956,5 +5958,6 @@ export function UnifiedMatrix({
       )}
 
     </div>
+    </MemoProvider>
   );
 }
