@@ -52,6 +52,10 @@ CATEGORY_SECTION = {
 # Sign convention for computed rows: negative categories subtract
 COST_CATEGORIES = {"cogs", "opex_total", "opex_rd", "opex_sm", "opex_ga"}
 
+# Categories that are computed inline by _assemble_rows — skip during discovery
+# to avoid duplicate rows (these get stored by actuals_ingestion but are recomputed)
+DERIVED_CATEGORIES = {"gross_profit", "ebitda", "opex_total", "net_income"}
+
 # Fallback labels when subcategory is null
 CATEGORY_LABELS = {
     "revenue": "Revenue",
@@ -516,6 +520,11 @@ class PnlBuilder:
 
         # Collect all keys from actuals
         for key in sorted(actuals.keys()):
+            # Skip derived categories — these are computed inline by _assemble_rows
+            base_cat = key.split(":")[0].split("/")[0]
+            if base_cat in DERIVED_CATEGORIES:
+                continue
+
             # Handle deep hierarchy_path keys (e.g. "opex_rd/engineering/senior_engineers")
             if key in path_keys:
                 parts = key.split("/")
@@ -675,7 +684,8 @@ class PnlBuilder:
                 # Insert Gross Profit after COGS
                 rows.append(self._inline_computed_row(
                     "gross_profit", "Gross Profit", "gross_profit", all_periods,
-                    actuals, forecast, compute_fn=lambda p, a, f: self._compute_gross_profit(p, a, f)
+                    actuals, forecast, compute_fn=lambda p, a, f: self._compute_gross_profit(p, a, f),
+                    explanation="Total Revenue minus Total COGS",
                 ))
             elif section == "opex":
                 rows.append(self._sum_data_rows_total(
@@ -686,7 +696,8 @@ class PnlBuilder:
                 # EBITDA is computed: gross_profit - total_opex
                 rows.append(self._inline_computed_row(
                     "ebitda", "EBITDA", "ebitda", all_periods,
-                    actuals, forecast, compute_fn=lambda p, a, f: self._compute_ebitda(p, a, f)
+                    actuals, forecast, compute_fn=lambda p, a, f: self._compute_ebitda(p, a, f),
+                    explanation="Gross Profit minus Total Operating Expenses",
                 ))
 
         # Store section totals for gross_profit / ebitda computation
@@ -735,7 +746,7 @@ class PnlBuilder:
             # 3. Fall through to forecast
             values[p] = forecast.get(p, {}).get(row_id)
 
-        return {
+        row = {
             "id": row_id,
             "label": label,
             "depth": 0,
@@ -743,6 +754,11 @@ class PnlBuilder:
             "isTotal": True,
             "values": values,
         }
+        # Auto-generate explanation from constituent rows
+        if data_rows:
+            parts = [dr.get("label", dr.get("id", "?")) for dr in data_rows]
+            row["explanation"] = f"Sum of {', '.join(parts)}"
+        return row
 
     def _inline_computed_row(
         self,
@@ -753,6 +769,7 @@ class PnlBuilder:
         actuals: Dict[str, Dict[str, float]],
         forecast: Dict[str, Dict[str, float]],
         compute_fn=None,
+        explanation: str = "",
     ) -> Dict[str, Any]:
         """Build a computed row — uses stored value if available, else computes."""
         values: Dict[str, Optional[float]] = {}
@@ -764,7 +781,7 @@ class PnlBuilder:
             if val is None and compute_fn:
                 val = compute_fn(p, actuals, forecast)
             values[p] = val
-        return {
+        row = {
             "id": row_id,
             "label": label,
             "depth": 0,
@@ -772,6 +789,9 @@ class PnlBuilder:
             "isComputed": True,
             "values": values,
         }
+        if explanation:
+            row["explanation"] = explanation
+        return row
 
     # ------------------------------------------------------------------
     # Saved forecast loading

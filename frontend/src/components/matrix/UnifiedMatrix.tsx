@@ -472,8 +472,8 @@ export function UnifiedMatrix({
     return [{ type: 'heading1', content: 'Working Memo' }, { type: 'paragraph', content: '' }];
   });
 
-  /** Memo panel below grid — emerges when agent builds it out */
-  const [memoPanelExpanded, setMemoPanelExpanded] = useState(false);
+  /** Memo panel below grid — always visible */
+  const [memoPanelExpanded, setMemoPanelExpanded] = useState(true);
   /** Track companies/capTables from last analysis for pin-to-company */
   const [memoPanelContext, setMemoPanelContext] = useState<{ companies?: any[]; capTables?: any[] }>({});
 
@@ -5686,9 +5686,8 @@ export function UnifiedMatrix({
         )}
       </div>
 
-      {/* Memo panel below grid — shows whenever agent has added content beyond the default heading+empty paragraph */}
-      {memoSections.length > 0 && memoSections.some(s => s.type !== 'heading1' && (s.content?.trim() || s.chart || s.table || s.items?.length)) && (
-        <div className="border-t bg-card/50">
+      {/* Memo panel below grid — always visible */}
+      <div className="border-t bg-card/50">
           <button
             className="w-full flex items-center justify-between px-4 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
             onClick={() => setMemoPanelExpanded(prev => !prev)}
@@ -5740,7 +5739,6 @@ export function UnifiedMatrix({
             </div>
           )}
         </div>
-      )}
 
       {/* Valuation method picker (parent-level, survives cell unmount) */}
       <Dialog open={!!valuationPicker} onOpenChange={(open) => !open && setValuationPicker(null)}>

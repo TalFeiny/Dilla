@@ -201,7 +201,11 @@ export function transformWaterfallRows(data: any): { columns: MatrixColumn[]; ro
       const isForecast = periods.indexOf(p) >= forecastStartIndex;
       cells[p] = cell(val, {
         source: isForecast ? 'formula' : 'api',
-        metadata: isForecast ? { generated_by: 'forecast' } : undefined,
+        metadata: {
+          ...(isForecast ? { generated_by: 'forecast' } : undefined),
+          ...(r.explanation ? { explanation: r.explanation } : undefined),
+          ...(r.isComputed ? { method: 'Computed' } : r.isTotal ? { method: 'Total' } : undefined),
+        },
       });
     }
     return {

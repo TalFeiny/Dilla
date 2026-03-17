@@ -2185,3 +2185,154 @@ def format_tornado_chart(
         "title": title,
         "renderType": "tableau",
     }
+
+
+def format_sensitivity_tornado_chart(
+    items: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format sensitivity tornado chart (alias with explicit type)."""
+    return {
+        "type": "sensitivity_tornado",
+        "data": {"items": items},
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_stacked_bar_chart(
+    labels: List[str], datasets: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format stacked bar chart. Each dataset: {label, data: [...], backgroundColor?}."""
+    return {
+        "type": "stacked_bar",
+        "data": {"labels": labels, "datasets": datasets},
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_bull_bear_base_chart(
+    labels: List[str], datasets: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format bull/bear/base scenario comparison (grouped bar)."""
+    return {
+        "type": "bull_bear_base",
+        "data": {"labels": labels, "datasets": datasets},
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_funnel_chart(
+    stages: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format funnel chart. stages: [{name, value}, ...]."""
+    return {
+        "type": "funnel",
+        "data": stages,
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_cash_flow_waterfall_chart(
+    items: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format cash flow waterfall with isSubtotal support."""
+    return {
+        "type": "cash_flow_waterfall",
+        "data": items,
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_revenue_forecast_chart(
+    labels: List[str], datasets: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format revenue forecast with confidence bands."""
+    return {
+        "type": "revenue_forecast",
+        "data": {"labels": labels, "datasets": datasets},
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_bar_comparison_chart(
+    labels: List[str], datasets: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format side-by-side bar comparison."""
+    return {
+        "type": "bar_comparison",
+        "data": {"labels": labels, "datasets": datasets},
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_cap_table_evolution_chart(
+    rounds: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format cap table evolution stacked area. rounds: [{round, founders, esop, ...}]."""
+    return {
+        "type": "cap_table_evolution",
+        "data": rounds,
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_monte_carlo_fan_chart(
+    trajectory_percentiles: Dict[str, Dict[str, List[float]]],
+    periods: List[str],
+    metric: str = "cash_balance",
+    title: str = None,
+) -> Dict[str, Any]:
+    """Format Monte Carlo fan chart from engine output."""
+    return {
+        "type": "monte_carlo_fan",
+        "data": {
+            "trajectory_percentiles": trajectory_percentiles,
+            "periods": periods,
+            "metric": metric,
+        },
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_monte_carlo_histogram_chart(
+    labels: List[str], datasets: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format Monte Carlo histogram."""
+    return {
+        "type": "monte_carlo_histogram",
+        "data": {"labels": labels, "datasets": datasets},
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_fpa_stress_test_chart(
+    labels: List[str], datasets: List[Dict[str, Any]], title: str = None
+) -> Dict[str, Any]:
+    """Format FP&A stress test multi-line chart."""
+    return {
+        "type": "fpa_stress_test",
+        "data": {"labels": labels, "datasets": datasets},
+        "title": title,
+        "renderType": "tableau",
+    }
+
+
+def format_treemap_chart(
+    hierarchy: Dict[str, Any], title: str = None
+) -> Dict[str, Any]:
+    """Format treemap chart. hierarchy: {name, value, children: [...]}."""
+    return {
+        "type": "treemap",
+        "data": hierarchy,
+        "title": title,
+        "renderType": "tableau",
+    }
