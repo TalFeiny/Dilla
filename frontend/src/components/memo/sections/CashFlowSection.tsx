@@ -1,13 +1,16 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { MemoSectionWrapper } from '../MemoSectionWrapper';
 import { useMemoContext, type NarrativeCard } from '../MemoContext';
-import type { MatrixRow } from '@/components/matrix/UnifiedMatrix';
+import { fetchCashFlow } from '@/lib/memo/api-helpers';
+import { Button } from '@/components/ui/button';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { Loader2, RefreshCw } from 'lucide-react';
+import { fmtCurrency } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -16,29 +19,40 @@ const TableauLevelCharts = dynamic(
 
 type ChartMode = 'line' | 'bar' | 'stacked_bar';
 
-function fmtCurrency(v: number): string {
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toLocaleString()}`;
+interface CFRow {
+  id: string;
+  label: string;
+  depth?: number;
+  section?: string;
+  isHeader?: boolean;
+  values: Record<string, number | null>;
 }
 
-function buildCFChartData(rows: MatrixRow[], columns: string[]): Record<string, any>[] {
-  const periodCols = columns.filter(c => c !== 'lineItem');
-  return periodCols.map(colId => {
-    const entry: Record<string, any> = { period: colId };
-    const getValue = (id: string) => {
-      const row = rows.find(r => r.id === id);
-      if (!row?.cells[colId]) return 0;
-      const v = row.cells[colId].value;
-      return typeof v === 'number' ? v : parseFloat(v) || 0;
-    };
-    entry['Operating CF'] = getValue('operating_cash_flow');
-    entry['CapEx'] = getValue('capex');
-    entry['Free Cash Flow'] = getValue('free_cash_flow');
-    entry['Cash Balance'] = getValue('cash_balance');
-    entry['Net Burn'] = getValue('net_burn_rate');
-    entry['Runway (mo)'] = getValue('runway_months');
+interface CFResponse {
+  periods: string[];
+  rows: CFRow[];
+}
+
+const CF_CHART_IDS = ['operating_cash_flow', 'capex', 'free_cash_flow', 'cash_balance', 'net_burn_rate'];
+const CF_CHART_LABELS: Record<string, string> = {
+  operating_cash_flow: 'Operating CF',
+  capex: 'CapEx',
+  free_cash_flow: 'Free Cash Flow',
+  cash_balance: 'Cash Balance',
+  net_burn_rate: 'Net Burn',
+};
+
+function buildChartFromResponse(data: CFResponse): Record<string, any>[] {
+  if (!data.periods || !data.rows) return [];
+  const rowMap: Record<string, Record<string, number | null>> = {};
+  for (const row of data.rows) {
+    rowMap[row.id] = row.values;
+  }
+  return data.periods.map(period => {
+    const entry: Record<string, any> = { period };
+    for (const id of CF_CHART_IDS) {
+      entry[CF_CHART_LABELS[id] || id] = rowMap[id]?.[period] ?? 0;
+    }
     return entry;
   });
 }
@@ -53,14 +67,34 @@ export function CashFlowSection({ onDelete, readOnly = false }: CashFlowSectionP
   const [chartMode, setChartMode] = useState<ChartMode>('line');
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
 
-  const cfRows = ctx.getCashFlowRows();
-  const columns = ctx.matrixData.columns.map(c => c.id);
+  const [cfData, setCfData] = useState<CFResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const chartData = useMemo(() => buildCFChartData(cfRows, columns), [cfRows, columns]);
+  const handleFetch = useCallback(async () => {
+    if (!ctx.companyId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchCashFlow(ctx.companyId);
+      setCfData(data);
+    } catch (err: any) {
+      console.warn('CashFlowSection fetch error:', err);
+      setError(err.message || 'Failed to load Cash Flow data');
+    } finally {
+      setLoading(false);
+    }
+  }, [ctx.companyId]);
+
+  useEffect(() => {
+    handleFetch();
+  }, [handleFetch]);
+
+  const chartData = useMemo(() => cfData ? buildChartFromResponse(cfData) : [], [cfData]);
 
   const latest = chartData[chartData.length - 1];
   const collapsedSummary = latest
-    ? `FCF: ${fmtCurrency(latest['Free Cash Flow'] || 0)} | Cash: ${fmtCurrency(latest['Cash Balance'] || 0)} | Runway: ${(latest['Runway (mo)'] || 0).toFixed(0)}mo`
+    ? `FCF: ${fmtCurrency(latest['Free Cash Flow'] || 0)} | Cash: ${fmtCurrency(latest['Cash Balance'] || 0)}`
     : 'Cash Flow — no data';
 
   const aiContext = useMemo(() => ({ cfData: chartData, latest }), [chartData, latest]);
@@ -76,42 +110,50 @@ export function CashFlowSection({ onDelete, readOnly = false }: CashFlowSectionP
           <SelectItem value="stacked_bar">Stacked Bar</SelectItem>
         </SelectContent>
       </Select>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 w-6 p-0"
+        onClick={handleFetch}
+        disabled={loading}
+        title="Refresh"
+      >
+        <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+      </Button>
     </div>
   );
 
-  const detailGrid = (
+  const detailGrid = cfData?.rows ? (
     <div className="overflow-x-auto mt-2">
       <table className="w-full text-[11px] border-collapse">
         <thead>
           <tr className="border-b-2 border-border bg-muted/50">
-            {columns.map(colId => {
-              const col = ctx.matrixData.columns.find(c => c.id === colId);
-              return <th key={colId} className="px-2 py-1 text-left font-semibold whitespace-nowrap">{col?.name || colId}</th>;
-            })}
+            <th className="px-2 py-1 text-left font-semibold whitespace-nowrap">Line Item</th>
+            {cfData.periods.map(period => (
+              <th key={period} className="px-2 py-1 text-right font-semibold whitespace-nowrap">{period}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {cfRows.map(row => {
-            const isHeader = (row as any).isHeader;
-            const isTotal = (row as any).isTotal;
-            const depth = (row as any).depth || 0;
-            return (
-              <tr key={row.id} className={`border-b border-border/50 ${isHeader ? 'bg-muted/30 font-semibold' : ''} ${isTotal ? 'font-semibold border-t border-border' : ''}`}>
-                {columns.map(colId => {
-                  if (colId === 'lineItem') {
-                    return <td key={colId} className="px-2 py-1 whitespace-nowrap" style={{ paddingLeft: `${8 + depth * 16}px` }}>{row.cells.lineItem?.value || row.id}</td>;
-                  }
-                  const cell = row.cells[colId];
-                  const v = cell?.value;
-                  return <td key={colId} className="px-2 py-1 tabular-nums text-right whitespace-nowrap">{typeof v === 'number' ? fmtCurrency(v) : (v ?? '')}</td>;
-                })}
-              </tr>
-            );
-          })}
+          {cfData.rows.map(row => (
+            <tr key={row.id} className={`border-b border-border/50 ${row.isHeader ? 'bg-muted/30 font-semibold' : ''}`}>
+              <td className="px-2 py-1 whitespace-nowrap" style={{ paddingLeft: `${8 + (row.depth || 0) * 16}px` }}>
+                {row.label}
+              </td>
+              {cfData.periods.map(period => {
+                const v = row.values[period];
+                return (
+                  <td key={period} className="px-2 py-1 tabular-nums text-right whitespace-nowrap">
+                    {v != null ? fmtCurrency(v) : ''}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
-  );
+  ) : null;
 
   return (
     <MemoSectionWrapper
@@ -127,7 +169,14 @@ export function CashFlowSection({ onDelete, readOnly = false }: CashFlowSectionP
       readOnly={readOnly}
     >
       <div className="w-full" style={{ height: 320 }}>
-        {chartData.length > 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center h-full text-xs text-muted-foreground gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading Cash Flow...
+          </div>
+        ) : error ? (
+          <div className="flex items-center justify-center h-full text-xs text-red-500">{error}</div>
+        ) : chartData.length > 0 ? (
           <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={300} />
         ) : (
           <div className="flex items-center justify-center h-full text-xs text-muted-foreground">

@@ -9,7 +9,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Loader2, Play } from 'lucide-react';
-import { getClientBackendUrl } from '@/lib/backend-url';
+import { runValuation } from '@/lib/memo/api-helpers';
+import { fmtCurrency } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -28,13 +29,6 @@ interface ValuationResult {
   details?: Record<string, any>;
 }
 
-function fmtCurrency(v: number): string {
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toLocaleString()}`;
-}
-
 export interface ValuationSectionProps {
   onDelete?: () => void;
   readOnly?: boolean;
@@ -42,7 +36,6 @@ export interface ValuationSectionProps {
 
 export function ValuationSection({ onDelete, readOnly = false }: ValuationSectionProps) {
   const ctx = useMemoContext();
-  const backendUrl = getClientBackendUrl();
   const [chartMode, setChartMode] = useState<ChartMode>('bar_comparison');
   const [method, setMethod] = useState<ValuationMethod>('all');
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
@@ -52,40 +45,26 @@ export function ValuationSection({ onDelete, readOnly = false }: ValuationSectio
   const handleRunValuation = useCallback(async () => {
     setLoading(true);
     try {
+      const data = await runValuation(ctx.companyId, method);
       if (method === 'all') {
-        const res = await fetch(`${backendUrl}/api/valuation/value-company`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ company_id: ctx.companyId }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setResults(data.valuations || data.results || []);
-        }
+        setResults(data.valuations || data.results || []);
       } else {
-        const endpoint = method === 'pwerm' ? 'pwerm-analysis' : method === 'dcf' ? 'dcf-model' : 'comparables-analysis';
-        const res = await fetch(`${backendUrl}/api/valuation/${endpoint}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ company_id: ctx.companyId }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const result: ValuationResult = {
-            method: method.toUpperCase(),
-            value: data.value || data.valuation || 0,
-            range_low: data.range_low || data.low,
-            range_high: data.range_high || data.high,
-            confidence: data.confidence,
-            details: data,
-          };
-          setResults([result]);
-        }
+        const result: ValuationResult = {
+          method: method.toUpperCase(),
+          value: data.value || data.valuation || 0,
+          range_low: data.range_low || data.low,
+          range_high: data.range_high || data.high,
+          confidence: data.confidence,
+          details: data,
+        };
+        setResults([result]);
       }
+    } catch (err) {
+      console.warn('Valuation failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [backendUrl, ctx.companyId, method]);
+  }, [ctx.companyId, method]);
 
   const chartData = useMemo(() => {
     if (results.length === 0) return [];

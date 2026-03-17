@@ -8,7 +8,6 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Loader2, Sparkles, RefreshCw } from 'lucide-react';
-
 type NarrativeStyle = 'board_summary' | 'investor_update' | 'internal_review' | 'risk_assessment';
 
 export interface AINarrativeSectionProps {
@@ -30,39 +29,16 @@ export function AINarrativeSection({ onDelete, readOnly = false }: AINarrativeSe
     risk_assessment: 'Risk Assessment',
   };
 
-  // Gather all data context from the grid for a comprehensive narrative
+  // Context for narrative — backend resolves financials from company_id
   const dataContext = useMemo(() => {
-    const pnlRows = ctx.getPnlRows();
-    const bsRows = ctx.getBalanceSheetRows();
-    const cfRows = ctx.getCashFlowRows();
-    const cols = ctx.matrixData.columns.filter(c => c.id !== 'lineItem');
-    const latestCol = cols[cols.length - 1]?.id;
-
-    const getLatest = (rowId: string) => {
-      if (!latestCol) return 0;
-      const row = ctx.matrixData.rows.find(r => r.id === rowId);
-      if (!row?.cells[latestCol]) return 0;
-      const v = row.cells[latestCol].value;
-      return typeof v === 'number' ? v : parseFloat(v) || 0;
-    };
-
     return {
       style,
-      revenue: getLatest('revenue') || getLatest('total_revenue'),
-      ebitda: getLatest('ebitda'),
-      net_income: getLatest('net_income'),
-      cash_balance: getLatest('cash_balance'),
-      runway_months: getLatest('runway_months'),
-      free_cash_flow: getLatest('free_cash_flow'),
-      total_assets: getLatest('total_assets'),
-      total_liabilities: getLatest('total_liabilities'),
-      total_equity: getLatest('total_equity'),
+      company_id: ctx.companyId,
+      branch_id: (ctx as any).activeBranchId ?? null,
       metrics: ctx.metrics,
       signals: ctx.signals,
       branches: ctx.activeBranches.map(b => ({ name: b.name, probability: b.probability })),
       drivers: ctx.driverRegistry.map(d => d.label),
-      period_count: cols.length,
-      latest_period: latestCol,
     };
   }, [ctx, style]);
 

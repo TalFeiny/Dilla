@@ -6,7 +6,8 @@ import { MemoSectionWrapper } from '../MemoSectionWrapper';
 import { useMemoContext, type NarrativeCard } from '../MemoContext';
 import { Button } from '@/components/ui/button';
 import { Loader2, Play } from 'lucide-react';
-import { getClientBackendUrl } from '@/lib/backend-url';
+import { runAdvancedAnalytics } from '@/lib/memo/api-helpers';
+import { fmtCurrency, fmtPct } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -27,17 +28,6 @@ interface WACCResult {
   components?: Array<{ name: string; value: number; weight: number }>;
 }
 
-function fmtPct(v: number): string {
-  return `${(v * 100).toFixed(2)}%`;
-}
-
-function fmtCurrency(v: number): string {
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toLocaleString()}`;
-}
-
 export interface CostOfCapitalSectionProps {
   onDelete?: () => void;
   readOnly?: boolean;
@@ -45,7 +35,6 @@ export interface CostOfCapitalSectionProps {
 
 export function CostOfCapitalSection({ onDelete, readOnly = false }: CostOfCapitalSectionProps) {
   const ctx = useMemoContext();
-  const backendUrl = getClientBackendUrl();
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [result, setResult] = useState<WACCResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -53,22 +42,14 @@ export function CostOfCapitalSection({ onDelete, readOnly = false }: CostOfCapit
   const handleCalculate = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${backendUrl}/api/advanced-analytics/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company_id: ctx.companyId,
-          analysis_type: 'cost_of_capital',
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setResult(data);
-      }
+      const data = await runAdvancedAnalytics(ctx.companyId, 'cost_of_capital');
+      setResult(data);
+    } catch (err) {
+      console.warn('Cost of capital failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [backendUrl, ctx.companyId]);
+  }, [ctx.companyId]);
 
   const chartData = useMemo(() => {
     if (!result) return [];

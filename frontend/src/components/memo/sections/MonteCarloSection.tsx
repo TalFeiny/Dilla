@@ -9,7 +9,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Loader2, Play } from 'lucide-react';
-import { getClientBackendUrl } from '@/lib/backend-url';
+import { runMonteCarlo } from '@/lib/memo/api-helpers';
+import { fmtCurrency } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -27,13 +28,6 @@ interface MCResult {
   histogram?: Array<{ bucket: number; count: number }>;
 }
 
-function fmtCurrency(v: number): string {
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toLocaleString()}`;
-}
-
 export interface MonteCarloSectionProps {
   onDelete?: () => void;
   readOnly?: boolean;
@@ -41,7 +35,6 @@ export interface MonteCarloSectionProps {
 
 export function MonteCarloSection({ onDelete, readOnly = false }: MonteCarloSectionProps) {
   const ctx = useMemoContext();
-  const backendUrl = getClientBackendUrl();
   const [chartMode, setChartMode] = useState<ChartMode>('monte_carlo_fan');
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [result, setResult] = useState<MCResult | null>(null);
@@ -52,25 +45,20 @@ export function MonteCarloSection({ onDelete, readOnly = false }: MonteCarloSect
   const handleRunMonteCarlo = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${backendUrl}/api/fpa/regression`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company_id: ctx.companyId,
-          type: 'monte_carlo',
-          target_metric: targetMetric,
-          simulations: parseInt(simCount) || 1000,
-          branch_id: ctx.activeBranchId,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setResult(data);
-      }
+      // Backend pulls actuals from Supabase — no grid scraping needed
+      const data = await runMonteCarlo(
+        ctx.companyId,
+        targetMetric,
+        parseInt(simCount) || 1000,
+        (ctx as any).activeBranchId ?? null,
+      );
+      setResult(data);
+    } catch (err) {
+      console.warn('Monte Carlo failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [backendUrl, ctx.companyId, ctx.activeBranchId, targetMetric, simCount]);
+  }, [ctx.companyId, targetMetric, simCount]);
 
   const chartData = useMemo(() => {
     if (!result) return [];

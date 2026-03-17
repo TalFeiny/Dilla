@@ -732,24 +732,8 @@ class KPIEngine:
     def _fetch_actuals(self, company_id: str) -> Dict[str, Dict[str, float]]:
         """Fetch all actuals as {category: {period: amount}}."""
         try:
-            from app.core.supabase_client import get_supabase_client
-
-            sb = get_supabase_client()
-            if not sb:
-                return {}
-            result = (
-                sb.table("fpa_actuals")
-                .select("period, category, amount")
-                .eq("company_id", company_id)
-                .order("period")
-                .execute()
-            )
-            out: Dict[str, Dict[str, float]] = {}
-            for row in result.data or []:
-                cat = row["category"]
-                period = row["period"][:7]  # "2025-01-01" -> "2025-01"
-                out.setdefault(cat, {})[period] = float(row["amount"])
-            return out
+            from app.services.company_data_pull import pull_company_data
+            return pull_company_data(company_id).time_series
         except Exception as e:
             logger.warning(f"[KPI] Failed to fetch actuals: {e}")
             return {}

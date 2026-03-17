@@ -156,6 +156,13 @@ except Exception as exc:  # pragma: no cover - defensive import guard
     ConfigLoader = None  # type: ignore[assignment]
 
 try:
+    from app.services.company_data_pull import pull_company_data, CompanyData
+except Exception as exc:  # pragma: no cover - defensive import guard
+    NON_CRITICAL_IMPORT_ERRORS["company_data_pull"] = exc
+    pull_company_data = None  # type: ignore[assignment]
+    CompanyData = None  # type: ignore[assignment]
+
+try:
     from app.services.fund_modeling_service import FundModelingService
 except Exception as exc:  # pragma: no cover - defensive import guard
     NON_CRITICAL_IMPORT_ERRORS["FundModelingService"] = exc
@@ -4328,6 +4335,36 @@ class UnifiedMCPOrchestrator:
                 "You're acting as an opinionated CFO. Focus on P&L drivers, burn rate, "
                 "runway, unit economics, and financial health. Use FPA tools for forecasting.\n\n"
             )
+            # ── Inject DB-sourced actuals so the agent knows the numbers ──
+            _fpa = self.shared_data.get("company_fpa_data")
+            if _fpa and isinstance(_fpa, dict) and _fpa.get("latest"):
+                _latest = _fpa["latest"]
+                _meta = _fpa.get("metadata", {})
+                _pr = _meta.get("period_range", [])
+                prompt += "## COMPANY ACTUALS (from database)\n"
+                if _pr:
+                    prompt += f"Data range: {_pr[0]} to {_pr[-1]} ({_meta.get('period_count', '?')} periods)\n"
+                # Show key P&L metrics
+                _key_fields = [
+                    ("revenue", "Revenue"), ("cogs", "COGS"),
+                    ("gross_profit", "Gross Profit"),
+                    ("opex_rd", "R&D"), ("opex_sm", "S&M"), ("opex_ga", "G&A"),
+                    ("opex_total", "Total OpEx"), ("ebitda", "EBITDA"),
+                ]
+                for _field, _label in _key_fields:
+                    _val = _latest.get(_field)
+                    if _val:
+                        prompt += f"- {_label}: ${_val:,.0f}\n"
+                # Show any extra categories not in the standard set
+                _standard = {f for f, _ in _key_fields}
+                _extras = [(k, v) for k, v in sorted(_latest.items()) if k not in _standard and v]
+                if _extras:
+                    for _k, _v in _extras[:10]:
+                        try:
+                            prompt += f"- {_k}: ${float(_v):,.0f}\n"
+                        except (TypeError, ValueError):
+                            prompt += f"- {_k}: {_v}\n"
+                prompt += "\nYou have full time_series data in context — use it directly for analysis. No need to call fpa_actuals first.\n\n"
         elif grid_mode == "legal":
             prompt += (
                 "## DOMAIN: General Counsel\n"
@@ -5842,7 +5879,30 @@ JUST THE JSON:"""
                     async with self.shared_data_lock:
                         self.shared_data["fund_context"] = fund_context
                     logger.info(f"[ORCHESTRATOR] Stored fund_context in shared_data")
-                
+
+                # Pull company financials from DB if company_id available
+                _task_cid = (
+                    prompt.get("company_id") or inputs.get("company_id")
+                    or (context or {}).get("company_id")
+                )
+                if _task_cid and isinstance(_task_cid, str) and len(_task_cid) == 36 and _task_cid.count('-') == 4:
+                    async with self.shared_data_lock:
+                        self.shared_data["company_id"] = _task_cid
+                    if pull_company_data:
+                        try:
+                            _cd = pull_company_data(_task_cid)
+                            if _cd and _cd.periods:
+                                async with self.shared_data_lock:
+                                    self.shared_data["company_fpa_data"] = {
+                                        "latest": _cd.latest,
+                                        "time_series": _cd.time_series,
+                                        "periods": _cd.periods,
+                                        "metadata": _cd.metadata,
+                                    }
+                                logger.info(f"[DATA_PULL] run-task: loaded {len(_cd.periods)} periods for {_task_cid}")
+                        except Exception as _dp_err:
+                            logger.warning(f"[DATA_PULL] run-task failed for {_task_cid}: {_dp_err}")
+
                 # Check for companies in both prompt (top level) and inputs
                 companies_input = prompt.get("companies") or inputs.get("companies")
                 if companies_input:
@@ -17262,7 +17322,7 @@ ABSOLUTE RULES:
             _current_mode = self.shared_data.get("grid_mode", "portfolio")
             if _current_mode == "pnl":
                 _mode_keys = {
-                    "company_fpa_context",
+                    "company_fpa_context", "company_fpa_data",
                     "fpa_pnl_result", "fpa_balance_sheet_result",
                     "fpa_variance_result", "fpa_forecast_result",
                     "fpa_cash_flow_result", "fpa_scenario_tree",
@@ -17346,6 +17406,27 @@ ABSOLUTE RULES:
                     if _cid and isinstance(_cid, str) and len(_cid) == 36 and _cid.count('-') == 4:
                         self.shared_data['company_id'] = _cid
                         logger.info(f"[CONTEXT] Stored company_id: {_cid}")
+                    # ── Pull company financials from DB (single source of truth) ──
+                    # Replaces grid-reading: agent gets real actuals, not stale grid snapshots.
+                    _resolved_cid = self.shared_data.get('company_id')
+                    if _resolved_cid and pull_company_data:
+                        try:
+                            _cd = pull_company_data(_resolved_cid)
+                            if _cd and _cd.periods:
+                                self.shared_data['company_fpa_data'] = {
+                                    'latest': _cd.latest,
+                                    'time_series': _cd.time_series,
+                                    'periods': _cd.periods,
+                                    'metadata': _cd.metadata,
+                                }
+                                logger.info(
+                                    f"[DATA_PULL] Loaded {_cd.metadata.get('row_count', 0)} rows, "
+                                    f"{len(_cd.periods)} periods for company {_resolved_cid}"
+                                )
+                            else:
+                                logger.info(f"[DATA_PULL] No actuals found for company {_resolved_cid}")
+                        except Exception as _dp_err:
+                            logger.warning(f"[DATA_PULL] Failed for {_resolved_cid}: {_dp_err}")
                     # ── Legal mode: extract document_ids and clause_ids from grid rows ──
                     # Grid rows in legal mode: id="legal:{clause_id}", cells carry
                     # document_id in metadata. Hierarchy: document → clauses → terms.

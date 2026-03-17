@@ -24,13 +24,16 @@ analytics_bridge = AnalyticsBridge()
 
 class AnalyticsRequest(BaseModel):
     """Request model for advanced analytics"""
-    company: str
+    company: Optional[str] = None           # company name (legacy)
+    company_id: Optional[str] = None        # UUID — preferred
+    branch_id: Optional[str] = None         # scenario branch for overrides
     analysis_type: str = Field(
         default="full_research",
         description="Type of analysis: full_research, monte_carlo, sensitivity, scenario"
     )
     parameters: Dict[str, Any] = Field(default_factory=dict)
     use_cache: bool = True
+    branch_name: Optional[str] = None       # custom branch name for persisted result
     
 class AnalyticsResponse(BaseModel):
     """Response model for analytics results"""
@@ -44,43 +47,73 @@ class AnalyticsResponse(BaseModel):
 @router.post("/analyze", response_model=AnalyticsResponse)
 async def analyze_company(request: AnalyticsRequest, background_tasks: BackgroundTasks):
     """
-    Perform advanced analytics on a company
+    Perform advanced analytics on a company.
+
+    When ``company_id`` is provided, pulls real financials from Supabase
+    and merges them into parameters so WACC / health score / etc. use
+    actual data instead of hardcoded defaults.
     """
     try:
+        company_label = request.company or request.company_id or "unknown"
+
+        # --- Pull real financials when company_id is provided ---
+        if request.company_id:
+            from app.services.company_data_pull import resolve_company_financials
+            merged, _ = resolve_company_financials(
+                company_id=request.company_id,
+                branch_id=request.branch_id,
+                overrides=dict(request.parameters),
+            )
+            request.parameters = merged
+
         # Check cache first
         if request.use_cache:
             cached_result = await analytics_bridge.get_cached_analysis(
-                request.company,
+                company_label,
                 request.analysis_type
             )
             if cached_result:
                 return AnalyticsResponse(
-                    company=request.company,
+                    company=company_label,
                     analysis_type=request.analysis_type,
                     results=cached_result,
                     metadata={"source": "cache"},
                     timestamp=datetime.utcnow(),
                     cached=True
                 )
-        
+
         # Process analysis
         results = await analytics_bridge.process_analysis(
-            request.company,
+            company_label,
             request.analysis_type,
             request.parameters
         )
-        
+
+        # Persist to branch
+        persist_meta = {}
+        if request.company_id:
+            from app.services.analysis_persistence_service import AnalysisPersistenceService
+            aps = AnalysisPersistenceService()
+            persist_meta = aps.persist_analytics(
+                company_id=request.company_id,
+                analysis_type=request.analysis_type,
+                analytics_result=results,
+                parameters=request.parameters,
+                branch_name=request.branch_name,
+                parent_branch_id=request.branch_id,
+            )
+
         return AnalyticsResponse(
-            company=request.company,
+            company=company_label,
             analysis_type=request.analysis_type,
-            results=results,
-            metadata={"source": "fresh_analysis"},
+            results={**results, "_persistence": persist_meta},
+            metadata={"source": "fresh_analysis", "company_id": request.company_id},
             timestamp=datetime.utcnow(),
             cached=False
         )
-        
+
     except Exception as e:
-        logger.error(f"Analysis failed for {request.company}: {str(e)}")
+        logger.error(f"Analysis failed for {company_label}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/compare")

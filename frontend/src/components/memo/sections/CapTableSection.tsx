@@ -9,7 +9,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Loader2, Play } from 'lucide-react';
-import { getClientBackendUrl } from '@/lib/backend-url';
+import { fetchCapTable } from '@/lib/memo/api-helpers';
+import { fmtCurrency, fmtPct } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -28,17 +29,6 @@ interface CapTableRow {
   value_at_exit?: number;
 }
 
-function fmtPct(v: number): string {
-  return `${(v * 100).toFixed(1)}%`;
-}
-
-function fmtCurrency(v: number): string {
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toLocaleString()}`;
-}
-
 export interface CapTableSectionProps {
   onDelete?: () => void;
   readOnly?: boolean;
@@ -46,7 +36,6 @@ export interface CapTableSectionProps {
 
 export function CapTableSection({ onDelete, readOnly = false }: CapTableSectionProps) {
   const ctx = useMemoContext();
-  const backendUrl = getClientBackendUrl();
   const [chartMode, setChartMode] = useState<ChartMode>('cap_table_waterfall');
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [capTableData, setCapTableData] = useState<CapTableRow[]>([]);
@@ -56,22 +45,14 @@ export function CapTableSection({ onDelete, readOnly = false }: CapTableSectionP
   const handleFetchCapTable = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${backendUrl}/api/cap-table-bridge`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company_id: ctx.companyId,
-          exit_valuation: parseFloat(exitValuation) || 50000000,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setCapTableData(data.cap_table || data.stakeholders || data.rows || []);
-      }
+      const data = await fetchCapTable(ctx.companyId);
+      setCapTableData(data.cap_table || data.stakeholders || data.rows || []);
+    } catch (err) {
+      console.warn('Cap table fetch failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [backendUrl, ctx.companyId, exitValuation]);
+  }, [ctx.companyId]);
 
   // Build chart data for various chart types
   const chartData = useMemo(() => {
@@ -107,7 +88,7 @@ export function CapTableSection({ onDelete, readOnly = false }: CapTableSectionP
 
   const totalOwnership = capTableData.reduce((sum, r) => sum + r.ownership_pct, 0);
   const collapsedSummary = capTableData.length > 0
-    ? `${capTableData.length} stakeholders | ${fmtPct(totalOwnership)} allocated`
+    ? `${capTableData.length} stakeholders | ${fmtPct(totalOwnership, 1)} allocated`
     : 'Cap Table — load data to view';
 
   const aiContext = useMemo(() => ({
@@ -170,7 +151,7 @@ export function CapTableSection({ onDelete, readOnly = false }: CapTableSectionP
                 <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted">{row.share_class}</span>
               </td>
               <td className="px-2 py-1 tabular-nums text-right">{row.shares.toLocaleString()}</td>
-              <td className="px-2 py-1 tabular-nums text-right">{fmtPct(row.ownership_pct)}</td>
+              <td className="px-2 py-1 tabular-nums text-right">{fmtPct(row.ownership_pct, 1)}</td>
               <td className="px-2 py-1 tabular-nums text-right">{row.liquidation_pref != null ? `${row.liquidation_pref}x` : '—'}</td>
               <td className="px-2 py-1 tabular-nums text-right">{row.invested ? fmtCurrency(row.invested) : '—'}</td>
               <td className="px-2 py-1 tabular-nums text-right font-medium">

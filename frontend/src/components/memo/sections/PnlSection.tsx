@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { MemoSectionWrapper } from '../MemoSectionWrapper';
 import { useMemoContext, type NarrativeCard } from '../MemoContext';
-import type { MatrixRow } from '@/components/matrix/UnifiedMatrix';
+import { fetchPnl, buildForecast } from '@/lib/memo/api-helpers';
 import { Button } from '@/components/ui/button';
 import {
   Select,
@@ -13,7 +13,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Loader2, Play } from 'lucide-react';
+import { Loader2, Play, RefreshCw } from 'lucide-react';
+import { fmtCurrency } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -28,71 +29,55 @@ type ChartMode = 'stacked_bar' | 'line' | 'bar';
 type TimeRange = 'all' | '6m' | '12m' | 'ytd';
 type ForecastMethod = 'driver-based' | 'regression' | 'seasonal' | 'auto';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Build stacked bar data from P&L rows for Recharts */
-function buildStackedBarData(
-  rows: MatrixRow[],
-  columns: string[],
-  forecastStartIndex?: number,
-): Record<string, any>[] {
-  const periodCols = columns.filter(c => c !== 'lineItem');
-
-  return periodCols.map((colId, idx) => {
-    const entry: Record<string, any> = {
-      period: colId,
-      isForecast: forecastStartIndex != null && idx >= forecastStartIndex,
-    };
-
-    // Revenue
-    const revRow = rows.find(r => r.id === 'revenue' || r.id === 'total_revenue');
-    if (revRow?.cells[colId]) {
-      const v = revRow.cells[colId].value;
-      entry.Revenue = typeof v === 'number' ? v : parseFloat(v) || 0;
-    }
-
-    // COGS
-    const cogsRow = rows.find(r => r.id === 'cogs' || r.id === 'total_cogs');
-    if (cogsRow?.cells[colId]) {
-      const v = cogsRow.cells[colId].value;
-      entry.COGS = typeof v === 'number' ? v : parseFloat(v) || 0;
-    }
-
-    // OpEx breakdown
-    for (const [rowId, label] of [['opex_rd', 'R&D'], ['opex_sm', 'S&M'], ['opex_ga', 'G&A']] as const) {
-      const r = rows.find(row => row.id === rowId);
-      if (r?.cells[colId]) {
-        const v = r.cells[colId].value;
-        entry[label] = typeof v === 'number' ? v : parseFloat(v) || 0;
-      }
-    }
-
-    // EBITDA as line overlay
-    const ebitdaRow = rows.find(r => r.id === 'ebitda');
-    if (ebitdaRow?.cells[colId]) {
-      const v = ebitdaRow.cells[colId].value;
-      entry.EBITDA = typeof v === 'number' ? v : parseFloat(v) || 0;
-    }
-
-    // Net Income
-    const niRow = rows.find(r => r.id === 'net_income');
-    if (niRow?.cells[colId]) {
-      const v = niRow.cells[colId].value;
-      entry['Net Income'] = typeof v === 'number' ? v : parseFloat(v) || 0;
-    }
-
-    return entry;
-  });
+/** Row shape returned by /fpa/pnl backend */
+interface PnlRow {
+  id: string;
+  label: string;
+  depth?: number;
+  section?: string;
+  isHeader?: boolean;
+  isTotal?: boolean;
+  isComputed?: boolean;
+  values: Record<string, number | null>;
 }
 
-/** Format currency for display */
-function fmtCurrency(v: number): string {
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toLocaleString()}`;
+interface PnlResponse {
+  periods: string[];
+  rows: PnlRow[];
+  forecastStartIndex?: number;
+  ratios?: Record<string, any>;
+}
+
+/** Chart series we want to plot from the PnlResponse rows */
+const PNL_CHART_IDS = ['revenue', 'cogs', 'opex_rd', 'opex_sm', 'opex_ga', 'ebitda', 'net_income'];
+const PNL_CHART_LABELS: Record<string, string> = {
+  revenue: 'Revenue',
+  cogs: 'COGS',
+  opex_rd: 'R&D',
+  opex_sm: 'S&M',
+  opex_ga: 'G&A',
+  ebitda: 'EBITDA',
+  net_income: 'Net Income',
+};
+
+/** Transform backend rows into chart-ready data */
+function buildChartFromResponse(data: PnlResponse): Record<string, any>[] {
+  if (!data.periods || !data.rows) return [];
+
+  // Build a lookup: row id → values
+  const rowMap: Record<string, Record<string, number | null>> = {};
+  for (const row of data.rows) {
+    rowMap[row.id] = row.values;
+  }
+
+  return data.periods.map(period => {
+    const entry: Record<string, any> = { period };
+    for (const id of PNL_CHART_IDS) {
+      const label = PNL_CHART_LABELS[id] || id;
+      entry[label] = rowMap[id]?.[period] ?? 0;
+    }
+    return entry;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -113,41 +98,63 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [forecasting, setForecasting] = useState(false);
 
-  const pnlRows = ctx.getPnlRows();
-  const columns = ctx.matrixData.columns.map(c => c.id);
-  const forecastStartIndex = ctx.matrixData.metadata?.forecastStartIndex;
+  // --- Data from backend ---
+  const [pnlData, setPnlData] = useState<PnlResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Filter columns by time range
-  const filteredColumns = useMemo(() => {
-    const periodCols = columns.filter(c => c !== 'lineItem');
-    if (timeRange === 'all' || periodCols.length === 0) return columns;
+  // Fetch P&L data from backend on mount and when company changes
+  const handleFetch = useCallback(async () => {
+    if (!ctx.companyId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchPnl(ctx.companyId);
+      setPnlData(data);
+    } catch (err: any) {
+      console.warn('PnlSection fetch error:', err);
+      setError(err.message || 'Failed to load P&L data');
+    } finally {
+      setLoading(false);
+    }
+  }, [ctx.companyId]);
+
+  useEffect(() => {
+    handleFetch();
+  }, [handleFetch]);
+
+  // Filter periods by time range
+  const filteredPeriods = useMemo(() => {
+    if (!pnlData?.periods) return [];
+    const periods = pnlData.periods;
+    if (timeRange === 'all' || periods.length === 0) return periods;
 
     const now = new Date();
     const currentYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
     if (timeRange === '6m') {
-      const idx = periodCols.indexOf(currentYM);
-      const start = Math.max(0, (idx >= 0 ? idx : periodCols.length) - 3);
-      const end = Math.min(periodCols.length, start + 6);
-      return ['lineItem', ...periodCols.slice(start, end)];
+      const idx = periods.indexOf(currentYM);
+      const start = Math.max(0, (idx >= 0 ? idx : periods.length) - 3);
+      const end = Math.min(periods.length, start + 6);
+      return periods.slice(start, end);
     }
     if (timeRange === '12m') {
-      const idx = periodCols.indexOf(currentYM);
-      const start = Math.max(0, (idx >= 0 ? idx : periodCols.length) - 6);
-      const end = Math.min(periodCols.length, start + 12);
-      return ['lineItem', ...periodCols.slice(start, end)];
+      const idx = periods.indexOf(currentYM);
+      const start = Math.max(0, (idx >= 0 ? idx : periods.length) - 6);
+      const end = Math.min(periods.length, start + 12);
+      return periods.slice(start, end);
     }
     if (timeRange === 'ytd') {
       const yearPrefix = `${now.getFullYear()}-`;
-      return ['lineItem', ...periodCols.filter(c => c.startsWith(yearPrefix))];
+      return periods.filter(p => p.startsWith(yearPrefix));
     }
-    return columns;
-  }, [columns, timeRange]);
+    return periods;
+  }, [pnlData, timeRange]);
 
-  // Build chart data — always, even if zero. Chart renders instantly.
+  // Build chart data from backend response
   const chartData = useMemo(
-    () => buildStackedBarData(pnlRows, filteredColumns, forecastStartIndex),
-    [pnlRows, filteredColumns, forecastStartIndex]
+    () => pnlData ? buildChartFromResponse(pnlData) : [],
+    [pnlData]
   );
 
   // Latest period summary for collapsed state
@@ -156,24 +163,27 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
     ? `Revenue: ${fmtCurrency(latestPeriod.Revenue || 0)} | EBITDA: ${fmtCurrency(latestPeriod.EBITDA || 0)} | Net: ${fmtCurrency(latestPeriod['Net Income'] || 0)}`
     : 'P&L — no periods loaded';
 
-  // Build forecast action — passes selected method
+  // Build forecast action
   const handleBuildForecast = useCallback(async () => {
+    if (!ctx.companyId) return;
     setForecasting(true);
     try {
-      await ctx.buildForecast({ method: forecastMethod });
+      await buildForecast(ctx.companyId, { method: forecastMethod });
+      // Re-fetch P&L to get updated data with forecast
+      await handleFetch();
     } finally {
       setForecasting(false);
     }
-  }, [ctx, forecastMethod]);
+  }, [ctx.companyId, forecastMethod, handleFetch]);
 
   // AI data context
   const aiContext = useMemo(() => ({
     pnlData: chartData,
     latestPeriod,
-    forecastStartIndex,
+    forecastStartIndex: pnlData?.forecastStartIndex,
     forecastMethod,
     branchCount: ctx.activeBranches.length,
-  }), [chartData, latestPeriod, forecastStartIndex, forecastMethod, ctx.activeBranches.length]);
+  }), [chartData, latestPeriod, pnlData, forecastMethod, ctx.activeBranches.length]);
 
   // ---- Config bar ----
   const configBar = (
@@ -230,6 +240,16 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
           <span className="text-muted-foreground">Branches</span>
         </label>
       )}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 w-6 p-0"
+        onClick={handleFetch}
+        disabled={loading}
+        title="Refresh"
+      >
+        <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+      </Button>
       {!readOnly && (
         <Button
           variant="outline"
@@ -245,62 +265,49 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
     </>
   );
 
-  // ---- Detail: expandable grid rows ----
-  const detailGrid = (
+  // ---- Detail: expandable grid rows from backend data ----
+  const detailGrid = pnlData?.rows ? (
     <div className="overflow-x-auto mt-2">
       <table className="w-full text-[11px] border-collapse">
         <thead>
           <tr className="border-b-2 border-border bg-muted/50">
-            {filteredColumns.map(colId => {
-              const col = ctx.matrixData.columns.find(c => c.id === colId);
-              return (
-                <th key={colId} className="px-2 py-1 text-left font-semibold whitespace-nowrap">
-                  {col?.name || colId}
-                </th>
-              );
-            })}
+            <th className="px-2 py-1 text-left font-semibold whitespace-nowrap">Line Item</th>
+            {filteredPeriods.map(period => (
+              <th key={period} className="px-2 py-1 text-right font-semibold whitespace-nowrap">
+                {period}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {pnlRows.map(row => {
-            const isHeader = (row as any).isHeader;
-            const isTotal = (row as any).isTotal;
-            const depth = (row as any).depth || 0;
-            return (
-              <tr
-                key={row.id}
-                className={`border-b border-border/50 ${isHeader ? 'bg-muted/30 font-semibold' : ''} ${isTotal ? 'font-semibold border-t border-border' : ''}`}
-              >
-                {filteredColumns.map(colId => {
-                  if (colId === 'lineItem') {
-                    return (
-                      <td key={colId} className="px-2 py-1 whitespace-nowrap" style={{ paddingLeft: `${8 + depth * 16}px` }}>
-                        {row.cells.lineItem?.value || row.id}
-                      </td>
-                    );
-                  }
-                  const cell = row.cells[colId];
-                  const v = cell?.value;
-                  const display = typeof v === 'number' ? fmtCurrency(v) : (v ?? '');
-                  const isForecast = cell?.source === 'api' || cell?.source === 'formula';
-                  return (
-                    <td
-                      key={colId}
-                      className={`px-2 py-1 tabular-nums text-right whitespace-nowrap ${isForecast ? 'text-blue-600 dark:text-blue-400' : ''}`}
-                    >
-                      {display}
-                    </td>
-                  );
-                })}
-              </tr>
-            );
-          })}
+          {pnlData.rows.map(row => (
+            <tr
+              key={row.id}
+              className={`border-b border-border/50 ${row.isHeader ? 'bg-muted/30 font-semibold' : ''} ${row.isTotal ? 'font-semibold border-t border-border' : ''}`}
+            >
+              <td className="px-2 py-1 whitespace-nowrap" style={{ paddingLeft: `${8 + (row.depth || 0) * 16}px` }}>
+                {row.label}
+              </td>
+              {filteredPeriods.map(period => {
+                const v = row.values[period];
+                const isForecast = pnlData.forecastStartIndex != null &&
+                  pnlData.periods.indexOf(period) >= pnlData.forecastStartIndex;
+                return (
+                  <td
+                    key={period}
+                    className={`px-2 py-1 tabular-nums text-right whitespace-nowrap ${isForecast ? 'text-blue-600 dark:text-blue-400' : ''}`}
+                  >
+                    {v != null ? fmtCurrency(v) : ''}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
-  );
+  ) : null;
 
-  // Always render chart — no empty state gatekeeping
   return (
     <MemoSectionWrapper
       sectionType="pnl"
@@ -315,7 +322,16 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
       readOnly={readOnly}
     >
       <div className="w-full" style={{ height: 320 }}>
-        {chartData.length > 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center h-full text-xs text-muted-foreground gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading P&L data...
+          </div>
+        ) : error ? (
+          <div className="flex items-center justify-center h-full text-xs text-red-500">
+            {error}
+          </div>
+        ) : chartData.length > 0 ? (
           <TableauLevelCharts
             data={chartData}
             type={chartMode}

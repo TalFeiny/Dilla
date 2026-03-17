@@ -9,7 +9,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Loader2, Play } from 'lucide-react';
-import { getClientBackendUrl } from '@/lib/backend-url';
+import { fetchCapTable } from '@/lib/memo/api-helpers';
+import { fmtPct } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -29,10 +30,6 @@ interface StakeholderRow {
   voting_rights?: number;
 }
 
-function fmtPct(v: number): string {
-  return `${(v * 100).toFixed(1)}%`;
-}
-
 export interface StakeholderSectionProps {
   onDelete?: () => void;
   readOnly?: boolean;
@@ -40,7 +37,6 @@ export interface StakeholderSectionProps {
 
 export function StakeholderSection({ onDelete, readOnly = false }: StakeholderSectionProps) {
   const ctx = useMemoContext();
-  const backendUrl = getClientBackendUrl();
   const [chartMode, setChartMode] = useState<ChartMode>('cap_table_sankey');
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [stakeholders, setStakeholders] = useState<StakeholderRow[]>([]);
@@ -50,22 +46,14 @@ export function StakeholderSection({ onDelete, readOnly = false }: StakeholderSe
   const handleFetchStakeholders = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${backendUrl}/api/cap-table-bridge`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company_id: ctx.companyId,
-          view: 'stakeholder_map',
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setStakeholders(data.stakeholders || data.rows || []);
-      }
+      const data = await fetchCapTable(ctx.companyId);
+      setStakeholders(data.stakeholders || data.rows || []);
+    } catch (err) {
+      console.warn('Stakeholder fetch failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [backendUrl, ctx.companyId]);
+  }, [ctx.companyId]);
 
   const chartData = useMemo(() => {
     if (stakeholders.length === 0) return [];
@@ -99,7 +87,7 @@ export function StakeholderSection({ onDelete, readOnly = false }: StakeholderSe
   }, [stakeholders, groupBy]);
 
   const collapsedSummary = stakeholders.length > 0
-    ? `${stakeholders.length} stakeholders | ${groupSummary.slice(0, 3).map(([k, v]) => `${typeLabels[k] || k}: ${fmtPct(v)}`).join(', ')}`
+    ? `${stakeholders.length} stakeholders | ${groupSummary.slice(0, 3).map(([k, v]) => `${typeLabels[k] || k}: ${fmtPct(v, 1)}`).join(', ')}`
     : 'Stakeholders — load data';
 
   const aiContext = useMemo(() => ({
@@ -162,8 +150,8 @@ export function StakeholderSection({ onDelete, readOnly = false }: StakeholderSe
               </td>
               <td className="px-2 py-1 text-[10px] font-mono">{s.share_class}</td>
               <td className="px-2 py-1 tabular-nums text-right">{s.shares.toLocaleString()}</td>
-              <td className="px-2 py-1 tabular-nums text-right font-semibold">{fmtPct(s.ownership_pct)}</td>
-              <td className="px-2 py-1 tabular-nums text-right">{s.vested_pct != null ? fmtPct(s.vested_pct) : '—'}</td>
+              <td className="px-2 py-1 tabular-nums text-right font-semibold">{fmtPct(s.ownership_pct, 1)}</td>
+              <td className="px-2 py-1 tabular-nums text-right">{s.vested_pct != null ? fmtPct(s.vested_pct, 1) : '—'}</td>
               <td className="px-2 py-1 text-center">{s.board_seat ? 'Yes' : '—'}</td>
             </tr>
           ))}

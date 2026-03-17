@@ -73,6 +73,8 @@ class FPARegressionRequest(BaseModel):
     regression_type: str  # "linear" | "exponential" | "time_series" | "monte_carlo" | "sensitivity"
     data: Dict[str, Any]
     options: Optional[Dict[str, Any]] = None
+    branch_name: Optional[str] = None        # custom branch name (auto-generated if None)
+    parent_branch_id: Optional[str] = None   # fork from existing branch
 
 
 class FPAForecastRequest(BaseModel):
@@ -86,6 +88,42 @@ class FPAForecastRequest(BaseModel):
 
 
 # Services are lazy-loaded via _get_nl_services() — see top of file
+
+
+# ---------------------------------------------------------------------------
+# Persistence helper — every FPA compute endpoint calls this so results
+# land on a scenario branch (and optionally the grid when it's empty).
+# Errors are swallowed so persistence never breaks the endpoint.
+# ---------------------------------------------------------------------------
+
+def _persist_fpa_output(
+    company_id: str,
+    analysis_type: str,
+    assumptions: Dict[str, Any],
+    *,
+    branch_name: Optional[str] = None,
+    parent_branch_id: Optional[str] = None,
+    trajectory: Optional[List[Dict[str, Any]]] = None,
+    periods: Optional[List[str]] = None,
+    summary: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Persist FPA output to branch + grid (if empty). Never raises."""
+    try:
+        from app.services.analysis_persistence_service import AnalysisPersistenceService
+        aps = AnalysisPersistenceService()
+        return aps.persist_analysis_result(
+            company_id=company_id,
+            analysis_type=analysis_type,
+            assumptions=assumptions,
+            branch_name=branch_name,
+            parent_branch_id=parent_branch_id,
+            trajectory=trajectory,
+            periods=periods,
+            summary=summary,
+        )
+    except Exception as e:
+        logger.warning("FPA persistence failed (%s): %s", analysis_type, e)
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +322,187 @@ async def upsert_bs_cell(req: PnlCellEditRequest):
 
 
 # ---------------------------------------------------------------------------
+# Cash Flow endpoint — assembles CF actuals + derived rows
+# ---------------------------------------------------------------------------
+
+
+@router.get("/cash-flow")
+async def get_cash_flow(
+    company_id: Optional[str] = Query(None),
+    start: Optional[str] = Query(None, description="Start period YYYY-MM"),
+    end: Optional[str] = Query(None, description="End period YYYY-MM"),
+):
+    """
+    Fetch Cash Flow data via CashFlowBuilder.
+    Returns hierarchical rows (operating / investing / financing / position)
+    with derived FCF, burn rate, and runway.
+    """
+    from app.services.cash_flow_builder import CashFlowBuilder
+
+    try:
+        builder = CashFlowBuilder(company_id=company_id)
+        return builder.build(start=start, end=end)
+
+    except Exception as e:
+        logger.error("Error fetching Cash Flow: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Metrics endpoint — computes KPIs from latest actuals
+# ---------------------------------------------------------------------------
+
+
+@router.get("/metrics")
+async def get_metrics(
+    company_id: str = Query(..., description="Company ID"),
+):
+    """
+    Compute key metrics from fpa_actuals for a company.
+    Returns latest-period KPIs with trends and severity indicators.
+    """
+    from app.services.company_data_pull import pull_company_data
+
+    try:
+        data = pull_company_data(company_id)
+        if not data.time_series:
+            return {"metrics": []}
+
+        def lp(cat: str) -> tuple:
+            return data.category_latest_and_prev(cat)
+
+        def trend(curr: float, previous: float) -> str:
+            if curr > previous:
+                return "up"
+            if curr < previous:
+                return "down"
+            return "flat"
+
+        def trend_pct(curr: float, previous: float) -> float:
+            if previous == 0:
+                return 0
+            return (curr - previous) / abs(previous)
+
+        metrics = []
+
+        # Revenue
+        rev, rev_prev = lp("revenue")
+        if rev != 0:
+            metrics.append({
+                "id": "revenue",
+                "label": "Revenue",
+                "value": rev,
+                "unit": "currency",
+                "trend": trend(rev, rev_prev),
+                "trendValue": round(trend_pct(rev, rev_prev), 4),
+                "severity": "green" if rev > rev_prev else "amber",
+            })
+
+        # EBITDA
+        ebitda_val, ebitda_prev = lp("ebitda")
+        if ebitda_val != 0 or "ebitda" in data.time_series:
+            metrics.append({
+                "id": "ebitda",
+                "label": "EBITDA",
+                "value": ebitda_val,
+                "unit": "currency",
+                "trend": trend(ebitda_val, ebitda_prev),
+                "trendValue": round(trend_pct(ebitda_val, ebitda_prev), 4),
+                "severity": "green" if ebitda_val >= 0 else "red",
+            })
+
+        # EBITDA Margin
+        if rev != 0:
+            margin = ebitda_val / rev
+            metrics.append({
+                "id": "ebitda_margin",
+                "label": "EBITDA Margin",
+                "value": round(margin, 4),
+                "unit": "percentage",
+                "severity": "green" if margin > 0.2 else "amber" if margin > 0 else "red",
+            })
+
+        # Gross Margin
+        cogs_val, _ = lp("cogs")
+        if rev != 0 and (cogs_val != 0 or "cogs" in data.time_series):
+            gm = (rev - abs(cogs_val)) / rev
+            metrics.append({
+                "id": "gross_margin",
+                "label": "Gross Margin",
+                "value": round(gm, 4),
+                "unit": "percentage",
+                "severity": "green" if gm > 0.5 else "amber" if gm > 0.3 else "red",
+            })
+
+        # Cash Balance
+        cash_val, _ = lp("cash_balance")
+        if not cash_val:
+            cash_val, _ = lp("bs_cash")
+        cash = cash_val
+        if cash != 0:
+            metrics.append({
+                "id": "cash",
+                "label": "Cash Balance",
+                "value": cash,
+                "unit": "currency",
+                "severity": "green" if cash > 0 else "red",
+            })
+
+        # Net Burn
+        burn, _ = lp("net_burn_rate")
+        if burn == 0 and ebitda_val < 0:
+            burn = abs(ebitda_val)
+        if burn != 0:
+            metrics.append({
+                "id": "net_burn",
+                "label": "Net Burn",
+                "value": burn,
+                "unit": "currency",
+                "severity": "amber" if burn > 0 else "green",
+            })
+
+        # Runway
+        if cash > 0 and burn > 0:
+            runway = cash / burn
+            metrics.append({
+                "id": "runway",
+                "label": "Runway",
+                "value": round(runway, 1),
+                "unit": "months",
+                "severity": "green" if runway > 12 else "amber" if runway > 6 else "red",
+            })
+
+        # OpEx breakdown
+        opex_rd, _ = lp("opex_rd")
+        opex_sm, _ = lp("opex_sm")
+        opex_ga, _ = lp("opex_ga")
+        total_opex = abs(opex_rd) + abs(opex_sm) + abs(opex_ga)
+        if total_opex > 0 and rev != 0:
+            metrics.append({
+                "id": "opex_ratio",
+                "label": "OpEx / Revenue",
+                "value": round(total_opex / rev, 4),
+                "unit": "percentage",
+                "severity": "green" if total_opex / rev < 0.8 else "amber" if total_opex / rev < 1.0 else "red",
+            })
+
+        # Persist metrics snapshot to branch
+        persist = _persist_fpa_output(
+            company_id=company_id,
+            analysis_type="metrics_snapshot",
+            assumptions={"source": "fpa_actuals"},
+            summary={"metrics": metrics},
+            branch_name="Metrics Snapshot",
+        )
+
+        return {"metrics": metrics, "_persistence": persist}
+
+    except Exception as e:
+        logger.error("Error computing metrics: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
 # Variance endpoint — compare actuals vs budget
 # ---------------------------------------------------------------------------
 
@@ -306,7 +525,27 @@ async def get_variance(
 
     try:
         results = get_variance_report(company_id, budget_id, period_start, period_end)
-        return {"company_id": company_id, "budget_id": budget_id, "period": {"start": start, "end": end}, "variances": results}
+
+        # Persist variance report to branch
+        persist = _persist_fpa_output(
+            company_id=company_id,
+            analysis_type="budget_variance",
+            assumptions={
+                "budget_id": budget_id,
+                "period_start": start,
+                "period_end": end,
+            },
+            summary=results,
+            branch_name=f"Variance {start} – {end}",
+        )
+
+        return {
+            "company_id": company_id,
+            "budget_id": budget_id,
+            "period": {"start": start, "end": end},
+            "variances": results,
+            "_persistence": persist,
+        }
     except Exception as e:
         logger.error("Variance report error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1987,6 +2226,46 @@ async def get_rolling_forecast(
             result.get("rows", []),
             boundary_index=result.get("boundary_index", 0),
         )
+
+        # If forecast was computed fresh (no saved forecast), persist it so
+        # the next call loads from saved rather than recomputing.
+        rows = result.get("rows", [])
+        boundary = result.get("boundary_index", 0)
+        forecast_rows = [r for r in rows[boundary:] if r.get("source") == "forecast"]
+        if forecast_rows:
+            try:
+                from app.services.forecast_persistence_service import ForecastPersistenceService
+                fps = ForecastPersistenceService()
+                # Only save if no active forecast already exists
+                existing = fps.get_active_forecast(company_id)
+                if not existing:
+                    saved = fps.save_forecast(
+                        company_id=company_id,
+                        forecast=forecast_rows,
+                        method="rolling_forecast",
+                        seed_snapshot={"window_months": window, "granularity": granularity},
+                        assumptions={"boundary_period": result.get("boundary_period")},
+                        name="Rolling Forecast (auto-saved)",
+                        activate=True,
+                        created_by="rolling_forecast_endpoint",
+                    )
+                    result["_persistence"] = {
+                        "forecast_id": saved.get("id"),
+                        "rows_written": len(forecast_rows),
+                    }
+                    # Write to grid if empty
+                    if saved.get("id"):
+                        from app.services.analysis_persistence_service import AnalysisPersistenceService
+                        aps = AnalysisPersistenceService()
+                        if aps._grid_is_empty(company_id):
+                            grid_rows = fps.write_forecast_to_actuals(
+                                saved["id"], source="rolling_forecast_applied",
+                            )
+                            result["_persistence"]["wrote_to_grid"] = True
+                            result["_persistence"]["grid_rows"] = grid_rows
+            except Exception as e:
+                logger.warning("Rolling forecast persistence failed: %s", e)
+
         return result
     except HTTPException:
         raise
@@ -2143,6 +2422,28 @@ async def compare_scenarios(req: ScenarioCompareRequest):
 
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
+
+    # Persist expected-value forecast to branch (+ grid if empty)
+    ev_forecast = result.get("expected_value")
+    if ev_forecast and isinstance(ev_forecast, list):
+        periods = [r.get("period") for r in ev_forecast if isinstance(r, dict)]
+        persist = _persist_fpa_output(
+            company_id=req.company_id,
+            analysis_type="scenario_comparison_ev",
+            assumptions={
+                "branch_ids": req.branch_ids,
+                "forecast_months": req.forecast_months,
+                "start_period": req.start_period,
+            },
+            trajectory=ev_forecast,
+            periods=periods,
+            summary={
+                "branches_compared": len(req.branch_ids),
+                "capital_impact": result.get("capital_impact"),
+            },
+            branch_name="Scenario Comparison EV",
+        )
+        result["_persistence"] = persist
 
     return result
 
@@ -2416,9 +2717,30 @@ async def execute_model(model_id: str):
 
 @router.post("/regression")
 async def run_regression(request: FPARegressionRequest):
-    """Run regression analysis"""
+    """Run regression analysis and persist results to a scenario branch.
+
+    For monte_carlo and sensitivity: when ``data.company_id`` is present the
+    backend pulls latest actuals from Supabase so the frontend doesn't need
+    to scrape the grid.  If ``data.branch_id`` is also set, branch-adjusted
+    values override the base actuals.
+
+    All analysis results are always persisted:
+    - A scenario branch is created with the assumptions used
+    - MC/time_series trajectories are saved as forecast lines
+    - If the grid is empty, forecast rows are written to fpa_actuals
+    """
     try:
         *_, regression_service = _get_nl_services()
+
+        # --- Auto-populate from Supabase when company_id is provided ---
+        company_id = request.data.get("company_id")
+        branch_id = request.data.get("branch_id")
+        company_data = None
+        if company_id and request.regression_type in ("monte_carlo", "sensitivity"):
+            from app.services.company_data_pull import pull_company_data, apply_branch_overrides
+            company_data = pull_company_data(company_id)
+            company_data = apply_branch_overrides(company_data, branch_id)
+
         if request.regression_type == "linear":
             x = request.data.get("x", [])
             y = request.data.get("y", [])
@@ -2432,18 +2754,89 @@ async def run_regression(request: FPARegressionRequest):
             periods = request.options.get("periods", 12) if request.options else 12
             result = await regression_service.time_series_forecast(historical_data, periods)
         elif request.regression_type == "monte_carlo":
-            base_scenario = request.data.get("base_scenario", {})
+            # Start from pulled actuals, let explicit request values override
+            base_scenario = {}
+            if company_data:
+                base_scenario = company_data.latest_with_overrides(request.data.get("base_scenario", {}))
+            else:
+                base_scenario = request.data.get("base_scenario", {})
             distributions = request.data.get("distributions", {})
+            # Derive distributions from actual historical variance
+            if not distributions and company_data:
+                for key in ("revenue", "cogs", "opex_total", "ebitda"):
+                    variance = company_data.historical_variance(key)
+                    if variance:
+                        distributions[key] = {"min": variance["min"], "max": variance["max"]}
             iterations = request.options.get("iterations", 1000) if request.options else 1000
             result = await regression_service.monte_carlo_simulation(base_scenario, distributions, iterations)
         elif request.regression_type == "sensitivity":
-            base_inputs = request.data.get("base_inputs", {})
+            # Start from pulled actuals, let explicit request values override
+            base_inputs = {}
+            if company_data:
+                base_inputs = company_data.latest_with_overrides(request.data.get("base_inputs", {}))
+            else:
+                base_inputs = request.data.get("base_inputs", {})
             variable_ranges = request.data.get("variable_ranges", {})
-            # TODO: Pass model function
+            # Default variable ranges from latest values
+            if not variable_ranges and company_data:
+                for key in ("revenue", "cogs", "opex_total", "ebitda"):
+                    val = company_data.latest.get(key)
+                    if val:
+                        variable_ranges[key] = {"min": val * 0.7, "max": val * 1.3, "steps": 10}
             result = await regression_service.sensitivity_analysis(base_inputs, variable_ranges, None)
         else:
             raise HTTPException(status_code=400, detail=f"Unknown regression type: {request.regression_type}")
-        
+
+        # --- Persist results to branch (+ grid if empty) ---
+        persist_meta = {}
+        if company_id:
+            from app.services.analysis_persistence_service import AnalysisPersistenceService
+            aps = AnalysisPersistenceService()
+
+            if request.regression_type == "monte_carlo":
+                persist_meta = aps.persist_monte_carlo(
+                    company_id=company_id,
+                    mc_result=result,
+                    branch_name=request.branch_name,
+                    parent_branch_id=request.parent_branch_id,
+                )
+            elif request.regression_type == "sensitivity":
+                persist_meta = aps.persist_sensitivity(
+                    company_id=company_id,
+                    sensitivity_result=result,
+                    base_inputs=base_inputs,
+                    branch_name=request.branch_name,
+                    parent_branch_id=request.parent_branch_id,
+                )
+            elif request.regression_type == "time_series":
+                # time_series forecast produces a trajectory
+                trajectory = []
+                forecast_values = result.get("forecast", [])
+                for i, val in enumerate(forecast_values):
+                    trajectory.append({"period": f"forecast_{i}", "revenue": val})
+                persist_meta = aps.persist_analysis_result(
+                    company_id=company_id,
+                    analysis_type="time_series_forecast",
+                    assumptions={"historical_data_points": len(request.data.get("historical_data", []))},
+                    branch_name=request.branch_name,
+                    parent_branch_id=request.parent_branch_id,
+                    trajectory=trajectory if trajectory else None,
+                    summary=result,
+                )
+            else:
+                # linear / exponential — point-in-time, branch only
+                persist_meta = aps.persist_analysis_result(
+                    company_id=company_id,
+                    analysis_type=request.regression_type,
+                    assumptions=request.data,
+                    branch_name=request.branch_name,
+                    parent_branch_id=request.parent_branch_id,
+                    summary=result,
+                )
+
+        # Return analysis result + persistence metadata
+        if isinstance(result, dict):
+            result["_persistence"] = persist_meta
         return result
     except HTTPException:
         raise
@@ -2616,6 +3009,29 @@ async def generate_forecast(request: FPAForecastRequest):
             except Exception as bl_err:
                 logger.warning("budget_lines write-through failed: %s", bl_err)
 
+        # ── Persist to branch + grid (if empty) ─────────────────────
+        persist = {}
+        if request.company_id and forecast:
+            branch_assumptions: Dict[str, Any] = {
+                "forecast_periods": request.forecast_periods,
+                "granularity": request.granularity,
+            }
+            if request.growth_rate is not None:
+                branch_assumptions["growth_rate"] = request.growth_rate
+            if request.base_data:
+                branch_assumptions["base_data"] = request.base_data
+            if request.assumptions:
+                branch_assumptions.update(request.assumptions)
+            periods = [r.get("period") for r in forecast if isinstance(r, dict)]
+            persist = _persist_fpa_output(
+                company_id=request.company_id,
+                analysis_type="forecast_projection",
+                assumptions=branch_assumptions,
+                trajectory=forecast,
+                periods=periods,
+                branch_name="Forecast Projection",
+            )
+
         return {
             "forecast": forecast,
             "granularity": request.granularity,
@@ -2630,6 +3046,7 @@ async def generate_forecast(request: FPAForecastRequest):
                 "gross_margin": company_data.get("gross_margin"),
             },
             "charts": _build_forecast_charts(forecast, boundary_index=0),
+            "_persistence": persist,
         }
     except HTTPException:
         raise

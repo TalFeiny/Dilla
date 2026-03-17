@@ -9,7 +9,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Loader2, Play, Heart } from 'lucide-react';
-import { getClientBackendUrl } from '@/lib/backend-url';
+import { runAdvancedAnalytics } from '@/lib/memo/api-helpers';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -48,7 +48,6 @@ export interface HealthScoreSectionProps {
 
 export function HealthScoreSection({ onDelete, readOnly = false }: HealthScoreSectionProps) {
   const ctx = useMemoContext();
-  const backendUrl = getClientBackendUrl();
   const [chartMode, setChartMode] = useState<ChartMode>('radar_comparison');
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [result, setResult] = useState<HealthResult | null>(null);
@@ -57,22 +56,14 @@ export function HealthScoreSection({ onDelete, readOnly = false }: HealthScoreSe
   const handleRunHealth = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${backendUrl}/api/advanced-analytics/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company_id: ctx.companyId,
-          analysis_type: 'health_score',
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setResult(data);
-      }
+      const data = await runAdvancedAnalytics(ctx.companyId, 'health_score');
+      setResult(data);
+    } catch (err) {
+      console.warn('Health score failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [backendUrl, ctx.companyId]);
+  }, [ctx.companyId]);
 
   const chartData = useMemo(() => {
     if (!result?.dimensions) return [];

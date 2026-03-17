@@ -10,7 +10,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Loader2, Play, GitBranch, Plus, Trash2, MessageSquare } from 'lucide-react';
-import { getClientBackendUrl } from '@/lib/backend-url';
+import { parseNLScenario } from '@/lib/memo/api-helpers';
+import { fmtCurrency } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -19,13 +20,6 @@ const TableauLevelCharts = dynamic(
 
 type ChartMode = 'branched_line' | 'scenario_tree' | 'bull_bear_base';
 
-function fmtCurrency(v: number): string {
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toLocaleString()}`;
-}
-
 export interface ScenarioSectionProps {
   onDelete?: () => void;
   readOnly?: boolean;
@@ -33,7 +27,6 @@ export interface ScenarioSectionProps {
 
 export function ScenarioSection({ onDelete, readOnly = false }: ScenarioSectionProps) {
   const ctx = useMemoContext();
-  const backendUrl = getClientBackendUrl();
   const [chartMode, setChartMode] = useState<ChartMode>('branched_line');
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [nlInput, setNlInput] = useState('');
@@ -102,32 +95,24 @@ export function ScenarioSection({ onDelete, readOnly = false }: ScenarioSectionP
     });
   }, [baseForecast, branches, forecasts]);
 
-  // NL scenario composer — parse "what if..." into branch
+  // NL scenario composer — parse "what if..." into branch (correct endpoint: /what-if not /parse)
   const handleNLSubmit = useCallback(async () => {
     if (!nlInput.trim()) return;
     setParsing(true);
     try {
-      const res = await fetch(`${backendUrl}/api/nl-scenarios/parse`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company_id: ctx.companyId,
-          query: nlInput,
-          base_branch_id: ctx.activeBranchId,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const assumptions = data.assumptions || data.drivers || {};
-        const name = data.name || nlInput.slice(0, 40);
-        const forkPeriod = data.fork_period || null;
-        await ctx.createFork(name, ctx.activeBranchId, forkPeriod, assumptions);
-        setNlInput('');
-      }
+      const data = await parseNLScenario(nlInput, ctx.companyId);
+      const scenario = data.composed_scenario || data;
+      const assumptions = scenario.assumptions || scenario.drivers || data.assumptions || data.drivers || {};
+      const name = scenario.scenario_name || data.name || nlInput.slice(0, 40);
+      const forkPeriod = data.fork_period || null;
+      await ctx.createFork(name, ctx.activeBranchId, forkPeriod, assumptions);
+      setNlInput('');
+    } catch (err) {
+      console.warn('NL scenario parse failed:', err);
     } finally {
       setParsing(false);
     }
-  }, [nlInput, backendUrl, ctx]);
+  }, [nlInput, ctx]);
 
   // Delete a branch
   const handleDeleteBranch = useCallback(async (branchId: string) => {

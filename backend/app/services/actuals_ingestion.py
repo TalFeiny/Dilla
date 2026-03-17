@@ -414,6 +414,23 @@ def ingest_time_series(
     return len(rows) + len(derived_rows)
 
 
+def get_company_financials_snapshot(company_id: str) -> Dict[str, Any]:
+    """DEPRECATED — use ``company_data_pull.pull_company_data()`` instead.
+
+    Kept only as a thin wrapper so nothing breaks if called from an
+    unexpected location.  Returns the same flat dict as before.
+    """
+    import warnings
+    warnings.warn(
+        "get_company_financials_snapshot is deprecated. "
+        "Use company_data_pull.pull_company_data() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from app.services.company_data_pull import pull_company_data
+    return pull_company_data(company_id).as_flat_dict()
+
+
 def get_actuals_for_forecast(
     company_id: str, category: str = "revenue", months: int = 12
 ) -> List[Dict[str, Any]]:

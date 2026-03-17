@@ -9,7 +9,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Loader2, Play } from 'lucide-react';
-import { getClientBackendUrl } from '@/lib/backend-url';
+import { fetchBudgetVariance } from '@/lib/memo/api-helpers';
+import { fmtCurrency } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -27,13 +28,6 @@ interface VarianceRow {
   favorable: boolean;
 }
 
-function fmtCurrency(v: number): string {
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toLocaleString()}`;
-}
-
 export interface BudgetVarianceSectionProps {
   onDelete?: () => void;
   readOnly?: boolean;
@@ -41,7 +35,6 @@ export interface BudgetVarianceSectionProps {
 
 export function BudgetVarianceSection({ onDelete, readOnly = false }: BudgetVarianceSectionProps) {
   const ctx = useMemoContext();
-  const backendUrl = getClientBackendUrl();
   const [chartMode, setChartMode] = useState<ChartMode>('bar_comparison');
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [varianceData, setVarianceData] = useState<VarianceRow[]>([]);
@@ -51,18 +44,14 @@ export function BudgetVarianceSection({ onDelete, readOnly = false }: BudgetVari
   const handleFetchVariance = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${backendUrl}/api/fpa/variance?company_id=${ctx.companyId}${period !== 'latest' ? `&period=${period}` : ''}`, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setVarianceData(data.variances || data.rows || []);
-      }
+      const data = await fetchBudgetVariance(ctx.companyId, period !== 'latest' ? period : undefined);
+      setVarianceData(data.variances || data.rows || []);
+    } catch (err) {
+      console.warn('Budget variance failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [backendUrl, ctx.companyId, period]);
+  }, [ctx.companyId, period]);
 
   const chartData = useMemo(() => {
     if (varianceData.length === 0) return [];

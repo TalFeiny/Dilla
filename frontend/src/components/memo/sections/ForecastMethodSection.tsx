@@ -4,11 +4,12 @@ import React, { useMemo, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { MemoSectionWrapper } from '../MemoSectionWrapper';
 import { useMemoContext, type NarrativeCard, type ForecastMeta } from '../MemoContext';
+import { buildForecast } from '@/lib/memo/api-helpers';
 import { Button } from '@/components/ui/button';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { Loader2, Play, BarChart3 } from 'lucide-react';
+import { Loader2, Play } from 'lucide-react';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -29,43 +30,37 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [selectedMethod, setSelectedMethod] = useState<ForecastMethod>('auto');
   const [loading, setLoading] = useState(false);
-
-  // Read forecast metadata from context — populated by buildForecast()
-  const methodResult = ctx.forecastMeta;
+  const [forecastResult, setForecastResult] = useState<ForecastMeta | null>(null);
 
   const handleBuildForecast = useCallback(async () => {
+    if (!ctx.companyId) return;
     setLoading(true);
     try {
-      await ctx.buildForecast({ method: selectedMethod });
-      // forecastMeta is now set in context by buildForecast — no local fetch needed
+      const data = await buildForecast(ctx.companyId, { method: selectedMethod });
+      const meta: ForecastMeta = {
+        method: data.method || selectedMethod,
+        r_squared: data.r_squared,
+        mape: data.mape,
+        description: data.description,
+        fit_data: data.fit_data || data.forecast,
+        alternatives: data.alternatives,
+      };
+      setForecastResult(meta);
+    } catch (err: any) {
+      console.warn('Forecast build error:', err);
     } finally {
       setLoading(false);
     }
-  }, [ctx, selectedMethod]);
+  }, [ctx.companyId, selectedMethod]);
 
-  // Build chart data: actuals + fitted line
+  // Use local result or context forecastMeta
+  const methodResult = forecastResult || ctx.forecastMeta;
+
+  // Build chart data from forecast response — no grid fallback
   const chartData = useMemo(() => {
     if (methodResult?.fit_data) return methodResult.fit_data;
-
-    // Fallback: build from grid data (actual vs forecast overlay)
-    const pnlRows = ctx.getPnlRows();
-    const cols = ctx.matrixData.columns.filter(c => c.id !== 'lineItem');
-    const revRow = pnlRows.find(r => r.id === 'revenue' || r.id === 'total_revenue');
-    if (!revRow || cols.length === 0) return [];
-
-    const forecastStart = ctx.matrixData.metadata?.forecastStartIndex;
-    return cols.map((col, i) => {
-      const v = revRow.cells[col.id]?.value;
-      const value = typeof v === 'number' ? v : parseFloat(v) || 0;
-      const isForecast = forecastStart != null && i >= forecastStart;
-      return {
-        period: col.name || col.id,
-        actual: isForecast ? null : value,
-        forecast: isForecast ? value : null,
-        value,
-      };
-    });
-  }, [methodResult, ctx]);
+    return [];
+  }, [methodResult]);
 
   const collapsedSummary = methodResult
     ? `Method: ${methodResult.method} | R²: ${methodResult.r_squared?.toFixed(3) || '—'} | MAPE: ${methodResult.mape ? `${(methodResult.mape * 100).toFixed(1)}%` : '—'}`

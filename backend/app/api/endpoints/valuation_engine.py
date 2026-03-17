@@ -14,81 +14,147 @@ logger = logging.getLogger(__name__)
 
 
 class ValuationRequest(BaseModel):
-    company_data: Dict[str, Any]
-    method: str = "dcf"  # dcf, multiples, pwerm
+    company_data: Dict[str, Any] = {}     # optional when company_id is set
+    company_id: Optional[str] = None      # UUID — pulls financials from Supabase
+    branch_id: Optional[str] = None       # scenario branch overrides
+    method: str = "dcf"                   # dcf, multiples, pwerm
     comparables: List[Dict[str, Any]] = []
     assumptions: Dict[str, Any] = {}
+    branch_name: Optional[str] = None     # custom branch name for persisted result
 
 
 class PWERMRequest(BaseModel):
-    company_data: Dict[str, Any]
-    exit_scenarios: List[Dict[str, Any]]
-    probabilities: List[float]
-    time_horizons: List[int]
+    company_data: Dict[str, Any] = {}
+    company_id: Optional[str] = None
+    branch_id: Optional[str] = None
+    exit_scenarios: List[Dict[str, Any]] = []
+    probabilities: List[float] = []
+    time_horizons: List[int] = []
     discount_rate: float = 0.12
+    branch_name: Optional[str] = None
 
 
 class ComparablesRequest(BaseModel):
-    company_data: Dict[str, Any]
-    peer_companies: List[Dict[str, Any]]
+    company_data: Dict[str, Any] = {}
+    company_id: Optional[str] = None
+    branch_id: Optional[str] = None
+    peer_companies: List[Dict[str, Any]] = []
     metrics: List[str] = ["revenue_multiple", "ebitda_multiple"]
+    branch_name: Optional[str] = None
+
+
+def _resolve_company_data(request: ValuationRequest) -> Dict[str, Any]:
+    """Pull company financials + branch overrides, merge with request data."""
+    from app.services.company_data_pull import resolve_company_financials
+    merged, _ = resolve_company_financials(
+        company_id=request.company_id,
+        branch_id=request.branch_id,
+        overrides=dict(request.company_data),
+    )
+    return merged
 
 
 @router.post("/value-company")
 async def value_company(request: ValuationRequest):
-    """Perform comprehensive company valuation"""
+    """Perform comprehensive company valuation.
+
+    Always persists results to a scenario branch.
+    """
     try:
         engine = ValuationEngineService()
-        
+        company_data = _resolve_company_data(request)
+
         result = await engine.value_company(
-            company_data=request.company_data,
+            company_data=company_data,
             method=request.method,
             comparables=request.comparables,
             assumptions=request.assumptions
         )
-        
+
+        # Persist to branch
+        persist_meta = {}
+        if request.company_id:
+            from app.services.analysis_persistence_service import AnalysisPersistenceService
+            aps = AnalysisPersistenceService()
+            persist_meta = aps.persist_valuation(
+                company_id=request.company_id,
+                valuation_result=result,
+                method=request.method,
+                assumptions=request.assumptions,
+                branch_name=request.branch_name,
+                parent_branch_id=request.branch_id,
+            )
+
         return {
             "success": True,
             "method": request.method,
             "valuation": result,
-            "company": request.company_data.get("name", "Unknown"),
-            "timestamp": "2024-01-01T00:00:00Z"  # Should be current timestamp
+            "company": company_data.get("name", "Unknown"),
+            "company_id": request.company_id,
+            "_persistence": persist_meta,
         }
-        
+
     except Exception as e:
         logger.error(f"Valuation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _resolve_generic_company_data(company_data: Dict, company_id: Optional[str], branch_id: Optional[str]) -> Dict[str, Any]:
+    """Pull company financials + branch overrides for non-ValuationRequest models."""
+    from app.services.company_data_pull import resolve_company_financials
+    merged, _ = resolve_company_financials(
+        company_id=company_id,
+        branch_id=branch_id,
+        overrides=dict(company_data),
+    )
+    return merged
+
+
 @router.post("/pwerm-analysis")
 async def pwerm_analysis(request: PWERMRequest):
-    """Perform PWERM (Probability Weighted Expected Return Method) analysis"""
+    """Perform PWERM analysis.  Always persists to a scenario branch."""
     try:
         engine = ValuationEngineService()
-        
-        # Convert to engine format
-        valuation_data = {
-            "company_data": request.company_data,
-            "method": "pwerm",
-            "assumptions": {
-                "exit_scenarios": request.exit_scenarios,
-                "probabilities": request.probabilities,
-                "time_horizons": request.time_horizons,
-                "discount_rate": request.discount_rate
-            }
+        company_data = _resolve_generic_company_data(request.company_data, request.company_id, request.branch_id)
+
+        assumptions = {
+            "exit_scenarios": request.exit_scenarios,
+            "probabilities": request.probabilities,
+            "time_horizons": request.time_horizons,
+            "discount_rate": request.discount_rate,
         }
-        
+        valuation_data = {
+            "company_data": company_data,
+            "method": "pwerm",
+            "assumptions": assumptions,
+        }
+
         result = await engine.value_company(**valuation_data)
-        
+
+        # Persist to branch
+        persist_meta = {}
+        if request.company_id:
+            from app.services.analysis_persistence_service import AnalysisPersistenceService
+            aps = AnalysisPersistenceService()
+            persist_meta = aps.persist_valuation(
+                company_id=request.company_id,
+                valuation_result=result,
+                method="pwerm",
+                assumptions=assumptions,
+                branch_name=request.branch_name,
+                parent_branch_id=request.branch_id,
+            )
+
         return {
             "success": True,
             "method": "pwerm",
             "expected_value": result.get("expected_value", 0),
             "scenarios": result.get("scenarios", []),
             "risk_metrics": result.get("risk_metrics", {}),
-            "sensitivity_analysis": result.get("sensitivity_analysis", {})
+            "sensitivity_analysis": result.get("sensitivity_analysis", {}),
+            "_persistence": persist_meta,
         }
-        
+
     except Exception as e:
         logger.error(f"PWERM analysis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -96,19 +162,35 @@ async def pwerm_analysis(request: PWERMRequest):
 
 @router.post("/comparables-analysis")
 async def comparables_analysis(request: ComparablesRequest):
-    """Perform trading comparables analysis"""
+    """Perform trading comparables analysis.  Always persists to a branch."""
     try:
         engine = ValuationEngineService()
-        
+        company_data = _resolve_generic_company_data(request.company_data, request.company_id, request.branch_id)
+
+        assumptions = {"metrics": request.metrics}
         valuation_data = {
-            "company_data": request.company_data,
+            "company_data": company_data,
             "method": "multiples",
             "comparables": request.peer_companies,
-            "assumptions": {"metrics": request.metrics}
+            "assumptions": assumptions,
         }
-        
+
         result = await engine.value_company(**valuation_data)
-        
+
+        # Persist to branch
+        persist_meta = {}
+        if request.company_id:
+            from app.services.analysis_persistence_service import AnalysisPersistenceService
+            aps = AnalysisPersistenceService()
+            persist_meta = aps.persist_valuation(
+                company_id=request.company_id,
+                valuation_result=result,
+                method="multiples",
+                assumptions=assumptions,
+                branch_name=request.branch_name,
+                parent_branch_id=request.branch_id,
+            )
+
         return {
             "success": True,
             "method": "comparables",
@@ -116,9 +198,10 @@ async def comparables_analysis(request: ComparablesRequest):
             "peer_analysis": result.get("peer_analysis", []),
             "valuation_range": result.get("valuation_range", {}),
             "recommended_multiple": result.get("recommended_multiple", 0),
-            "implied_valuation": result.get("implied_valuation", 0)
+            "implied_valuation": result.get("implied_valuation", 0),
+            "_persistence": persist_meta,
         }
-        
+
     except Exception as e:
         logger.error(f"Comparables analysis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

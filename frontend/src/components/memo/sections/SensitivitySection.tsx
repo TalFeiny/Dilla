@@ -9,7 +9,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Loader2, Play } from 'lucide-react';
-import { getClientBackendUrl } from '@/lib/backend-url';
+import { runSensitivity } from '@/lib/memo/api-helpers';
+import { fmtCurrency } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -32,13 +33,6 @@ interface SensitivityResult {
   }>;
 }
 
-function fmtCurrency(v: number): string {
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toLocaleString()}`;
-}
-
 export interface SensitivitySectionProps {
   onDelete?: () => void;
   readOnly?: boolean;
@@ -46,7 +40,6 @@ export interface SensitivitySectionProps {
 
 export function SensitivitySection({ onDelete, readOnly = false }: SensitivitySectionProps) {
   const ctx = useMemoContext();
-  const backendUrl = getClientBackendUrl();
   const [chartMode, setChartMode] = useState<ChartMode>('sensitivity_tornado');
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [result, setResult] = useState<SensitivityResult | null>(null);
@@ -56,25 +49,19 @@ export function SensitivitySection({ onDelete, readOnly = false }: SensitivitySe
   const handleRunSensitivity = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${backendUrl}/api/fpa/regression`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company_id: ctx.companyId,
-          type: 'sensitivity',
-          target_metric: targetMetric,
-          branch_id: ctx.activeBranchId,
-          driver_ids: ctx.driverRegistry.map(d => d.id),
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setResult(data);
-      }
+      // Backend pulls actuals from Supabase — no grid scraping needed
+      const data = await runSensitivity(
+        ctx.companyId,
+        targetMetric,
+        (ctx as any).activeBranchId ?? null,
+      );
+      setResult(data);
+    } catch (err) {
+      console.warn('Sensitivity failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [backendUrl, ctx.companyId, ctx.activeBranchId, targetMetric, ctx.driverRegistry]);
+  }, [ctx.companyId, targetMetric]);
 
   // Build tornado chart data: sorted by impact range (largest swing first)
   const chartData = useMemo(() => {

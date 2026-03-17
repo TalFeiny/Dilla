@@ -359,29 +359,13 @@ def _get_actuals_monthly(
     Pull fpa_actuals and group into {period: {category: amount}}.
     Handles arbitrary date ranges.
     """
-    from app.core.supabase_client import get_supabase_client
+    from app.services.company_data_pull import pull_company_data
 
-    sb = get_supabase_client()
-    if not sb:
-        return {}
-
-    result = (
-        sb.table("fpa_actuals")
-        .select("category, amount, period")
-        .eq("company_id", company_id)
-        .gte("period", period_start.isoformat())
-        .lte("period", period_end.isoformat())
-        .execute()
+    data = pull_company_data(company_id)
+    return data.by_period(
+        start=f"{period_start.year}-{period_start.month:02d}",
+        end=f"{period_end.year}-{period_end.month:02d}",
     )
-
-    by_period: Dict[str, Dict[str, float]] = {}
-    for row in result.data or []:
-        period = row["period"][:7]
-        by_period.setdefault(period, {})
-        cat = row["category"]
-        by_period[period][cat] = by_period[period].get(cat, 0) + float(row["amount"])
-
-    return by_period
 
 
 # ---------------------------------------------------------------------------

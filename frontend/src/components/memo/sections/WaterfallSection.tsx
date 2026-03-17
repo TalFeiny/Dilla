@@ -1,12 +1,16 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { MemoSectionWrapper } from '../MemoSectionWrapper';
 import { useMemoContext, type NarrativeCard } from '../MemoContext';
+import { fetchPnl, fetchCashFlow } from '@/lib/memo/api-helpers';
+import { Button } from '@/components/ui/button';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { Loader2, RefreshCw } from 'lucide-react';
+import { fmtCurrency } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -14,13 +18,57 @@ const TableauLevelCharts = dynamic(
 );
 
 type ChartMode = 'cash_flow_waterfall' | 'waterfall' | 'bar';
-type WaterfallSource = 'pnl' | 'cash_flow' | 'custom';
+type WaterfallSource = 'pnl' | 'cash_flow';
 
-function fmtCurrency(v: number): string {
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toLocaleString()}`;
+interface BackendRow {
+  id: string;
+  label: string;
+  values: Record<string, number | null>;
+}
+
+interface BackendResponse {
+  periods: string[];
+  rows: BackendRow[];
+}
+
+/** Derive waterfall steps from PnL backend data for a given period */
+function buildPnlWaterfall(data: BackendResponse, period: string): Record<string, any>[] {
+  const rowMap: Record<string, Record<string, number | null>> = {};
+  for (const row of data.rows) {
+    rowMap[row.id] = row.values;
+  }
+  const val = (id: string) => rowMap[id]?.[period] ?? 0;
+
+  return [
+    { name: 'Revenue', value: val('revenue'), type: 'increase' },
+    { name: 'COGS', value: -Math.abs(val('cogs')), type: 'decrease' },
+    { name: 'Gross Profit', value: val('gross_profit'), type: 'subtotal' },
+    { name: 'R&D', value: -Math.abs(val('opex_rd')), type: 'decrease' },
+    { name: 'S&M', value: -Math.abs(val('opex_sm')), type: 'decrease' },
+    { name: 'G&A', value: -Math.abs(val('opex_ga')), type: 'decrease' },
+    { name: 'EBITDA', value: val('ebitda'), type: 'subtotal' },
+    { name: 'Debt Service', value: -Math.abs(val('debt_service')), type: 'decrease' },
+    { name: 'Tax', value: -Math.abs(val('tax_expense')), type: 'decrease' },
+    { name: 'Net Income', value: val('net_income'), type: 'total' },
+  ].filter(d => d.value !== 0);
+}
+
+/** Derive waterfall steps from Cash Flow backend data for a given period */
+function buildCFWaterfall(data: BackendResponse, period: string): Record<string, any>[] {
+  const rowMap: Record<string, Record<string, number | null>> = {};
+  for (const row of data.rows) {
+    rowMap[row.id] = row.values;
+  }
+  const val = (id: string) => rowMap[id]?.[period] ?? 0;
+
+  const wcDelta = val('working_capital_delta');
+  return [
+    { name: 'Operating CF', value: val('operating_cash_flow'), type: 'increase' },
+    { name: 'Working Capital', value: wcDelta, type: wcDelta >= 0 ? 'increase' : 'decrease' },
+    { name: 'CapEx', value: -Math.abs(val('capex')), type: 'decrease' },
+    { name: 'Debt Service', value: -Math.abs(val('debt_service')), type: 'decrease' },
+    { name: 'Free Cash Flow', value: val('free_cash_flow'), type: 'total' },
+  ].filter(d => d.value !== 0);
 }
 
 export interface WaterfallSectionProps {
@@ -35,50 +83,42 @@ export function WaterfallSection({ onDelete, readOnly = false }: WaterfallSectio
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [periodIndex, setPeriodIndex] = useState<string>('latest');
 
-  const columns = ctx.matrixData.columns.filter(c => c.id !== 'lineItem');
-  const colId = periodIndex === 'latest'
-    ? columns[columns.length - 1]?.id
+  const [backendData, setBackendData] = useState<BackendResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleFetch = useCallback(async () => {
+    if (!ctx.companyId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = source === 'pnl'
+        ? await fetchPnl(ctx.companyId)
+        : await fetchCashFlow(ctx.companyId);
+      setBackendData(data);
+    } catch (err: any) {
+      console.warn('WaterfallSection fetch error:', err);
+      setError(err.message || 'Failed to load waterfall data');
+    } finally {
+      setLoading(false);
+    }
+  }, [ctx.companyId, source]);
+
+  useEffect(() => {
+    handleFetch();
+  }, [handleFetch]);
+
+  const periods = backendData?.periods || [];
+  const selectedPeriod = periodIndex === 'latest'
+    ? periods[periods.length - 1]
     : periodIndex;
 
-  // Build waterfall steps from grid
   const chartData = useMemo(() => {
-    if (!colId) return [];
-
-    const getVal = (rowId: string) => {
-      const row = ctx.matrixData.rows.find(r => r.id === rowId);
-      if (!row?.cells[colId]) return 0;
-      const v = row.cells[colId].value;
-      return typeof v === 'number' ? v : parseFloat(v) || 0;
-    };
-
-    if (source === 'pnl') {
-      return [
-        { name: 'Revenue', value: getVal('revenue') || getVal('total_revenue'), type: 'increase' },
-        { name: 'COGS', value: -(getVal('cogs') || getVal('total_cogs')), type: 'decrease' },
-        { name: 'Gross Profit', value: getVal('gross_profit'), type: 'subtotal' },
-        { name: 'R&D', value: -getVal('opex_rd'), type: 'decrease' },
-        { name: 'S&M', value: -getVal('opex_sm'), type: 'decrease' },
-        { name: 'G&A', value: -getVal('opex_ga'), type: 'decrease' },
-        { name: 'EBITDA', value: getVal('ebitda'), type: 'subtotal' },
-        { name: 'Debt Service', value: -getVal('debt_service'), type: 'decrease' },
-        { name: 'Tax', value: -getVal('tax_expense'), type: 'decrease' },
-        { name: 'Net Income', value: getVal('net_income'), type: 'total' },
-      ].filter(d => d.value !== 0);
-    }
-
-    if (source === 'cash_flow') {
-      return [
-        { name: 'Net Income', value: getVal('net_income'), type: 'increase' },
-        { name: 'Working Capital Δ', value: getVal('working_capital_delta'), type: getVal('working_capital_delta') >= 0 ? 'increase' : 'decrease' },
-        { name: 'Operating CF', value: getVal('operating_cash_flow'), type: 'subtotal' },
-        { name: 'CapEx', value: -getVal('capex'), type: 'decrease' },
-        { name: 'Debt Service', value: -getVal('debt_service'), type: 'decrease' },
-        { name: 'Free Cash Flow', value: getVal('free_cash_flow'), type: 'total' },
-      ].filter(d => d.value !== 0);
-    }
-
-    return [];
-  }, [ctx.matrixData, colId, source]);
+    if (!backendData || !selectedPeriod) return [];
+    return source === 'pnl'
+      ? buildPnlWaterfall(backendData, selectedPeriod)
+      : buildCFWaterfall(backendData, selectedPeriod);
+  }, [backendData, selectedPeriod, source]);
 
   const lastStep = chartData[chartData.length - 1];
   const collapsedSummary = lastStep
@@ -88,8 +128,8 @@ export function WaterfallSection({ onDelete, readOnly = false }: WaterfallSectio
   const aiContext = useMemo(() => ({
     waterfallData: chartData,
     source,
-    period: colId,
-  }), [chartData, source, colId]);
+    period: selectedPeriod,
+  }), [chartData, source, selectedPeriod]);
 
   const configBar = (
     <>
@@ -120,12 +160,22 @@ export function WaterfallSection({ onDelete, readOnly = false }: WaterfallSectio
           <SelectTrigger className="h-6 w-[90px] text-[11px]"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="latest">Latest</SelectItem>
-            {columns.map(c => (
-              <SelectItem key={c.id} value={c.id}>{c.name || c.id}</SelectItem>
+            {periods.map(p => (
+              <SelectItem key={p} value={p}>{p}</SelectItem>
             ))}
           </SelectContent>
         </Select>
       </div>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 w-6 p-0"
+        onClick={handleFetch}
+        disabled={loading}
+        title="Refresh"
+      >
+        <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+      </Button>
     </>
   );
 
@@ -142,7 +192,14 @@ export function WaterfallSection({ onDelete, readOnly = false }: WaterfallSectio
       readOnly={readOnly}
     >
       <div className="w-full" style={{ height: 320 }}>
-        {chartData.length > 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center h-full text-xs text-muted-foreground gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading waterfall...
+          </div>
+        ) : error ? (
+          <div className="flex items-center justify-center h-full text-xs text-red-500">{error}</div>
+        ) : chartData.length > 0 ? (
           <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={300} />
         ) : (
           <div className="flex items-center justify-center h-full text-xs text-muted-foreground">

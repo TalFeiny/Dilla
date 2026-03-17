@@ -233,21 +233,21 @@ export function transformWaterfallRows(data: any): { columns: MatrixColumn[]; ro
  */
 
 const FORECAST_LINE_ITEMS = [
-  { key: 'revenue', label: 'Revenue', section: 'revenue', depth: 0 },
-  { key: 'cogs', label: 'COGS', section: 'cogs', depth: 0 },
-  { key: 'gross_profit', label: 'Gross Profit', section: 'gross_profit', depth: 0, isComputed: true },
-  { key: 'rd_spend', label: 'R&D', section: 'opex', depth: 1 },
-  { key: 'sm_spend', label: 'Sales & Marketing', section: 'opex', depth: 1 },
-  { key: 'ga_spend', label: 'G&A', section: 'opex', depth: 1 },
-  { key: 'total_opex', label: 'Total OpEx', section: 'opex', depth: 0, isComputed: true },
-  { key: 'ebitda', label: 'EBITDA', section: 'ebitda', depth: 0, isComputed: true },
-  { key: 'debt_service', label: 'Interest / Debt Service', section: 'below_line', depth: 0 },
-  { key: 'tax_expense', label: 'Tax', section: 'below_line', depth: 0 },
-  { key: 'net_income', label: 'Net Income', section: 'below_line', depth: 0, isComputed: true },
-  { key: 'gross_burn_rate', label: 'Gross Burn Rate', section: 'metrics', depth: 0, isComputed: true },
-  { key: 'net_burn_rate', label: 'Net Burn Rate', section: 'metrics', depth: 0, isComputed: true },
-  { key: 'runway_months', label: 'Runway (months)', section: 'metrics', depth: 0, isComputed: true },
-  { key: 'rule_of_40', label: 'Rule of 40', section: 'metrics', depth: 0, isComputed: true },
+  { key: 'revenue', rowId: 'revenue', label: 'Revenue', section: 'revenue', depth: 0 },
+  { key: 'cogs', rowId: 'cogs', label: 'COGS', section: 'cogs', depth: 0 },
+  { key: 'gross_profit', rowId: 'gross_profit', label: 'Gross Profit', section: 'gross_profit', depth: 0, isComputed: true },
+  { key: 'rd_spend', rowId: 'opex_rd', label: 'R&D', section: 'opex', depth: 1 },
+  { key: 'sm_spend', rowId: 'opex_sm', label: 'Sales & Marketing', section: 'opex', depth: 1 },
+  { key: 'ga_spend', rowId: 'opex_ga', label: 'G&A', section: 'opex', depth: 1 },
+  { key: 'total_opex', rowId: 'total_opex', label: 'Total OpEx', section: 'opex', depth: 0, isComputed: true },
+  { key: 'ebitda', rowId: 'ebitda', label: 'EBITDA', section: 'ebitda', depth: 0, isComputed: true },
+  { key: 'debt_service', rowId: 'debt_service', label: 'Interest / Debt Service', section: 'below_line', depth: 0 },
+  { key: 'tax_expense', rowId: 'tax_expense', label: 'Tax', section: 'below_line', depth: 0 },
+  { key: 'net_income', rowId: 'net_income', label: 'Net Income', section: 'below_line', depth: 0, isComputed: true },
+  { key: 'gross_burn_rate', rowId: 'gross_burn_rate', label: 'Gross Burn Rate', section: 'metrics', depth: 0, isComputed: true },
+  { key: 'net_burn_rate', rowId: 'net_burn_rate', label: 'Net Burn Rate', section: 'metrics', depth: 0, isComputed: true },
+  { key: 'runway_months', rowId: 'runway_months', label: 'Runway (months)', section: 'metrics', depth: 0, isComputed: true },
+  { key: 'rule_of_40', rowId: 'rule_of_40', label: 'Rule of 40', section: 'metrics', depth: 0, isComputed: true },
 ];
 
 export function transformForecastRows(
@@ -278,7 +278,7 @@ export function transformForecastRows(
       });
     });
     return {
-      id: item.key,
+      id: item.rowId || item.key,
       cells,
       isComputed: item.isComputed || false,
       depth: item.depth,
@@ -463,7 +463,7 @@ export function transformScenarioRows(
       });
     });
     return {
-      id: item.key,
+      id: item.rowId || item.key,
       cells,
       isComputed: item.isComputed || false,
       depth: item.depth,

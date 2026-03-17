@@ -8,7 +8,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Loader2, ArrowRight, AlertTriangle, FileText, DollarSign } from 'lucide-react';
-import { getClientBackendUrl } from '@/lib/backend-url';
+import { runCascadeAnalysis } from '@/lib/memo/api-helpers';
+import { fmtCurrency } from '@/lib/memo/format';
 
 interface CascadeStep {
   id: string;
@@ -19,13 +20,6 @@ interface CascadeStep {
   impact_label?: string;
   triggers_next?: string[];
   severity?: 'info' | 'warning' | 'critical';
-}
-
-function fmtCurrency(v: number): string {
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toLocaleString()}`;
 }
 
 const severityColors = {
@@ -41,7 +35,6 @@ export interface CascadeSectionProps {
 
 export function CascadeSection({ onDelete, readOnly = false }: CascadeSectionProps) {
   const ctx = useMemoContext();
-  const backendUrl = getClientBackendUrl();
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [cascadeSteps, setCascadeSteps] = useState<CascadeStep[]>([]);
   const [triggerType, setTriggerType] = useState<string>('dilution');
@@ -59,23 +52,15 @@ export function CascadeSection({ onDelete, readOnly = false }: CascadeSectionPro
   const handleRunCascade = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${backendUrl}/api/cascade/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company_id: ctx.companyId,
-          trigger_type: triggerType,
-          branch_id: ctx.activeBranchId,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setCascadeSteps(data.steps || data.cascade || []);
-      }
+      const data = await runCascadeAnalysis(ctx.companyId, triggerType, ctx.activeBranchId);
+      const steps = data.result?.steps || data.result?.cascade || data.steps || data.cascade || [];
+      setCascadeSteps(steps);
+    } catch (err) {
+      console.warn('Cascade failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [backendUrl, ctx.companyId, ctx.activeBranchId, triggerType]);
+  }, [ctx.companyId, ctx.activeBranchId, triggerType]);
 
   const totalImpact = useMemo(
     () => cascadeSteps.reduce((sum, s) => sum + (s.financial_impact || 0), 0),

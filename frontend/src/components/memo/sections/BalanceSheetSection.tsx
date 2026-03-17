@@ -1,13 +1,16 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { MemoSectionWrapper } from '../MemoSectionWrapper';
 import { useMemoContext, type NarrativeCard } from '../MemoContext';
-import type { MatrixRow } from '@/components/matrix/UnifiedMatrix';
+import { fetchBalanceSheet } from '@/lib/memo/api-helpers';
+import { Button } from '@/components/ui/button';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { Loader2, RefreshCw } from 'lucide-react';
+import { fmtCurrency } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -16,29 +19,41 @@ const TableauLevelCharts = dynamic(
 
 type ChartMode = 'stacked_bar' | 'bar' | 'line';
 
-function fmtCurrency(v: number): string {
-  if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toLocaleString()}`;
+interface BSRow {
+  id: string;
+  label: string;
+  depth?: number;
+  section?: string;
+  isHeader?: boolean;
+  isTotal?: boolean;
+  isComputed?: boolean;
+  values: Record<string, number | null>;
 }
 
-function buildBSChartData(rows: MatrixRow[], columns: string[]): Record<string, any>[] {
-  const periodCols = columns.filter(c => c !== 'lineItem');
-  return periodCols.map(colId => {
-    const entry: Record<string, any> = { period: colId };
-    const getValue = (id: string) => {
-      const row = rows.find(r => r.id === id);
-      if (!row?.cells[colId]) return 0;
-      const v = row.cells[colId].value;
-      return typeof v === 'number' ? v : parseFloat(v) || 0;
-    };
-    entry['Total Assets'] = getValue('total_assets');
-    entry['Total Liabilities'] = getValue('total_liabilities');
-    entry['Total Equity'] = getValue('total_equity');
-    entry['Cash'] = getValue('cash_equivalents');
-    entry['Receivables'] = getValue('accounts_receivable');
-    entry['Long-term Debt'] = getValue('long_term_debt');
+interface BSResponse {
+  periods: string[];
+  rows: BSRow[];
+  totals?: Record<string, Record<string, number | null>>;
+}
+
+const BS_CHART_IDS = ['total_assets', 'total_liabilities', 'total_equity'];
+const BS_CHART_LABELS: Record<string, string> = {
+  total_assets: 'Total Assets',
+  total_liabilities: 'Total Liabilities',
+  total_equity: 'Total Equity',
+};
+
+function buildChartFromResponse(data: BSResponse): Record<string, any>[] {
+  if (!data.periods || !data.rows) return [];
+  const rowMap: Record<string, Record<string, number | null>> = {};
+  for (const row of data.rows) {
+    rowMap[row.id] = row.values;
+  }
+  return data.periods.map(period => {
+    const entry: Record<string, any> = { period };
+    for (const id of BS_CHART_IDS) {
+      entry[BS_CHART_LABELS[id] || id] = rowMap[id]?.[period] ?? 0;
+    }
     return entry;
   });
 }
@@ -53,14 +68,34 @@ export function BalanceSheetSection({ onDelete, readOnly = false }: BalanceSheet
   const [chartMode, setChartMode] = useState<ChartMode>('stacked_bar');
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
 
-  const bsRows = ctx.getBalanceSheetRows();
-  const columns = ctx.matrixData.columns.map(c => c.id);
+  const [bsData, setBsData] = useState<BSResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const chartData = useMemo(() => buildBSChartData(bsRows, columns), [bsRows, columns]);
+  const handleFetch = useCallback(async () => {
+    if (!ctx.companyId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchBalanceSheet(ctx.companyId);
+      setBsData(data);
+    } catch (err: any) {
+      console.warn('BalanceSheetSection fetch error:', err);
+      setError(err.message || 'Failed to load Balance Sheet data');
+    } finally {
+      setLoading(false);
+    }
+  }, [ctx.companyId]);
+
+  useEffect(() => {
+    handleFetch();
+  }, [handleFetch]);
+
+  const chartData = useMemo(() => bsData ? buildChartFromResponse(bsData) : [], [bsData]);
 
   const latest = chartData[chartData.length - 1];
   const collapsedSummary = latest
-    ? `Assets: ${fmtCurrency(latest['Total Assets'] || 0)} | Equity: ${fmtCurrency(latest['Total Equity'] || 0)} | Debt: ${fmtCurrency(latest['Long-term Debt'] || 0)}`
+    ? `Assets: ${fmtCurrency(latest['Total Assets'] || 0)} | Equity: ${fmtCurrency(latest['Total Equity'] || 0)}`
     : 'Balance Sheet — no data';
 
   const aiContext = useMemo(() => ({ bsData: chartData, latest }), [chartData, latest]);
@@ -76,42 +111,50 @@ export function BalanceSheetSection({ onDelete, readOnly = false }: BalanceSheet
           <SelectItem value="line">Line</SelectItem>
         </SelectContent>
       </Select>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 w-6 p-0"
+        onClick={handleFetch}
+        disabled={loading}
+        title="Refresh"
+      >
+        <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+      </Button>
     </div>
   );
 
-  const detailGrid = (
+  const detailGrid = bsData?.rows ? (
     <div className="overflow-x-auto mt-2">
       <table className="w-full text-[11px] border-collapse">
         <thead>
           <tr className="border-b-2 border-border bg-muted/50">
-            {columns.map(colId => {
-              const col = ctx.matrixData.columns.find(c => c.id === colId);
-              return <th key={colId} className="px-2 py-1 text-left font-semibold whitespace-nowrap">{col?.name || colId}</th>;
-            })}
+            <th className="px-2 py-1 text-left font-semibold whitespace-nowrap">Line Item</th>
+            {bsData.periods.map(period => (
+              <th key={period} className="px-2 py-1 text-right font-semibold whitespace-nowrap">{period}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {bsRows.map(row => {
-            const isHeader = (row as any).isHeader;
-            const isTotal = (row as any).isTotal;
-            const depth = (row as any).depth || 0;
-            return (
-              <tr key={row.id} className={`border-b border-border/50 ${isHeader ? 'bg-muted/30 font-semibold' : ''} ${isTotal ? 'font-semibold border-t border-border' : ''}`}>
-                {columns.map(colId => {
-                  if (colId === 'lineItem') {
-                    return <td key={colId} className="px-2 py-1 whitespace-nowrap" style={{ paddingLeft: `${8 + depth * 16}px` }}>{row.cells.lineItem?.value || row.id}</td>;
-                  }
-                  const cell = row.cells[colId];
-                  const v = cell?.value;
-                  return <td key={colId} className="px-2 py-1 tabular-nums text-right whitespace-nowrap">{typeof v === 'number' ? fmtCurrency(v) : (v ?? '')}</td>;
-                })}
-              </tr>
-            );
-          })}
+          {bsData.rows.map(row => (
+            <tr key={row.id} className={`border-b border-border/50 ${row.isHeader ? 'bg-muted/30 font-semibold' : ''} ${row.isTotal ? 'font-semibold border-t border-border' : ''}`}>
+              <td className="px-2 py-1 whitespace-nowrap" style={{ paddingLeft: `${8 + (row.depth || 0) * 16}px` }}>
+                {row.label}
+              </td>
+              {bsData.periods.map(period => {
+                const v = row.values[period];
+                return (
+                  <td key={period} className="px-2 py-1 tabular-nums text-right whitespace-nowrap">
+                    {v != null ? fmtCurrency(v) : ''}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
-  );
+  ) : null;
 
   return (
     <MemoSectionWrapper
@@ -127,7 +170,14 @@ export function BalanceSheetSection({ onDelete, readOnly = false }: BalanceSheet
       readOnly={readOnly}
     >
       <div className="w-full" style={{ height: 320 }}>
-        {chartData.length > 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center h-full text-xs text-muted-foreground gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading Balance Sheet...
+          </div>
+        ) : error ? (
+          <div className="flex items-center justify-center h-full text-xs text-red-500">{error}</div>
+        ) : chartData.length > 0 ? (
           <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={300} />
         ) : (
           <div className="flex items-center justify-center h-full text-xs text-muted-foreground">

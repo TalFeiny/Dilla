@@ -5,6 +5,14 @@ import type { MatrixData, MatrixRow, MatrixCell } from '@/components/matrix/Unif
 import type { ScenarioBranch, ForecastMonth } from '@/hooks/useScenarioForkTree';
 import type { ChartConfig } from '@/components/matrix/ChartViewport';
 import { getClientBackendUrl } from '@/lib/backend-url';
+import {
+  getAllPnlRows,
+  getBalanceSheetRows as getBSRows,
+  getCashFlowRows as getCFRows,
+} from '@/lib/memo/grid-helpers';
+import {
+  requestNarrative as apiRequestNarrative,
+} from '@/lib/memo/api-helpers';
 
 // ---------------------------------------------------------------------------
 // Driver types
@@ -93,6 +101,8 @@ export interface ForecastMeta {
 export interface MemoContextValue {
   // Identity
   companyId: string;
+  companyName: string;
+  fundId: string;
 
   // The ledger — grid rows, columns, cells
   matrixData: MatrixData;
@@ -165,38 +175,8 @@ export function useMemoContextSafe(): MemoContextValue | null {
   return useContext(MemoCtx);
 }
 
-// ---------------------------------------------------------------------------
-// P&L / BS / CF section row IDs (match backend + pnl-columns.ts)
-// ---------------------------------------------------------------------------
-
-const PNL_ROW_IDS = new Set([
-  'revenue_header', 'revenue', 'total_revenue',
-  'cogs_header', 'cogs', 'total_cogs',
-  'gross_profit',
-  'opex_header', 'opex_rd', 'opex_sm', 'opex_ga', 'total_opex',
-  'ebitda',
-  'below_line_header', 'debt_service', 'pre_tax_income', 'tax_expense', 'net_income',
-  'bottom_header', 'cash_balance', 'runway',
-]);
-
-const BS_ROW_IDS = new Set([
-  'assets_header', 'current_assets_header', 'cash_equivalents', 'accounts_receivable',
-  'inventory', 'prepaid_expenses', 'total_current_assets',
-  'noncurrent_assets_header', 'ppe', 'intangible_assets', 'goodwill', 'total_noncurrent_assets',
-  'total_assets',
-  'liabilities_header', 'current_liabilities_header', 'accounts_payable', 'accrued_expenses',
-  'short_term_debt', 'deferred_revenue', 'total_current_liabilities',
-  'noncurrent_liabilities_header', 'long_term_debt', 'other_lt_liabilities', 'total_noncurrent_liabilities',
-  'total_liabilities',
-  'equity_header', 'common_stock', 'retained_earnings', 'additional_paid_in',
-  'total_equity', 'total_liabilities_equity',
-]);
-
-const CF_ROW_IDS = new Set([
-  'net_income', 'working_capital_delta', 'operating_cash_flow',
-  'capex', 'debt_service', 'free_cash_flow', 'cash_balance',
-  'gross_burn_rate', 'net_burn_rate', 'runway_months', 'rule_of_40',
-]);
+// Row helpers now use dynamic section-based filtering from grid-helpers.ts
+// (replaces hardcoded PNL_ROW_IDS, BS_ROW_IDS, CF_ROW_IDS)
 
 // ---------------------------------------------------------------------------
 // Provider
@@ -204,6 +184,8 @@ const CF_ROW_IDS = new Set([
 
 export interface MemoProviderProps {
   companyId: string;
+  companyName?: string;
+  fundId?: string;
   matrixData: MatrixData;
   setMatrixData: React.Dispatch<React.SetStateAction<MatrixData>>;
   // Optional: plug in existing fork tree from useScenarioForkTree
@@ -223,7 +205,7 @@ export interface MemoProviderProps {
   children: ReactNode;
 }
 
-export function MemoProvider({ companyId, matrixData, setMatrixData, forkTree, children }: MemoProviderProps) {
+export function MemoProvider({ companyId, companyName = '', fundId = '', matrixData, setMatrixData, forkTree, children }: MemoProviderProps) {
   const backendUrl = getClientBackendUrl();
 
   // Internal state
@@ -365,8 +347,13 @@ export function MemoProvider({ companyId, matrixData, setMatrixData, forkTree, c
       if (!res.ok) throw new Error(`Forecast failed: ${res.status}`);
       const data = await res.json();
 
-      // Apply forecast rows to grid
-      if (data.rows) {
+      // Apply forecast data to grid — backend returns { forecast: [...periods] }
+      if (data.forecast && Array.isArray(data.forecast)) {
+        applyForecastToGrid(data.forecast);
+      }
+
+      // Fallback: if backend returns { rows: [...] } format (waterfall/pnl endpoint)
+      if (data.rows && !data.forecast) {
         setMatrixData(prev => {
           const rowMap = new Map(prev.rows.map(r => [r.id, r]));
           for (const row of data.rows) {
@@ -403,14 +390,15 @@ export function MemoProvider({ companyId, matrixData, setMatrixData, forkTree, c
         });
       }
 
-      // Also fetch regression fit data for chart rendering
+      // Also fetch regression fit data for chart rendering (correct request shape)
       try {
-        const regRes = await fetch(`${backendUrl}/api/fpa/regression`, {
+        const regType = params?.method === 'auto' || !params?.method ? 'linear' : params.method;
+        const regRes = await fetch(`${backendUrl}/fpa/regression`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            company_id: companyId,
-            type: params?.method === 'auto' || !params?.method ? 'linear' : params.method,
+            regression_type: regType,
+            data: { company_id: companyId },
           }),
         });
         if (regRes.ok) {
@@ -433,31 +421,15 @@ export function MemoProvider({ companyId, matrixData, setMatrixData, forkTree, c
     }
   }, [companyId, backendUrl, setMatrixData, bump]);
 
-  // ---- AI narrative ----
+  // ---- AI narrative (uses correct unified-brain request shape) ----
   const requestNarrative = useCallback(async (sectionType: string, dataContext: Record<string, any>): Promise<string> => {
-    try {
-      const res = await fetch(`${backendUrl}/api/agent/unified-brain`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company_id: companyId,
-          action: 'narrate',
-          section_type: sectionType,
-          context: dataContext,
-        }),
-      });
-      if (!res.ok) return 'Unable to generate analysis.';
-      const data = await res.json();
-      return data.narrative || data.content || '';
-    } catch {
-      return 'Unable to generate analysis.';
-    }
-  }, [companyId, backendUrl]);
+    return apiRequestNarrative(companyId, sectionType, dataContext);
+  }, [companyId]);
 
-  // ---- Row helpers ----
-  const getPnlRows = useCallback(() => matrixData.rows.filter(r => PNL_ROW_IDS.has(r.id)), [matrixData.rows]);
-  const getBalanceSheetRows = useCallback(() => matrixData.rows.filter(r => BS_ROW_IDS.has(r.id)), [matrixData.rows]);
-  const getCashFlowRows = useCallback(() => matrixData.rows.filter(r => CF_ROW_IDS.has(r.id)), [matrixData.rows]);
+  // ---- Row helpers (dynamic section-based, no hardcoded ID sets) ----
+  const getPnlRows = useCallback(() => getAllPnlRows(matrixData), [matrixData]);
+  const getBalanceSheetRows = useCallback(() => getBSRows(matrixData), [matrixData]);
+  const getCashFlowRows = useCallback(() => getCFRows(matrixData), [matrixData]);
 
   const getRowValues = useCallback((rowId: string): Record<string, number> => {
     const row = matrixData.rows.find(r => r.id === rowId);
@@ -474,6 +446,8 @@ export function MemoProvider({ companyId, matrixData, setMatrixData, forkTree, c
   // ---- Compose value ----
   const value = useMemo<MemoContextValue>(() => ({
     companyId,
+    companyName,
+    fundId,
     matrixData,
     setMatrixData,
     activeBranches: forkTree?.branches ?? [],
@@ -500,7 +474,7 @@ export function MemoProvider({ companyId, matrixData, setMatrixData, forkTree, c
     getCashFlowRows,
     getRowValues,
   }), [
-    companyId, matrixData, setMatrixData,
+    companyId, companyName, fundId, matrixData, setMatrixData,
     forkTree?.branches, forkTree?.activeBranchId, forkTree?.forecasts, forkTree?.baseForecast, forkTree?.charts, forkTree?.loading,
     driverRegistry, driverValues, metrics, signals, forecastMeta, dataRevision,
     loading, updateCell, updateDrivers, createFork, deleteFork, setActiveBranch,
