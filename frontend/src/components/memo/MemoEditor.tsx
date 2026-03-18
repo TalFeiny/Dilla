@@ -12,7 +12,6 @@ import {
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { useMemoContextSafe } from './MemoContext';
-import { getClientBackendUrl } from '@/lib/backend-url';
 import {
   DropdownMenu,
   DropdownMenuContent,

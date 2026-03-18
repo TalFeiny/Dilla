@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { getClientBackendUrl } from '@/lib/backend-url';
 import type { ChartConfig } from '@/components/matrix/ChartViewport';
 
 // ---------------------------------------------------------------------------
@@ -76,7 +75,6 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const backendUrl = getClientBackendUrl();
   // Ref to avoid stale closures in refreshComparison
   const branchesRef = useRef(branches);
   branchesRef.current = branches;
@@ -87,7 +85,7 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${backendUrl}/fpa/scenarios/tree?company_id=${companyId}&enrich=true`);
+      const res = await fetch(`/api/fpa/scenarios/tree?company_id=${companyId}&enrich=true`);
       if (!res.ok) throw new Error(`Failed to load scenario tree: ${res.status}`);
       const data = await res.json();
       const tree: ScenarioBranch[] = data.branches ?? data.tree ?? [];
@@ -104,7 +102,7 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
     } finally {
       setLoading(false);
     }
-  }, [companyId, backendUrl]);
+  }, [companyId]);
 
   // Auto-load tree when companyId becomes available
   useEffect(() => {
@@ -117,7 +115,7 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
     const currentBranches = branchesRef.current;
     if (currentBranches.length === 0) return;
     try {
-      const res = await fetch(`${backendUrl}/fpa/scenarios/compare`, {
+      const res = await fetch(`/api/fpa/scenarios/compare`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -133,7 +131,7 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
     } catch {
       // Non-critical — charts just won't update
     }
-  }, [companyId, backendUrl]);
+  }, [companyId]);
 
   // ----- createFork -----
   const createFork = useCallback(async (
@@ -146,7 +144,7 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${backendUrl}/fpa/scenarios/branch`, {
+      const res = await fetch(`/api/fpa/scenarios/branch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -173,7 +171,7 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
     } finally {
       setLoading(false);
     }
-  }, [companyId, backendUrl, refreshComparison]);
+  }, [companyId, refreshComparison]);
 
   // ----- updateFork -----
   const updateFork = useCallback(async (branchId: string, drivers: Record<string, any>): Promise<ForecastMonth[] | undefined> => {
@@ -181,7 +179,7 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${backendUrl}/fpa/scenarios/branch/${branchId}`, {
+      const res = await fetch(`/api/fpa/scenarios/branch/${branchId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ assumptions: drivers }),
@@ -202,7 +200,7 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
     } finally {
       setLoading(false);
     }
-  }, [companyId, backendUrl, refreshComparison]);
+  }, [companyId, refreshComparison]);
 
   // ----- deleteFork -----
   const deleteFork = useCallback(async (branchId: string) => {
@@ -210,7 +208,7 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${backendUrl}/fpa/scenarios/branch/${branchId}`, {
+      const res = await fetch(`/api/fpa/scenarios/branch/${branchId}`, {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error(`Failed to delete fork: ${res.status}`);
@@ -227,7 +225,7 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
     } finally {
       setLoading(false);
     }
-  }, [companyId, backendUrl, activeBranchId, refreshComparison]);
+  }, [companyId, activeBranchId, refreshComparison]);
 
   // ----- addBranchFromAgentResponse -----
   const addBranchFromAgentResponse = useCallback((result: any) => {

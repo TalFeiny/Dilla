@@ -7,9 +7,6 @@
  * All endpoints take company_id as the primary identifier.
  */
 
-import { getClientBackendUrl } from '@/lib/backend-url';
-
-const backendUrl = () => getClientBackendUrl();
 const json = (body: any) => ({
   method: 'POST' as const,
   headers: { 'Content-Type': 'application/json' },
@@ -29,7 +26,7 @@ export async function fetchPnl(
   const params = new URLSearchParams({ company_id: companyId, months: String(months) });
   if (start) params.set('start', start);
   if (end) params.set('end', end);
-  const res = await fetch(`${backendUrl()}/fpa/pnl?${params}`, {
+  const res = await fetch(`/api/fpa/pnl?${params}`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
   });
@@ -50,7 +47,7 @@ export async function fetchBalanceSheet(
   const params = new URLSearchParams({ company_id: companyId });
   if (start) params.set('start', start);
   if (end) params.set('end', end);
-  const res = await fetch(`${backendUrl()}/fpa/balance-sheet?${params}`, {
+  const res = await fetch(`/api/fpa/balance-sheet?${params}`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
   });
@@ -71,7 +68,7 @@ export async function fetchCashFlow(
   const params = new URLSearchParams({ company_id: companyId });
   if (start) params.set('start', start);
   if (end) params.set('end', end);
-  const res = await fetch(`${backendUrl()}/fpa/cash-flow?${params}`, {
+  const res = await fetch(`/api/fpa/cash-flow?${params}`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
   });
@@ -86,7 +83,7 @@ export async function fetchCashFlow(
 
 export async function fetchMetrics(companyId: string) {
   const params = new URLSearchParams({ company_id: companyId });
-  const res = await fetch(`${backendUrl()}/fpa/metrics?${params}`, {
+  const res = await fetch(`/api/fpa/metrics?${params}`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
   });
@@ -103,7 +100,7 @@ export async function buildForecast(
   companyId: string,
   params?: Record<string, any>,
 ) {
-  const res = await fetch(`${backendUrl()}/fpa/forecast`, json({
+  const res = await fetch(`/api/fpa/forecast`, json({
     company_id: companyId,
     ...params,
   }));
@@ -126,7 +123,7 @@ export async function fetchRollingForecast(
     window: String(window),
     granularity,
   });
-  const res = await fetch(`${backendUrl()}/fpa/rolling-forecast?${params}`, {
+  const res = await fetch(`/api/fpa/rolling-forecast?${params}`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
   });
@@ -148,7 +145,7 @@ export async function requestNarrative(
 ): Promise<string> {
   try {
     const res = await fetch(
-      `${backendUrl()}/api/agent/unified-brain`,
+      `/api/agent/unified-brain`,
       json({
         prompt: `Generate a concise ${sectionType.replace(/_/g, ' ')} analysis narrative`,
         output_format: 'analysis',
@@ -185,7 +182,7 @@ export async function fetchCapTable(
   documentId?: string,
 ) {
   const res = await fetch(
-    `${backendUrl()}/api/agent/cap-table-bridge`,
+    `/api/agent/cap-table-bridge`,
     json({ company_id: companyId, fund_id: fundId || '', document_id: documentId }),
   );
   if (!res.ok) throw new Error(`Cap table failed: ${res.status}`);
@@ -197,7 +194,7 @@ export async function recalculateCapTable(
   shareEntries: Array<Record<string, any>>,
 ) {
   const res = await fetch(
-    `${backendUrl()}/api/agent/cap-table-bridge/recalculate`,
+    `/api/agent/cap-table-bridge/recalculate`,
     json({ share_entries: shareEntries }),
   );
   if (!res.ok) throw new Error(`Cap table recalculate failed: ${res.status}`);
@@ -213,7 +210,7 @@ export async function simulateCapTable(
   exitValue?: number,
 ) {
   const res = await fetch(
-    `${backendUrl()}/api/agent/cap-table-bridge/simulate`,
+    `/api/agent/cap-table-bridge/simulate`,
     json({
       share_entries: shareEntries,
       investment_amount: investmentAmount,
@@ -237,7 +234,7 @@ export async function runCascadeAnalysis(
   branchId?: string | null,
 ) {
   const res = await fetch(
-    `${backendUrl()}/api/agent/unified-brain`,
+    `/api/agent/unified-brain`,
     json({
       prompt: `Analyze cascade effects of a ${triggerType.replace(/_/g, ' ')} trigger event. Show step-by-step dependency chain with financial impact.`,
       output_format: 'analysis',
@@ -275,7 +272,7 @@ export async function runValuation(
           : 'comparables-analysis';
 
   const res = await fetch(
-    `${backendUrl()}/api/valuation/${endpoint}`,
+    `/api/valuation/${endpoint}`,
     json({
       company_id: companyId,
       branch_id: branchId,
@@ -302,7 +299,7 @@ export async function runRegression(
   options?: Record<string, any>,
 ) {
   const res = await fetch(
-    `${backendUrl()}/fpa/regression`,
+    `/api/fpa/regression`,
     json({
       regression_type: regressionType,
       data,
@@ -377,7 +374,7 @@ export async function fetchBudgetVariance(
   if (start) params.set('start', start);
   if (end) params.set('end', end);
   const res = await fetch(
-    `${backendUrl()}/fpa/variance?${params}`,
+    `/api/fpa/variance?${params}`,
     { method: 'GET', headers: { 'Content-Type': 'application/json' } },
   );
   if (!res.ok) throw new Error(`Variance failed: ${res.status}`);
@@ -395,7 +392,7 @@ export async function createBudget(
   status: string = 'draft',
 ) {
   const res = await fetch(
-    `${backendUrl()}/fpa/budgets`,
+    `/api/fpa/budgets`,
     json({ company_id: companyId, name, fiscal_year: fiscalYear, status }),
   );
   if (!res.ok) throw new Error(`Budget create failed: ${res.status}`);
@@ -405,7 +402,7 @@ export async function createBudget(
 export async function listBudgets(companyId: string) {
   const params = new URLSearchParams({ company_id: companyId });
   const res = await fetch(
-    `${backendUrl()}/fpa/budgets?${params}`,
+    `/api/fpa/budgets?${params}`,
     { method: 'GET' },
   );
   if (!res.ok) throw new Error(`Budget list failed: ${res.status}`);
@@ -427,7 +424,7 @@ export async function runAdvancedAnalytics(
   branchId?: string | null,
 ) {
   const res = await fetch(
-    `${backendUrl()}/api/advanced-analytics/analyze`,
+    `/api/advanced-analytics/analyze`,
     json({
       company_id: companyId,
       branch_id: branchId,
@@ -453,7 +450,7 @@ export async function parseNLScenario(
   fundId?: string,
 ) {
   const res = await fetch(
-    `${backendUrl()}/api/nl-scenarios/what-if`,
+    `/api/nl-scenarios/what-if`,
     json({ query, company_id: companyId, model_id: modelId, fund_id: fundId }),
   );
   if (!res.ok) throw new Error(`NL scenario failed: ${res.status}`);
@@ -474,7 +471,7 @@ export async function createScenarioBranch(
   probability?: number,
 ) {
   const res = await fetch(
-    `${backendUrl()}/fpa/scenarios/branch`,
+    `/api/fpa/scenarios/branch`,
     json({
       company_id: companyId,
       name,
@@ -494,7 +491,7 @@ export async function updateScenarioBranch(
   meta?: { name?: string; description?: string; probability?: number; forecast_months?: number },
 ) {
   const res = await fetch(
-    `${backendUrl()}/fpa/scenarios/branch/${branchId}`,
+    `/api/fpa/scenarios/branch/${branchId}`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -507,7 +504,7 @@ export async function updateScenarioBranch(
 
 export async function deleteScenarioBranch(branchId: string) {
   const res = await fetch(
-    `${backendUrl()}/fpa/scenarios/branch/${branchId}`,
+    `/api/fpa/scenarios/branch/${branchId}`,
     { method: 'DELETE' },
   );
   if (!res.ok) throw new Error(`Branch delete failed: ${res.status}`);
@@ -518,7 +515,7 @@ export async function fetchScenarioTree(companyId: string, enrich: boolean = tru
   const params = new URLSearchParams({ company_id: companyId });
   if (enrich) params.set('enrich', 'true');
   const res = await fetch(
-    `${backendUrl()}/fpa/scenarios/tree?${params}`,
+    `/api/fpa/scenarios/tree?${params}`,
     { method: 'GET' },
   );
   if (!res.ok) throw new Error(`Scenario tree failed: ${res.status}`);
@@ -528,7 +525,7 @@ export async function fetchScenarioTree(companyId: string, enrich: boolean = tru
 export async function fetchDriverRegistry(companyId: string) {
   const params = new URLSearchParams({ company_id: companyId });
   const res = await fetch(
-    `${backendUrl()}/fpa/drivers/registry?${params}`,
+    `/api/fpa/drivers/registry?${params}`,
     { method: 'GET' },
   );
   if (!res.ok) throw new Error(`Driver registry failed: ${res.status}`);
@@ -548,7 +545,7 @@ export async function upsertPnlCell(
   source: string = 'manual_cell_edit',
 ) {
   const res = await fetch(
-    `${backendUrl()}/fpa/pnl`,
+    `/api/fpa/pnl`,
     json({
       company_id: companyId,
       category,
@@ -573,7 +570,7 @@ export async function bulkUpsertPnlCells(
   }>,
 ) {
   const res = await fetch(
-    `${backendUrl()}/fpa/pnl/bulk`,
+    `/api/fpa/pnl/bulk`,
     json({ cells }),
   );
   if (!res.ok) throw new Error(`Bulk P&L upsert failed: ${res.status}`);
@@ -590,7 +587,7 @@ export async function queryFPA(
   companyIds?: string[],
 ) {
   const res = await fetch(
-    `${backendUrl()}/fpa/query`,
+    `/api/fpa/query`,
     json({
       query,
       fund_id: fundId,
@@ -611,7 +608,7 @@ export async function compareScenarios(
   startPeriod?: string,
 ) {
   const res = await fetch(
-    `${backendUrl()}/fpa/scenarios/compare`,
+    `/api/fpa/scenarios/compare`,
     json({
       branch_ids: branchIds,
       forecast_months: forecastMonths,

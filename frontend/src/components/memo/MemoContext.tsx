@@ -4,7 +4,6 @@ import React, { createContext, useContext, useCallback, useMemo, useState, useRe
 import type { MatrixData, MatrixRow, MatrixCell } from '@/components/matrix/UnifiedMatrix';
 import type { ScenarioBranch, ForecastMonth } from '@/hooks/useScenarioForkTree';
 import type { ChartConfig } from '@/components/matrix/ChartViewport';
-import { getClientBackendUrl } from '@/lib/backend-url';
 import {
   getAllPnlRows,
   getBalanceSheetRows as getBSRows,
@@ -206,7 +205,6 @@ export interface MemoProviderProps {
 }
 
 export function MemoProvider({ companyId, companyName = '', fundId = '', matrixData, setMatrixData, forkTree, children }: MemoProviderProps) {
-  const backendUrl = getClientBackendUrl();
 
   // Internal state
   const [driverRegistry, setDriverRegistry] = useState<DriverDef[]>([]);
@@ -294,7 +292,7 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
       // Direct API call if no fork tree wired — fetch recomputed rows back
       try {
         setLoading(true);
-        const res = await fetch(`${backendUrl}/fpa/scenarios/branch/${branchId}`, {
+        const res = await fetch(`/api/fpa/scenarios/branch/${branchId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ assumptions: overrides }),
@@ -310,7 +308,7 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
       }
     }
     bump();
-  }, [forkTree, backendUrl, bump, applyForecastToGrid]);
+  }, [forkTree, bump, applyForecastToGrid]);
 
   // ---- Scenario fork/delete ----
   const createFork = useCallback(async (name: string, parentId: string | null, forkPeriod: string | null, assumptions: Record<string, any>) => {
@@ -339,7 +337,7 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
   const buildForecast = useCallback(async (params?: Record<string, any>) => {
     setLoading(true);
     try {
-      const res = await fetch(`${backendUrl}/fpa/forecast`, {
+      const res = await fetch(`/api/fpa/forecast`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ company_id: companyId, ...params }),
@@ -393,7 +391,7 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
       // Also fetch regression fit data for chart rendering (correct request shape)
       try {
         const regType = params?.method === 'auto' || !params?.method ? 'linear' : params.method;
-        const regRes = await fetch(`${backendUrl}/fpa/regression`, {
+        const regRes = await fetch(`/api/fpa/regression`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -419,7 +417,7 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
     } finally {
       setLoading(false);
     }
-  }, [companyId, backendUrl, setMatrixData, bump]);
+  }, [companyId, setMatrixData, bump]);
 
   // ---- AI narrative (uses correct unified-brain request shape) ----
   const requestNarrative = useCallback(async (sectionType: string, dataContext: Record<string, any>): Promise<string> => {
