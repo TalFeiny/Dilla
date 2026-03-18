@@ -62,6 +62,8 @@ class ValuationRequest:
     industry: Optional[str] = None  # Fallback if business_model not provided
     category: Optional[str] = None  # For rollup, SaaS, AI detection
     ai_component_percentage: Optional[float] = None  # Percentage of AI in the business
+    company_id: Optional[str] = None  # For dynamic WACC computation
+    branch_id: Optional[str] = None  # Scenario branch for dynamic WACC
 
 @dataclass
 class PWERMScenario:
@@ -690,6 +692,8 @@ class ValuationEngineService:
             industry=company_data.get("industry") or company_data.get("sector"),
             category=company_data.get("category"),
             ai_component_percentage=_num(company_data.get("ai_component_percentage")),
+            company_id=company_data.get("company_id") or company_data.get("id"),
+            branch_id=company_data.get("branch_id"),
         )
 
     async def value_company(
@@ -857,7 +861,7 @@ class ValuationEngineService:
         
         # Generate exit scenarios and annotate returns
         scenarios = self._generate_exit_scenarios(request)
-        discount_rate = self.stage_parameters[request.stage]['discount_rate']
+        discount_rate = await self._get_dynamic_discount_rate(request) or self.stage_parameters[request.stage]['discount_rate']
         
         # Calculate probability-weighted value
         total_value = sum(s.probability * s.present_value for s in scenarios)
@@ -901,26 +905,26 @@ class ValuationEngineService:
         # Calculate terminal value
         terminal_growth = 0.03  # 3% perpetual growth
         
-        # Adjust discount rate based on growth rate and stage
-        base_discount_rate = self.stage_parameters[request.stage]['discount_rate']
-        
-        # For established high-growth companies (Series C+), use lower discount rates
-        if request.stage in [Stage.SERIES_C, Stage.GROWTH, Stage.LATE]:
-            if request.growth_rate and request.growth_rate > 1.0:
-                # Proven hyper-growth at scale deserves lower discount
-                discount_rate = 0.25  # 25% for proven execution
-            elif request.growth_rate and request.growth_rate > 0.5:
-                discount_rate = 0.22  # 22% for strong growth
+        # Try dynamic WACC from actual company data first
+        discount_rate = await self._get_dynamic_discount_rate(request)
+        if discount_rate is None:
+            # Fall back to stage-based discount rate with growth adjustments
+            base_discount_rate = self.stage_parameters[request.stage]['discount_rate']
+
+            if request.stage in [Stage.SERIES_C, Stage.GROWTH, Stage.LATE]:
+                if request.growth_rate and request.growth_rate > 1.0:
+                    discount_rate = 0.25
+                elif request.growth_rate and request.growth_rate > 0.5:
+                    discount_rate = 0.22
+                else:
+                    discount_rate = base_discount_rate
             else:
-                discount_rate = base_discount_rate
-        else:
-            # Earlier stage companies have higher risk
-            if request.growth_rate and request.growth_rate > 1.0:
-                discount_rate = min(base_discount_rate * 1.3, 0.30)  # Up to 30%
-            elif request.growth_rate and request.growth_rate > 0.5:
-                discount_rate = min(base_discount_rate * 1.15, 0.25)
-            else:
-                discount_rate = base_discount_rate
+                if request.growth_rate and request.growth_rate > 1.0:
+                    discount_rate = min(base_discount_rate * 1.3, 0.30)
+                elif request.growth_rate and request.growth_rate > 0.5:
+                    discount_rate = min(base_discount_rate * 1.15, 0.25)
+                else:
+                    discount_rate = base_discount_rate
         
         terminal_fcf = projections[-1]['free_cash_flow']
         terminal_value = terminal_fcf * (1 + terminal_growth) / (discount_rate - terminal_growth)
@@ -958,6 +962,33 @@ class ValuationEngineService:
         
         return self._sanitize_valuation_result(result)
     
+    async def _get_dynamic_discount_rate(self, request: ValuationRequest) -> Optional[float]:
+        """Compute discount rate from dynamic WACC if company_id is available.
+
+        Returns None if unavailable, letting the caller fall back to stage-based rates.
+        """
+        if not request.company_id:
+            return None
+        try:
+            from app.services.strategic_intelligence_service import compute_dynamic_wacc
+            from app.services.unified_financial_state import build_unified_state
+
+            state = await build_unified_state(
+                request.company_id, branch_id=request.branch_id,
+            )
+            wacc_result = compute_dynamic_wacc(state)
+            if wacc_result and wacc_result.wacc > 0:
+                logger.info(
+                    "Using dynamic WACC %.2f%% for %s (vs stage default %.0f%%)",
+                    wacc_result.wacc * 100,
+                    request.company_name,
+                    self.stage_parameters[request.stage]["discount_rate"] * 100,
+                )
+                return wacc_result.wacc
+        except Exception as e:
+            logger.debug("Dynamic WACC unavailable for %s: %s", request.company_name, e)
+        return None
+
     async def _calculate_opm(self, request: ValuationRequest) -> ValuationResult:
         """
         Option Pricing Model (for complex capital structures)

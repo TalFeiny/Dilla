@@ -230,7 +230,7 @@ class ScenarioBranchService:
 
         Returns dict with forecast, base_forecast, source_map, fork info.
         """
-        from app.services.actuals_ingestion import seed_forecast_from_actuals
+        from app.services.company_data_pull import pull_company_data
 
         chain = self.get_ancestor_chain(branch_id)
         if not chain:
@@ -239,7 +239,7 @@ class ScenarioBranchService:
         leaf = chain[-1]
         merged = self.merge_assumptions(chain)
 
-        base_data = seed_forecast_from_actuals(company_id)
+        base_data = pull_company_data(company_id).to_forecast_seed()
         if not base_data.get("revenue"):
             return {"error": "No actuals data. Upload financials first."}
 
@@ -356,13 +356,13 @@ class ScenarioBranchService:
         Run fork-aware projection for each branch and return side-by-side
         comparison with deltas, expected-value forecast, and multi-branch charts.
         """
-        from app.services.actuals_ingestion import seed_forecast_from_actuals
+        from app.services.company_data_pull import pull_company_data
 
         if not start_period:
             today = date.today()
             start_period = f"{today.year}-{today.month:02d}"
 
-        base_data = seed_forecast_from_actuals(company_id)
+        base_data = pull_company_data(company_id).to_forecast_seed()
         if not base_data.get("revenue"):
             return {"error": "No actuals data. Upload financials first."}
 
@@ -534,7 +534,7 @@ class ScenarioBranchService:
 
         Returns dict keyed by driver_id with full metadata + computed values.
         """
-        from app.services.actuals_ingestion import seed_forecast_from_actuals
+        from app.services.company_data_pull import pull_company_data
         from app.services.driver_registry import get_all_drivers, assumptions_to_drivers
 
         chain = self.get_ancestor_chain(branch_id)
@@ -542,7 +542,7 @@ class ScenarioBranchService:
             return {"error": f"Branch {branch_id} not found"}
 
         merged = self.merge_assumptions(chain)
-        base_data = seed_forecast_from_actuals(company_id)
+        base_data = pull_company_data(company_id).to_forecast_seed()
 
         # Map: driver_id → base value from actuals/defaults
         base_values = self._extract_base_driver_values(base_data)
@@ -743,8 +743,8 @@ class ScenarioBranchService:
             return None
 
         # Stage-appropriate round sizing from gap_filler benchmarks
-        from app.services.actuals_ingestion import seed_forecast_from_actuals
-        base_data = seed_forecast_from_actuals(company_id)
+        from app.services.company_data_pull import pull_company_data
+        base_data = pull_company_data(company_id).to_forecast_seed()
         stage = base_data.get("funding_stage") or base_data.get("stage") or "Seed"
 
         round_estimate = self._estimate_round_size(stage, cash_needed)

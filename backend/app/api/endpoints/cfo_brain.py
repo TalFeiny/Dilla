@@ -69,10 +69,11 @@ def _build_cfo_system_prompt(company_context: Optional[Dict] = None) -> str:
     company_id = ctx.get("company_id") or ctx.get("companyId")
     if company_id:
         try:
-            from app.services.actuals_ingestion import seed_forecast_from_actuals
+            from app.services.company_data_pull import pull_company_data
             from app.services.forecast_method_router import ForecastMethodRouter
 
-            seed = seed_forecast_from_actuals(company_id)
+            cd = pull_company_data(company_id)
+            seed = cd.to_forecast_seed()
             parts = []
             if seed.get("revenue"):
                 parts.append(f"Last month revenue: {fmt(seed['revenue'])}")
@@ -103,7 +104,7 @@ def _build_cfo_system_prompt(company_context: Optional[Dict] = None) -> str:
 
             # Tell agent what forecast method the router auto-selected and why
             router = ForecastMethodRouter()
-            method, reasoning = router.auto_select_method(company_id, seed)
+            method, reasoning = router.auto_select_method(company_id, seed, company_data=cd)
             methodology_note = (
                 f"\n\nForecast methodology: {method}. {reasoning}. "
                 "You can re-run with a different method using fpa_forecast, "

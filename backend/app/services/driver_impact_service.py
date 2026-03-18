@@ -58,14 +58,13 @@ class DriverImpactService:
         Returns audit-complete result with data points, N, r, p-value,
         interpretation, and refusal reason if N < MIN_CORRELATION_POINTS.
         """
-        from app.services.actuals_ingestion import get_actuals_for_forecast
+        from app.services.company_data_pull import pull_company_data
 
-        series_a = get_actuals_for_forecast(company_id, metric_a, months=60)
-        series_b = get_actuals_for_forecast(company_id, metric_b, months=60)
+        cd = pull_company_data(company_id)
 
         # Align by period
-        a_by_period = {r["period"][:7]: r["amount"] for r in series_a}
-        b_by_period = {r["period"][:7]: r["amount"] for r in series_b}
+        a_by_period = dict(cd.historical_values(metric_a))
+        b_by_period = dict(cd.historical_values(metric_b))
         common_periods = sorted(set(a_by_period) & set(b_by_period))
 
         n = len(common_periods)
@@ -77,8 +76,8 @@ class DriverImpactService:
                 "metric_b": metric_b,
                 "n": n,
                 "min_required": MIN_CORRELATION_POINTS,
-                "periods_a": len(series_a),
-                "periods_b": len(series_b),
+                "periods_a": len(a_by_period),
+                "periods_b": len(b_by_period),
                 "common_periods": common_periods,
                 "message": (
                     f"Need at least {MIN_CORRELATION_POINTS} overlapping periods "

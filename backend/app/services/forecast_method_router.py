@@ -43,7 +43,7 @@ METHODS = {
 class ForecastMethodRouter:
 
     def auto_select_method(
-        self, company_id: str, seed_data: Dict
+        self, company_id: str, seed_data: Dict, company_data=None
     ) -> Tuple[str, str]:
         """Auto-select best method based on data availability.
 
@@ -56,6 +56,10 @@ class ForecastMethodRouter:
         4. If approved budget exists for forecast period → 'budget_pct'
         5. Default → 'growth_rate'
         """
+        if company_data is None:
+            from app.services.company_data_pull import pull_company_data
+            company_data = pull_company_data(company_id)
+
         data_quality = seed_data.get("_data_quality", {})
         rev_months = data_quality.get("revenue_months", 0)
 
@@ -74,7 +78,7 @@ class ForecastMethodRouter:
             try:
                 from app.services.seasonality_engine import SeasonalityEngine
                 engine = SeasonalityEngine()
-                pattern = engine.detect_pattern(company_id, "revenue", min_periods=12)
+                pattern = engine.detect_pattern(company_id, "revenue", min_periods=12, company_data=company_data)
                 if pattern and pattern.strength > 0.2:
                     return (
                         "seasonal",
@@ -87,7 +91,7 @@ class ForecastMethodRouter:
         # 3. Advanced regression if enough data
         if rev_months >= 6:
             try:
-                best_model = self._quick_advanced_regression_check(company_id)
+                best_model = self._quick_advanced_regression_check(company_data)
                 if best_model:
                     model_name = best_model.get("model_name", "unknown")
                     adj_r2 = best_model.get("adjusted_r_squared", 0)
@@ -103,7 +107,7 @@ class ForecastMethodRouter:
         # 3b. Fallback to basic linear regression
         if rev_months >= 12:
             try:
-                r2 = self._quick_regression_check(company_id)
+                r2 = self._quick_regression_check(company_data)
                 if r2 and r2 > 0.7:
                     return (
                         "regression",
@@ -128,11 +132,16 @@ class ForecastMethodRouter:
         months: int = 24,
         assumptions: Dict = None,
         start_period: str = None,
+        company_data=None,
     ) -> Tuple[List[Dict], Dict]:
         """Dispatch to the right engine based on method.
 
         Returns (forecast_rows, provenance_dict).
         """
+        if company_data is None and company_id:
+            from app.services.company_data_pull import pull_company_data
+            company_data = pull_company_data(company_id)
+
         if method not in METHODS:
             logger.warning(f"Unknown method '{method}', falling back to growth_rate")
             method = "growth_rate"
@@ -143,16 +152,16 @@ class ForecastMethodRouter:
             forecast = self._build_growth_rate(seed_data, months, assumptions)
         elif method == "advanced_regression":
             forecast = self._build_advanced_regression(
-                company_id, seed_data, months, start_period, provenance
+                company_id, seed_data, months, start_period, provenance, company_data
             )
         elif method == "regression":
-            forecast = self._build_regression(company_id, seed_data, months, start_period, provenance)
+            forecast = self._build_regression(company_id, seed_data, months, start_period, provenance, company_data)
         elif method == "driver_based":
             forecast = self._build_driver_based(seed_data, months, assumptions)
         elif method == "seasonal":
-            forecast = self._build_seasonal(company_id, seed_data, months, assumptions, provenance)
+            forecast = self._build_seasonal(company_id, seed_data, months, assumptions, provenance, company_data)
         elif method == "budget_pct":
-            forecast = self._build_budget_pct(company_id, seed_data, months, provenance)
+            forecast = self._build_budget_pct(company_id, seed_data, months, provenance, company_data)
         elif method == "manual":
             forecast = self._build_manual(assumptions, months)
         else:
@@ -186,21 +195,19 @@ class ForecastMethodRouter:
 
     def _build_regression(
         self, company_id: str, seed_data: Dict, months: int,
-        start_period: str, provenance: Dict,
+        start_period: str, provenance: Dict, company_data=None,
     ) -> List[Dict]:
         """Regression-based forecast: fit actuals, project forward, then
         feed projected revenue growth into CashFlowPlanningService."""
         from app.services.fpa_regression_service import FPARegressionService
-        from app.services.actuals_ingestion import get_actuals_for_forecast
         from app.services.cash_flow_planning_service import CashFlowPlanningService
         import asyncio
 
         svc = FPARegressionService()
-        actuals = get_actuals_for_forecast(company_id, "revenue")
+        y = company_data.sorted_amounts("revenue") if company_data else []
 
-        if len(actuals) >= 6:
-            x = list(range(len(actuals)))
-            y = [a["amount"] for a in actuals]
+        if len(y) >= 6:
+            x = list(range(len(y)))
 
             # Run regression (sync wrapper for async method)
             try:
@@ -222,7 +229,7 @@ class ForecastMethodRouter:
             # Project revenue forward using regression
             slope = reg_result.get("slope", 0)
             intercept = reg_result.get("intercept", 0)
-            last_x = len(actuals)
+            last_x = len(y)
 
             # Convert regression projection to equivalent growth rate
             last_revenue = seed_data.get("revenue", 0)
@@ -257,7 +264,7 @@ class ForecastMethodRouter:
 
     def _build_seasonal(
         self, company_id: str, seed_data: Dict, months: int,
-        assumptions: Dict, provenance: Dict,
+        assumptions: Dict, provenance: Dict, company_data=None,
     ) -> List[Dict]:
         """Growth-rate model + seasonal overlay."""
         from app.services.seasonality_engine import SeasonalityEngine
@@ -271,7 +278,7 @@ class ForecastMethodRouter:
 
         # Detect and apply seasonality
         engine = SeasonalityEngine()
-        pattern = engine.detect_pattern(company_id, "revenue", min_periods=12)
+        pattern = engine.detect_pattern(company_id, "revenue", min_periods=12, company_data=company_data)
         if pattern:
             forecast = engine.apply_seasonal_factors(forecast, pattern, "revenue")
             provenance["seasonal_pattern"] = {
@@ -283,12 +290,12 @@ class ForecastMethodRouter:
         return forecast
 
     def _build_budget_pct(
-        self, company_id: str, seed_data: Dict, months: int, provenance: Dict
+        self, company_id: str, seed_data: Dict, months: int, provenance: Dict,
+        company_data=None,
     ) -> List[Dict]:
         """Forecast = budget × trailing achievement rate."""
         from app.core.supabase_client import get_supabase_client
         from app.services.cash_flow_planning_service import CashFlowPlanningService
-        from app.services.actuals_ingestion import get_actuals_for_forecast
 
         sb = get_supabase_client()
         if not sb:
@@ -323,15 +330,16 @@ class ForecastMethodRouter:
             return self._build_growth_rate(seed_data, months)
 
         # Compute trailing achievement rate from actuals vs budget
-        revenue_actuals = get_actuals_for_forecast(company_id, "revenue", months=6)
+        rev_amounts = company_data.sorted_amounts("revenue") if company_data else []
         budget_revenue_line = next(
             (l for l in lines.data if l.get("category") == "revenue"), None
         )
 
         achievement_rate = 1.0
-        if budget_revenue_line and revenue_actuals:
+        if budget_revenue_line and rev_amounts:
             # Average the most recent actuals against budget months
-            actual_avg = sum(a["amount"] for a in revenue_actuals[-3:]) / min(3, len(revenue_actuals[-3:]))
+            recent = rev_amounts[-3:]
+            actual_avg = sum(recent) / len(recent)
             # Budget monthly average from m1-m12
             budget_months = [budget_revenue_line.get(f"m{i}", 0) or 0 for i in range(1, 13)]
             budget_avg = sum(budget_months) / 12 if budget_months else 0
@@ -357,16 +365,16 @@ class ForecastMethodRouter:
 
     def _build_advanced_regression(
         self, company_id: str, seed_data: Dict, months: int,
-        start_period: str, provenance: Dict,
+        start_period: str, provenance: Dict, company_data=None,
     ) -> List[Dict]:
         """Advanced regression: fit all models, pick best, project revenue,
         then feed into CashFlowPlanningService for full P&L build."""
         from app.services.advanced_regression_service import AdvancedRegressionService
-        from app.services.actuals_ingestion import get_actuals_for_forecast
         from app.services.cash_flow_planning_service import CashFlowPlanningService
 
         adv = AdvancedRegressionService()
-        actuals = get_actuals_for_forecast(company_id, "revenue")
+        hist = company_data.historical_values("revenue") if company_data else []
+        actuals = [{"period": p, "amount": v} for p, v in hist]
 
         if len(actuals) < 3:
             logger.warning("Not enough actuals for advanced regression, falling back to growth_rate")
@@ -609,17 +617,15 @@ class ForecastMethodRouter:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _quick_advanced_regression_check(self, company_id: str) -> Optional[Dict]:
+    def _quick_advanced_regression_check(self, company_data) -> Optional[Dict]:
         """Quick check: fit advanced models on revenue actuals, return best model info."""
-        from app.services.actuals_ingestion import get_actuals_for_forecast
         from app.services.advanced_regression_service import AdvancedRegressionService
 
-        actuals = get_actuals_for_forecast(company_id, "revenue", months=36)
-        if len(actuals) < 6:
+        y = company_data.sorted_amounts("revenue") if company_data else []
+        if len(y) < 6:
             return None
 
-        x = list(range(len(actuals)))
-        y = [a["amount"] for a in actuals]
+        x = list(range(len(y)))
 
         try:
             adv = AdvancedRegressionService()
@@ -629,16 +635,13 @@ class ForecastMethodRouter:
             logger.debug(f"Advanced regression check failed: {e}")
             return None
 
-    def _quick_regression_check(self, company_id: str) -> Optional[float]:
+    def _quick_regression_check(self, company_data) -> Optional[float]:
         """Quick R² check on revenue actuals."""
-        from app.services.actuals_ingestion import get_actuals_for_forecast
-
-        actuals = get_actuals_for_forecast(company_id, "revenue", months=24)
-        if len(actuals) < 6:
+        y = company_data.sorted_amounts("revenue") if company_data else []
+        if len(y) < 6:
             return None
 
-        x = list(range(len(actuals)))
-        y = [a["amount"] for a in actuals]
+        x = list(range(len(y)))
         result = self._simple_linear_regression(x, y)
         return result.get("r_squared")
 

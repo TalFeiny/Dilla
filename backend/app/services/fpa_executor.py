@@ -318,10 +318,10 @@ class FPAExecutor:
             company_id = kwargs.get("company_id") or (ctx.company_ids[0] if ctx.company_ids else None)
             if company_id:
                 try:
-                    from app.services.actuals_ingestion import get_actuals_for_forecast
-                    actuals = get_actuals_for_forecast(company_id, "revenue", months=24)
-                    if actuals:
-                        historical_data = [{"period": a["period"], "value": a["amount"]} for a in actuals]
+                    from app.services.company_data_pull import pull_company_data
+                    hist = pull_company_data(company_id).historical_values("revenue")
+                    if hist:
+                        historical_data = [{"period": p, "value": v} for p, v in hist]
                 except Exception as e:
                     logger.warning("Failed to load actuals for forecast: %s", e)
 

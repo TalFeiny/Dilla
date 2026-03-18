@@ -8,10 +8,70 @@ Replaces the hardcoded PNL_ROW_DEFS / _map_forecast_to_pnl_values approach.
 """
 
 import logging
-from datetime import date
+import re
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_period(raw: str) -> Optional[str]:
+    """Parse a period string flexibly into 'YYYY-MM' format.
+
+    Handles: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS, YYYY/MM/DD, YYYY-MM,
+    MM/YYYY, Month YYYY, YYYYMMDD, etc.
+    Returns None (with a warning) if unparseable rather than silently corrupting.
+    """
+    if not raw or not isinstance(raw, str):
+        logger.warning("Empty or non-string period value: %r", raw)
+        return None
+
+    s = raw.strip()
+
+    # Already YYYY-MM
+    if re.match(r"^\d{4}-\d{2}$", s):
+        return s
+
+    # YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS...
+    if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+        return s[:7]
+
+    # YYYY/MM/DD
+    if re.match(r"^\d{4}/\d{2}/\d{2}$", s):
+        return f"{s[:4]}-{s[5:7]}"
+
+    # YYYYMMDD
+    if re.match(r"^\d{8}$", s):
+        return f"{s[:4]}-{s[4:6]}"
+
+    # MM/YYYY or M/YYYY
+    m = re.match(r"^(\d{1,2})/(\d{4})$", s)
+    if m:
+        return f"{m.group(2)}-{int(m.group(1)):02d}"
+
+    # DD/MM/YYYY or DD-MM-YYYY (ambiguous, assume day-first since month is 2nd)
+    m = re.match(r"^\d{1,2}[/-](\d{1,2})[/-](\d{4})$", s)
+    if m:
+        return f"{m.group(2)}-{int(m.group(1)):02d}"
+
+    # "January 2025", "Jan 2025", etc.
+    for fmt in ("%B %Y", "%b %Y"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return f"{dt.year:04d}-{dt.month:02d}"
+        except ValueError:
+            continue
+
+    # Q1 2025, Q2-2025, etc.
+    m = re.match(r"^Q(\d)\s*[-/]?\s*(\d{4})$", s, re.IGNORECASE)
+    if m:
+        q = int(m.group(1))
+        y = m.group(2)
+        month = (q - 1) * 3 + 1
+        return f"{y}-{month:02d}"
+
+    logger.warning("Could not parse period %r — skipping row", raw)
+    return None
 
 # ---------------------------------------------------------------------------
 # Waterfall section ordering — controls how rows are grouped and sorted
@@ -81,9 +141,10 @@ CATEGORY_LABELS = {
 class PnlBuilder:
     """Builds a dynamic P&L waterfall from fpa_actuals + forecast."""
 
-    def __init__(self, company_id: Optional[str] = None, fund_id: Optional[str] = None):
+    def __init__(self, company_id: Optional[str] = None, fund_id: Optional[str] = None, company_data=None):
         self.company_id = company_id
         self.fund_id = fund_id
+        self._company_data = company_data  # Optional CompanyData — avoids re-pull
 
     def build(
         self,
@@ -226,7 +287,10 @@ class PnlBuilder:
         terminated = terminated_sources or {}
 
         for row in result.data:
-            period = row["period"][:7]
+            period = _normalize_period(row.get("period", ""))
+            if not period:
+                logger.warning("Skipping actuals row with unparseable period: %r", row.get("period"))
+                continue
             cat = row["category"]
             sub = row.get("subcategory")
             hp = row.get("hierarchy_path", "")
@@ -354,10 +418,11 @@ class PnlBuilder:
         its output back into the actual category structure using derived ratios.
         """
         from app.services.cash_flow_planning_service import CashFlowPlanningService
-        from app.services.actuals_ingestion import seed_forecast_from_actuals
+        from app.services.company_data_pull import pull_company_data
 
         try:
-            company_data = seed_forecast_from_actuals(self.company_id)
+            cd = self._company_data or pull_company_data(self.company_id)
+            company_data = cd.to_forecast_seed()
         except Exception:
             company_data = {"revenue": 0, "growth_rate": 0.5}
 
@@ -371,11 +436,16 @@ class PnlBuilder:
         # Determine forecast start
         if actual_periods:
             last = actual_periods[-1]
-            y, m = map(int, last.split("-"))
-            m += 1
-            if m > 12:
-                m, y = 1, y + 1
-            forecast_start = f"{y:04d}-{m:02d}"
+            try:
+                y, m = map(int, last.split("-"))
+                m += 1
+                if m > 12:
+                    m, y = 1, y + 1
+                forecast_start = f"{y:04d}-{m:02d}"
+            except (ValueError, TypeError) as e:
+                logger.error("Cannot parse last actual period %r for forecast start: %s", last, e)
+                today = date.today()
+                forecast_start = f"{today.year:04d}-{today.month:02d}"
         else:
             today = date.today()
             forecast_start = f"{today.year:04d}-{today.month:02d}"
@@ -385,13 +455,14 @@ class PnlBuilder:
         #  growth_rate, manual) instead of always using raw growth_rate decay.
         from app.services.forecast_method_router import ForecastMethodRouter
         router = ForecastMethodRouter()
-        method, reasoning = router.auto_select_method(self.company_id, company_data)
+        method, reasoning = router.auto_select_method(self.company_id, company_data, company_data=cd)
         monthly, provenance = router.build_forecast(
             company_id=self.company_id,
             method=method,
             seed_data=company_data,
             months=months,
             start_period=forecast_start,
+            company_data=cd,
         )
         # Store provenance so agent can explain methodology
         company_data["_forecast_method"] = method
@@ -839,7 +910,10 @@ class PnlBuilder:
         actual_set = set(actual_periods)
 
         for line in lines:
-            period = line["period"][:7]  # Normalize to YYYY-MM
+            period = _normalize_period(line.get("period", ""))
+            if not period:
+                logger.warning("Skipping forecast line with unparseable period: %r", line.get("period"))
+                continue
             if period in actual_set:
                 continue  # Don't overlap with actuals
             category = line["category"]
@@ -978,9 +1052,10 @@ class PnlBuilder:
         """Add unit economics rows if customer/ACV data exists."""
         try:
             from app.services.computed_metrics import ComputedMetrics, COMPUTED_LABELS
-            from app.services.actuals_ingestion import seed_forecast_from_actuals
+            from app.services.company_data_pull import pull_company_data
 
-            seed = seed_forecast_from_actuals(self.company_id)
+            cd = self._company_data or pull_company_data(self.company_id)
+            seed = cd.to_forecast_seed()
             if not seed.get("_detected_acv") and not seed.get("_detected_customer_count"):
                 return rows  # No unit economics data
 

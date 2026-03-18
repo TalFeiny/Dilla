@@ -27,7 +27,11 @@ const TableauLevelCharts = dynamic(
 
 type ChartMode = 'stacked_bar' | 'line' | 'bar';
 type TimeRange = 'all' | '6m' | '12m' | 'ytd';
-type ForecastMethod = 'driver-based' | 'regression' | 'seasonal' | 'auto';
+type ForecastMethod =
+  | 'auto' | 'driver-based' | 'seasonal'
+  | 'linear' | 'polynomial' | 'exponential_growth'
+  | 'logistic' | 'power_law' | 'gompertz'
+  | 'piecewise_linear' | 'weighted_linear';
 
 /** Row shape returned by /fpa/pnl backend */
 interface PnlRow {
@@ -222,14 +226,21 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
       <div className="flex items-center gap-1.5">
         <span className="text-muted-foreground">Method:</span>
         <Select value={forecastMethod} onValueChange={(v) => setForecastMethod(v as ForecastMethod)}>
-          <SelectTrigger className="h-6 w-[110px] text-[11px]">
+          <SelectTrigger className="h-6 w-[150px] text-[11px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="auto">Auto</SelectItem>
-            <SelectItem value="driver-based">Driver-based</SelectItem>
-            <SelectItem value="regression">Regression</SelectItem>
+            <SelectItem value="auto">Auto (best fit)</SelectItem>
+            <SelectItem value="linear">Linear</SelectItem>
+            <SelectItem value="polynomial">Polynomial</SelectItem>
+            <SelectItem value="exponential_growth">Exponential</SelectItem>
+            <SelectItem value="logistic">Logistic (S-curve)</SelectItem>
+            <SelectItem value="power_law">Power Law</SelectItem>
+            <SelectItem value="gompertz">Gompertz</SelectItem>
+            <SelectItem value="piecewise_linear">Piecewise Linear</SelectItem>
+            <SelectItem value="weighted_linear">Weighted Linear</SelectItem>
             <SelectItem value="seasonal">Seasonal</SelectItem>
+            <SelectItem value="driver-based">Driver-based</SelectItem>
           </SelectContent>
         </Select>
       </div>

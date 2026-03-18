@@ -70,7 +70,7 @@ class FPAModelRequest(BaseModel):
 
 class FPARegressionRequest(BaseModel):
     """Request for regression analysis"""
-    regression_type: str  # "linear" | "exponential" | "time_series" | "monte_carlo" | "sensitivity"
+    regression_type: str  # "advanced" | "linear" | "polynomial" | "exponential_growth" | "logistic" | "power_law" | "gompertz" | "piecewise_linear" | "weighted_linear" | "exponential" | "time_series" | "monte_carlo" | "sensitivity"
     data: Dict[str, Any]
     options: Optional[Dict[str, Any]] = None
     branch_name: Optional[str] = None        # custom branch name (auto-generated if None)
@@ -2741,10 +2741,121 @@ async def run_regression(request: FPARegressionRequest):
             company_data = pull_company_data(company_id)
             company_data = apply_branch_overrides(company_data, branch_id)
 
-        if request.regression_type == "linear":
-            x = request.data.get("x", [])
-            y = request.data.get("y", [])
-            result = await regression_service.linear_regression(x, y)
+        # --- Advanced regression types (full toolkit) ---
+        ADVANCED_TYPES = {
+            "advanced", "linear", "polynomial", "exponential_growth",
+            "logistic", "power_law", "gompertz", "piecewise_linear",
+            "weighted_linear",
+        }
+
+        if request.regression_type in ADVANCED_TYPES:
+            from app.services.advanced_regression_service import AdvancedRegressionService
+            from app.services.company_data_pull import pull_company_data
+
+            adv_svc = AdvancedRegressionService()
+            options = request.options or {}
+            metric = options.get("metric", "revenue")
+            forecast_periods = options.get("forecast_periods", 12)
+            category = options.get("category", metric)
+
+            # Get x/y: either from payload or from company actuals
+            x = request.data.get("x")
+            y = request.data.get("y")
+
+            # Resolve period labels from actuals when pulling from company data
+            period_labels: list[str] = []
+
+            if x is None or y is None:
+                if not company_id:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Provide either data.x + data.y arrays, or data.company_id to pull actuals",
+                    )
+                cd = pull_company_data(company_id)
+                hist = cd.historical_values(category)  # [(period, amount), ...]
+                if len(hist) < 3:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Need at least 3 actuals for regression, got {len(hist)} for category '{category}'",
+                    )
+                x = list(range(len(hist)))
+                y = [float(amt) for _, amt in hist]
+                period_labels = [p for p, _ in hist]
+
+            if len(x) < 3 or len(y) < 3:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Need at least 3 data points for regression, got {len(x)}",
+                )
+
+            import numpy as np
+            from dateutil.relativedelta import relativedelta
+            from datetime import date as dt_date
+            x_arr = np.array(x, dtype=float)
+            y_arr = np.array(y, dtype=float)
+
+            if request.regression_type in ("advanced", "regression"):
+                # Auto-select best model from all available
+                auto_result = adv_svc.auto_select_best_model(
+                    x, y, forecast_periods=forecast_periods, metric_name=metric,
+                )
+                result = auto_result.to_dict()
+                # Flatten top-level keys for frontend compatibility
+                result["r_squared"] = result["best_model"]["r_squared"]
+                result["mape"] = None  # TODO: compute MAPE when actuals available
+                result["description"] = result["selection_reasoning"]
+                predictions = result["best_model"].get("predictions", [])
+                forecast_vals = result.get("forecast", [])
+            else:
+                # Run a specific model type
+                fit_fn = {
+                    "linear": lambda: adv_svc.fit_linear(x_arr, y_arr),
+                    "polynomial": lambda: adv_svc.fit_polynomial(x_arr, y_arr, degree=options.get("degree", 2)),
+                    "exponential_growth": lambda: adv_svc.fit_exponential_growth(x_arr, y_arr),
+                    "logistic": lambda: adv_svc.fit_logistic(x_arr, y_arr),
+                    "power_law": lambda: adv_svc.fit_power_law(x_arr, y_arr),
+                    "gompertz": lambda: adv_svc.fit_gompertz(x_arr, y_arr),
+                    "piecewise_linear": lambda: adv_svc.fit_piecewise_linear(x_arr, y_arr),
+                    "weighted_linear": lambda: adv_svc.fit_weighted_linear(x_arr, y_arr, decay=options.get("decay", 0.9)),
+                }
+                fit_result = fit_fn[request.regression_type]()
+                if fit_result is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Model '{request.regression_type}' could not be fit to this data",
+                    )
+                result = fit_result.to_dict()
+                result["r_squared"] = fit_result.r_squared
+                predictions = fit_result.predictions
+                forecast_vals = []
+
+            # Build chart-ready fit_data with period labels
+            # Generate forecast period labels if we have actuals periods
+            forecast_labels: list[str] = []
+            if period_labels and forecast_vals:
+                last_period = dt_date.fromisoformat(period_labels[-1])
+                for i in range(1, len(forecast_vals) + 1):
+                    next_p = last_period + relativedelta(months=i)
+                    forecast_labels.append(next_p.strftime("%Y-%m-%d"))
+
+            # Build all chart shapes so frontend can toggle without re-fetching
+            from app.services.forecast_chart_transforms import build_all_chart_shapes
+            confidence_intervals = result.get("forecast_confidence_intervals")
+            model_meta = result.get("best_model") or result
+            charts = build_all_chart_shapes(
+                periods=period_labels or [f"t{i}" for i in range(len(y))],
+                actuals=[float(v) for v in y],
+                predictions=[float(v) for v in predictions],
+                forecast_periods=forecast_labels,
+                forecast_vals=[float(v) for v in forecast_vals],
+                category=category,
+                model_meta=model_meta,
+                confidence_intervals=confidence_intervals,
+            )
+            result["fit_data"] = charts
+            result["period_labels"] = period_labels
+            result["forecast_labels"] = forecast_labels
+
         elif request.regression_type == "exponential":
             data = request.data.get("data", [])
             time_periods = request.data.get("time_periods", [])
@@ -2952,12 +3063,12 @@ async def generate_forecast(request: FPAForecastRequest):
     explicit base_data. Returns a full P&L projection at the requested granularity.
     """
     from app.services.cash_flow_planning_service import CashFlowPlanningService
-    from app.services.actuals_ingestion import seed_forecast_from_actuals
+    from app.services.company_data_pull import pull_company_data
 
     try:
         # Seed company_data from actuals or use provided base_data
         if request.company_id:
-            company_data = seed_forecast_from_actuals(request.company_id)
+            company_data = pull_company_data(request.company_id).to_forecast_seed()
             if not company_data.get("revenue") and not (request.base_data or {}).get("revenue"):
                 raise HTTPException(
                     status_code=400,

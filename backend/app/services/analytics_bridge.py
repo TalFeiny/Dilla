@@ -8,7 +8,7 @@ from typing import Dict, Any, List, Optional
 import logging
 from datetime import datetime
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,10 @@ class AnalyticsBridge:
             return await self._run_scenario_analysis(company, parameters)
         elif analysis_type == "full_research":
             return await self._run_full_research(company, parameters)
+        elif analysis_type == "cost_of_capital":
+            return await self._run_cost_of_capital(company, parameters)
+        elif analysis_type == "health_score":
+            return await self._run_health_score(company, parameters)
         else:
             return {
                 "status": "unsupported",
@@ -311,6 +315,132 @@ class AnalyticsBridge:
             }
         }
     
+    async def _run_cost_of_capital(
+        self,
+        company: str,
+        parameters: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Compute dynamic WACC from actual company data via strategic intelligence."""
+        from app.services.strategic_intelligence_service import (
+            compute_dynamic_wacc,
+            _wacc_to_dict,
+        )
+        from app.services.unified_financial_state import build_unified_state
+
+        company_id = parameters.get("company_id") or parameters.get("_company_id")
+        branch_id = parameters.get("branch_id")
+
+        if not company_id:
+            return {
+                "company": company,
+                "analysis_type": "cost_of_capital",
+                "status": "error",
+                "message": "company_id required for dynamic WACC computation",
+            }
+
+        state = await build_unified_state(
+            company_id, branch_id=branch_id, company_data=parameters,
+        )
+        wacc_result = compute_dynamic_wacc(state)
+
+        if not wacc_result:
+            return {
+                "company": company,
+                "analysis_type": "cost_of_capital",
+                "status": "error",
+                "message": "Insufficient data to compute WACC",
+            }
+
+        return {
+            "company": company,
+            "analysis_type": "cost_of_capital",
+            "results": _wacc_to_dict(wacc_result),
+        }
+
+    async def _run_health_score(
+        self,
+        company: str,
+        parameters: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Compute company health score from strategic signal detection."""
+        from app.services.strategic_intelligence_service import detect_signals
+        from app.services.unified_financial_state import build_unified_state
+
+        company_id = parameters.get("company_id") or parameters.get("_company_id")
+        branch_id = parameters.get("branch_id")
+
+        if not company_id:
+            return {
+                "company": company,
+                "analysis_type": "health_score",
+                "status": "error",
+                "message": "company_id required for health score computation",
+            }
+
+        state = await build_unified_state(
+            company_id, branch_id=branch_id, company_data=parameters,
+        )
+        signals = detect_signals(state)
+
+        # Compute health score: start at 100, deduct per signal severity
+        score = 100.0
+        deductions = []
+        for signal in signals:
+            if signal.severity == "high":
+                penalty = 20
+            elif signal.severity == "medium":
+                penalty = 10
+            else:
+                penalty = 5
+            score -= penalty
+            deductions.append({
+                "metric": signal.metric,
+                "signal_type": signal.signal_type,
+                "description": signal.description,
+                "severity": signal.severity,
+                "penalty": penalty,
+                "current_value": signal.current_value,
+                "threshold": signal.threshold,
+            })
+
+        score = max(score, 0.0)
+
+        # Classify
+        if score >= 80:
+            grade = "A"
+            status = "healthy"
+        elif score >= 60:
+            grade = "B"
+            status = "moderate_risk"
+        elif score >= 40:
+            grade = "C"
+            status = "elevated_risk"
+        else:
+            grade = "D"
+            status = "critical"
+
+        return {
+            "company": company,
+            "analysis_type": "health_score",
+            "results": {
+                "score": round(score, 1),
+                "grade": grade,
+                "status": status,
+                "signals_detected": len(signals),
+                "high_severity_count": sum(1 for s in signals if s.severity == "high"),
+                "medium_severity_count": sum(1 for s in signals if s.severity == "medium"),
+                "deductions": deductions,
+                "summary": {
+                    "runway_months": state.runway_months,
+                    "growth_rate": state.growth_rate,
+                    "burn_rate": state.burn_rate,
+                    "gross_margin": state.gross_margin,
+                    "growth_trajectory": state.growth_trajectory,
+                    "burn_trajectory": state.burn_trajectory,
+                },
+            },
+        }
+
     def _calculate_probability_above(
         self,
         simulations: np.ndarray,

@@ -1,10 +1,9 @@
 'use client';
 
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { MemoSectionWrapper } from '../MemoSectionWrapper';
-import { useMemoContext, type NarrativeCard, type ForecastMeta } from '../MemoContext';
-// Using ctx.buildForecast so the grid, forecastMeta, and driver registry all update.
+import { useMemoContext, type NarrativeCard } from '../MemoContext';
 import { Button } from '@/components/ui/button';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -16,8 +15,12 @@ const TableauLevelCharts = dynamic(
   { ssr: false, loading: () => <div className="h-[300px] animate-pulse bg-muted rounded" /> }
 );
 
-type ChartMode = 'regression_line' | 'line' | 'bar_comparison';
-type ForecastMethod = 'driver-based' | 'regression' | 'seasonal' | 'auto';
+type ChartMode = 'branched_line' | 'stacked_bar' | 'treemap' | 'regression_line' | 'line' | 'bar_comparison' | 'monte_carlo_fan';
+type ForecastMethod =
+  | 'auto' | 'driver-based' | 'seasonal'
+  | 'linear' | 'polynomial' | 'exponential_growth'
+  | 'logistic' | 'power_law' | 'gompertz'
+  | 'piecewise_linear' | 'weighted_linear';
 
 export interface ForecastMethodSectionProps {
   onDelete?: () => void;
@@ -26,7 +29,7 @@ export interface ForecastMethodSectionProps {
 
 export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMethodSectionProps) {
   const ctx = useMemoContext();
-  const [chartMode, setChartMode] = useState<ChartMode>('regression_line');
+  const [chartMode, setChartMode] = useState<ChartMode>('branched_line');
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [selectedMethod, setSelectedMethod] = useState<ForecastMethod>('auto');
   const [loading, setLoading] = useState(false);
@@ -35,9 +38,7 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
     if (!ctx.companyId) return;
     setLoading(true);
     try {
-      // Use context buildForecast so grid, drivers, and forecastMeta all update
       await ctx.buildForecast({ method: selectedMethod });
-      // ctx.forecastMeta gets set by the context after buildForecast completes
     } catch (err: any) {
       console.warn('Forecast build error:', err);
     } finally {
@@ -47,11 +48,64 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
 
   const methodResult = ctx.forecastMeta;
 
-  // Build chart data from forecast response — no grid fallback
-  const chartData = useMemo(() => {
-    if (methodResult?.fit_data) return methodResult.fit_data;
-    return [];
-  }, [methodResult]);
+  // Auto-generate narrative cards when forecast metadata updates
+  useEffect(() => {
+    if (!methodResult) return;
+    const cards: NarrativeCard[] = [];
+
+    // Model fit narrative
+    if (methodResult.description) {
+      cards.push({
+        id: 'forecast-description',
+        text: methodResult.description,
+        severity: 'info',
+      });
+    }
+
+    // R² / accuracy card
+    if (methodResult.r_squared != null) {
+      const r2 = methodResult.r_squared;
+      const quality = r2 >= 0.9 ? 'strong' : r2 >= 0.7 ? 'moderate' : 'weak';
+      const severity = r2 >= 0.7 ? 'info' : 'warning';
+      cards.push({
+        id: 'forecast-accuracy',
+        text: `${methodResult.method || 'Model'} fit: R² = ${r2.toFixed(3)} (${quality})${methodResult.mape != null ? ` | MAPE: ${(methodResult.mape * 100).toFixed(1)}%` : ''}`,
+        severity,
+      });
+    }
+
+    // Request AI narrative for richer context
+    if (ctx.requestNarrative && methodResult.method) {
+      ctx.requestNarrative('forecast_method', {
+        method: methodResult.method,
+        r_squared: methodResult.r_squared,
+        mape: methodResult.mape,
+        alternatives: methodResult.alternatives,
+        fit_data_points: methodResult.fit_data?.length,
+      }).then(narrative => {
+        if (narrative) {
+          setNarrativeCards(prev => [
+            ...prev.filter(c => c.id !== 'forecast-ai-narrative'),
+            { id: 'forecast-ai-narrative', text: narrative, severity: 'info' as const },
+          ]);
+        }
+      }).catch(() => {});
+    }
+
+    setNarrativeCards(cards);
+  }, [methodResult, ctx]);
+
+  // Backend returns pre-built chart shapes keyed by chart type — just pass through
+  // Each shape: { data, citations, explanation }
+  const chartShape = useMemo(() => {
+    if (!methodResult?.fit_data) return null;
+    const shapes = methodResult.fit_data;
+    return shapes[chartMode] ?? shapes['line'] ?? null;
+  }, [methodResult, chartMode]);
+
+  const chartData = chartShape?.data ?? null;
+  const chartCitations = chartShape?.citations ?? [];
+  const chartExplanation = chartShape?.explanation ?? null;
 
   const collapsedSummary = methodResult
     ? `Method: ${methodResult.method} | R²: ${methodResult.r_squared?.toFixed(3) || '—'} | MAPE: ${methodResult.mape ? `${(methodResult.mape * 100).toFixed(1)}%` : '—'}`
@@ -67,23 +121,34 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
       <div className="flex items-center gap-1.5">
         <span className="text-muted-foreground">Chart:</span>
         <Select value={chartMode} onValueChange={(v) => setChartMode(v as ChartMode)}>
-          <SelectTrigger className="h-6 w-[120px] text-[11px]"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="h-6 w-[140px] text-[11px]"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="regression_line">Regression</SelectItem>
+            <SelectItem value="branched_line">Scenario Branches</SelectItem>
+            <SelectItem value="stacked_bar">Stacked Bar</SelectItem>
+            <SelectItem value="regression_line">Regression Fit</SelectItem>
             <SelectItem value="line">Line</SelectItem>
-            <SelectItem value="bar_comparison">Comparison</SelectItem>
+            <SelectItem value="treemap">Treemap</SelectItem>
+            <SelectItem value="bar_comparison">Grouped Bar</SelectItem>
+            <SelectItem value="monte_carlo_fan">MC Fan</SelectItem>
           </SelectContent>
         </Select>
       </div>
       <div className="flex items-center gap-1.5">
         <span className="text-muted-foreground">Method:</span>
         <Select value={selectedMethod} onValueChange={(v) => setSelectedMethod(v as ForecastMethod)}>
-          <SelectTrigger className="h-6 w-[110px] text-[11px]"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="h-6 w-[150px] text-[11px]"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="auto">Auto</SelectItem>
-            <SelectItem value="driver-based">Driver-based</SelectItem>
-            <SelectItem value="regression">Regression</SelectItem>
+            <SelectItem value="auto">Auto (best fit)</SelectItem>
+            <SelectItem value="linear">Linear</SelectItem>
+            <SelectItem value="polynomial">Polynomial</SelectItem>
+            <SelectItem value="exponential_growth">Exponential</SelectItem>
+            <SelectItem value="logistic">Logistic (S-curve)</SelectItem>
+            <SelectItem value="power_law">Power Law</SelectItem>
+            <SelectItem value="gompertz">Gompertz</SelectItem>
+            <SelectItem value="piecewise_linear">Piecewise Linear</SelectItem>
+            <SelectItem value="weighted_linear">Weighted Linear</SelectItem>
             <SelectItem value="seasonal">Seasonal</SelectItem>
+            <SelectItem value="driver-based">Driver-based</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -126,16 +191,16 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
     >
       {methodCards}
       <div className="w-full" style={{ height: 280 }}>
-        {chartData.length > 0 ? (
-          <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={260} />
+        {chartData ? (
+          <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={260} citations={chartCitations} />
         ) : (
           <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
             Build a forecast to see method fit and accuracy
           </div>
         )}
       </div>
-      {methodResult?.description && (
-        <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">{methodResult.description}</p>
+      {chartExplanation && (
+        <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">{chartExplanation}</p>
       )}
     </MemoSectionWrapper>
   );

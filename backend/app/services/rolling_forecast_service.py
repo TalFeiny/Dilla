@@ -53,11 +53,14 @@ class RollingForecastService:
         3. Tag each row with source="actual" or source="forecast"
         4. Aggregate to requested granularity
         """
-        from app.services.actuals_ingestion import seed_forecast_from_actuals
+        from app.services.company_data_pull import pull_company_data
         from app.services.cash_flow_planning_service import CashFlowPlanningService
 
+        # Single data pull — all actuals + analytics in one query
+        cd = pull_company_data(company_id)
+
         # --- 1. Pull actuals ---
-        actuals_monthly = self._load_actuals_monthly(company_id)
+        actuals_monthly = self._reshape_to_pnl_rows(cd)
         num_actuals = len(actuals_monthly)
 
         # Capture data boundaries for frontend column generation
@@ -89,7 +92,7 @@ class RollingForecastService:
                 forecast_monthly = saved_forecast
             else:
                 # Fall back to computing forecast on the fly
-                company_data = seed_forecast_from_actuals(company_id)
+                company_data = cd.to_forecast_seed()
                 if company_data.get("revenue", 0) > 0:
                     svc = CashFlowPlanningService()
                     forecast_monthly = svc.build_monthly_cash_flow_model(
@@ -144,7 +147,7 @@ class RollingForecastService:
             from app.services.forecast_explainer import ForecastExplainer
 
             explainer = ForecastExplainer()
-            seed_data = seed_forecast_from_actuals(company_id) if actuals_monthly else {}
+            seed_data = cd.to_forecast_seed() if actuals_monthly else {}
             method = seed_data.get("_forecast_method", "growth_rate")
             # Generate derivations for forecast cells
             for i, row in enumerate(combined):
@@ -256,75 +259,34 @@ class RollingForecastService:
             logger.debug(f"Failed to load active forecast for rolling view: {e}")
             return None
 
-    def _load_actuals_monthly(self, company_id: str) -> List[Dict[str, Any]]:
-        """
-        Pull fpa_actuals and reshape into monthly P&L rows matching
-        the CashFlowPlanningService output shape.
-        """
-        from app.core.supabase_client import get_supabase_client
+    _CAT_TO_PNL_KEY = {
+        "opex_rd": "rd_spend",
+        "opex_sm": "sm_spend",
+        "opex_ga": "ga_spend",
+        "opex_total": "total_opex",
+        "opex": "total_opex",
+    }
 
-        sb = get_supabase_client()
-        if not sb:
+    def _reshape_to_pnl_rows(self, cd) -> List[Dict[str, Any]]:
+        """Reshape CompanyData.by_period() into monthly P&L rows.
+
+        Same output shape as the old _load_actuals_monthly, but uses the
+        already-loaded CompanyData instead of a separate DB query.
+        """
+        by_period = cd.by_period()
+        if not by_period:
             return []
 
-        result = (
-            sb.table("fpa_actuals")
-            .select("period, category, subcategory, amount")
-            .eq("company_id", company_id)
-            .order("period")
-            .execute()
-        )
-
-        # Group by period
-        by_period: Dict[str, Dict[str, float]] = {}
-        for row in result.data or []:
-            period = row["period"][:7]  # "2025-01-01" → "2025-01"
-            if period not in by_period:
-                by_period[period] = {}
-            cat = row["category"]
-            amount = float(row["amount"])
-
-            # Map to standard keys
-            if cat == "revenue":
-                by_period[period]["revenue"] = by_period[period].get("revenue", 0) + amount
-            elif cat == "cogs":
-                by_period[period]["cogs"] = amount
-            elif cat in ("opex_total", "opex"):
-                by_period[period]["total_opex"] = amount
-            elif cat == "opex_rd":
-                by_period[period]["rd_spend"] = amount
-            elif cat == "opex_sm":
-                by_period[period]["sm_spend"] = amount
-            elif cat == "opex_ga":
-                by_period[period]["ga_spend"] = amount
-            elif cat == "ebitda":
-                by_period[period]["ebitda"] = amount
-            elif cat == "cash_balance":
-                by_period[period]["cash_balance"] = amount
-            elif cat == "burn_rate":
-                by_period[period]["burn_rate"] = amount
-            # Balance sheet categories
-            elif cat == "bs_cash":
-                by_period[period]["bs_cash"] = by_period[period].get("bs_cash", 0) + amount
-            elif cat == "bs_receivables":
-                by_period[period]["bs_receivables"] = by_period[period].get("bs_receivables", 0) + amount
-            elif cat == "bs_payables":
-                by_period[period]["bs_payables"] = by_period[period].get("bs_payables", 0) + amount
-            elif cat == "bs_inventory":
-                by_period[period]["bs_inventory"] = by_period[period].get("bs_inventory", 0) + amount
-            elif cat == "bs_deferred_revenue":
-                by_period[period]["bs_deferred_revenue"] = by_period[period].get("bs_deferred_revenue", 0) + amount
-            elif cat == "bs_lt_debt":
-                by_period[period]["bs_lt_debt"] = by_period[period].get("bs_lt_debt", 0) + amount
-            elif cat == "bs_st_debt":
-                by_period[period]["bs_st_debt"] = by_period[period].get("bs_st_debt", 0) + amount
-            elif cat == "bs_ppe":
-                by_period[period]["bs_ppe"] = by_period[period].get("bs_ppe", 0) + amount
-
-        # Build rows in standard P&L shape
         rows: List[Dict[str, Any]] = []
         for period in sorted(by_period.keys()):
-            vals = by_period[period]
+            raw = by_period[period]
+
+            # Map category names → P&L keys (revenue, cogs, bs_* stay as-is)
+            vals: Dict[str, float] = {}
+            for cat, amount in raw.items():
+                key = self._CAT_TO_PNL_KEY.get(cat, cat)
+                vals[key] = vals.get(key, 0) + amount
+
             revenue = vals.get("revenue", 0)
             cogs = vals.get("cogs", 0)
             gross_profit = revenue - cogs
@@ -333,7 +295,6 @@ class RollingForecastService:
             sm = vals.get("sm_spend", 0)
             ga = vals.get("ga_spend", 0)
 
-            # If we have line-item opex but no total, sum them
             if total_opex == 0 and (rd or sm or ga):
                 total_opex = rd + sm + ga
 
@@ -349,7 +310,6 @@ class RollingForecastService:
             bs_st_debt = vals.get("bs_st_debt", 0)
             bs_ppe = vals.get("bs_ppe", 0)
 
-            # Derived BS metrics
             working_capital = bs_receivables + bs_inventory - bs_payables - bs_deferred_revenue
             net_debt = bs_lt_debt + bs_st_debt - bs_cash
 
@@ -366,10 +326,9 @@ class RollingForecastService:
                 "ebitda": round(ebitda, 2),
                 "ebitda_margin": round(ebitda / revenue, 4) if revenue else -1.0,
                 "capex": 0,
-                "free_cash_flow": round(ebitda, 2),  # no capex in actuals
+                "free_cash_flow": round(ebitda, 2),
                 "cash_balance": round(vals.get("cash_balance", 0), 2),
                 "runway_months": 0,
-                # Balance sheet position
                 "bs_cash": round(bs_cash, 2),
                 "bs_receivables": round(bs_receivables, 2),
                 "bs_payables": round(bs_payables, 2),

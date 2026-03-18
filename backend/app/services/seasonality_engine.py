@@ -33,6 +33,7 @@ class SeasonalityEngine:
         company_id: str,
         metric: str = "revenue",
         min_periods: int = 12,
+        company_data=None,
     ) -> Optional[SeasonalPattern]:
         """Detect seasonal pattern from actual actuals data.
 
@@ -43,21 +44,21 @@ class SeasonalityEngine:
         4. Test significance: max/min ratio < 1.1 = not seasonal
         5. Return 12 monthly factors (sum to 12.0)
         """
-        from app.services.actuals_ingestion import get_actuals_for_forecast
+        if company_data is None:
+            from app.services.company_data_pull import pull_company_data
+            company_data = pull_company_data(company_id)
 
-        series = get_actuals_for_forecast(company_id, metric, months=36)
-        if len(series) < min_periods:
+        hist = company_data.historical_values(metric)
+        if len(hist) < min_periods:
             logger.debug(
                 "Seasonality: need %d periods, have %d for %s/%s",
-                min_periods, len(series), company_id, metric,
+                min_periods, len(hist), company_id, metric,
             )
             return None
 
         # Extract (month, amount) pairs
         data_points: List[tuple] = []
-        for entry in series:
-            period = entry["period"][:7]  # "2025-01"
-            amount = entry["amount"]
+        for period, amount in hist:
             if amount is None or amount == 0:
                 continue
             try:

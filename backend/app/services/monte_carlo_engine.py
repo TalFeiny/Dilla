@@ -113,14 +113,15 @@ class MonteCarloEngine:
 
         Returns percentile bands, VaR, runway distribution, driver sensitivity.
         """
-        from app.services.actuals_ingestion import seed_forecast_from_actuals
+        from app.services.company_data_pull import pull_company_data
         from app.services.cash_flow_planning_service import CashFlowPlanningService
         from app.services.scenario_branch_service import ScenarioBranchService
 
         cfp = CashFlowPlanningService()
 
-        # Get base company data from actuals
-        base_data = seed_forecast_from_actuals(company_id)
+        # Get base company data from actuals (full time series)
+        cd = pull_company_data(company_id)
+        base_data = cd.to_forecast_seed()
         if not base_data.get("revenue") and not base_data.get("burn_rate"):
             logger.warning("MC: no actuals for %s", company_id)
             return MonteCarloResult(iterations=0, months=months)
@@ -134,7 +135,7 @@ class MonteCarloEngine:
                 base_data = sbs._apply_overrides({**base_data}, merged)
 
         # Build distribution specs from actual data where possible
-        dist_specs = _build_distributions(company_id, base_data, driver_overrides)
+        dist_specs = _build_distributions(cd, base_data, driver_overrides)
 
         # Storage for all iterations
         metrics_to_track = [
@@ -285,7 +286,7 @@ _DRIVER_TO_DATA_KEY = {
 
 
 def _build_distributions(
-    company_id: str,
+    cd,  # CompanyData — has full time series, no extra queries needed
     base_data: Dict[str, Any],
     overrides: Optional[Dict[str, DistSpec]],
 ) -> Dict[str, DistSpec]:
@@ -293,11 +294,9 @@ def _build_distributions(
 
     For each driver:
     1. If user provided an override, use it
-    2. If we have actuals history, compute sigma from actual variance
+    2. If we have actuals history, derive sigma from CompanyData.historical_variance()
     3. Fall back to default distribution
     """
-    from app.services.actuals_ingestion import get_actuals_for_forecast
-
     specs: Dict[str, DistSpec] = {}
 
     for driver_id in _MC_DRIVERS:
@@ -306,30 +305,25 @@ def _build_distributions(
             specs[driver_id] = overrides[driver_id]
             continue
 
-        # Try to derive from actuals
+        # Try to derive from actuals via CompanyData (no extra DB query)
         actuals_category = _DRIVER_TO_ACTUALS_CATEGORY.get(driver_id)
         if actuals_category:
             try:
-                series = get_actuals_for_forecast(company_id, actuals_category, months=24)
-                if len(series) >= 6:
-                    values = [e["amount"] for e in series if e.get("amount")]
-                    if len(values) >= 6:
-                        mean_val = sum(values) / len(values)
-                        if mean_val != 0:
-                            # Coefficient of variation → sigma
-                            variance = sum((v - mean_val) ** 2 for v in values) / len(values)
-                            cv = (variance ** 0.5) / abs(mean_val)
-                            specs[driver_id] = DistSpec(
-                                dist_type="normal",
-                                sigma=min(cv, 0.5),  # cap at 50%
-                                clip_low=_DEFAULT_DISTRIBUTIONS.get(
-                                    driver_id, DistSpec()
-                                ).clip_low,
-                                clip_high=_DEFAULT_DISTRIBUTIONS.get(
-                                    driver_id, DistSpec()
-                                ).clip_high,
-                            )
-                            continue
+                hv = cd.historical_variance(actuals_category)
+                if hv and hv["n"] >= 6:
+                    # Use the spread as sigma (half the range is a reasonable proxy)
+                    spread = (hv["max"] - hv["min"]) / 2
+                    specs[driver_id] = DistSpec(
+                        dist_type="normal",
+                        sigma=min(abs(spread), 0.5),  # cap at 50%
+                        clip_low=_DEFAULT_DISTRIBUTIONS.get(
+                            driver_id, DistSpec()
+                        ).clip_low,
+                        clip_high=_DEFAULT_DISTRIBUTIONS.get(
+                            driver_id, DistSpec()
+                        ).clip_high,
+                    )
+                    continue
             except Exception:
                 pass
 

@@ -414,15 +414,25 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
         });
       }
 
-      // Also fetch regression fit data for chart rendering (correct request shape)
+      // Fetch regression fit data using the advanced toolkit
       try {
-        const regType = params?.method === 'auto' || !params?.method ? 'linear' : params.method;
+        const methodToRegType: Record<string, string> = {
+          auto: 'advanced', linear: 'linear', regression: 'advanced',
+          advanced_regression: 'advanced', polynomial: 'polynomial',
+          exponential: 'exponential_growth', exponential_growth: 'exponential_growth',
+          logistic: 'logistic', power_law: 'power_law', gompertz: 'gompertz',
+          piecewise: 'piecewise_linear', piecewise_linear: 'piecewise_linear',
+          weighted_linear: 'weighted_linear', seasonal: 'advanced',
+          'driver-based': 'advanced', driver_based: 'advanced',
+        };
+        const regType = methodToRegType[params?.method || 'auto'] || 'advanced';
         const regRes = await fetch(`/api/fpa/regression`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             regression_type: regType,
             data: { company_id: companyId },
+            options: { metric: 'revenue', forecast_periods: 12 },
           }),
         });
         if (regRes.ok) {
@@ -432,12 +442,22 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
             ...prev,
             r_squared: regData.r_squared ?? prev?.r_squared,
             mape: regData.mape ?? prev?.mape,
-            description: regData.description ?? prev?.description,
+            description: regData.description ?? regData.selection_reasoning ?? prev?.description,
             fit_data: regData.fit_data ?? prev?.fit_data,
-            alternatives: regData.alternatives ?? prev?.alternatives,
+            alternatives: regData.all_models_ranked ?? regData.alternatives ?? prev?.alternatives,
+            model_name: regData.best_model?.model_name ?? regData.model_name,
+            business_interpretation: regData.best_model?.business_interpretation,
+            extrapolation_risk: regData.best_model?.extrapolation_risk,
+            confidence: regData.best_model?.confidence,
+            data_characteristics: regData.data_characteristics,
           }));
+        } else {
+          const errText = await regRes.text().catch(() => 'Unknown error');
+          console.warn(`Regression endpoint returned ${regRes.status}: ${errText}`);
         }
-      } catch { /* regression endpoint optional */ }
+      } catch (err) {
+        console.warn('Regression fetch failed:', err);
+      }
 
       bump();
     } finally {

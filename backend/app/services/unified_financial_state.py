@@ -237,24 +237,22 @@ async def _load_kpis(company_id: str) -> Any:
 
 async def _load_actuals_history(company_id: str) -> Dict[str, ActualsSummary]:
     """Load actuals across all categories for trend analysis."""
-    from app.services.actuals_ingestion import get_actuals_for_forecast, METRIC_TO_CATEGORY
+    from app.services.company_data_pull import pull_company_data
 
+    cd = pull_company_data(company_id)
     result: Dict[str, ActualsSummary] = {}
-    categories = list(METRIC_TO_CATEGORY.values())
 
-    for category in categories:
-        try:
-            series = get_actuals_for_forecast(company_id, category, months=24)
-            if series:
-                result[category] = ActualsSummary(
-                    category=category,
-                    latest_period=series[-1]["period"][:7],
-                    latest_amount=series[-1]["amount"],
-                    series=series,
-                    periods_available=len(series),
-                )
-        except Exception as e:
-            logger.debug("Actuals load for %s/%s failed: %s", company_id, category, e)
+    for category in cd.time_series:
+        hist = cd.historical_values(category)
+        if hist:
+            series = [{"period": p, "amount": v} for p, v in hist]
+            result[category] = ActualsSummary(
+                category=category,
+                latest_period=hist[-1][0],
+                latest_amount=hist[-1][1],
+                series=series,
+                periods_available=len(hist),
+            )
 
     return result
 
