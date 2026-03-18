@@ -53,7 +53,31 @@ export function CascadeSection({ onDelete, readOnly = false }: CascadeSectionPro
     setLoading(true);
     try {
       const data = await runCascadeAnalysis(ctx.companyId, triggerType, ctx.activeBranchId);
-      const steps = data.result?.steps || data.result?.cascade || data.steps || data.cascade || [];
+
+      // The cascade engine (CascadeGraph) returns CascadeResult with:
+      // { trigger, steps: CascadeStep[], cap_table_delta, cash_flow_delta, ... }
+      // But it may come through unified-brain wrapped in { result: { ... } }
+      const inner = data?.result ?? data;
+
+      // Find the steps array — might be under different keys
+      const rawSteps: any[] = inner?.steps
+        ?? inner?.cascade
+        ?? inner?.cascade_steps
+        ?? data?.steps
+        ?? [];
+
+      const steps: CascadeStep[] = rawSteps.map((s: any, i: number) => ({
+        id: s.id ?? `step-${s.step_number ?? s.step ?? i}`,
+        trigger: s.trigger ?? s.param_affected ?? s.edge_type ?? '',
+        clause: s.clause ?? s.source_clause?.clause_ref ?? s.source_clause,
+        description: s.description ?? '',
+        financial_impact: s.financial_impact,
+        impact_label: s.impact_label,
+        triggers_next: s.triggers_next ?? s.downstream_triggers ?? [],
+        severity: s.severity ?? (Math.abs(s.financial_impact ?? 0) > 1000000 ? 'critical'
+          : Math.abs(s.financial_impact ?? 0) > 100000 ? 'warning' : 'info'),
+      }));
+
       setCascadeSteps(steps);
     } catch (err) {
       console.warn('Cascade failed:', err);

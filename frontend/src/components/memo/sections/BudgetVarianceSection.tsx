@@ -9,7 +9,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Loader2, Play } from 'lucide-react';
-import { fetchBudgetVariance } from '@/lib/memo/api-helpers';
+import { fetchBudgetVariance, listBudgets } from '@/lib/memo/api-helpers';
 import { fmtCurrency } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
@@ -44,14 +44,51 @@ export function BudgetVarianceSection({ onDelete, readOnly = false }: BudgetVari
   const handleFetchVariance = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await fetchBudgetVariance(ctx.companyId, period !== 'latest' ? period : undefined);
-      setVarianceData(data.variances || data.rows || []);
+      // Derive start/end from grid columns so the backend doesn't 422.
+      const periodCols = ctx.matrixData.columns
+        .map(c => c.id)
+        .filter(id => id !== 'lineItem')
+        .sort();
+      const start = periodCols[0] || undefined;
+      const end = periodCols[periodCols.length - 1] || undefined;
+
+      // Resolve a real budget_id if we can; don't send a period string as budget_id.
+      let budgetId: string | undefined;
+      try {
+        const budgets = await listBudgets(ctx.companyId);
+        const list: any[] = budgets?.budgets || (Array.isArray(budgets) ? budgets : []);
+        if (list.length > 0) budgetId = list[0].id ?? list[0].budget_id;
+      } catch { /* budget list optional */ }
+
+      const data = await fetchBudgetVariance(ctx.companyId, budgetId, start, end);
+
+      // Flexibly map response.
+      // Possible: { variances: { by_category: [...], summary: {...}, monthly_trend: [...] } }
+      //   or { variances: [...] } or { rows: [...] }
+      const variances = data?.variances;
+      const raw: any[] = variances?.by_category
+        ?? (Array.isArray(variances) ? variances : null)
+        ?? data?.rows
+        ?? (Array.isArray(data) ? data : []);
+
+      const mapped: VarianceRow[] = raw.map((entry: any) => ({
+        line_item: entry.line_item ?? entry.category ?? entry.name ?? '',
+        budget: entry.budget ?? 0,
+        actual: entry.actual ?? 0,
+        variance: entry.variance ?? (entry.actual ?? 0) - (entry.budget ?? 0),
+        variance_pct: entry.variance_pct ?? entry.pct ?? 0,
+        favorable: entry.favorable
+          ?? (entry.status === 'under' || entry.status === 'on_track')
+          ?? ((entry.variance ?? 0) >= 0),
+      }));
+
+      setVarianceData(mapped);
     } catch (err) {
       console.warn('Budget variance failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [ctx.companyId, period]);
+  }, [ctx.companyId, ctx.matrixData.columns, period]);
 
   const chartData = useMemo(() => {
     if (varianceData.length === 0) return [];

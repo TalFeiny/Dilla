@@ -4,7 +4,7 @@ import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { MemoSectionWrapper } from '../MemoSectionWrapper';
 import { useMemoContext, type NarrativeCard } from '../MemoContext';
-import { fetchPnl, buildForecast } from '@/lib/memo/api-helpers';
+import { fetchPnl } from '@/lib/memo/api-helpers';
 import { Button } from '@/components/ui/button';
 import {
   Select,
@@ -48,33 +48,21 @@ interface PnlResponse {
   ratios?: Record<string, any>;
 }
 
-/** Chart series we want to plot from the PnlResponse rows */
-const PNL_CHART_IDS = ['revenue', 'cogs', 'opex_rd', 'opex_sm', 'opex_ga', 'ebitda', 'net_income'];
-const PNL_CHART_LABELS: Record<string, string> = {
-  revenue: 'Revenue',
-  cogs: 'COGS',
-  opex_rd: 'R&D',
-  opex_sm: 'S&M',
-  opex_ga: 'G&A',
-  ebitda: 'EBITDA',
-  net_income: 'Net Income',
-};
-
-/** Transform backend rows into chart-ready data */
+/** Transform backend rows into chart-ready data.
+ *  Dynamic — charts all non-header, non-computed rows that have actual values.
+ *  This handles any subcategory structure the backend returns. */
 function buildChartFromResponse(data: PnlResponse): Record<string, any>[] {
   if (!data.periods || !data.rows) return [];
 
-  // Build a lookup: row id → values
-  const rowMap: Record<string, Record<string, number | null>> = {};
-  for (const row of data.rows) {
-    rowMap[row.id] = row.values;
-  }
+  // Pick rows worth charting: anything that has values and isn't a section header.
+  // Totals (isTotal) are included because they're meaningful aggregates.
+  const chartableRows = data.rows.filter(r => !r.isHeader && r.values && Object.keys(r.values).length > 0);
 
   return data.periods.map(period => {
     const entry: Record<string, any> = { period };
-    for (const id of PNL_CHART_IDS) {
-      const label = PNL_CHART_LABELS[id] || id;
-      entry[label] = rowMap[id]?.[period] ?? 0;
+    for (const row of chartableRows) {
+      const label = row.label || row.id;
+      entry[label] = row.values[period] ?? 0;
     }
     return entry;
   });
@@ -157,24 +145,40 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
     [pnlData]
   );
 
-  // Latest period summary for collapsed state
+  // Latest period summary for collapsed state — look for common keys flexibly
   const latestPeriod = chartData[chartData.length - 1];
-  const collapsedSummary = latestPeriod
-    ? `Revenue: ${fmtCurrency(latestPeriod.Revenue || 0)} | EBITDA: ${fmtCurrency(latestPeriod.EBITDA || 0)} | Net: ${fmtCurrency(latestPeriod['Net Income'] || 0)}`
-    : 'P&L — no periods loaded';
+  const collapsedSummary = useMemo(() => {
+    if (!latestPeriod) return 'P&L — no periods loaded';
+    // Find revenue / ebitda / net income by label, case-insensitive partial match
+    const find = (keywords: string[]) => {
+      for (const key of Object.keys(latestPeriod)) {
+        const lower = key.toLowerCase();
+        if (keywords.some(k => lower.includes(k))) return latestPeriod[key];
+      }
+      return null;
+    };
+    const rev = find(['revenue']);
+    const ebitda = find(['ebitda']);
+    const net = find(['net_income', 'net income']);
+    const parts: string[] = [];
+    if (rev != null) parts.push(`Revenue: ${fmtCurrency(rev)}`);
+    if (ebitda != null) parts.push(`EBITDA: ${fmtCurrency(ebitda)}`);
+    if (net != null) parts.push(`Net: ${fmtCurrency(net)}`);
+    return parts.length > 0 ? parts.join(' | ') : `P&L — ${chartData.length} periods`;
+  }, [latestPeriod, chartData.length]);
 
   // Build forecast action
   const handleBuildForecast = useCallback(async () => {
     if (!ctx.companyId) return;
     setForecasting(true);
     try {
-      await buildForecast(ctx.companyId, { method: forecastMethod });
+      await ctx.buildForecast({ method: forecastMethod });
       // Re-fetch P&L to get updated data with forecast
       await handleFetch();
     } finally {
       setForecasting(false);
     }
-  }, [ctx.companyId, forecastMethod, handleFetch]);
+  }, [ctx, forecastMethod, handleFetch]);
 
   // AI data context
   const aiContext = useMemo(() => ({

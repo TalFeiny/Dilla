@@ -39,13 +39,52 @@ export function CostOfCapitalSection({ onDelete, readOnly = false }: CostOfCapit
   const [result, setResult] = useState<WACCResult | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const [error, setError] = useState<string | null>(null);
+
   const handleCalculate = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const data = await runAdvancedAnalytics(ctx.companyId, 'cost_of_capital');
-      setResult(data);
+
+      // Backend wraps in AnalyticsResponse: { results: { ... } }
+      // Strategic intelligence service returns WACCResult with: wacc, cost_of_equity,
+      // cost_of_debt, equity_weight, debt_weight, beta_used, risk_free_rate,
+      // equity_risk_premium, adjustments_applied, breakdown
+      const inner = data?.results ?? data;
+
+      if (inner?.status === 'unsupported') {
+        setError(inner.message || 'Cost of capital analysis not yet available.');
+        return;
+      }
+
+      // Flexibly map — the WACC data might be nested under a wacc key,
+      // or be flat at the inner level
+      const w = inner?.wacc_result ?? inner?.wacc_data ?? inner;
+
+      const wacc: WACCResult = {
+        wacc: (typeof w.wacc === 'number') ? w.wacc : 0,
+        cost_of_equity: w.cost_of_equity ?? 0,
+        cost_of_debt: w.cost_of_debt ?? 0,
+        equity_weight: w.equity_weight ?? 0,
+        debt_weight: w.debt_weight ?? 0,
+        tax_rate: w.tax_rate ?? 0.25,
+        risk_free_rate: w.risk_free_rate ?? 0,
+        equity_risk_premium: w.equity_risk_premium ?? 0,
+        beta: w.beta ?? w.beta_used,
+        size_premium: w.size_premium,
+        components: w.components ?? w.breakdown?.components,
+      };
+
+      // Only set if we got real data (wacc > 0 or cost_of_equity > 0)
+      if (wacc.wacc > 0 || wacc.cost_of_equity > 0) {
+        setResult(wacc);
+      } else {
+        setError('No WACC data returned. The backend may not support this analysis type yet.');
+      }
     } catch (err) {
       console.warn('Cost of capital failed:', err);
+      setError('Failed to calculate WACC.');
     } finally {
       setLoading(false);
     }
@@ -131,7 +170,7 @@ export function CostOfCapitalSection({ onDelete, readOnly = false }: CostOfCapit
         </div>
       ) : (
         <div className="flex items-center justify-center h-[200px] text-xs text-muted-foreground">
-          Calculate WACC to view cost of capital components
+          {error || 'Calculate WACC to view cost of capital components'}
         </div>
       )}
     </MemoSectionWrapper>

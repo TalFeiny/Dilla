@@ -45,20 +45,94 @@ export function MonteCarloSection({ onDelete, readOnly = false }: MonteCarloSect
   const handleRunMonteCarlo = useCallback(async () => {
     setLoading(true);
     try {
-      // Backend pulls actuals from Supabase — no grid scraping needed
       const data = await runMonteCarlo(
         ctx.companyId,
         targetMetric,
         parseInt(simCount) || 1000,
-        (ctx as any).activeBranchId ?? null,
+        ctx.activeBranchId ?? null,
       );
-      setResult(data);
+
+      // Flexibly map whatever shape the backend returns into MCResult.
+      // Possible shapes:
+      //   { statistics: { revenue: { mean, std, p5, p95, median } }, iterations, results }
+      //   { results: { mean_valuation, median_valuation, std_deviation, confidence_intervals, sample_simulations } }
+      //   or a flat shape with percentiles/mean/std_dev directly
+      const inner = data?.results ?? data;
+      const stats = inner?.statistics?.[targetMetric]
+        || (inner?.statistics ? Object.values(inner.statistics)[0] as Record<string, any> : null);
+
+      const percentiles: Record<string, number> = {};
+      let mean = 0;
+      let stdDev = 0;
+      let sims = 0;
+      let fanData: any[] | undefined;
+      let histogram: any[] | undefined;
+
+      if (stats) {
+        // Shape: { statistics: { [metric]: { mean, std, p5, p25, p50, p75, p95, median } } }
+        percentiles.p5 = stats.p5 ?? stats.percentile_5 ?? 0;
+        percentiles.p10 = stats.p10 ?? stats.percentile_10 ?? 0;
+        percentiles.p25 = stats.p25 ?? stats.percentile_25 ?? 0;
+        percentiles.p50 = stats.p50 ?? stats.median ?? stats.percentile_50 ?? 0;
+        percentiles.p75 = stats.p75 ?? stats.percentile_75 ?? 0;
+        percentiles.p90 = stats.p90 ?? stats.percentile_90 ?? 0;
+        percentiles.p95 = stats.p95 ?? stats.percentile_95 ?? 0;
+        mean = stats.mean ?? 0;
+        stdDev = stats.std ?? stats.std_dev ?? stats.std_deviation ?? 0;
+        sims = inner.iterations ?? data.iterations ?? (parseInt(simCount) || 1000);
+      } else if (inner?.confidence_intervals || inner?.mean_valuation != null) {
+        // Shape: analytics_bridge { mean_valuation, median_valuation, std_deviation, confidence_intervals }
+        const ci = inner.confidence_intervals ?? {};
+        percentiles.p10 = ci['10%'] ?? ci.p10 ?? 0;
+        percentiles.p25 = ci['25%'] ?? ci.p25 ?? 0;
+        percentiles.p50 = ci['50%'] ?? ci.p50 ?? inner.median_valuation ?? 0;
+        percentiles.p75 = ci['75%'] ?? ci.p75 ?? 0;
+        percentiles.p90 = ci['90%'] ?? ci.p90 ?? 0;
+        mean = inner.mean_valuation ?? inner.mean ?? 0;
+        stdDev = inner.std_deviation ?? inner.std_dev ?? 0;
+        sims = data.parameters_used?.simulations ?? (parseInt(simCount) || 1000);
+      } else if (inner?.percentiles) {
+        // Already in expected shape
+        Object.assign(percentiles, inner.percentiles);
+        mean = inner.mean ?? 0;
+        stdDev = inner.std_dev ?? 0;
+        sims = inner.simulations ?? (parseInt(simCount) || 1000);
+      }
+
+      // Fan data / histogram if returned
+      fanData = inner?.fan_data ?? data?.fan_data;
+      histogram = inner?.histogram ?? data?.histogram;
+      // Build histogram from sample_simulations if not provided
+      if (!histogram && (inner?.sample_simulations || inner?.results)) {
+        const samples: number[] = inner.sample_simulations || (Array.isArray(inner.results) ? inner.results : []);
+        if (samples.length > 0) {
+          const bucketCount = 20;
+          const min = Math.min(...samples);
+          const max = Math.max(...samples);
+          const bucketSize = (max - min) / bucketCount || 1;
+          const buckets = new Array(bucketCount).fill(0);
+          for (const v of samples) {
+            const idx = Math.min(Math.floor((v - min) / bucketSize), bucketCount - 1);
+            buckets[idx]++;
+          }
+          histogram = buckets.map((count, i) => ({ bucket: min + i * bucketSize, count }));
+        }
+      }
+
+      setResult({
+        percentiles,
+        mean,
+        std_dev: stdDev,
+        simulations: sims,
+        fan_data: fanData,
+        histogram,
+      });
     } catch (err) {
       console.warn('Monte Carlo failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [ctx.companyId, targetMetric, simCount]);
+  }, [ctx.companyId, ctx.activeBranchId, targetMetric, simCount]);
 
   const chartData = useMemo(() => {
     if (!result) return [];

@@ -4,7 +4,7 @@ import React, { useMemo, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { MemoSectionWrapper } from '../MemoSectionWrapper';
 import { useMemoContext, type NarrativeCard, type ForecastMeta } from '../MemoContext';
-import { buildForecast } from '@/lib/memo/api-helpers';
+// Using ctx.buildForecast so the grid, forecastMeta, and driver registry all update.
 import { Button } from '@/components/ui/button';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -30,31 +30,22 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [selectedMethod, setSelectedMethod] = useState<ForecastMethod>('auto');
   const [loading, setLoading] = useState(false);
-  const [forecastResult, setForecastResult] = useState<ForecastMeta | null>(null);
 
   const handleBuildForecast = useCallback(async () => {
     if (!ctx.companyId) return;
     setLoading(true);
     try {
-      const data = await buildForecast(ctx.companyId, { method: selectedMethod });
-      const meta: ForecastMeta = {
-        method: data.method || selectedMethod,
-        r_squared: data.r_squared,
-        mape: data.mape,
-        description: data.description,
-        fit_data: data.fit_data || data.forecast,
-        alternatives: data.alternatives,
-      };
-      setForecastResult(meta);
+      // Use context buildForecast so grid, drivers, and forecastMeta all update
+      await ctx.buildForecast({ method: selectedMethod });
+      // ctx.forecastMeta gets set by the context after buildForecast completes
     } catch (err: any) {
       console.warn('Forecast build error:', err);
     } finally {
       setLoading(false);
     }
-  }, [ctx.companyId, selectedMethod]);
+  }, [ctx, selectedMethod]);
 
-  // Use local result or context forecastMeta
-  const methodResult = forecastResult || ctx.forecastMeta;
+  const methodResult = ctx.forecastMeta;
 
   // Build chart data from forecast response — no grid fallback
   const chartData = useMemo(() => {

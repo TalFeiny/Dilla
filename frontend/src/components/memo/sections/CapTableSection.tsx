@@ -45,14 +45,47 @@ export function CapTableSection({ onDelete, readOnly = false }: CapTableSectionP
   const handleFetchCapTable = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await fetchCapTable(ctx.companyId);
-      setCapTableData(data.cap_table || data.stakeholders || data.rows || []);
+      const data = await fetchCapTable(ctx.companyId, ctx.fundId || undefined);
+
+      // Flexibly map whatever shape the backend returns.
+      const raw: any[] = data.share_entries
+        || data.cap_table
+        || data.ownership
+        || data.stakeholders
+        || data.rows
+        || (Array.isArray(data) ? data : []);
+
+      // Separate ownership array for cross-referencing if present alongside share_entries
+      const ownershipMap = new Map<string, number>();
+      if (data.ownership && Array.isArray(data.ownership) && data.share_entries) {
+        for (const o of data.ownership) {
+          const key = o.shareholder_name ?? o.shareholder ?? o.name ?? '';
+          ownershipMap.set(key, o.ownership_pct ?? o.percentage ?? o.pct ?? 0);
+        }
+      }
+
+      const mapped: CapTableRow[] = raw.map((entry: any) => {
+        const name = entry.shareholder_name ?? entry.shareholder ?? entry.name ?? entry.stakeholder ?? '';
+        return {
+          stakeholder: name,
+          shares: typeof entry.num_shares === 'string' ? parseInt(entry.num_shares) || 0
+            : (entry.num_shares ?? entry.shares ?? 0),
+          ownership_pct: entry.ownership_pct ?? entry.percentage ?? entry.pct
+            ?? ownershipMap.get(name) ?? 0,
+          share_class: entry.share_class ?? entry.class ?? entry.type ?? '',
+          liquidation_pref: entry.liquidation_pref ?? entry.liquidation_preference ?? entry.liq_pref,
+          invested: entry.invested ?? entry.investment_amount ?? entry.amount_invested,
+          value_at_exit: entry.value_at_exit ?? entry.exit_value,
+        };
+      });
+
+      setCapTableData(mapped);
     } catch (err) {
       console.warn('Cap table fetch failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [ctx.companyId]);
+  }, [ctx.companyId, ctx.fundId]);
 
   // Build chart data for various chart types
   const chartData = useMemo(() => {

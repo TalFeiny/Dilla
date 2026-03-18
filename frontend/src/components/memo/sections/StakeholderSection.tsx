@@ -46,14 +46,37 @@ export function StakeholderSection({ onDelete, readOnly = false }: StakeholderSe
   const handleFetchStakeholders = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await fetchCapTable(ctx.companyId);
-      setStakeholders(data.stakeholders || data.rows || []);
+      const data = await fetchCapTable(ctx.companyId, ctx.fundId || undefined);
+
+      // Flexibly map whatever the backend returns.
+      const raw: any[] = data.ownership
+        || data.share_entries
+        || data.stakeholders
+        || data.rows
+        || (Array.isArray(data) ? data : []);
+
+      const mapped: StakeholderRow[] = raw.map((entry: any) => {
+        const name = entry.shareholder_name ?? entry.shareholder ?? entry.name ?? entry.stakeholder ?? '';
+        return {
+          name,
+          type: entry.type ?? entry.stakeholder_type ?? entry.category ?? 'other',
+          shares: typeof entry.num_shares === 'string' ? parseInt(entry.num_shares) || 0
+            : (entry.num_shares ?? entry.shares ?? 0),
+          ownership_pct: entry.ownership_pct ?? entry.percentage ?? entry.pct ?? 0,
+          share_class: entry.share_class ?? entry.class ?? '',
+          vested_pct: entry.vested_pct ?? entry.vested ?? entry.vesting_pct,
+          board_seat: entry.board_seat ?? entry.has_board_seat,
+          voting_rights: entry.voting_rights ?? entry.votes,
+        };
+      });
+
+      setStakeholders(mapped);
     } catch (err) {
       console.warn('Stakeholder fetch failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [ctx.companyId]);
+  }, [ctx.companyId, ctx.fundId]);
 
   const chartData = useMemo(() => {
     if (stakeholders.length === 0) return [];

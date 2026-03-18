@@ -46,18 +46,42 @@ export function ValuationSection({ onDelete, readOnly = false }: ValuationSectio
     setLoading(true);
     try {
       const data = await runValuation(ctx.companyId, method);
-      if (method === 'all') {
-        setResults(data.valuations || data.results || []);
-      } else {
-        const result: ValuationResult = {
-          method: method.toUpperCase(),
-          value: data.value || data.valuation || 0,
-          range_low: data.range_low || data.low,
-          range_high: data.range_high || data.high,
-          confidence: data.confidence,
-          details: data,
+
+      // Helper: extract a numeric value from a valuation response that may be
+      // a number, or a dict with enterprise_value/equity_value/value inside.
+      const extractValue = (v: any): number => {
+        if (typeof v === 'number') return v;
+        if (v && typeof v === 'object') {
+          return v.enterprise_value ?? v.equity_value ?? v.value ?? v.total ?? 0;
+        }
+        return 0;
+      };
+
+      // Helper: normalize a single method result from whatever shape the backend returns.
+      const normalize = (raw: any, fallbackMethod: string): ValuationResult => {
+        const val = raw.valuation ?? raw.value ?? raw.enterprise_value ?? raw.equity_value;
+        return {
+          method: (raw.method ?? fallbackMethod).toUpperCase(),
+          value: extractValue(val),
+          range_low: raw.range_low ?? raw.low ?? raw.valuation_range?.low,
+          range_high: raw.range_high ?? raw.high ?? raw.valuation_range?.high,
+          confidence: raw.confidence,
+          details: raw,
         };
-        setResults([result]);
+      };
+
+      if (method === 'all') {
+        // Backend might return { valuations: [...] }, { results: [...] },
+        // or a single object with method-keyed sub-results.
+        const list = data.valuations || data.results;
+        if (Array.isArray(list)) {
+          setResults(list.map((r: any) => normalize(r, r.method || 'unknown')));
+        } else {
+          // Single result with nested valuation dict
+          setResults([normalize(data, method)]);
+        }
+      } else {
+        setResults([normalize(data, method)]);
       }
     } catch (err) {
       console.warn('Valuation failed:', err);

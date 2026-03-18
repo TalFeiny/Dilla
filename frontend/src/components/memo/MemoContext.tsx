@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useCallback, useMemo, useState, useRef, type ReactNode } from 'react';
+import React, { createContext, useContext, useCallback, useEffect, useMemo, useState, useRef, type ReactNode } from 'react';
 import type { MatrixData, MatrixRow, MatrixCell } from '@/components/matrix/UnifiedMatrix';
 import type { ScenarioBranch, ForecastMonth } from '@/hooks/useScenarioForkTree';
 import type { ChartConfig } from '@/components/matrix/ChartViewport';
@@ -11,6 +11,8 @@ import {
 } from '@/lib/memo/grid-helpers';
 import {
   requestNarrative as apiRequestNarrative,
+  fetchDriverRegistry as apiFetchDriverRegistry,
+  fetchMetrics as apiFetchMetrics,
 } from '@/lib/memo/api-helpers';
 
 // ---------------------------------------------------------------------------
@@ -217,6 +219,30 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
 
   const bump = useCallback(() => setDataRevision(r => r + 1), []);
 
+  // ---- Load driver registry + metrics on mount ----
+  useEffect(() => {
+    if (!companyId) return;
+    let cancelled = false;
+
+    apiFetchDriverRegistry(companyId)
+      .then(data => {
+        if (cancelled) return;
+        const drivers = data?.drivers || data?.registry || (Array.isArray(data) ? data : []);
+        if (drivers.length) setDriverRegistry(drivers);
+      })
+      .catch(() => {});
+
+    apiFetchMetrics(companyId)
+      .then(data => {
+        if (cancelled) return;
+        const m = data?.metrics || (Array.isArray(data) ? data : []);
+        if (m.length) setMetrics(m);
+      })
+      .catch(() => {});
+
+    return () => { cancelled = true; };
+  }, [companyId]);
+
   // ---- Cell update ----
   const updateCell = useCallback((rowId: string, colId: string, value: any) => {
     setMatrixData(prev => {
@@ -295,7 +321,7 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
         const res = await fetch(`/api/fpa/scenarios/branch/${branchId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ assumptions: overrides }),
+          body: JSON.stringify({ drivers: overrides }),
         });
         if (res.ok) {
           const data = await res.json();

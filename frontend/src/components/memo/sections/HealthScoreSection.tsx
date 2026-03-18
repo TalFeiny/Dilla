@@ -53,13 +53,43 @@ export function HealthScoreSection({ onDelete, readOnly = false }: HealthScoreSe
   const [result, setResult] = useState<HealthResult | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const [error, setError] = useState<string | null>(null);
+
   const handleRunHealth = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const data = await runAdvancedAnalytics(ctx.companyId, 'health_score');
-      setResult(data);
+
+      // Backend wraps in AnalyticsResponse: { results: { ... } }
+      // The actual data might be at data.results, or data directly.
+      // Also handle "unsupported" gracefully.
+      const inner = data?.results ?? data;
+
+      if (inner?.status === 'unsupported') {
+        setError(inner.message || 'Health score analysis not yet available for this company.');
+        return;
+      }
+
+      // Normalize: score/grade/dimensions can be at different nesting levels
+      const score = inner.overall_score ?? inner.score ?? data.overall_score ?? 0;
+      const grade = inner.overall_grade ?? inner.grade ?? data.overall_grade ?? '';
+
+      // Dimensions: could be an array under several keys
+      const rawDims: any[] = inner.dimensions ?? inner.categories ?? data.dimensions ?? [];
+      const dimensions: HealthDimension[] = rawDims.map((d: any, i: number) => ({
+        id: d.id ?? d.name ?? `dim-${i}`,
+        label: d.label ?? d.name ?? d.dimension ?? '',
+        score: d.score ?? d.value ?? 0,
+        weight: d.weight ?? 1,
+        grade: d.grade ?? (d.score >= 80 ? 'A' : d.score >= 60 ? 'B' : d.score >= 40 ? 'C' : d.score >= 20 ? 'D' : 'F'),
+        detail: d.detail ?? d.description ?? d.summary,
+      }));
+
+      setResult({ overall_score: score, overall_grade: grade, dimensions });
     } catch (err) {
       console.warn('Health score failed:', err);
+      setError('Failed to run health score analysis.');
     } finally {
       setLoading(false);
     }
@@ -151,7 +181,7 @@ export function HealthScoreSection({ onDelete, readOnly = false }: HealthScoreSe
           <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={240} />
         ) : (
           <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
-            Run health score analysis to evaluate company dimensions
+            {error || 'Run health score analysis to evaluate company dimensions'}
           </div>
         )}
       </div>

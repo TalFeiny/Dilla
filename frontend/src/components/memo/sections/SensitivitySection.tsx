@@ -49,19 +49,52 @@ export function SensitivitySection({ onDelete, readOnly = false }: SensitivitySe
   const handleRunSensitivity = useCallback(async () => {
     setLoading(true);
     try {
-      // Backend pulls actuals from Supabase — no grid scraping needed
       const data = await runSensitivity(
         ctx.companyId,
         targetMetric,
-        (ctx as any).activeBranchId ?? null,
+        ctx.activeBranchId ?? null,
       );
-      setResult(data);
+
+      // Flexibly map whatever shape comes back.
+      // Possible shapes:
+      //   { tornado_chart_data: [...], base_output, sensitivity_rankings }
+      //   { results: { base_case_valuation, tornado_chart: [...], sensitivity_factors } }
+      //   { target_metric, base_value, drivers: [...] }  (already matches)
+      const inner = data?.results ?? data;
+
+      const baseValue = inner.base_value
+        ?? inner.base_output
+        ?? inner.base_case_valuation
+        ?? 0;
+
+      // Find the tornado data array — could be under several keys
+      const rawDrivers: any[] = inner.drivers
+        ?? inner.tornado_chart_data
+        ?? inner.tornado_chart
+        ?? inner.sensitivity_rankings
+        ?? [];
+
+      const drivers = rawDrivers.map((d: any) => ({
+        driver_id: d.driver_id ?? d.variable ?? d.factor ?? d.id ?? '',
+        driver_label: d.driver_label ?? d.variable ?? d.factor ?? d.label ?? d.name ?? '',
+        low_value: d.low_value ?? 0,
+        high_value: d.high_value ?? 0,
+        low_impact: d.low_impact ?? d.min_impact ?? d.low_value ?? 0,
+        high_impact: d.high_impact ?? d.max_impact ?? d.high_value ?? 0,
+        elasticity: d.elasticity,
+      }));
+
+      setResult({
+        target_metric: inner.target_metric ?? targetMetric,
+        base_value: baseValue,
+        drivers,
+      });
     } catch (err) {
       console.warn('Sensitivity failed:', err);
     } finally {
       setLoading(false);
     }
-  }, [ctx.companyId, targetMetric]);
+  }, [ctx.companyId, ctx.activeBranchId, targetMetric]);
 
   // Build tornado chart data: sorted by impact range (largest swing first)
   const chartData = useMemo(() => {
