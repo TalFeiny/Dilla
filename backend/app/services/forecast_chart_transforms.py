@@ -24,6 +24,8 @@ import logging
 from datetime import date
 from typing import Any, Dict, List, Optional
 
+from app.core.date_utils import parse_period_to_date
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,8 +42,8 @@ def detect_granularity(periods: List[str]) -> str:
     if len(periods[0]) == 4:
         return "annual"
     try:
-        d0 = date.fromisoformat(periods[0])
-        d1 = date.fromisoformat(periods[1])
+        d0 = parse_period_to_date(periods[0])
+        d1 = parse_period_to_date(periods[1])
         gap = (d1 - d0).days
         if gap > 300:
             return "annual"
@@ -67,7 +69,7 @@ def format_period(period: str, granularity: str) -> str:
             return period
     # Monthly
     try:
-        d = date.fromisoformat(period)
+        d = parse_period_to_date(period)
         return d.strftime("%b") + f" '{d.strftime('%y')}"
     except ValueError:
         return period
@@ -128,57 +130,32 @@ def _build_explanation(
     n_forecast: int,
     granularity: str,
 ) -> str:
-    """CFO-readable explanation for each chart type."""
-    model_name = (model_meta or {}).get("model_name", "the selected model")
-    biz_interp = (model_meta or {}).get("business_interpretation", "")
-    qual = (model_meta or {}).get("qualitative_assessment", "")
-    confidence = (model_meta or {}).get("confidence", "")
-    risk = (model_meta or {}).get("extrapolation_risk", "")
-    r2 = (model_meta or {}).get("r_squared")
-    gran_label = {"monthly": "months", "quarterly": "quarters", "annual": "years"}[granularity]
+    """Business explanation — what the forecast means, not how it was computed."""
+    meta = model_meta or {}
+    biz_interp = meta.get("business_interpretation", "")
+    qual = meta.get("qualitative_assessment", "")
+    reasoning = meta.get("selection_reasoning", "")
+    risk = meta.get("extrapolation_risk", "")
+    cat_label = category.replace("_", " ")
+    gran_label = {"monthly": "months", "quarterly": "quarters", "annual": "years"}.get(
+        granularity, "periods"
+    )
 
-    base = f"{n_actuals} {gran_label} of {category.replace('_', ' ')} actuals"
-    fit_note = f", fit with {model_name}" + (f" (R² = {r2:.3f})" if r2 else "")
+    # Business interpretation is the explanation. Everything else is secondary.
+    if biz_interp:
+        explanation = biz_interp
+        if risk and risk not in ("low", "unknown"):
+            explanation += f" Forward projection carries {risk} extrapolation risk."
+        return explanation
 
-    explanations = {
-        "branched_line": (
-            f"Actuals-to-forecast trajectory showing {base}{fit_note}. "
-            f"The fork point marks where historical data ends and the {n_forecast}-period projection begins."
-            + (f" {biz_interp}" if biz_interp else "")
-            + (f" Extrapolation risk: {risk}." if risk else "")
-        ),
-        "stacked_bar": (
-            f"Period-by-period breakdown of {base}{fit_note}. "
-            f"Forecast periods are projected forward using the fitted model."
-            + (f" {qual}" if qual else "")
-        ),
-        "treemap": (
-            f"Proportional comparison of total actuals vs total forecast for {category.replace('_', ' ')}. "
-            f"Based on {base}{fit_note}."
-        ),
-        "line": (
-            f"Trend line showing actual values, model fit, and {n_forecast}-period forecast. "
-            f"Based on {base}{fit_note}."
-            + (f" Model confidence: {confidence}." if confidence else "")
-        ),
-        "regression_line": (
-            f"Regression fit overlay on {base}. "
-            f"{model_name} captures the underlying trend."
-            + (f" {qual}" if qual else "")
-            + (f" {biz_interp}" if biz_interp else "")
-        ),
-        "monte_carlo_fan": (
-            f"Forecast fan chart with confidence intervals. "
-            f"Based on {base}{fit_note}. "
-            f"Upper and lower bounds show the range of likely outcomes."
-            + (f" {biz_interp}" if biz_interp else "")
-        ),
-        "bar_comparison": (
-            f"Side-by-side comparison of actuals, fitted values, and forecast for {category.replace('_', ' ')}."
-        ),
-    }
+    if qual:
+        return qual + (f" Extrapolation risk: {risk}." if risk and risk not in ("low", "unknown") else "")
 
-    return explanations.get(chart_type, f"Forecast visualization based on {base}{fit_note}.")
+    if reasoning:
+        return reasoning
+
+    # Fallback — only if the regression service returned nothing useful
+    return f"{cat_label.title()} forecast built from {n_actuals} {gran_label} of actuals, projecting {n_forecast} {gran_label} forward."
 
 
 # ---------------------------------------------------------------------------
@@ -212,24 +189,24 @@ def to_branched_line(
         forecast_series[n_actuals - 1] = round(actuals[-1], 2)  # bridge point
 
     series = [
-        {"name": "Actuals", "values": actual_vals, "style": "solid", "color": "#4e79a7"},
-        {"name": "Fitted", "values": fitted_vals, "style": "dashed", "color": "#76b7b2"},
+        {"name": "Actuals", "data": actual_vals, "style": "solid", "color": "#4e79a7"},
+        {"name": "Fitted", "data": fitted_vals, "style": "dashed", "color": "#76b7b2"},
     ]
     if any(v is not None for v in forecast_series):
         series.append(
-            {"name": "Forecast", "values": forecast_series, "style": "dashed", "color": "#f28e2c"}
+            {"name": "Forecast", "data": forecast_series, "style": "dashed", "color": "#f28e2c"}
         )
 
     # Scenario branches
     branch_colors = ["#e15759", "#59a14f", "#af7aa1", "#edc949"]
     if branches:
         for i, b in enumerate(branches):
-            bvals = [None] * n_actuals + b.get("values", [])
+            bvals = [None] * n_actuals + b.get("data", b.get("values", []))
             if n_actuals > 0 and bvals:
                 bvals[n_actuals - 1] = round(actuals[-1], 2)
             series.append({
                 "name": b.get("name", f"Branch {i+1}"),
-                "values": bvals,
+                "data": bvals,
                 "style": "dashed",
                 "color": branch_colors[i % len(branch_colors)],
             })
