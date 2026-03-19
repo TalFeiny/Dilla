@@ -77,60 +77,75 @@ def _normalize_period(raw: str) -> Optional[str]:
 # Waterfall section ordering — controls how rows are grouped and sorted
 # ---------------------------------------------------------------------------
 
-SECTION_ORDER = ["revenue", "cogs", "gross_profit", "opex", "ebitda", "below_line", "operational"]
+# ---------------------------------------------------------------------------
+# Fixed P&L skeleton — these rows ALWAYS exist.
+# Dynamic subcategories from actuals slot in under their correct parent.
+# Parents sum their children. Computed rows derive from parent totals.
+# ---------------------------------------------------------------------------
 
-SECTION_LABELS = {
-    "revenue": "Revenue",
-    "cogs": "Cost of Sales",
-    "gross_profit": "Gross Profit",
-    "opex": "Operating Expenses",
-    "ebitda": "EBITDA",
-    "below_line": "Below the Line",
-    "operational": "Operational Metrics",
+# The skeleton defines the fixed rows of the income statement.
+# Each entry: (id, label, section, depth)
+# All rows are "parent" rows.  Leaf parents sum their dynamic children.
+# Formula parents (gross_profit, total_opex, ebitda) derive values from
+# other parents — no separate "computed" type needed.
+SKELETON = [
+    ("revenue",       "Revenue",            "revenue",       0),
+    ("cogs",          "COGS",               "cogs",          0),
+    ("gross_profit",  "Gross Profit",       "gross_profit",  0),
+    ("opex_rd",       "R&D",                "opex",          1),
+    ("opex_sm",       "Sales & Marketing",  "opex",          1),
+    ("opex_ga",       "G&A",                "opex",          1),
+    ("total_opex",    "Total OpEx",         "opex",          0),
+    ("ebitda",        "EBITDA",             "ebitda",        0),
+]
+
+# Parent rows whose values are derived from other parents via formula.
+# These never get dynamic children — their value IS the formula result.
+FORMULA_ROWS = {
+    "gross_profit": ("revenue", "-", "cogs"),
+    "total_opex":   ("opex_rd", "+", "opex_sm", "+", "opex_ga"),
+    "ebitda":       ("gross_profit", "-", "total_opex"),
 }
 
-# Which fpa_actuals categories roll into which sections
-CATEGORY_SECTION = {
+# Which fpa_actuals categories map to which skeleton parent
+CATEGORY_TO_PARENT = {
     "revenue": "revenue",
     "arr": "revenue",
     "mrr": "revenue",
     "cogs": "cogs",
-    "opex_total": "opex",
-    "opex_rd": "opex",
-    "opex_sm": "opex",
-    "opex_ga": "opex",
-    "ebitda": "ebitda",
-    "debt_service": "below_line",
-    "interest": "below_line",
-    "tax": "below_line",
-    "tax_expense": "below_line",
-    "net_income": "below_line",
-    "headcount": "operational",
-    "customers": "operational",
+    "opex_rd": "opex_rd",
+    "opex_sm": "opex_sm",
+    "opex_ga": "opex_ga",
+    "opex_total": None,      # derived — skip
+    "gross_profit": None,    # derived — skip
+    "ebitda": None,          # derived — skip
+    "net_income": None,      # derived — skip
+    "debt_service": None,    # not in skeleton
+    "interest": None,
+    "tax": None,
+    "tax_expense": None,
+    "headcount": None,
+    "customers": None,
+    "cash_balance": None,
+    "burn_rate": None,
 }
+
+# Parent IDs that can have dynamic subcategory children
+PARENT_IDS = {"revenue", "cogs", "opex_rd", "opex_sm", "opex_ga"}
 
 # Sign convention for computed rows: negative categories subtract
 COST_CATEGORIES = {"cogs", "opex_total", "opex_rd", "opex_sm", "opex_ga"}
 
-# Categories that are computed inline by _assemble_rows — skip during discovery
-# to avoid duplicate rows (these get stored by actuals_ingestion but are recomputed)
+# Categories that are computed — never discovered from actuals
 DERIVED_CATEGORIES = {"gross_profit", "ebitda", "opex_total", "net_income"}
 
-# Fallback labels when subcategory is null
+# Labels for parent categories
 CATEGORY_LABELS = {
     "revenue": "Revenue",
     "cogs": "COGS",
-    "opex_total": "Total OpEx",
     "opex_rd": "R&D",
     "opex_sm": "Sales & Marketing",
     "opex_ga": "G&A",
-    "ebitda": "EBITDA",
-    "cash_balance": "Cash Balance",
-    "burn_rate": "Burn Rate",
-    "headcount": "Headcount",
-    "customers": "Customers",
-    "arr": "ARR",
-    "mrr": "MRR",
 }
 
 
@@ -210,8 +225,8 @@ class PnlBuilder:
         if budget_data:
             rows = self._add_budget_comparison(rows, budget_data, actual_periods)
 
-        # 8. Add computed metrics rows if unit economics data available
-        rows = self._add_computed_metrics(rows, actuals, all_periods)
+        # 8. Attach computed metrics to memo (not as rows)
+        computed_metrics = self._get_computed_metrics()
 
         result = {
             "periods": all_periods,
@@ -219,6 +234,8 @@ class PnlBuilder:
             "rows": rows,
             "view": view,
         }
+        if computed_metrics:
+            result["computed_metrics"] = computed_metrics
         if forecast_id:
             result["forecast_id"] = forecast_id
 
@@ -568,301 +585,188 @@ class PnlBuilder:
 
     def _discover_line_items(
         self, actuals: Dict[str, Dict[str, float]]
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Build the waterfall row definitions dynamically from what's in actuals.
-        Returns a list of row defs with id, label, depth, section, parentId, etc.
+        Discover dynamic subcategory rows from fpa_actuals keys.
+
+        Whatever subcategories the CSV/ERP upserted — those are the children.
+        Returns: {parent_id: [child_defs]}
         """
-        items: List[Dict[str, Any]] = []
-        seen_sections: set = set()
-        seen_categories: set = set()
+        children: Dict[str, List[Dict[str, Any]]] = {pid: [] for pid in PARENT_IDS}
+        seen: set = set()
 
-        # First pass: find which categories have subcategories
-        cats_with_subs: set = set()
-        for key in actuals.keys():
-            if ":" in key:
-                cats_with_subs.add(key.split(":", 1)[0])
-
-        # Also detect hierarchy_path-based keys (contain "/" with >2 segments)
-        path_keys: set = set()
-        for key in actuals.keys():
-            if "/" in key and key.count("/") > 1:
-                path_keys.add(key)
-
-        # Collect all keys from actuals
         for key in sorted(actuals.keys()):
-            # Skip derived categories — these are computed inline by _assemble_rows
-            base_cat = key.split(":")[0].split("/")[0]
-            if base_cat in DERIVED_CATEGORIES:
-                continue
-
-            # Handle deep hierarchy_path keys (e.g. "opex_rd/engineering/senior_engineers")
-            if key in path_keys:
+            if ":" in key:
+                cat, sub = key.split(":", 1)
+            elif "/" in key and key.count("/") > 1:
                 parts = key.split("/")
-                depth = len(parts) - 1  # 3-part path = depth 2
-                parent_path = "/".join(parts[:-1])
-                leaf = parts[-1]
-                root_cat = parts[0]
-                section = CATEGORY_SECTION.get(root_cat, "other")
-                seen_sections.add(section)
-                seen_categories.add(root_cat)
-                items.append({
-                    "id": key,
-                    "label": leaf.replace("_", " ").title(),
-                    "category": root_cat,
-                    "subcategory": leaf,
-                    "section": section,
-                    "depth": depth,
-                    "parentId": parent_path,
-                })
+                cat = parts[0]
+                sub = parts[-1]
+            else:
+                continue  # bare parent key — skeleton handles it
+
+            if cat in DERIVED_CATEGORIES:
                 continue
 
-            cat, sub = (key.split(":", 1) + [None])[:2]
-            section = CATEGORY_SECTION.get(cat, "other")
-            seen_sections.add(section)
-            seen_categories.add(cat)
+            parent_id = CATEGORY_TO_PARENT.get(cat, cat)
+            if parent_id is None or parent_id not in PARENT_IDS:
+                continue
 
-            if sub:
-                items.append({
-                    "id": key,
-                    "label": sub.replace("_", " ").title(),
-                    "category": cat,
-                    "subcategory": sub,
-                    "section": section,
-                    "depth": 2 if cat.startswith("opex_") else 1,
-                    "parentId": cat,
-                })
-            else:
-                # Skip parent row when subcategories exist (avoids double-counting)
-                if cat in cats_with_subs:
-                    continue
-                items.append({
-                    "id": key,
-                    "label": CATEGORY_LABELS.get(cat, cat.replace("_", " ").title()),
-                    "category": cat,
-                    "subcategory": None,
-                    "section": section,
-                    "depth": 1 if section in ("revenue", "cogs", "opex") else 0,
-                    "parentId": None,
-                })
+            if key in seen:
+                continue
+            seen.add(key)
 
-        # If no actuals at all, return a minimal skeleton
-        if not items:
-            return self._fallback_skeleton()
+            depth = 2 if parent_id.startswith("opex_") else 1
+            children[parent_id].append({
+                "id": key,
+                "label": sub.replace("_", " ").title(),
+                "subcategory": sub,
+                "parentId": parent_id,
+                "depth": depth,
+            })
 
-        return items
-
-    def _fallback_skeleton(self) -> List[Dict[str, Any]]:
-        """Minimal row defs when there are no actuals — just forecast categories."""
-        return [
-            {"id": "revenue", "label": "Revenue", "section": "revenue", "depth": 0},
-            {"id": "cogs", "label": "COGS", "section": "cogs", "depth": 0},
-            {"id": "gross_profit", "label": "Gross Profit", "section": "gross_profit", "depth": 0, "isComputed": True},
-            {"id": "opex_rd", "label": "R&D", "section": "opex", "depth": 1},
-            {"id": "opex_sm", "label": "Sales & Marketing", "section": "opex", "depth": 1},
-            {"id": "opex_ga", "label": "G&A", "section": "opex", "depth": 1},
-            {"id": "total_opex", "label": "Total OpEx", "section": "opex", "depth": 0, "isTotal": True},
-            {"id": "ebitda", "label": "EBITDA", "section": "ebitda", "depth": 0, "isComputed": True},
-            {"id": "debt_service", "label": "Interest / Debt Service", "section": "below_line", "depth": 0},
-            {"id": "pre_tax_income", "label": "Pre-Tax Income", "section": "below_line", "depth": 0, "isComputed": True},
-            {"id": "tax_expense", "label": "Tax", "section": "below_line", "depth": 0},
-            {"id": "net_income", "label": "Net Income", "section": "below_line", "depth": 0, "isComputed": True},
-        ]
+        return children
 
     # ------------------------------------------------------------------
-    # Step 5: Assemble final rows
+    # Step 5: Assemble final rows — fixed skeleton + dynamic subcategories
     # ------------------------------------------------------------------
 
     def _assemble_rows(
         self,
-        line_items: List[Dict[str, Any]],
+        line_items: Dict[str, List[Dict[str, Any]]],
         actuals: Dict[str, Dict[str, float]],
         forecast: Dict[str, Dict[str, float]],
         all_periods: List[str],
     ) -> List[Dict[str, Any]]:
         """
-        Build the final row list with section headers, data rows,
-        and computed subtotals inserted at the right points.
+        Fixed skeleton parents + dynamic subcategory children.
+
+        Every skeleton row is a parent. Three kinds:
+        1. Leaf parents (revenue, cogs, opex_rd/sm/ga) — sum their dynamic children,
+           or use direct actuals/forecast if no children were discovered.
+        2. Formula parents (gross_profit, total_opex, ebitda) — derive from other
+           parents. No children. Values are pushed into the parent row itself.
+
+        No separate "computed" rows. No duplicates.
         """
         rows: List[Dict[str, Any]] = []
+        self._parent_totals: Dict[str, Dict[str, Optional[float]]] = {}
 
-        # Group items by section
-        by_section: Dict[str, List[Dict[str, Any]]] = {}
-        for item in line_items:
-            sec = item.get("section", "other")
-            by_section.setdefault(sec, []).append(item)
-
-        # Track section data rows so totals can sum them (avoids double-counting)
-        section_data_rows: Dict[str, List[Dict[str, Any]]] = {}
-
-        for section in SECTION_ORDER:
-            items = by_section.get(section, [])
-            if not items and section not in ("gross_profit", "ebitda"):
+        for skel_id, label, section, depth in SKELETON:
+            # --- Formula rows: derive from other parent totals ---
+            if skel_id in FORMULA_ROWS:
+                parent_values = self._eval_formula(skel_id, all_periods, actuals, forecast)
+                self._parent_totals[skel_id] = parent_values
+                rows.append({
+                    "id": skel_id,
+                    "label": label,
+                    "depth": depth,
+                    "section": section,
+                    "isTotal": True,
+                    "values": parent_values,
+                })
                 continue
 
-            # Section header
-            rows.append({
-                "id": f"{section}_header",
-                "label": SECTION_LABELS.get(section, section.title()),
-                "depth": 0,
-                "isHeader": True,
-                "section": section,
-                "values": {},
-            })
+            # --- Leaf parents: sum dynamic children ---
+            children = line_items.get(skel_id, [])
+            child_rows: List[Dict[str, Any]] = []
 
-            # Data rows for this section
-            data_rows_for_section: List[Dict[str, Any]] = []
-            for item in items:
-                row_id = item["id"]
+            for child in children:
+                child_id = child["id"]
                 values: Dict[str, Optional[float]] = {}
                 for p in all_periods:
-                    # Check actuals first, then forecast
-                    val = actuals.get(row_id, {}).get(p)
+                    val = actuals.get(child_id, {}).get(p)
                     if val is None:
-                        val = forecast.get(p, {}).get(row_id)
+                        val = forecast.get(p, {}).get(child_id)
                     values[p] = val
-
-                row = {
-                    "id": row_id,
-                    "label": item["label"],
-                    "depth": item.get("depth", 1),
+                child_rows.append({
+                    "id": child_id,
+                    "label": child["label"],
+                    "depth": child["depth"],
                     "section": section,
+                    "parentId": skel_id,
                     "values": values,
-                }
-                if item.get("parentId"):
-                    row["parentId"] = item["parentId"]
-                if item.get("isComputed"):
-                    row["isComputed"] = True
-                if item.get("isTotal"):
-                    row["isTotal"] = True
-                rows.append(row)
-                data_rows_for_section.append(row)
+                })
 
-            section_data_rows[section] = data_rows_for_section
+            # Parent value: sum of children, or direct actuals/forecast
+            parent_values: Dict[str, Optional[float]] = {}
+            for p in all_periods:
+                if child_rows:
+                    total = 0.0
+                    found = False
+                    for cr in child_rows:
+                        v = cr["values"].get(p)
+                        if v is not None:
+                            total += v
+                            found = True
+                    if found:
+                        parent_values[p] = total
+                    else:
+                        val = actuals.get(skel_id, {}).get(p)
+                        if val is None:
+                            val = forecast.get(p, {}).get(skel_id)
+                        parent_values[p] = val
+                else:
+                    val = actuals.get(skel_id, {}).get(p)
+                    if val is None:
+                        val = forecast.get(p, {}).get(skel_id)
+                    parent_values[p] = val
 
-            # Section subtotals — sum the displayed data rows to avoid
-            # double-counting from overlapping actuals keys
-            if section == "revenue":
-                rows.append(self._sum_data_rows_total(
-                    "total_revenue", "Total Revenue", section,
-                    data_rows_for_section, all_periods, actuals, forecast
-                ))
-            elif section == "cogs":
-                rows.append(self._sum_data_rows_total(
-                    "total_cogs", "Total COGS", section,
-                    data_rows_for_section, all_periods, actuals, forecast
-                ))
-                # Insert Gross Profit after COGS
-                rows.append(self._inline_computed_row(
-                    "gross_profit", "Gross Profit", "gross_profit", all_periods,
-                    actuals, forecast, compute_fn=lambda p, a, f: self._compute_gross_profit(p, a, f),
-                    explanation="Total Revenue minus Total COGS",
-                ))
-            elif section == "opex":
-                rows.append(self._sum_data_rows_total(
-                    "total_opex", "Total OpEx", section,
-                    data_rows_for_section, all_periods, actuals, forecast
-                ))
-            elif section == "ebitda":
-                # EBITDA is computed: gross_profit - total_opex
-                rows.append(self._inline_computed_row(
-                    "ebitda", "EBITDA", "ebitda", all_periods,
-                    actuals, forecast, compute_fn=lambda p, a, f: self._compute_ebitda(p, a, f),
-                    explanation="Gross Profit minus Total Operating Expenses",
-                ))
+            self._parent_totals[skel_id] = parent_values
 
-        # Store section totals for gross_profit / ebitda computation
-        self._section_totals = {}
-        for row in rows:
-            if row.get("isTotal"):
-                self._section_totals[row["id"]] = row["values"]
+            rows.append({
+                "id": skel_id,
+                "label": label,
+                "depth": depth,
+                "section": section,
+                "isTotal": bool(child_rows),
+                "values": parent_values,
+            })
+            for cr in child_rows:
+                rows.append(cr)
 
         return rows
 
-    def _sum_data_rows_total(
+    def _eval_formula(
         self,
         row_id: str,
-        label: str,
-        section: str,
-        data_rows: List[Dict[str, Any]],
         periods: List[str],
         actuals: Dict[str, Dict[str, float]],
         forecast: Dict[str, Dict[str, float]],
-    ) -> Dict[str, Any]:
-        """Build a total row by summing the displayed data rows for this section.
-
-        This avoids double-counting — we only sum what's actually shown in the grid.
-        Falls through to forecast only if no data rows had values for a period.
-        """
+    ) -> Dict[str, Optional[float]]:
+        """Evaluate a formula parent row from already-computed parent totals."""
         values: Dict[str, Optional[float]] = {}
         for p in periods:
-            # 1. Try direct key first (e.g. if "total_revenue" is stored explicitly)
-            val = actuals.get(row_id, {}).get(p)
-            if val is not None:
-                values[p] = val
-                continue
+            if row_id == "gross_profit":
+                rev = self._parent_totals.get("revenue", {}).get(p)
+                cogs = self._parent_totals.get("cogs", {}).get(p)
+                if rev is not None and cogs is not None:
+                    values[p] = rev - cogs
+                elif rev is not None:
+                    values[p] = rev
+                else:
+                    values[p] = actuals.get("gross_profit", {}).get(p) or forecast.get(p, {}).get("gross_profit")
 
-            # 2. Sum displayed data rows for this section
-            total = 0.0
-            found = False
-            for dr in data_rows:
-                cell_val = dr.get("values", {}).get(p)
-                if cell_val is not None:
-                    total += cell_val
-                    found = True
-            if found:
-                values[p] = total
-                continue
+            elif row_id == "total_opex":
+                rd = self._parent_totals.get("opex_rd", {}).get(p) or 0
+                sm = self._parent_totals.get("opex_sm", {}).get(p) or 0
+                ga = self._parent_totals.get("opex_ga", {}).get(p) or 0
+                total = rd + sm + ga
+                values[p] = total if total else (
+                    actuals.get("opex_total", {}).get(p) or forecast.get(p, {}).get("total_opex")
+                )
 
-            # 3. Fall through to forecast
-            values[p] = forecast.get(p, {}).get(row_id)
+            elif row_id == "ebitda":
+                gp = self._parent_totals.get("gross_profit", {}).get(p)
+                opex = self._parent_totals.get("total_opex", {}).get(p)
+                if gp is not None and opex is not None:
+                    values[p] = gp - opex
+                elif gp is not None:
+                    values[p] = gp
+                else:
+                    values[p] = actuals.get("ebitda", {}).get(p) or forecast.get(p, {}).get("ebitda")
 
-        row = {
-            "id": row_id,
-            "label": label,
-            "depth": 0,
-            "section": section,
-            "isTotal": True,
-            "values": values,
-        }
-        # Auto-generate explanation from constituent rows
-        if data_rows:
-            parts = [dr.get("label", dr.get("id", "?")) for dr in data_rows]
-            row["explanation"] = f"Sum of {', '.join(parts)}"
-        return row
-
-    def _inline_computed_row(
-        self,
-        row_id: str,
-        label: str,
-        section: str,
-        periods: List[str],
-        actuals: Dict[str, Dict[str, float]],
-        forecast: Dict[str, Dict[str, float]],
-        compute_fn=None,
-        explanation: str = "",
-    ) -> Dict[str, Any]:
-        """Build a computed row — uses stored value if available, else computes."""
-        values: Dict[str, Optional[float]] = {}
-        for p in periods:
-            # Prefer stored value
-            val = actuals.get(row_id, {}).get(p)
-            if val is None:
-                val = forecast.get(p, {}).get(row_id)
-            if val is None and compute_fn:
-                val = compute_fn(p, actuals, forecast)
-            values[p] = val
-        row = {
-            "id": row_id,
-            "label": label,
-            "depth": 0,
-            "section": section,
-            "isComputed": True,
-            "values": values,
-        }
-        if explanation:
-            row["explanation"] = explanation
-        return row
+        return values
 
     # ------------------------------------------------------------------
     # Saved forecast loading
@@ -1043,13 +947,8 @@ class PnlBuilder:
     # Computed metrics rows
     # ------------------------------------------------------------------
 
-    def _add_computed_metrics(
-        self,
-        rows: List[Dict[str, Any]],
-        actuals: Dict[str, Dict[str, float]],
-        all_periods: List[str],
-    ) -> List[Dict[str, Any]]:
-        """Add unit economics rows if customer/ACV data exists."""
+    def _get_computed_metrics(self) -> Optional[Dict[str, Any]]:
+        """Return unit economics as memo data (not rows)."""
         try:
             from app.services.computed_metrics import ComputedMetrics, COMPUTED_LABELS
             from app.services.company_data_pull import pull_company_data
@@ -1057,79 +956,27 @@ class PnlBuilder:
             cd = self._company_data or pull_company_data(self.company_id)
             seed = cd.to_forecast_seed()
             if not seed.get("_detected_acv") and not seed.get("_detected_customer_count"):
-                return rows  # No unit economics data
+                return None
 
             metrics = ComputedMetrics.compute_all(seed)
             if not metrics or all(k.startswith("_") for k in metrics):
-                return rows
+                return None
 
-            # Add section header
-            rows.append({
-                "id": "unit_economics_header",
-                "label": "Unit Economics",
-                "depth": 0,
-                "isHeader": True,
-                "section": "unit_economics",
-                "values": {},
-            })
-
-            # Add metric rows
+            result = {}
             for metric_id, value in metrics.items():
                 if metric_id.startswith("_"):
                     continue
                 label = COMPUTED_LABELS.get(metric_id, metric_id.replace("_", " ").title())
                 derivation = metrics.get("_derivations", {}).get(metric_id)
-                rows.append({
-                    "id": f"computed_{metric_id}",
+                result[metric_id] = {
                     "label": label,
-                    "section": "unit_economics",
-                    "depth": 1,
-                    "isComputed": True,
-                    "values": {p: value for p in all_periods},
+                    "value": value,
                     "derivation": derivation,
-                })
-
-            return rows
+                }
+            return result if result else None
         except Exception as e:
             logger.debug(f"Computed metrics skipped: {e}")
-            return rows
-
-    def _get_section_total(self, total_id: str, period: str) -> Optional[float]:
-        """Get a previously computed section total."""
-        return getattr(self, "_section_totals", {}).get(total_id, {}).get(period)
-
-    def _compute_gross_profit(
-        self,
-        period: str,
-        actuals: Dict[str, Dict[str, float]],
-        forecast: Dict[str, Dict[str, float]],
-    ) -> Optional[float]:
-        # Use section totals computed from displayed rows
-        rev = self._get_section_total("total_revenue", period)
-        if rev is None:
-            rev = forecast.get(period, {}).get("total_revenue")
-        cogs = self._get_section_total("total_cogs", period)
-        if cogs is None:
-            cogs = forecast.get(period, {}).get("total_cogs")
-        if rev is not None and cogs is not None:
-            return rev - cogs
-        if rev is not None:
-            return rev
-        return None
-
-    def _compute_ebitda(
-        self,
-        period: str,
-        actuals: Dict[str, Dict[str, float]],
-        forecast: Dict[str, Dict[str, float]],
-    ) -> Optional[float]:
-        gp = self._compute_gross_profit(period, actuals, forecast)
-        opex = self._get_section_total("total_opex", period)
-        if opex is None:
-            opex = forecast.get(period, {}).get("total_opex")
-        if gp is not None and opex is not None:
-            return gp - opex
-        return None
+            return None
 
     # ------------------------------------------------------------------
     # Group consolidation entry point

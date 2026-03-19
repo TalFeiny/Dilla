@@ -311,7 +311,7 @@ class ForecastPersistenceService:
             chunk = rows[i:i + 500]
             self._sb.table("fpa_actuals").upsert(
                 chunk,
-                on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+                on_conflict="company_id,period,category,subcategory,hierarchy_path",
             ).execute()
 
         self._log_audit(company_id, forecast_id, "applied_to_grid", {"rows": len(rows)})

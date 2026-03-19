@@ -6043,62 +6043,28 @@ JUST THE JSON:"""
         else:
             actual_prompt = prompt
         
-        logger.info(f"[ORCHESTRATOR] actual_prompt: {actual_prompt[:100] if actual_prompt else 'None'}...")
-        logger.info(f"[ORCHESTRATOR] final output_format: {output_format}")
-        
+        logger.debug(f"[ORCHESTRATOR] output_format: {output_format}")
+
         result = None
         error_message = None
-        
-        # Add detailed logging for stream processing
-        logger.info(f"[PROCESS_REQUEST] Starting stream processing for format: {output_format}")
-        
+
         try:
             async for update in self.process_request_stream(actual_prompt, output_format, context):
-                logger.info(f"[PROCESS_REQUEST] Stream update type: {update.get('type')}")
-                
                 if update.get("type") == "complete":
                     result = update.get("result", {})
-                    logger.info(f"[PROCESS_REQUEST] ✅ Captured complete result from stream")
-                    logger.info(f"[PROCESS_REQUEST] ✅ Result type: {type(result)}")
-                    logger.info(f"[PROCESS_REQUEST] ✅ Result keys: {list(result.keys()) if isinstance(result, dict) else 'not_dict'}")
-                    if isinstance(result, dict):
-                        logger.info(f"[PROCESS_REQUEST] ✅ Result format: {result.get('format')}")
-                        slides_data = result.get('slides') or []
-                        logger.info(f"[PROCESS_REQUEST] ✅ Result slides count: {len(slides_data)}")
-                        if slides_data:
-                            logger.info(f"[PROCESS_REQUEST] ✅ First slide ID: {slides_data[0].get('id') if slides_data else 'None'}")
-                            logger.info(f"[PROCESS_REQUEST] ✅ Slide IDs: {[s.get('id') for s in slides_data[:3]]}")
                 elif update.get("type") == "error":
                     error_message = update.get("error")
-                    logger.error(f"[PROCESS_REQUEST] ❌ Error from stream: {error_message}")
-                elif update.get("type") == "progress":
-                    logger.info(f"[PROCESS_REQUEST] Progress: {update.get('stage')} - {update.get('message')}")
-                    
+                    logger.error(f"[PROCESS_REQUEST] Error from stream: {error_message}")
+
         except Exception as e:
             logger.error(f"[PROCESS_REQUEST] Stream processing failed: {e}")
             error_message = str(e)
             result = None
-        
-        # Add debug logging for deck format
-        logger.info(f"[PROCESS_REQUEST] Final result analysis:")
-        logger.info(f"[PROCESS_REQUEST] output_format: {output_format}")
-        logger.info(f"[PROCESS_REQUEST] result type: {type(result)}")
-        logger.info(f"[PROCESS_REQUEST] result keys: {list(result.keys()) if isinstance(result, dict) else 'not_dict'}")
-        if isinstance(result, dict):
-            logger.info(f"[PROCESS_REQUEST] result.format: {result.get('format')}")
-            slides_data = result.get('slides') or []
-            logger.info(f"[PROCESS_REQUEST] result.slides count: {len(slides_data)}")
-            if slides_data:
-                logger.info(f"[PROCESS_REQUEST] Slide preview: {[s.get('id', 'no-id') for s in slides_data[:3]]}")
-        
+
         # Return in the format the endpoint expects
         if result and not result.get("error"):
-            logger.info(f"[PROCESS_REQUEST] Returning success with result format: {result.get('format') if isinstance(result, dict) else 'not_dict'}")
-            
             # For deck format, return slides directly in the response structure
             if isinstance(result, dict) and result.get('format') == 'deck':
-                logger.info(f"[PROCESS_REQUEST] ✅ Deck format detected, returning slides directly")
-                logger.info(f"[PROCESS_REQUEST] ✅ Slides count: {len(result.get('slides', []))}")
                 
                 # Return deck data directly with slides at top level
                 # Ensure slides is always an array (never None)
@@ -6121,7 +6087,6 @@ JUST THE JSON:"""
                 return resp
             else:
                 # For other formats, use the original structure
-                logger.info(f"[PROCESS_REQUEST] Non-deck format, using original structure")
                 resp = {"success": True, "result": result, "results": result}
                 if isinstance(result, dict) and result.get("warnings"):
                     resp["warnings"] = result["warnings"]
@@ -11986,7 +11951,7 @@ Return JSON with ONLY these fields (use null if unknown):
                     "amount": float(amount),
                     "source": "agent_edit",
                 },
-                on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+                on_conflict="company_id,period,category,subcategory,hierarchy_path",
             ).execute()
 
             return {"success": True, "category": category, "period": period, "amount": amount}
@@ -34115,7 +34080,7 @@ Return a JSON with this structure:
                 chunk = rows[i:i + 500]
                 sb.table("fpa_actuals").upsert(
                     chunk,
-                    on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+                    on_conflict="company_id,period,category,subcategory,hierarchy_path",
                 ).execute()
 
             # Build grid_commands for frontend

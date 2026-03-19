@@ -52,24 +52,24 @@ interface PnlResponse {
   ratios?: Record<string, any>;
 }
 
-/** Transform backend rows into chart-ready data.
- *  Dynamic — charts all non-header, non-computed rows that have actual values.
- *  This handles any subcategory structure the backend returns. */
-function buildChartFromResponse(data: PnlResponse): Record<string, any>[] {
-  if (!data.periods || !data.rows) return [];
+/** Transform backend rows into chart-ready {labels, datasets} format
+ *  that TableauLevelCharts renderLineOrBarChart expects.
+ *  Only charts leaf data rows (no headers, no computed subtotals). */
+function buildChartFromResponse(data: PnlResponse): { labels: string[]; datasets: { label: string; data: (number | null)[] }[] } | null {
+  if (!data.periods?.length || !data.rows?.length) return null;
 
-  // Pick rows worth charting: anything that has values and isn't a section header.
-  // Totals (isTotal) are included because they're meaningful aggregates.
-  const chartableRows = data.rows.filter(r => !r.isHeader && r.values && Object.keys(r.values).length > 0);
+  const chartableRows = data.rows.filter(
+    r => !r.isHeader && !r.isComputed && !r.isTotal && r.values && Object.keys(r.values).length > 0
+  );
+  if (!chartableRows.length) return null;
 
-  return data.periods.map(period => {
-    const entry: Record<string, any> = { period };
-    for (const row of chartableRows) {
-      const label = row.label || row.id;
-      entry[label] = row.values[period] ?? 0;
-    }
-    return entry;
-  });
+  const labels = data.periods;
+  const datasets = chartableRows.map(row => ({
+    label: row.label || row.id,
+    data: data.periods.map(p => row.values[p] ?? null),
+  }));
+
+  return { labels, datasets };
 }
 
 // ---------------------------------------------------------------------------
@@ -145,19 +145,18 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
 
   // Build chart data from backend response
   const chartData = useMemo(
-    () => pnlData ? buildChartFromResponse(pnlData) : [],
+    () => pnlData ? buildChartFromResponse(pnlData) : null,
     [pnlData]
   );
 
-  // Latest period summary for collapsed state — look for common keys flexibly
-  const latestPeriod = chartData[chartData.length - 1];
+  // Latest period summary from raw pnlData rows
   const collapsedSummary = useMemo(() => {
-    if (!latestPeriod) return 'P&L — no periods loaded';
-    // Find revenue / ebitda / net income by label, case-insensitive partial match
+    if (!pnlData?.periods?.length || !pnlData?.rows?.length) return 'P&L — no periods loaded';
+    const lastPeriod = pnlData.periods[pnlData.periods.length - 1];
     const find = (keywords: string[]) => {
-      for (const key of Object.keys(latestPeriod)) {
-        const lower = key.toLowerCase();
-        if (keywords.some(k => lower.includes(k))) return latestPeriod[key];
+      for (const row of pnlData.rows) {
+        const lower = (row.label || row.id).toLowerCase();
+        if (keywords.some(k => lower.includes(k))) return row.values[lastPeriod];
       }
       return null;
     };
@@ -168,8 +167,8 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
     if (rev != null) parts.push(`Revenue: ${fmtCurrency(rev)}`);
     if (ebitda != null) parts.push(`EBITDA: ${fmtCurrency(ebitda)}`);
     if (net != null) parts.push(`Net: ${fmtCurrency(net)}`);
-    return parts.length > 0 ? parts.join(' | ') : `P&L — ${chartData.length} periods`;
-  }, [latestPeriod, chartData.length]);
+    return parts.length > 0 ? parts.join(' | ') : `P&L — ${pnlData.periods.length} periods`;
+  }, [pnlData]);
 
   // Build forecast action
   const handleBuildForecast = useCallback(async () => {
@@ -187,11 +186,10 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
   // AI data context
   const aiContext = useMemo(() => ({
     pnlData: chartData,
-    latestPeriod,
     forecastStartIndex: pnlData?.forecastStartIndex,
     forecastMethod,
     branchCount: ctx.activeBranches.length,
-  }), [chartData, latestPeriod, pnlData, forecastMethod, ctx.activeBranches.length]);
+  }), [chartData, pnlData, forecastMethod, ctx.activeBranches.length]);
 
   // ---- Config bar ----
   const configBar = (
@@ -346,13 +344,14 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
           <div className="flex items-center justify-center h-full text-xs text-red-500">
             {error}
           </div>
-        ) : chartData.length > 0 ? (
+        ) : chartData ? (
           <TableauLevelCharts
             data={chartData}
             type={chartMode}
             title=""
             width="100%"
             height={300}
+            showCitations={false}
           />
         ) : (
           <div className="flex items-center justify-center h-full text-xs text-muted-foreground">

@@ -75,6 +75,14 @@ const PYTHON_API_ROUTES = [
   '/api/investment/',      // Investment analysis
   '/api/analyst/',         // Analyst endpoints
   '/api/health',           // Health check endpoint
+  '/api/fpa/',             // FPA endpoints: P&L, regression, forecast, scenarios
+  '/api/valuation/',       // Valuation endpoints
+  '/api/nl-scenarios/',    // NL scenario endpoints
+  '/api/cell-actions/',    // Cell action execute/list
+  '/api/integrations/',    // Xero, etc.
+  '/api/stripe/',          // Stripe checkout/portal
+  '/api/export/',          // Deck export
+  '/api/deck-data/',       // Deck data
 ]
 
 // Routes that should be handled by Next.js (not proxied)
@@ -90,12 +98,11 @@ const NEXTJS_ONLY_ROUTES = [
   '/api/agent/test-orchestration',  // Add our test endpoint
   '/api/agent/tools/',
   '/api/agent/unified-brain',  // Unified brain has its own Next.js route handler
-  '/api/cell-actions',  // Cell actions: Next.js route proxies to backend (execute/route.ts)
+  // '/api/cell-actions' — moved to PYTHON_API_ROUTES (middleware proxy)
   '/api/portfolio',   // Portfolio + companies: Next.js + Supabase (must NOT proxy to backend)
   '/api/matrix',      // Matrix columns, cells, suggestions: Next.js + Supabase
   '/api/documents',   // Document upload/fetch/delete: Next.js + Supabase
   '/api/funds',       // Fund CRUD: Next.js + Supabase
-  '/api/fpa',         // FPA upload/query: Next.js route proxies to backend
 ]
 
 // Performance-optimized middleware with API gateway functionality and security

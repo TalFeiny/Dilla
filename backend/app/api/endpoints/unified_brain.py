@@ -201,14 +201,6 @@ async def process_unified_request(request: UnifiedRequest, raw_request: Request)
             # With the new unified format, 'results' contains the formatted response
             formatted_results = result.get('results') or result.get('result')  # Try both
             
-            # Add debug logging for deck response construction
-            logger.info(f"[ENDPOINT] result.success: {result.get('success')}")
-            logger.info(f"[ENDPOINT] formatted_results type: {type(formatted_results)}")
-            logger.info(f"[ENDPOINT] formatted_results keys: {list(formatted_results.keys()) if isinstance(formatted_results, dict) else 'not_dict'}")
-            if isinstance(formatted_results, dict):
-                logger.info(f"[ENDPOINT] formatted_results.format: {formatted_results.get('format')}")
-                logger.info(f"[ENDPOINT] formatted_results.slides count: {len(formatted_results.get('slides', []))}")
-            
             # Normalize missing format/type metadata so successful results never 500
             if isinstance(formatted_results, dict):
                 requested_format = (request.output_format or "").strip().lower()
@@ -222,18 +214,10 @@ async def process_unified_request(request: UnifiedRequest, raw_request: Request)
                     formatted_results.setdefault('format', inferred_format)
                     formatted_results.setdefault('type', inferred_format)
             
-            # REMOVED: No need to check for nested deck-storytelling
-            # The orchestrator now returns deck data at top level
-            
-            # Add debug logging for deck data structure
-            logger.info(f"[API] Deck data structure: format={formatted_results.get('format') if isinstance(formatted_results, dict) else 'not_dict'}, slides_count={len(formatted_results.get('slides', [])) if isinstance(formatted_results, dict) else 0}")
+            # Normalize slides to list if present
             if isinstance(formatted_results, dict) and formatted_results.get('slides'):
-                logger.info(f"[API] First slide structure: {list(formatted_results.get('slides')[0].keys()) if formatted_results.get('slides') else 'no slides'}")
-                # Normalize slides to ensure it's a list
-                slides = formatted_results.get('slides') or []
-                if not isinstance(slides, list):
-                    slides = []
-                formatted_results['slides'] = slides
+                if not isinstance(formatted_results['slides'], list):
+                    formatted_results['slides'] = []
             
             # SPECIAL CASE: Check if this is a deck request but format field is missing
             if request.output_format == 'deck' and isinstance(formatted_results, dict):
@@ -289,44 +273,10 @@ async def process_unified_request(request: UnifiedRequest, raw_request: Request)
                 else:
                     logger.info(f"[ENDPOINT] Non-deck format: {formatted_results.get('format')}")
                 # New unified format - wrap in result object for frontend compatibility
-                logger.info(f"[ENDPOINT] Wrapping non-deck format as structured response")
-                result_data = {
-                    "format": formatted_results.get('format'),
-                    "companies": formatted_results.get('companies', []),
-                    "charts": formatted_results.get('charts', []),
-                    "citations": formatted_results.get('citations', []),
-                    "data": formatted_results.get('data', {}),
-                    "metadata": formatted_results.get('metadata', {}),
-                    "commands": formatted_results.get('commands', [])  # Include commands for spreadsheet format
-                }
-                
-                # Add format-specific fields
-                if 'investment_analysis' in formatted_results:
-                    result_data['investment_analysis'] = formatted_results['investment_analysis']
-                if 'comparison' in formatted_results:
-                    result_data['comparison'] = formatted_results['comparison']
-                if 'valuation' in formatted_results:
-                    result_data['valuation'] = formatted_results['valuation']
-                if 'valuations' in formatted_results:
-                    result_data['valuations'] = formatted_results['valuations']  # Bull/bear/base scenarios
-                if 'cap_tables' in formatted_results:
-                    result_data['cap_tables'] = formatted_results['cap_tables']
-                if 'portfolio_analysis' in formatted_results:
-                    result_data['portfolio_analysis'] = formatted_results['portfolio_analysis']
-                if 'exit_modeling' in formatted_results:
-                    result_data['exit_modeling'] = formatted_results['exit_modeling']
-                if 'fund_metrics' in formatted_results:
-                    result_data['fund_metrics'] = formatted_results['fund_metrics']
-                if 'stage_analysis' in formatted_results:
-                    result_data['stage_analysis'] = formatted_results['stage_analysis']
-                if 'market_analysis' in formatted_results:
-                    result_data['market_analysis'] = formatted_results['market_analysis']  # Market sizing
-                if 'slides' in formatted_results:
-                    result_data['slides'] = formatted_results['slides']
-                if 'matrix' in formatted_results:
-                    result_data['matrix'] = formatted_results['matrix']
-                    result_data['columns'] = formatted_results.get('columns', [])
-                    result_data['rows'] = formatted_results.get('rows', [])
+                # Pass through ALL fields from the orchestrator — don't cherry-pick.
+                # Previous code dropped narrative/content/analysis fields which
+                # broke every non-deck response.
+                result_data = dict(formatted_results)
                 
                 # Wrap in result object for frontend compatibility
                 response_data = {

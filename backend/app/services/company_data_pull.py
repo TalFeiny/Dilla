@@ -207,28 +207,12 @@ class CompanyData:
 # ---------------------------------------------------------------------------
 
 def _normalize_period(raw: str) -> str:
-    """Normalize period values to YYYY-MM format.
+    """Normalize DB period values to YYYY-MM.
 
-    Handles: '2026-01-01', '2026-01', '2026/01', '2026-1', 'Jan 2026', etc.
+    DB returns ISO dates (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS) — just slice.
     """
-    if not raw:
-        return raw
-    s = str(raw).strip()
-    # ISO date: 2026-01-15 → 2026-01
-    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
-        return s[:7]
-    # Already YYYY-MM
-    if len(s) == 7 and s[4] == "-":
-        return s
-    # YYYY/MM
-    if len(s) >= 6 and "/" in s:
-        parts = s.split("/")
-        if len(parts) >= 2 and len(parts[0]) == 4:
-            return f"{parts[0]}-{parts[1].zfill(2)}"
-    # YYYY-M (no leading zero)
-    if len(s) == 6 and s[4] == "-":
-        return f"{s[:5]}{s[5:].zfill(2)}"
-    return s
+    from app.core.date_utils import normalize_period
+    return normalize_period(raw)
 
 
 def _compute_derived(values: Dict[str, float]) -> Dict[str, float]:
@@ -404,9 +388,14 @@ def pull_company_data(company_id: str) -> CompanyData:
 
     for row in rows:
         cat = row.get("category")
+        sub = row.get("subcategory") or ""
         raw_period = row.get("period")
         amount = row.get("amount")
         if not cat or raw_period is None or amount is None:
+            continue
+        # Parent rows (subcategory="") already contain the aggregated total.
+        # Including subcategory rows would double-count.
+        if sub:
             continue
         period = _normalize_period(str(raw_period))
         time_series[cat][period] += float(amount)

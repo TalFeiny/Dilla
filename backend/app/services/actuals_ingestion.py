@@ -299,7 +299,7 @@ def ingest_time_series(
         # Known taxonomy takes priority; unknown subcategories accepted when caller provides parent_category
         subcategory = entry.get("subcategory")
         if subcategory:
-            parent_cat = SUBCATEGORY_TO_PARENT.get(subcategory) or entry.get("parent_category") or entry.get("category")
+            parent_cat = entry.get("parent_category") or entry.get("category") or SUBCATEGORY_TO_PARENT.get(subcategory)
             if not parent_cat:
                 continue  # no parent resolvable — skip
             amount_val = entry.get("amount")
@@ -348,70 +348,18 @@ def ingest_time_series(
     if not rows:
         return 0
 
-    # Upsert: unique index is (company_id, period, category, subcategory, hierarchy_path, source)
+    # Derived categories (gross_profit, opex_total, ebitda, net_income) are
+    # NOT stored in fpa_actuals. They are computed on the fly by pnl_builder
+    # and company_data_pull._compute_derived(). Storing them caused duplicate
+    # summary rows and stale data.
+
+    # Single upsert — on_conflict must match the DB unique index exactly
     sb.table("fpa_actuals").upsert(
         rows,
         on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
     ).execute()
 
-    # ── Compute derived parent categories per period ──
-    # Group all upserted rows by period to compute gross_profit, opex_total, ebitda, net_income
-    period_buckets: Dict[str, Dict[str, float]] = {}  # period → {category: amount}
-    for row in rows:
-        if row["subcategory"]:
-            continue  # only use parent-level rows
-        pb = period_buckets.setdefault(row["period"], {})
-        # Sum if multiple sources wrote the same category in the same period
-        pb[row["category"]] = pb.get(row["category"], 0) + row["amount"]
-
-    derived_rows = []
-    for period_str, cats in period_buckets.items():
-        revenue = cats.get("revenue", 0)
-        cogs = cats.get("cogs", 0)
-
-        # opex_total = sum of opex sub-categories
-        opex_total = sum(v for k, v in cats.items() if k.startswith("opex_"))
-        if not opex_total:
-            opex_total = cats.get("opex_total", 0)
-
-        gross_profit = revenue - cogs
-        ebitda = gross_profit - opex_total
-
-        # Below-the-line items (D&A, interest, tax) if available
-        below_line = cats.get("below_line", 0)
-        net_income = ebitda - below_line
-
-        for cat, val in [
-            ("gross_profit", gross_profit),
-            ("opex_total", opex_total),
-            ("ebitda", ebitda),
-            ("net_income", net_income),
-        ]:
-            if val == 0 and cat not in ("opex_total",):
-                # Skip zero derived values unless we have at least one input
-                if not revenue and not cogs and not opex_total:
-                    continue
-            derived_rows.append({
-                "company_id": company_id,
-                "fund_id": fund_id,
-                "document_id": document_id,
-                "period": period_str,
-                "category": cat,
-                "subcategory": "",
-                "hierarchy_path": cat,
-                "amount": val,
-                "source": source,
-            })
-
-    if derived_rows:
-        sb.table("fpa_actuals").upsert(
-            derived_rows,
-            on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
-        ).execute()
-        logger.info(f"[ACTUALS] Computed {len(derived_rows)} derived categories "
-                    f"(gross_profit, opex_total, ebitda, net_income) for {len(period_buckets)} periods")
-
-    return len(rows) + len(derived_rows)
+    return len(rows)
 
 
 def get_company_financials_snapshot(company_id: str) -> Dict[str, Any]:
@@ -460,8 +408,11 @@ def _detect_frequency(actuals: List[Dict[str, Any]]) -> int:
         return 12  # default to monthly assumption
     gaps = []
     for i in range(1, len(actuals)):
-        prev = date.fromisoformat(actuals[i - 1]["period"])
-        curr = date.fromisoformat(actuals[i]["period"])
+        prev_raw = actuals[i - 1]["period"]
+        curr_raw = actuals[i]["period"]
+        # Periods may be YYYY-MM — append -01 for date parsing
+        prev = date.fromisoformat(prev_raw if len(prev_raw) > 7 else f"{prev_raw}-01")
+        curr = date.fromisoformat(curr_raw if len(curr_raw) > 7 else f"{curr_raw}-01")
         gaps.append((curr - prev).days)
     median_gap = sorted(gaps)[len(gaps) // 2]
     if median_gap > 300:  # ~yearly
@@ -589,6 +540,14 @@ CATEGORY_TO_SECTION = {
 }
 
 
+    # Categories that are computed (not raw data) — never returned as actuals
+_DERIVED_OR_NOISE_CATEGORIES = {
+    "gross_profit", "ebitda", "opex_total", "net_income",
+    "tax", "tax_expense", "interest", "debt_service",
+    "below_the_line", "below_line",
+}
+
+
 def get_company_actuals(
     company_id: str,
     start: Optional[str] = None,
@@ -628,6 +587,8 @@ def get_company_actuals(
     for row in result.data or []:
         period = row["period"][:7]  # "2025-01-01" -> "2025-01"
         cat = row["category"]
+        if cat in _DERIVED_OR_NOISE_CATEGORIES:
+            continue
         sub = row.get("subcategory")
         amount = float(row["amount"])
 

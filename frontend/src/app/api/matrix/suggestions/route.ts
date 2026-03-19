@@ -484,13 +484,16 @@ async function handleLegalSuggestions(
   );
 
   // Fetch pending legal clause suggestions
+  // Include both fund-linked AND unlinked (sentinel 00000000-...) suggestions
+  // so documents processed without a fund_id still surface their clauses.
+  const UNLINKED = '00000000-0000-0000-0000-000000000000';
   let pendingQuery = supabaseService
     .from('pending_suggestions')
-    .select('id, company_id, column_id, suggested_value, source_service, reasoning, metadata, created_at')
-    .eq('fund_id', fundId)
+    .select('id, fund_id, company_id, column_id, suggested_value, source_service, reasoning, metadata, created_at')
+    .in('fund_id', [fundId, UNLINKED])
     .like('column_id', 'legal:%')
     .order('created_at', { ascending: false });
-  if (companyId) pendingQuery = pendingQuery.eq('company_id', companyId);
+  if (companyId) pendingQuery = pendingQuery.in('company_id', [companyId, UNLINKED]);
 
   const { data: pendingRows, error: pendingError } = await pendingQuery;
   if (pendingError) {

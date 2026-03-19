@@ -205,7 +205,7 @@ async def upsert_pnl_cell(req: PnlCellEditRequest):
     try:
         sb.table("fpa_actuals").upsert(
             row,
-            on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+            on_conflict="company_id,period,category,subcategory,hierarchy_path",
         ).execute()
     except Exception as e:
         logger.error("P&L cell upsert failed: %s", e, exc_info=True)
@@ -236,7 +236,7 @@ async def bulk_upsert_pnl_cells(req: BulkPnlWriteRequest):
             chunk = rows[i:i + 500]
             sb.table("fpa_actuals").upsert(
                 chunk,
-                on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+                on_conflict="company_id,period,category,subcategory,hierarchy_path",
             ).execute()
     except Exception as e:
         logger.error("Bulk P&L upsert failed: %s", e, exc_info=True)
@@ -312,7 +312,7 @@ async def upsert_bs_cell(req: PnlCellEditRequest):
     try:
         sb.table("fpa_actuals").upsert(
             row,
-            on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+            on_conflict="company_id,period,category,subcategory,hierarchy_path",
         ).execute()
     except Exception as e:
         logger.error("BS cell upsert failed: %s", e, exc_info=True)
@@ -1914,7 +1914,7 @@ async def upload_actuals_csv(
 
         sb.table("fpa_actuals").upsert(
             actuals_rows,
-            on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
+            on_conflict="company_id,period,category,subcategory,hierarchy_path",
         ).execute()
 
         periods = sorted(set(r["period"][:7] for r in actuals_rows))
@@ -2833,10 +2833,12 @@ async def run_regression(request: FPARegressionRequest):
             # Generate forecast period labels if we have actuals periods
             forecast_labels: list[str] = []
             if period_labels and forecast_vals:
-                last_period = dt_date.fromisoformat(period_labels[-1])
+                # period_labels are YYYY-MM — use safe parser
+                from app.core.date_utils import parse_period_to_date
+                last_period = parse_period_to_date(period_labels[-1])
                 for i in range(1, len(forecast_vals) + 1):
                     next_p = last_period + relativedelta(months=i)
-                    forecast_labels.append(next_p.strftime("%Y-%m-%d"))
+                    forecast_labels.append(next_p.strftime("%Y-%m"))
 
             # Build all chart shapes so frontend can toggle without re-fetching
             from app.services.forecast_chart_transforms import build_all_chart_shapes
