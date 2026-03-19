@@ -144,10 +144,24 @@ export async function requestNarrative(
   dataContext: Record<string, any>,
 ): Promise<string> {
   try {
+    // Build a rich, section-specific prompt with actual data so the AI has real context
+    const sectionLabel = sectionType.replace(/_/g, ' ');
+    const dataSnippet = Object.entries(dataContext)
+      .filter(([, v]) => v != null && v !== '')
+      .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`)
+      .join('\n');
+
+    const prompt = [
+      `You are a strategic CFO analyst. Generate a concise ${sectionLabel} analysis.`,
+      `Section: ${sectionLabel}`,
+      dataSnippet ? `Data context:\n${dataSnippet}` : '',
+      `Provide 2-3 sentences of actionable CFO-level insight. Be specific about the numbers. No filler.`,
+    ].filter(Boolean).join('\n\n');
+
     const res = await fetch(
       `/api/agent/unified-brain`,
       json({
-        prompt: `Generate a concise ${sectionType.replace(/_/g, ' ')} analysis narrative`,
+        prompt,
         output_format: 'analysis',
         context: {
           company_id: companyId,
@@ -156,17 +170,21 @@ export async function requestNarrative(
         },
       }),
     );
-    if (!res.ok) return 'Unable to generate analysis.';
+    if (!res.ok) {
+      console.warn(`AI narrative request failed: ${res.status}`);
+      return '';
+    }
     const data = await res.json();
     return (
       data.result?.narrative ||
       data.result?.content ||
       data.narrative ||
       data.content ||
-      (typeof data.result === 'string' ? data.result : 'Unable to generate analysis.')
+      (typeof data.result === 'string' ? data.result : '')
     );
-  } catch {
-    return 'Unable to generate analysis.';
+  } catch (err) {
+    console.warn('AI narrative error:', err);
+    return '';
   }
 }
 

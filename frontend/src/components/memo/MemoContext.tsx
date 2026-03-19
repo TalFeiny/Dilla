@@ -432,7 +432,11 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
           body: JSON.stringify({
             regression_type: regType,
             data: { company_id: companyId },
-            options: { metric: 'revenue', forecast_periods: 12 },
+            options: {
+              metric: params?.metric || 'revenue',
+              forecast_periods: params?.forecast_periods ?? 12,
+              granularity: params?.granularity || 'monthly',
+            },
           }),
         });
         if (regRes.ok) {

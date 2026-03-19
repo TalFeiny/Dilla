@@ -613,12 +613,16 @@ export default function TableauLevelCharts({
 
         case 'monte_carlo_fan':
           if (!normalizedData || typeof normalizedData !== 'object') {
-            return { valid: false, data: null, error: 'Monte Carlo fan data must include trajectory_percentiles and periods' };
+            return { valid: false, data: null, error: 'Monte Carlo fan data must include trajectory_percentiles and periods, or labels and datasets' };
           }
-          if (!normalizedData.trajectory_percentiles && !normalizedData.percentiles) {
-            return { valid: false, data: null, error: 'Missing trajectory_percentiles or percentiles' };
+          // Accept both shapes: {trajectory_percentiles, periods} or {labels, datasets}
+          if (normalizedData.trajectory_percentiles || normalizedData.percentiles) {
+            return { valid: true, data: normalizedData };
           }
-          return { valid: true, data: normalizedData };
+          if (normalizedData.labels && normalizedData.datasets) {
+            return { valid: true, data: normalizedData };
+          }
+          return { valid: false, data: null, error: 'Missing trajectory_percentiles/percentiles or labels/datasets' };
 
         case 'branched_line':
           if (!normalizedData || typeof normalizedData !== 'object') {
@@ -1645,34 +1649,75 @@ export default function TableauLevelCharts({
     const chartData = labels.map((label: string, i: number) => {
       const point: Record<string, any> = { name: label };
       datasets.forEach((ds: any) => {
-        point[ds.label || ds.id || `Series${datasets.indexOf(ds)}`] = ds.data?.[i] ?? 0;
+        point[ds.label || ds.id || `Series${datasets.indexOf(ds)}`] = ds.data?.[i] ?? null;
       });
       return point;
     });
     const isBarType = type === 'bar' || type === 'bar_comparison' || type === 'bull_bear_base' || type === 'stacked_bar' || type === 'nav_live';
-    const ChartComponent = isBarType ? BarChart : LineChart;
-    const DataComponent = isBarType ? Bar : Line;
+
+    // Forecast-aware colors: Actual=blue, Fitted=teal-dashed, Forecast=orange-dashed
+    const forecastColors: Record<string, { stroke: string; dash?: string }> = {
+      'Actual': { stroke: '#4e79a7' },
+      'Fitted': { stroke: '#76b7b2', dash: '6 3' },
+      'Forecast': { stroke: '#f28e2c', dash: '6 3' },
+      'Upper Bound': { stroke: '#e15759', dash: '4 2' },
+      'Lower Bound': { stroke: '#59a14f', dash: '4 2' },
+    };
+
+    const fmtTick = (v: number) => {
+      if (v == null) return '';
+      if (Math.abs(v) >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+      if (Math.abs(v) >= 1_000) return `$${(v / 1_000).toFixed(0)}K`;
+      return typeof v === 'number' ? `$${v.toFixed(0)}` : String(v);
+    };
+
+    if (isBarType) {
+      return (
+        <ResponsiveContainer width="100%" height={height}>
+          <BarChart data={chartData}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis dataKey="name" fontSize={11} tick={{ fill: '#6b7280' }} />
+            <YAxis tickFormatter={fmtTick} fontSize={11} tick={{ fill: '#6b7280' }} />
+            <Tooltip formatter={(val: any) => [fmtTick(val as number), '']} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+            <Legend />
+            {datasets.map((ds: any, i: number) => (
+              <Bar
+                key={ds.label || i}
+                dataKey={ds.label || ds.id || `Series${i}`}
+                fill={ds.backgroundColor || forecastColors[ds.label]?.stroke || colors[i % colors.length]}
+                fillOpacity={0.8}
+              />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
     return (
       <ResponsiveContainer width="100%" height={height}>
-        <ChartComponent data={chartData}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="name" />
-          <YAxis />
-          <Tooltip />
+        <LineChart data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+          <XAxis dataKey="name" fontSize={11} tick={{ fill: '#6b7280' }} />
+          <YAxis tickFormatter={fmtTick} fontSize={11} tick={{ fill: '#6b7280' }} />
+          <Tooltip formatter={(val: any, name: string) => [fmtTick(val as number), name]} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
           <Legend />
-          {datasets.map((ds: any, i: number) => (
-            <DataComponent
-              key={ds.label || i}
-              type="monotone"
-              dataKey={ds.label || ds.id || `Series${i}`}
-              stroke={ds.borderColor || colors[i % colors.length]}
-              fill={ds.backgroundColor || colors[i % colors.length]}
-              fillOpacity={type === 'bar' ? 0.8 : 0}
-              strokeDasharray={ds.strokeDasharray}
-              dot={ds.backgroundColor === 'transparent' ? false : undefined}
-            />
-          ))}
-        </ChartComponent>
+          {datasets.map((ds: any, i: number) => {
+            const fc = forecastColors[ds.label];
+            const strokeColor = ds.borderColor || fc?.stroke || colors[i % colors.length];
+            return (
+              <Line
+                key={ds.label || i}
+                type="monotone"
+                dataKey={ds.label || ds.id || `Series${i}`}
+                stroke={strokeColor}
+                strokeWidth={ds.label === 'Actual' ? 3 : 2}
+                strokeDasharray={ds.strokeDasharray || fc?.dash}
+                dot={ds.label === 'Actual' ? { r: 3, fill: strokeColor } : false}
+                connectNulls={false}
+              />
+            );
+          })}
+        </LineChart>
       </ResponsiveContainer>
     );
   };
@@ -2618,28 +2663,56 @@ export default function TableauLevelCharts({
     }
 
     const mcData = validation.data;
-    const percentiles = mcData.trajectory_percentiles || mcData.percentiles || {};
-    const metric = mcData.metric || 'cash_balance';
-    const periods = mcData.periods || [];
-    const varThreshold = mcData.var_cash_12m;
 
-    const metricPcts = percentiles[metric] || {};
-    const p5 = metricPcts.p5 || [];
-    const p25 = metricPcts.p25 || [];
-    const p50 = metricPcts.p50 || [];
-    const p75 = metricPcts.p75 || [];
-    const p95 = metricPcts.p95 || [];
+    // Handle {labels, datasets} shape from forecast_chart_transforms
+    let chartData: any[];
+    let varThreshold = mcData.var_cash_12m;
 
-    // Build recharts data: each point needs low/high for area bands
-    const chartData = (periods.length > 0 ? periods : p50.map((_: any, i: number) => `M${i + 1}`))
-      .map((period: string, i: number) => ({
-        x: period?.slice?.(0, 7) || period,
-        p5: p5[i] ?? 0,
-        p25: p25[i] ?? 0,
-        p50: p50[i] ?? 0,
-        p75: p75[i] ?? 0,
-        p95: p95[i] ?? 0,
-      }));
+    if (mcData.labels && mcData.datasets) {
+      const labels = mcData.labels as string[];
+      const datasets = mcData.datasets as any[];
+      const getDS = (name: string) => datasets.find((d: any) => d.label === name)?.data || [];
+      const actualData = getDS('Actual');
+      const fittedData = getDS('Fitted');
+      const forecastData = getDS('Forecast');
+      const upperData = getDS('Upper Bound');
+      const lowerData = getDS('Lower Bound');
+
+      chartData = labels.map((label: string, i: number) => {
+        const median = actualData[i] ?? forecastData[i] ?? fittedData[i] ?? null;
+        return {
+          x: label,
+          p50: median,
+          p75: upperData[i] ?? median,
+          p25: lowerData[i] ?? median,
+          p95: upperData[i] ?? median,
+          p5: lowerData[i] ?? median,
+        };
+      });
+    } else {
+      // Original {trajectory_percentiles, periods} shape
+      const percentiles = mcData.trajectory_percentiles || mcData.percentiles || {};
+      const metric = mcData.metric || 'cash_balance';
+      const periods = mcData.periods || [];
+      varThreshold = mcData.var_cash_12m;
+
+      const metricPcts = percentiles[metric] || {};
+      const p5 = metricPcts.p5 || [];
+      const p25 = metricPcts.p25 || [];
+      const p50 = metricPcts.p50 || [];
+      const p75 = metricPcts.p75 || [];
+      const p95 = metricPcts.p95 || [];
+
+      chartData = (periods.length > 0 ? periods : p50.map((_: any, i: number) => `M${i + 1}`))
+        .map((period: string, i: number) => ({
+          x: period?.slice?.(0, 7) || period,
+          p5: p5[i] ?? 0,
+          p25: p25[i] ?? 0,
+          p50: p50[i] ?? 0,
+          p75: p75[i] ?? 0,
+          p95: p95[i] ?? 0,
+        }));
+    }
 
     const fmtTick = (v: number) => {
       if (Math.abs(v) >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
@@ -2801,20 +2874,26 @@ export default function TableauLevelCharts({
           {/* Fork point annotations */}
           {(annotations || [])
             .filter((a: any) => a.type === 'fork_point')
-            .map((a: any, i: number) => (
-              <ReferenceLine
-                key={`fork-${i}`}
-                x={a.x}
-                stroke="#9ca3af"
-                strokeDasharray="4 4"
-                label={{
-                  value: a.label || 'Fork',
-                  position: 'top',
-                  fontSize: 10,
-                  fill: '#6b7280',
-                }}
-              />
-            ))}
+            .map((a: any, i: number) => {
+              // a.x can be a numeric index — resolve to the actual label string for categorical XAxis
+              const xVal = typeof a.x === 'number' ? x_axis[a.x] : a.x;
+              // a.label can be a string or {content: "..."} object
+              const labelText = typeof a.label === 'string' ? a.label : a.label?.content || 'Fork';
+              return (
+                <ReferenceLine
+                  key={`fork-${i}`}
+                  x={xVal}
+                  stroke="#9ca3af"
+                  strokeDasharray="4 4"
+                  label={{
+                    value: labelText,
+                    position: 'top',
+                    fontSize: 10,
+                    fill: '#6b7280',
+                  }}
+                />
+              );
+            })}
           {/* One Line per series */}
           {(series || []).map((s: any, idx: number) => (
             <Line
@@ -3319,10 +3398,13 @@ export default function TableauLevelCharts({
     );
   }
 
+  // Embedded mode: no title means we're inside a memo section — use minimal wrapper
+  const isEmbedded = !title;
+
   return (
-    <div 
+    <div
       ref={chartContainerRef}
-      className="bg-white p-6 rounded-xl shadow-lg border border-gray-100" 
+      className={isEmbedded ? 'w-full h-full' : 'bg-white p-6 rounded-xl shadow-lg border border-gray-100'}
       data-chart-type={type}
       data-chart-ready={chartReady ? 'true' : 'false'}
     >
@@ -3344,13 +3426,13 @@ export default function TableauLevelCharts({
           </div>
           {interactive && (
             <div className="flex gap-2">
-              <button 
+              <button
                 onClick={() => setZoomLevel(1)}
                 className="px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200"
               >
                 Reset
               </button>
-              <button 
+              <button
                 onClick={() => setFilterValue(null)}
                 className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
               >
@@ -3360,30 +3442,40 @@ export default function TableauLevelCharts({
           )}
         </div>
       )}
-      
+
       {renderChart()}
-      
-      {/* Citations section */}
+
+      {/* Citations — compact inline when embedded, full box when standalone */}
       {citations.length > 0 && showCitations && (
-        <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
-          <div className="text-xs text-blue-700 font-medium mb-1">Data Sources:</div>
-          <div className="space-y-1">
+        isEmbedded ? (
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[10px] text-muted-foreground">
             {citations.map(citation => (
-              <div key={citation.number} className="text-xs text-blue-600 flex items-start gap-1">
-                <span className="font-semibold">[{citation.number}]</span>
-                <span>{citation.source} - {citation.date}</span>
-                {citation.url && (
-                  <a href={citation.url} target="_blank" rel="noopener noreferrer" 
-                     className="hover:underline">
-                    🔗
-                  </a>
-                )}
-              </div>
+              <span key={citation.number} className="opacity-70">
+                [{citation.number}] {citation.source}
+              </span>
             ))}
           </div>
-        </div>
+        ) : (
+          <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
+            <div className="text-xs text-blue-700 font-medium mb-1">Data Sources:</div>
+            <div className="space-y-1">
+              {citations.map(citation => (
+                <div key={citation.number} className="text-xs text-blue-600 flex items-start gap-1">
+                  <span className="font-semibold">[{citation.number}]</span>
+                  <span>{citation.source} - {citation.date}</span>
+                  {citation.url && (
+                    <a href={citation.url} target="_blank" rel="noopener noreferrer"
+                       className="hover:underline">
+                      🔗
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )
       )}
-      
+
       {/* Selected node details */}
       {selectedNode && interactive && (
         <div className="mt-4 p-4 bg-gray-50 rounded-lg">

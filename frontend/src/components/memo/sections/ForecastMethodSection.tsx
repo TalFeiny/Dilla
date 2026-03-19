@@ -21,6 +21,8 @@ type ForecastMethod =
   | 'linear' | 'polynomial' | 'exponential_growth'
   | 'logistic' | 'power_law' | 'gompertz'
   | 'piecewise_linear' | 'weighted_linear';
+type ForecastMetric = 'revenue' | 'ebitda' | 'gross_profit' | 'total_opex' | 'free_cash_flow' | 'cogs';
+type ForecastGranularity = 'monthly' | 'quarterly' | 'annual';
 
 export interface ForecastMethodSectionProps {
   onDelete?: () => void;
@@ -32,19 +34,27 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
   const [chartMode, setChartMode] = useState<ChartMode>('branched_line');
   const [narrativeCards, setNarrativeCards] = useState<NarrativeCard[]>([]);
   const [selectedMethod, setSelectedMethod] = useState<ForecastMethod>('auto');
+  const [selectedMetric, setSelectedMetric] = useState<ForecastMetric>('revenue');
+  const [forecastPeriods, setForecastPeriods] = useState(12);
+  const [granularity, setGranularity] = useState<ForecastGranularity>('monthly');
   const [loading, setLoading] = useState(false);
 
   const handleBuildForecast = useCallback(async () => {
     if (!ctx.companyId) return;
     setLoading(true);
     try {
-      await ctx.buildForecast({ method: selectedMethod });
+      await ctx.buildForecast({
+        method: selectedMethod,
+        metric: selectedMetric,
+        forecast_periods: forecastPeriods,
+        granularity,
+      });
     } catch (err: any) {
       console.warn('Forecast build error:', err);
     } finally {
       setLoading(false);
     }
-  }, [ctx, selectedMethod]);
+  }, [ctx, selectedMethod, selectedMetric, forecastPeriods, granularity]);
 
   const methodResult = ctx.forecastMeta;
 
@@ -52,15 +62,6 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
   useEffect(() => {
     if (!methodResult) return;
     const cards: NarrativeCard[] = [];
-
-    // Model fit narrative
-    if (methodResult.description) {
-      cards.push({
-        id: 'forecast-description',
-        text: methodResult.description,
-        severity: 'info',
-      });
-    }
 
     // R² / accuracy card
     if (methodResult.r_squared != null) {
@@ -74,14 +75,31 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
       });
     }
 
-    // Request AI narrative for richer context
+    // Model description card (from backend — dynamic, not hardcoded)
+    if (methodResult.description) {
+      cards.push({
+        id: 'forecast-description',
+        text: methodResult.description,
+        severity: 'info',
+      });
+    }
+
+    setNarrativeCards(cards);
+
+    // Request AI narrative — async, appends to cards when available
     if (ctx.requestNarrative && methodResult.method) {
+      const meta = methodResult as any;
       ctx.requestNarrative('forecast_method', {
+        metric: selectedMetric,
         method: methodResult.method,
         r_squared: methodResult.r_squared,
         mape: methodResult.mape,
-        alternatives: methodResult.alternatives,
-        fit_data_points: methodResult.fit_data?.length,
+        model_name: meta.model_name,
+        business_interpretation: meta.business_interpretation,
+        extrapolation_risk: meta.extrapolation_risk,
+        confidence: meta.confidence,
+        alternatives: methodResult.alternatives?.slice(0, 3),
+        data_characteristics: meta.data_characteristics,
       }).then(narrative => {
         if (narrative) {
           setNarrativeCards(prev => [
@@ -89,11 +107,9 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
             { id: 'forecast-ai-narrative', text: narrative, severity: 'info' as const },
           ]);
         }
-      }).catch(() => {});
+      }).catch(err => console.warn('Forecast AI narrative failed:', err));
     }
-
-    setNarrativeCards(cards);
-  }, [methodResult, ctx]);
+  }, [methodResult, ctx, selectedMetric]);
 
   // Backend returns pre-built chart shapes keyed by chart type — just pass through
   // Each shape: { data, citations, explanation }
@@ -112,31 +128,39 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
     : `Forecast Method: ${selectedMethod}`;
 
   const aiContext = useMemo(() => ({
+    metric: selectedMetric,
     method: selectedMethod,
-    result: methodResult,
-  }), [selectedMethod, methodResult]);
+    granularity,
+    forecast_periods: forecastPeriods,
+    r_squared: methodResult?.r_squared,
+    mape: methodResult?.mape,
+    model_name: (methodResult as any)?.model_name,
+    business_interpretation: (methodResult as any)?.business_interpretation,
+    extrapolation_risk: (methodResult as any)?.extrapolation_risk,
+    confidence: (methodResult as any)?.confidence,
+    alternatives: methodResult?.alternatives?.map(a => ({ method: a.method, r_squared: a.r_squared })),
+  }), [selectedMethod, selectedMetric, granularity, forecastPeriods, methodResult]);
 
   const configBar = (
     <>
       <div className="flex items-center gap-1.5">
-        <span className="text-muted-foreground">Chart:</span>
-        <Select value={chartMode} onValueChange={(v) => setChartMode(v as ChartMode)}>
-          <SelectTrigger className="h-6 w-[140px] text-[11px]"><SelectValue /></SelectTrigger>
+        <span className="text-muted-foreground">Metric:</span>
+        <Select value={selectedMetric} onValueChange={(v) => setSelectedMetric(v as ForecastMetric)}>
+          <SelectTrigger className="h-6 w-[130px] text-[11px]"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="branched_line">Scenario Branches</SelectItem>
-            <SelectItem value="stacked_bar">Stacked Bar</SelectItem>
-            <SelectItem value="regression_line">Regression Fit</SelectItem>
-            <SelectItem value="line">Line</SelectItem>
-            <SelectItem value="treemap">Treemap</SelectItem>
-            <SelectItem value="bar_comparison">Grouped Bar</SelectItem>
-            <SelectItem value="monte_carlo_fan">MC Fan</SelectItem>
+            <SelectItem value="revenue">Revenue</SelectItem>
+            <SelectItem value="ebitda">EBITDA</SelectItem>
+            <SelectItem value="gross_profit">Gross Profit</SelectItem>
+            <SelectItem value="total_opex">Total OpEx</SelectItem>
+            <SelectItem value="free_cash_flow">Free Cash Flow</SelectItem>
+            <SelectItem value="cogs">COGS</SelectItem>
           </SelectContent>
         </Select>
       </div>
       <div className="flex items-center gap-1.5">
         <span className="text-muted-foreground">Method:</span>
         <Select value={selectedMethod} onValueChange={(v) => setSelectedMethod(v as ForecastMethod)}>
-          <SelectTrigger className="h-6 w-[150px] text-[11px]"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="h-6 w-[140px] text-[11px]"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="auto">Auto (best fit)</SelectItem>
             <SelectItem value="linear">Linear</SelectItem>
@@ -152,10 +176,50 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
           </SelectContent>
         </Select>
       </div>
+      <div className="flex items-center gap-1.5">
+        <span className="text-muted-foreground">Chart:</span>
+        <Select value={chartMode} onValueChange={(v) => setChartMode(v as ChartMode)}>
+          <SelectTrigger className="h-6 w-[130px] text-[11px]"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="branched_line">Scenario Branches</SelectItem>
+            <SelectItem value="regression_line">Regression Fit</SelectItem>
+            <SelectItem value="line">Line</SelectItem>
+            <SelectItem value="stacked_bar">Stacked Bar</SelectItem>
+            <SelectItem value="bar_comparison">Grouped Bar</SelectItem>
+            <SelectItem value="monte_carlo_fan">MC Fan</SelectItem>
+            <SelectItem value="treemap">Treemap</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span className="text-muted-foreground">View:</span>
+        <Select value={granularity} onValueChange={(v) => setGranularity(v as ForecastGranularity)}>
+          <SelectTrigger className="h-6 w-[90px] text-[11px]"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="monthly">Monthly</SelectItem>
+            <SelectItem value="quarterly">Quarterly</SelectItem>
+            <SelectItem value="annual">Annual</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span className="text-muted-foreground">Periods:</span>
+        <Select value={String(forecastPeriods)} onValueChange={(v) => setForecastPeriods(Number(v))}>
+          <SelectTrigger className="h-6 w-[55px] text-[11px]"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="3">3</SelectItem>
+            <SelectItem value="6">6</SelectItem>
+            <SelectItem value="12">12</SelectItem>
+            <SelectItem value="18">18</SelectItem>
+            <SelectItem value="24">24</SelectItem>
+            <SelectItem value="36">36</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
       {!readOnly && (
         <Button variant="outline" size="sm" className="h-6 text-[11px] gap-1 ml-auto" onClick={handleBuildForecast} disabled={loading}>
           {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-          Build Forecast
+          Build
         </Button>
       )}
     </>
@@ -190,11 +254,11 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
       readOnly={readOnly}
     >
       {methodCards}
-      <div className="w-full" style={{ height: 280 }}>
+      <div className="w-full">
         {chartData ? (
-          <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={260} citations={chartCitations} />
+          <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={280} citations={chartCitations} />
         ) : (
-          <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
+          <div className="flex items-center justify-center h-[200px] text-xs text-muted-foreground">
             Build a forecast to see method fit and accuracy
           </div>
         )}
