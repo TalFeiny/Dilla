@@ -144,18 +144,32 @@ export async function requestNarrative(
   dataContext: Record<string, any>,
 ): Promise<string> {
   try {
-    // Build a rich, section-specific prompt with actual data so the AI has real context
+    // Build section-specific prompts with real data so the AI produces actionable insight
     const sectionLabel = sectionType.replace(/_/g, ' ');
     const dataSnippet = Object.entries(dataContext)
       .filter(([, v]) => v != null && v !== '')
       .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`)
       .join('\n');
 
+    // Section-specific guidance for richer analysis
+    const sectionGuidance: Record<string, string> = {
+      forecast_method: 'Explain what the forecast pattern means for the business trajectory. Identify inflection points, growth sustainability, and what would cause the forecast to break. Recommend what to monitor.',
+      pnl: 'Analyze profitability trends, margin expansion or compression, and cost structure. Identify the biggest lever for improving the bottom line. Flag any line items growing faster than revenue.',
+      balance_sheet: 'Assess liquidity, working capital efficiency, and capital structure. Identify risks (e.g. rising receivables, debt maturity). Compare to industry norms.',
+      cash_flow: 'Evaluate cash generation quality, burn rate sustainability, and runway implications. Distinguish between operating cash flow and one-time items.',
+      drivers: 'Explain which business drivers have the most impact on financial outcomes. Identify which levers management should prioritize and which are at risk.',
+      metrics: 'Interpret the key metrics in business context. Flag any that are trending in a concerning direction. Compare to SaaS/industry benchmarks where relevant.',
+      scenario: 'Compare scenario outcomes and quantify the range of potential results. Identify which assumptions drive the biggest variance between scenarios.',
+      board_summary: 'Write a board-ready executive summary. Lead with the headline (good or bad news), cover financial health, growth trajectory, key risks, and 1-2 strategic recommendations.',
+    };
+    const guidance = sectionGuidance[sectionType] ||
+      'Provide specific, actionable CFO-level insight grounded in the numbers. No generic statements.';
+
     const prompt = [
-      `You are a strategic CFO analyst. Generate a concise ${sectionLabel} analysis.`,
-      `Section: ${sectionLabel}`,
-      dataSnippet ? `Data context:\n${dataSnippet}` : '',
-      `Provide 2-3 sentences of actionable CFO-level insight. Be specific about the numbers. No filler.`,
+      `You are a strategic CFO writing an internal memo. Analyze the following ${sectionLabel} data.`,
+      dataSnippet ? `Financial data:\n${dataSnippet}` : '',
+      guidance,
+      'Be specific about dollar amounts, percentages, and trends. Write 3-5 sentences. No filler, no hedging, no "it is important to note" — go straight to the insight.',
     ].filter(Boolean).join('\n\n');
 
     const res = await fetch(
@@ -634,5 +648,50 @@ export async function compareScenarios(
     }),
   );
   if (!res.ok) throw new Error(`Scenario compare failed: ${res.status}`);
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Model Construction — construct + execute via unified-brain agent tools
+// ---------------------------------------------------------------------------
+
+export async function constructForecastModel(
+  companyId: string,
+  prompt: string,
+) {
+  const res = await fetch(
+    `/api/agent/unified-brain`,
+    json({
+      prompt: `Use the construct_forecast_model tool to build a forecast model. Prompt: ${prompt}`,
+      output_format: 'tool_result',
+      context: {
+        company_id: companyId,
+        tool_hint: 'construct_forecast_model',
+        tool_inputs: { prompt, company_id: companyId },
+      },
+    }),
+  );
+  if (!res.ok) throw new Error(`Model construction failed: ${res.status}`);
+  return res.json();
+}
+
+export async function executeForecastModel(
+  companyId: string,
+  modelId?: string,
+  months: number = 24,
+) {
+  const res = await fetch(
+    `/api/agent/unified-brain`,
+    json({
+      prompt: `Use the execute_forecast_model tool to run the constructed model.`,
+      output_format: 'tool_result',
+      context: {
+        company_id: companyId,
+        tool_hint: 'execute_forecast_model',
+        tool_inputs: { company_id: companyId, model_id: modelId, months },
+      },
+    }),
+  );
+  if (!res.ok) throw new Error(`Model execution failed: ${res.status}`);
   return res.json();
 }

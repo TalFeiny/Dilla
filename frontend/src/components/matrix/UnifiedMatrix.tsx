@@ -474,6 +474,8 @@ export function UnifiedMatrix({
 
   /** Memo panel below grid — always visible */
   const [memoPanelExpanded, setMemoPanelExpanded] = useState(true);
+  /** Grid collapse — hides the AG Grid to give memo panel full viewport */
+  const [gridCollapsed, setGridCollapsed] = useState(false);
   /** Track companies/capTables from last analysis for pin-to-company */
   const [memoPanelContext, setMemoPanelContext] = useState<{ companies?: any[]; capTables?: any[] }>({});
 
@@ -5169,9 +5171,10 @@ export function UnifiedMatrix({
       )}
 
       {/* Main Content: grid first (takes space), chat on the right */}
+      {!gridCollapsed && (
       <div className="flex gap-3 flex-1 min-h-0 overflow-hidden">
         {/* AG Grid Matrix with Drag-and-Drop */}
-        <div 
+        <div
           className="flex-1 min-w-0 w-full relative flex flex-col"
           style={{ height: 640, minHeight: 640 }}
           onDragOverCapture={handleDragOverCapture}
@@ -5685,11 +5688,12 @@ export function UnifiedMatrix({
           </div>
         )}
       </div>
+      )}
 
       {/* Memo panel below grid — always visible */}
-      <div className="border-t bg-card/50">
+      <div className={`border-t bg-card/50 ${gridCollapsed ? 'flex-1 flex flex-col min-h-0' : ''}`}>
           <button
-            className="w-full flex items-center justify-between px-4 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            className="w-full flex items-center justify-between px-4 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
             onClick={() => setMemoPanelExpanded(prev => !prev)}
           >
             <span className="flex items-center gap-1.5">
@@ -5697,6 +5701,16 @@ export function UnifiedMatrix({
               {memoSections.find(s => s.type === 'heading1')?.content || 'Working Memo'}
             </span>
             <span className="flex items-center gap-2">
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded cursor-pointer hover:bg-muted border border-border/50"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setGridCollapsed(prev => !prev);
+                }}
+                title={gridCollapsed ? 'Show grid' : 'Hide grid for full memo view'}
+              >
+                {gridCollapsed ? 'Show Grid' : 'Hide Grid'}
+              </span>
               <Pin
                 className="h-3 w-3 cursor-pointer hover:text-primary"
                 onClick={(e) => {
@@ -5725,7 +5739,7 @@ export function UnifiedMatrix({
             </span>
           </button>
           {memoPanelExpanded && (
-            <div className="max-h-[340px] overflow-y-auto">
+            <div className={`overflow-y-auto ${gridCollapsed ? 'flex-1 min-h-0' : 'max-h-[50vh]'}`}>
               <MemoEditor
                 sections={memoSections}
                 onChange={setMemoSections}

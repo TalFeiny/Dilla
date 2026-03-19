@@ -2827,7 +2827,12 @@ async def run_regression(request: FPARegressionRequest):
                 result = fit_result.to_dict()
                 result["r_squared"] = fit_result.r_squared
                 predictions = fit_result.predictions
-                forecast_vals = []
+                # Generate forward forecast for the specific method
+                forecast_vals, ci = adv_svc._generate_forecast(
+                    fit_result, x_arr, y_arr, forecast_periods
+                )
+                result["forecast"] = [round(v, 2) for v in forecast_vals]
+                result["forecast_confidence_intervals"] = ci
 
             # Build chart-ready fit_data with period labels
             # Generate forecast period labels if we have actuals periods
@@ -3068,9 +3073,12 @@ async def generate_forecast(request: FPAForecastRequest):
     from app.services.company_data_pull import pull_company_data
 
     try:
-        # Seed company_data from actuals or use provided base_data
+        # Pull full CompanyData — time_series, periods, historical_values()
+        # are all needed downstream. Flat seed dict is just for the projection engine.
+        cd_obj = None
         if request.company_id:
-            company_data = pull_company_data(request.company_id).to_forecast_seed()
+            cd_obj = pull_company_data(request.company_id)
+            company_data = cd_obj.to_forecast_seed()
             if not company_data.get("revenue") and not (request.base_data or {}).get("revenue"):
                 raise HTTPException(
                     status_code=400,
@@ -3145,6 +3153,68 @@ async def generate_forecast(request: FPAForecastRequest):
                 branch_name="Forecast Projection",
             )
 
+        # ── Build chart-ready fit_data (same contract as regression) ──
+        # Uses real actuals from CompanyData so branched_line gets a proper
+        # fork point where actuals end and forecast begins.
+        fit_data = None
+        if cd_obj and forecast:
+            from app.services.forecast_chart_transforms import build_all_chart_shapes
+
+            # Extract actuals for the primary metric (revenue) to build
+            # the actuals→forecast fork. The connected model forecasts all
+            # metrics, but branched_line needs one primary series for the fork.
+            actuals_pairs = cd_obj.historical_values("revenue")
+            actual_periods = [p for p, _ in actuals_pairs]
+            actual_values = [v for _, v in actuals_pairs]
+
+            # Forecast periods + revenue values from the projection
+            forecast_periods = [r.get("period", "") for r in forecast if isinstance(r, dict)]
+            forecast_revenue = [r.get("revenue", 0) for r in forecast if isinstance(r, dict)]
+
+            # For connected model, predictions over actuals = actuals themselves
+            # (no regression fit line — the model is driver-based, not curve-fit)
+            predictions = list(actual_values)
+
+            # Build multi-series branches for the connected P&L metrics
+            # so branched_line shows revenue, EBITDA, cash diverging from fork
+            branches = []
+            for metric, label, color in [
+                ("gross_profit", "Gross Profit", "#59a14f"),
+                ("ebitda", "EBITDA", "#f28e2c"),
+                ("cash_balance", "Cash Balance", "#e15759"),
+            ]:
+                branch_vals = [r.get(metric, 0) for r in forecast if isinstance(r, dict)]
+                if any(v for v in branch_vals):
+                    branches.append({
+                        "name": label,
+                        "data": [round(v, 2) for v in branch_vals],
+                        "color": color,
+                    })
+
+            fit_data = build_all_chart_shapes(
+                periods=actual_periods,
+                actuals=actual_values,
+                predictions=predictions,
+                forecast_periods=forecast_periods,
+                forecast_vals=[round(v, 2) for v in forecast_revenue],
+                category="revenue",
+                model_meta={
+                    "model_name": "Connected P&L",
+                    "business_interpretation": f"Full P&L projection with {request.forecast_periods} {request.granularity} periods. Revenue cascades through COGS, OpEx, EBITDA, FCF, and cash balance.",
+                    "extrapolation_risk": "low",
+                    "confidence": "high",
+                },
+                branches=branches,
+            )
+
+        # Runway from last forecast period
+        runway = None
+        if forecast:
+            last = forecast[-1] if isinstance(forecast[-1], dict) else {}
+            r = last.get("runway_months")
+            if r and r < 999:
+                runway = round(r)
+
         return {
             "forecast": forecast,
             "granularity": request.granularity,
@@ -3159,6 +3229,11 @@ async def generate_forecast(request: FPAForecastRequest):
                 "gross_margin": company_data.get("gross_margin"),
             },
             "charts": _build_forecast_charts(forecast, boundary_index=0),
+            "fit_data": fit_data,
+            "model_name": "Connected P&L",
+            "method": "driver-based",
+            "confidence": "high",
+            "runway_months": runway,
             "_persistence": persist,
         }
     except HTTPException:

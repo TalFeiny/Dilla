@@ -43,19 +43,20 @@ const BS_CHART_LABELS: Record<string, string> = {
   total_equity: 'Total Equity',
 };
 
-function buildChartFromResponse(data: BSResponse): Record<string, any>[] {
-  if (!data.periods || !data.rows) return [];
+function buildChartFromResponse(data: BSResponse): { labels: string[]; datasets: { label: string; data: (number | null)[] }[] } | null {
+  if (!data.periods?.length || !data.rows?.length) return null;
   const rowMap: Record<string, Record<string, number | null>> = {};
   for (const row of data.rows) {
     rowMap[row.id] = row.values;
   }
-  return data.periods.map(period => {
-    const entry: Record<string, any> = { period };
-    for (const id of BS_CHART_IDS) {
-      entry[BS_CHART_LABELS[id] || id] = rowMap[id]?.[period] ?? 0;
-    }
-    return entry;
-  });
+  const labels = data.periods;
+  const datasets = BS_CHART_IDS
+    .filter(id => rowMap[id])
+    .map(id => ({
+      label: BS_CHART_LABELS[id] || id,
+      data: data.periods.map(p => rowMap[id]?.[p] ?? null),
+    }));
+  return datasets.length > 0 ? { labels, datasets } : null;
 }
 
 export interface BalanceSheetSectionProps {
@@ -91,14 +92,16 @@ export function BalanceSheetSection({ onDelete, readOnly = false }: BalanceSheet
     handleFetch();
   }, [handleFetch]);
 
-  const chartData = useMemo(() => bsData ? buildChartFromResponse(bsData) : [], [bsData]);
+  const chartData = useMemo(() => bsData ? buildChartFromResponse(bsData) : null, [bsData]);
 
-  const latest = chartData[chartData.length - 1];
-  const collapsedSummary = latest
-    ? `Assets: ${fmtCurrency(latest['Total Assets'] || 0)} | Equity: ${fmtCurrency(latest['Total Equity'] || 0)}`
-    : 'Balance Sheet — no data';
+  const collapsedSummary = useMemo(() => {
+    if (!chartData) return 'Balance Sheet — no data';
+    const lastIdx = chartData.labels.length - 1;
+    const findVal = (label: string) => chartData.datasets.find(d => d.label === label)?.data[lastIdx] ?? 0;
+    return `Assets: ${fmtCurrency(findVal('Total Assets'))} | Equity: ${fmtCurrency(findVal('Total Equity'))}`;
+  }, [chartData]);
 
-  const aiContext = useMemo(() => ({ bsData: chartData, latest }), [chartData, latest]);
+  const aiContext = useMemo(() => ({ bsData: chartData }), [chartData]);
 
   const configBar = (
     <div className="flex items-center gap-1.5">
@@ -177,7 +180,7 @@ export function BalanceSheetSection({ onDelete, readOnly = false }: BalanceSheet
           </div>
         ) : error ? (
           <div className="flex items-center justify-center h-full text-xs text-red-500">{error}</div>
-        ) : chartData.length > 0 ? (
+        ) : chartData ? (
           <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={300} />
         ) : (
           <div className="flex items-center justify-center h-full text-xs text-muted-foreground">

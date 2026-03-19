@@ -23,6 +23,7 @@ class QueryHandlerType(str, Enum):
     COMPARISON = "comparison"
     REGRESSION = "regression"
     GROWTH_DECAY = "growth_decay"
+    MODEL_CONSTRUCTION = "model_construction"
 
 
 _VALID_HANDLERS = {h.value for h in QueryHandlerType}
@@ -69,7 +70,8 @@ class FPAQueryClassifier:
             "sensitivity: Sensitivity analysis, tornado charts, variable ranges\n"
             "comparison: Side-by-side comparison of scenarios, companies, periods\n"
             "regression: Statistical analysis, trend fitting, correlation\n"
-            "growth_decay: Growth/decay curves, churn modeling, cohort analysis"
+            "growth_decay: Growth/decay curves, churn modeling, cohort analysis\n"
+            "model_construction: Custom model building with priors, composite curves, confidence bands, macro shocks"
         )
 
         classify_prompt = (
@@ -125,5 +127,7 @@ class FPAQueryClassifier:
             return QueryHandlerType.REGRESSION
         elif "decay" in qt or "churn" in query or "cohort" in query:
             return QueryHandlerType.GROWTH_DECAY
+        elif "model_construction" in qt or "build" in query and "model" in query or "priors" in query:
+            return QueryHandlerType.MODEL_CONSTRUCTION
         else:
             return QueryHandlerType.SCENARIO

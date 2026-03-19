@@ -91,15 +91,16 @@ export function ValuationSection({ onDelete, readOnly = false }: ValuationSectio
   }, [ctx.companyId, method]);
 
   const chartData = useMemo(() => {
-    if (results.length === 0) return [];
+    if (results.length === 0) return null;
 
-    return results.map(r => ({
-      name: r.method,
-      value: r.value,
-      low: r.range_low || r.value * 0.8,
-      high: r.range_high || r.value * 1.2,
-      confidence: r.confidence,
-    }));
+    return {
+      labels: results.map(r => r.method),
+      datasets: [
+        { label: 'Low', data: results.map(r => r.range_low || r.value * 0.8) },
+        { label: 'Value', data: results.map(r => r.value) },
+        { label: 'High', data: results.map(r => r.range_high || r.value * 1.2) },
+      ],
+    };
   }, [results]);
 
   const primaryVal = results.length > 0
@@ -192,7 +193,7 @@ export function ValuationSection({ onDelete, readOnly = false }: ValuationSectio
       readOnly={readOnly}
     >
       <div className="w-full" style={{ height: 320 }}>
-        {chartData.length > 0 ? (
+        {chartData ? (
           <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={300} />
         ) : (
           <div className="flex items-center justify-center h-full text-xs text-muted-foreground">

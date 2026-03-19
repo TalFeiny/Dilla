@@ -400,7 +400,7 @@ class SessionState:
 
             drivers = fc.get("driver_impacts")
             if drivers and isinstance(drivers, list):
-                lines.append(f"  Drivers: {' | '.join(f'{d.get('driver','?')}: {d.get('impact','?')}' for d in drivers[:3])}")
+                lines.append("  Drivers: " + " | ".join(f"{d.get('driver','?')}: {d.get('impact','?')}" for d in drivers[:3]))
 
         # ── Charts ───────────────────────────────────────────────────
         lines.append("CHARTS: use generate_chart (line, bar, waterfall, sankey, probability_cloud, heatmap, bubble)")

@@ -340,6 +340,7 @@ class CashFlowPlanningService:
         months: int = 24,
         monthly_overrides: Optional[Dict[str, float]] = None,
         start_period: Optional[str] = None,
+        revenue_trajectory: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build a month-by-month P&L / cash flow model.
@@ -347,6 +348,11 @@ class CashFlowPlanningService:
         Same logic as build_cash_flow_model but at monthly granularity.
         Uses RevenueProjectionService.project_revenue_monthly() for revenue,
         then applies OpEx benchmarks and computes EBITDA/FCF/runway per month.
+
+        When revenue_trajectory is provided, those revenue values are used
+        directly instead of computing from growth rates. This allows
+        regression-fitted revenue (gompertz, logistic, etc.) to cascade
+        through the full P&L.
 
         Driver-engine extensions (read from company_data):
         - churn_rate / nrr / pricing_pct_change / new_customer_growth_rate / acv_override:
@@ -365,6 +371,9 @@ class CashFlowPlanningService:
             months: projection horizon in months
             monthly_overrides: {"YYYY-MM": annual_growth_rate} overrides
             start_period: "YYYY-MM" start month (defaults to next month)
+            revenue_trajectory: optional list of {"period": "YYYY-MM", "revenue": float}
+                                dicts from regression. When provided, overrides
+                                the growth-rate model for revenue.
 
         Returns:
             List of per-month dicts with full P&L breakdown.
@@ -383,18 +392,45 @@ class CashFlowPlanningService:
         # Cap initial growth rate to prevent runaway forecasts
         growth_rate = max(0.0, min(growth_rate, 3.0))  # 0% to 300% max
 
-        # Get monthly revenue projections (growth-rate model)
-        rev_projections = RevenueProjectionService.project_revenue_monthly(
-            base_revenue_annual=base_revenue,
-            initial_growth=growth_rate,
-            months=months,
-            stage=stage,
-            sector=company_data.get("sector", "saas"),
-            investor_quality=company_data.get("investor_quality"),
-            geography=company_data.get("geography"),
-            monthly_overrides=monthly_overrides,
-            start_period=start_period,
-        )
+        # If regression-fitted revenue trajectory is provided, build period
+        # stubs from it instead of the growth-rate model
+        if revenue_trajectory:
+            rev_projections = []
+            for entry in revenue_trajectory[:months]:
+                rev_projections.append({
+                    "period": entry.get("period", f"M{len(rev_projections)+1}"),
+                    "revenue": entry["revenue"],
+                    "gross_margin": company_data.get("gross_margin", 0.65),
+                    "growth_rate_annual": 0,  # not meaningful for regression
+                })
+            # Pad if trajectory is shorter than requested months
+            if len(rev_projections) < months:
+                last_rev = rev_projections[-1]["revenue"] if rev_projections else 0
+                last_period = rev_projections[-1]["period"] if rev_projections else start_period or "2025-01"
+                from dateutil.relativedelta import relativedelta
+                from app.core.date_utils import parse_period_to_date
+                last_dt = parse_period_to_date(last_period)
+                for i in range(len(rev_projections), months):
+                    next_dt = last_dt + relativedelta(months=i - len(revenue_trajectory) + 1)
+                    rev_projections.append({
+                        "period": next_dt.strftime("%Y-%m"),
+                        "revenue": last_rev,  # flat beyond trajectory
+                        "gross_margin": company_data.get("gross_margin", 0.65),
+                        "growth_rate_annual": 0,
+                    })
+        else:
+            # Get monthly revenue projections (growth-rate model)
+            rev_projections = RevenueProjectionService.project_revenue_monthly(
+                base_revenue_annual=base_revenue,
+                initial_growth=growth_rate,
+                months=months,
+                stage=stage,
+                sector=company_data.get("sector", "saas"),
+                investor_quality=company_data.get("investor_quality"),
+                geography=company_data.get("geography"),
+                monthly_overrides=monthly_overrides,
+                start_period=start_period,
+            )
 
         # Analytical metrics are computed upstream (see annual model comment).
         total_raised = company_data.get("total_raised") or 0
@@ -641,6 +677,7 @@ class CashFlowPlanningService:
         growth_overrides: Optional[List[float]] = None,
         monthly_overrides: Optional[Dict[str, float]] = None,
         start_period: Optional[str] = None,
+        revenue_trajectory: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Unified projection engine. Runs monthly internally, then aggregates
@@ -654,6 +691,8 @@ class CashFlowPlanningService:
             growth_overrides: per-year growth rate list (annual model compat)
             monthly_overrides: {"YYYY-MM": rate} per-month overrides
             start_period: "YYYY-MM" start (defaults to next month)
+            revenue_trajectory: optional regression-fitted revenue values to
+                                cascade through the P&L instead of growth-rate model
 
         Returns:
             List of period dicts with full P&L breakdown at requested granularity.
@@ -681,6 +720,7 @@ class CashFlowPlanningService:
             months=months_needed,
             monthly_overrides=monthly_overrides,
             start_period=start_period,
+            revenue_trajectory=revenue_trajectory,
         )
 
         if granularity == "monthly":

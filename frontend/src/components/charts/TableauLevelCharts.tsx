@@ -1672,6 +1672,7 @@ export default function TableauLevelCharts({
     };
 
     if (isBarType) {
+      const isStacked = type === 'stacked_bar';
       return (
         <ResponsiveContainer width="100%" height={height}>
           <BarChart data={chartData}>
@@ -1686,6 +1687,7 @@ export default function TableauLevelCharts({
                 dataKey={ds.label || ds.id || `Series${i}`}
                 fill={ds.backgroundColor || forecastColors[ds.label]?.stroke || colors[i % colors.length]}
                 fillOpacity={0.8}
+                stackId={isStacked ? 'stack' : undefined}
               />
             ))}
           </BarChart>

@@ -135,26 +135,38 @@ export function MonteCarloSection({ onDelete, readOnly = false }: MonteCarloSect
   }, [ctx.companyId, ctx.activeBranchId, targetMetric, simCount]);
 
   const chartData = useMemo(() => {
-    if (!result) return [];
+    if (!result) return null;
 
     if (chartMode === 'monte_carlo_histogram' && result.histogram) {
-      return result.histogram.map(h => ({ name: fmtCurrency(h.bucket), value: h.count, bucket: h.bucket }));
+      return {
+        labels: result.histogram.map(h => fmtCurrency(h.bucket)),
+        datasets: [{ label: 'Frequency', data: result.histogram.map(h => h.count) }],
+      };
     }
 
     if (chartMode === 'monte_carlo_fan' && result.fan_data) {
-      return result.fan_data;
+      // Fan chart accepts {labels, datasets} per TableauLevelCharts validation
+      const periods = result.fan_data.map((d: any) => d.period || d.label || '');
+      const bandKeys = Object.keys(result.fan_data[0] || {}).filter(k => k !== 'period' && k !== 'label');
+      return {
+        labels: periods,
+        datasets: bandKeys.map(key => ({
+          label: key.toUpperCase(),
+          data: result.fan_data!.map((d: any) => d[key] ?? null),
+        })),
+      };
     }
 
     // Fallback: build from percentiles
     if (result.percentiles) {
-      return Object.entries(result.percentiles).map(([k, v]) => ({
-        name: k.toUpperCase(),
-        value: v,
-      }));
+      return {
+        labels: Object.keys(result.percentiles).map(k => k.toUpperCase()),
+        datasets: [{ label: targetMetric, data: Object.values(result.percentiles) }],
+      };
     }
 
-    return [];
-  }, [result, chartMode]);
+    return null;
+  }, [result, chartMode, targetMetric]);
 
   const collapsedSummary = result
     ? `MC: ${targetMetric} | p50: ${fmtCurrency(result.percentiles?.p50 || result.mean)} | ${result.simulations.toLocaleString()} sims`
@@ -236,7 +248,7 @@ export function MonteCarloSection({ onDelete, readOnly = false }: MonteCarloSect
     >
       {percentileCards}
       <div className="w-full" style={{ height: 300 }}>
-        {chartData.length > 0 ? (
+        {chartData ? (
           <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={280} />
         ) : (
           <div className="flex items-center justify-center h-full text-xs text-muted-foreground">

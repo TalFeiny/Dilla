@@ -1993,6 +1993,23 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="standard",
         timeout_ms=120_000,
     ),
+    # ── Priors-based custom model engine ───────────────────────────────
+    AgentTool(
+        name="construct_forecast_model",
+        description="Build custom forecast model from NL prompt + actuals. Returns ModelSpec with curves, priors, macro shocks.",
+        handler="_tool_construct_forecast_model",
+        input_schema={"prompt": "str", "company_id": "str?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="execute_forecast_model",
+        description="Execute a constructed ModelSpec. Returns full P&L forecast with confidence bands and milestones.",
+        handler="_tool_execute_forecast_model",
+        input_schema={"model_id": "str?", "months": "int?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
 ]
 
 # Quick lookup by name (includes ALL tools — agent-visible + internal)
@@ -2357,6 +2374,16 @@ TOOL_WIRING: dict[str, dict] = {
     },
     "convert_currency": {
         "requires": ["companies"],
+        "produces": [],
+    },
+
+    # ── Priors-based custom model engine ───────────────────────────────
+    "construct_forecast_model": {
+        "requires": ["companies"],
+        "produces": ["forecast_models"],
+    },
+    "execute_forecast_model": {
+        "requires": ["forecast_models"],
         "produces": [],
     },
 }
@@ -4423,11 +4450,53 @@ class UnifiedMCPOrchestrator:
         """Single conversational turn — thin dispatcher.
 
         Classifies the turn, checks context health, then routes to one
-        of three handler paths:
-        - _fast_reply: PHATIC only — single LLM call, no tools (greetings/acks)
+        of these handler paths:
+        - _fast_reply: PHATIC or section analysis — single LLM call, no tools
         - _crystallize_and_execute: SYNTHESIS in CONVERGING/EXECUTING with 4+ exchanges
         - _conversational_loop: everything else (incl. STATUS, STEERING) — standard tool-use loop
         """
+        # ── 0. Section analysis — not agentic ──
+        # When context has section_type, this came from a memo block button
+        # click, not a user typing in chat. The prompt is pre-built with all
+        # data baked in. No classification, no history, no tools — just one
+        # completion.
+        _section_type = (context or {}).get("section_type")
+        if _section_type:
+            turn_type = TurnType.ANALYSIS
+            logger.info(f"[FAST_PATH] section_type={_section_type} — single completion, no classification/history")
+            self._turn_type_history.append(turn_type)
+            if len(self._turn_type_history) > 10:
+                self._turn_type_history = self._turn_type_history[-10:]
+
+            yield {
+                "type": "classification",
+                "intent": turn_type.value,
+                "response_mode": "task",
+                "confidence": 1.0,
+            }
+
+            self._turn_result = {"full_text": "", "tool_calls_made": []}
+            async for event in self._fast_reply(prompt, context, turn_type):
+                yield event
+
+            tr = self._turn_result
+            await self._update_turn_state(
+                turn_type, TURN_BUDGETS[turn_type] or 4096,
+                tr["full_text"], tr["tool_calls_made"], prompt,
+            )
+            yield {
+                "type": "complete",
+                "result": {
+                    "success": True,
+                    "result": {
+                        "content": tr["full_text"],
+                        "narrative": tr["full_text"],
+                        "turn_type": turn_type.value,
+                    },
+                },
+            }
+            return
+
         # ── 1. Check context health — offer handoff if clogged ──
         health = self._check_context_health()
         if health["needs_handoff"]:
@@ -10880,6 +10949,171 @@ Return JSON with ONLY these fields (use null if unknown):
             return fpa_result
         except Exception as e:
             logger.warning(f"[TOOL] fpa failed: {e}")
+            return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Priors-based custom model engine
+    # ------------------------------------------------------------------
+
+    async def _tool_construct_forecast_model(self, inputs: dict) -> dict:
+        """Build ModelSpec(s) from NL prompt + company actuals."""
+        try:
+            from app.services.agent_model_constructor import AgentModelConstructor
+            from app.services.company_data_pull import pull_company_data
+
+            company_id = self._resolve_company_id(inputs)
+            if not company_id:
+                return {"error": "No company_id available. Upload financials or set company context first."}
+
+            cd = pull_company_data(company_id)
+            if not cd.periods:
+                return {"error": "No actuals data. Upload financials first."}
+
+            constructor = AgentModelConstructor(
+                self.model_router,
+                tavily_search_fn=self._tavily_search,
+            )
+
+            # Pass existing models for inheritance
+            existing = self.shared_data.get("forecast_models", [])
+            from app.services.model_spec_schema import ModelSpec
+            existing_specs = []
+            for m in existing:
+                if isinstance(m, ModelSpec):
+                    existing_specs.append(m)
+                elif isinstance(m, dict):
+                    try:
+                        existing_specs.append(ModelSpec.model_validate(m))
+                    except Exception:
+                        pass
+
+            specs = await constructor.construct_models(
+                prompt=inputs.get("prompt", ""),
+                company_data=cd,
+                company_id=company_id,
+                existing_models=existing_specs,
+            )
+
+            if not specs:
+                return {"error": "Failed to construct forecast model from prompt."}
+
+            # Store in shared_data
+            async with self.shared_data_lock:
+                stored = self.shared_data.get("forecast_models", [])
+                stored.extend(specs)
+                self.shared_data["forecast_models"] = stored
+
+            # Create scenario branches with model_spec embedded
+            try:
+                from app.services.scenario_branch_service import ScenarioBranchService
+                sbs = ScenarioBranchService()
+                for spec in specs:
+                    branch_assumptions = {
+                        "model_spec": spec.model_dump(),
+                        "model_spec_id": spec.model_id,
+                    }
+                    await sbs.create_branch(
+                        company_id=company_id,
+                        branch_name=spec.model_id,
+                        assumptions=branch_assumptions,
+                        parent_branch_id=None,
+                    )
+            except Exception as e:
+                logger.warning("Failed to create scenario branch for model spec: %s", e)
+
+            return {
+                "status": "ok",
+                "models_constructed": len(specs),
+                "model_ids": [s.model_id for s in specs],
+                "narratives": {s.model_id: s.narrative for s in specs},
+                "curves": {
+                    s.model_id: list(s.curves.keys()) for s in specs
+                },
+                "event_chain": specs[0].event_chain.model_dump() if specs and specs[0].event_chain else None,
+            }
+        except Exception as e:
+            logger.warning(f"[TOOL] construct_forecast_model failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_execute_forecast_model(self, inputs: dict) -> dict:
+        """Execute a previously constructed ModelSpec → full P&L forecast."""
+        try:
+            from app.services.model_spec_executor import ModelSpecExecutor
+            from app.services.model_spec_schema import ModelSpec, ExecutionResult
+            from app.services.company_data_pull import pull_company_data
+
+            company_id = self._resolve_company_id(inputs)
+            if not company_id:
+                return {"error": "No company_id available."}
+
+            cd = pull_company_data(company_id)
+            seed = cd.to_forecast_seed()
+
+            stored = self.shared_data.get("forecast_models", [])
+            if not stored:
+                return {"error": "No forecast models constructed yet. Call construct_forecast_model first."}
+
+            # Find specific model or execute all
+            target_id = inputs.get("model_id")
+            months = inputs.get("months", 24)
+            executor = ModelSpecExecutor()
+
+            results = []
+            parent_result = None
+
+            for item in stored:
+                spec = item if isinstance(item, ModelSpec) else ModelSpec.model_validate(item)
+
+                if target_id and spec.model_id != target_id:
+                    continue
+
+                # Resolve parent if inheriting
+                if spec.parent_model and parent_result and parent_result.model_id == spec.parent_model:
+                    pr = parent_result
+                else:
+                    pr = None
+
+                result = executor.execute(
+                    spec=spec,
+                    company_data=seed,
+                    months=months,
+                    parent_result=pr,
+                )
+                parent_result = result  # for chaining
+                results.append(result)
+
+            if not results:
+                return {"error": f"Model '{target_id}' not found in constructed models."}
+
+            # Store results in shared_data
+            async with self.shared_data_lock:
+                self.shared_data["forecast_model_results"] = [
+                    r.model_dump() for r in results
+                ]
+
+            return {
+                "status": "ok",
+                "models_executed": len(results),
+                "results": [
+                    {
+                        "model_id": r.model_id,
+                        "narrative": r.narrative,
+                        "months": len(r.forecast),
+                        "final_revenue": r.forecast[-1].get("revenue", 0) if r.forecast else 0,
+                        "final_cash": r.forecast[-1].get("cash_balance", 0) if r.forecast else 0,
+                        "milestones": r.milestones,
+                        "has_confidence_bands": bool(r.confidence_bands),
+                        "event_chain": r.event_chain.model_dump() if r.event_chain else None,
+                        "cascade_ripple": r.cascade_ripple if r.cascade_ripple else {},
+                        "forecast": r.forecast,
+                        "confidence_bands": r.confidence_bands,
+                        "curves": r.curves,
+                    }
+                    for r in results
+                ],
+            }
+        except Exception as e:
+            logger.warning(f"[TOOL] execute_forecast_model failed: {e}")
             return {"error": str(e)}
 
     # ------------------------------------------------------------------

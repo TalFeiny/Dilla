@@ -5,10 +5,14 @@ import dynamic from 'next/dynamic';
 import { MemoSectionWrapper } from '../MemoSectionWrapper';
 import { useMemoContext, type NarrativeCard } from '../MemoContext';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { Loader2, Play } from 'lucide-react';
+import { Loader2, Play, MessageSquare } from 'lucide-react';
+import { constructForecastModel, executeForecastModel } from '@/lib/memo/api-helpers';
+import { CascadeModelView, type ModelExecutionResult } from './CascadeModelView';
+import { ModelSpecEditor } from './ModelSpecEditor';
 
 const TableauLevelCharts = dynamic(
   () => import('@/components/charts/TableauLevelCharts'),
@@ -20,7 +24,8 @@ type ForecastMethod =
   | 'auto' | 'driver-based' | 'seasonal'
   | 'linear' | 'polynomial' | 'exponential_growth'
   | 'logistic' | 'power_law' | 'gompertz'
-  | 'piecewise_linear' | 'weighted_linear';
+  | 'piecewise_linear' | 'weighted_linear'
+  | 'model_construction';
 type ForecastMetric = 'revenue' | 'ebitda' | 'gross_profit' | 'total_opex' | 'free_cash_flow' | 'cogs';
 type ForecastGranularity = 'monthly' | 'quarterly' | 'annual';
 
@@ -39,6 +44,14 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
   const [granularity, setGranularity] = useState<ForecastGranularity>('monthly');
   const [loading, setLoading] = useState(false);
 
+  // Model construction state
+  const [mcPrompt, setMcPrompt] = useState('');
+  const [mcResult, setMcResult] = useState<ModelExecutionResult | null>(null);
+  const [mcModelIds, setMcModelIds] = useState<string[]>([]);
+
+  const isModelConstruction = selectedMethod === 'model_construction';
+
+  // Standard forecast build
   const handleBuildForecast = useCallback(async () => {
     if (!ctx.companyId) return;
     setLoading(true);
@@ -56,26 +69,121 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
     }
   }, [ctx, selectedMethod, selectedMetric, forecastPeriods, granularity]);
 
+  // Model construction: construct + execute
+  const handleModelConstruction = useCallback(async (prompt?: string) => {
+    if (!ctx.companyId) return;
+    const p = prompt || mcPrompt;
+    if (!p.trim()) return;
+    setLoading(true);
+    try {
+      // Step 1: Construct
+      const constructResult = await constructForecastModel(ctx.companyId, p);
+      const data = constructResult.result || constructResult;
+      const modelIds: string[] = data.model_ids || [];
+      setMcModelIds(modelIds);
+
+      if (modelIds.length === 0) {
+        console.warn('No models constructed');
+        return;
+      }
+
+      // Step 2: Execute
+      const execResult = await executeForecastModel(
+        ctx.companyId,
+        modelIds[0],
+        forecastPeriods,
+      );
+      const execData = execResult.result || execResult;
+      const results = execData.results || [];
+
+      if (results.length > 0) {
+        setMcResult(results[0]);
+      }
+    } catch (err: any) {
+      console.warn('Model construction error:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [ctx.companyId, mcPrompt, forecastPeriods]);
+
+  // Re-run executor with current model
+  const handleReRun = useCallback(async () => {
+    if (!ctx.companyId || mcModelIds.length === 0) return;
+    setLoading(true);
+    try {
+      const execResult = await executeForecastModel(
+        ctx.companyId,
+        mcModelIds[0],
+        forecastPeriods,
+      );
+      const execData = execResult.result || execResult;
+      const results = execData.results || [];
+      if (results.length > 0) {
+        setMcResult(results[0]);
+      }
+    } catch (err: any) {
+      console.warn('Model re-execution error:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [ctx.companyId, mcModelIds, forecastPeriods]);
+
+  // Event chain handlers for ModelSpecEditor
+  const handleToggleEvent = useCallback((eventId: string, enabled: boolean) => {
+    // Update local state — will re-run on next Run click
+    if (!mcResult?.event_chain) return;
+    const updated = { ...mcResult };
+    if (updated.event_chain) {
+      updated.event_chain = {
+        ...updated.event_chain,
+        events: updated.event_chain.events.map(e =>
+          e.id === eventId ? { ...e, probability: enabled ? e.probability || 0.5 : 0 } : e
+        ),
+      };
+      setMcResult(updated);
+    }
+  }, [mcResult]);
+
+  const handleChangeProbability = useCallback((eventId: string, probability: number) => {
+    if (!mcResult?.event_chain) return;
+    const updated = { ...mcResult };
+    if (updated.event_chain) {
+      updated.event_chain = {
+        ...updated.event_chain,
+        events: updated.event_chain.events.map(e =>
+          e.id === eventId ? { ...e, probability } : e
+        ),
+      };
+      setMcResult(updated);
+    }
+  }, [mcResult]);
+
+  const handleRePrompt = useCallback((prompt: string) => {
+    setMcPrompt(prompt);
+    handleModelConstruction(prompt);
+  }, [handleModelConstruction]);
+
   const methodResult = ctx.forecastMeta;
 
   // Auto-generate narrative cards when forecast metadata updates
   useEffect(() => {
-    if (!methodResult) return;
+    if (!methodResult || isModelConstruction) return;
     const cards: NarrativeCard[] = [];
 
-    // R² / accuracy card
     if (methodResult.r_squared != null) {
       const r2 = methodResult.r_squared;
-      const quality = r2 >= 0.9 ? 'strong' : r2 >= 0.7 ? 'moderate' : 'weak';
+      const quality = r2 >= 0.9 ? 'High confidence' : r2 >= 0.7 ? 'Moderate confidence' : 'Low confidence';
       const severity = r2 >= 0.7 ? 'info' : 'warning';
+      const mapeNote = methodResult.mape != null
+        ? ` — average forecast error: ${(methodResult.mape * 100).toFixed(1)}%`
+        : '';
       cards.push({
         id: 'forecast-accuracy',
-        text: `${methodResult.method || 'Model'} fit: R² = ${r2.toFixed(3)} (${quality})${methodResult.mape != null ? ` | MAPE: ${(methodResult.mape * 100).toFixed(1)}%` : ''}`,
+        text: `${quality} forecast${mapeNote}`,
         severity,
       });
     }
 
-    // Model description card (from backend — dynamic, not hardcoded)
     if (methodResult.description) {
       cards.push({
         id: 'forecast-description',
@@ -86,20 +194,18 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
 
     setNarrativeCards(cards);
 
-    // Request AI narrative — async, appends to cards when available
     if (ctx.requestNarrative && methodResult.method) {
-      const meta = methodResult as any;
       ctx.requestNarrative('forecast_method', {
         metric: selectedMetric,
         method: methodResult.method,
         r_squared: methodResult.r_squared,
         mape: methodResult.mape,
-        model_name: meta.model_name,
-        business_interpretation: meta.business_interpretation,
-        extrapolation_risk: meta.extrapolation_risk,
-        confidence: meta.confidence,
+        model_name: methodResult.model_name,
+        business_interpretation: methodResult.business_interpretation,
+        extrapolation_risk: methodResult.extrapolation_risk,
+        confidence: methodResult.confidence,
         alternatives: methodResult.alternatives?.slice(0, 3),
-        data_characteristics: meta.data_characteristics,
+        data_characteristics: methodResult.data_characteristics,
       }).then(narrative => {
         if (narrative) {
           setNarrativeCards(prev => [
@@ -109,10 +215,9 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
         }
       }).catch(err => console.warn('Forecast AI narrative failed:', err));
     }
-  }, [methodResult, ctx, selectedMetric]);
+  }, [methodResult, ctx, selectedMetric, isModelConstruction]);
 
-  // Backend returns pre-built chart shapes keyed by chart type — just pass through
-  // Each shape: { data, citations, explanation }
+  // Backend returns pre-built chart shapes keyed by chart type
   const chartShape = useMemo(() => {
     if (!methodResult?.fit_data) return null;
     const shapes = methodResult.fit_data;
@@ -123,45 +228,54 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
   const chartCitations = chartShape?.citations ?? [];
   const chartExplanation = chartShape?.explanation ?? null;
 
-  const collapsedSummary = methodResult
-    ? `Method: ${methodResult.method} | R²: ${methodResult.r_squared?.toFixed(3) || '—'} | MAPE: ${methodResult.mape ? `${(methodResult.mape * 100).toFixed(1)}%` : '—'}`
-    : `Forecast Method: ${selectedMethod}`;
+  const collapsedSummary = isModelConstruction
+    ? `Model Construction${mcResult ? ` | ${mcResult.model_id}` : ''}`
+    : methodResult
+      ? `Method: ${methodResult.method} | R²: ${methodResult.r_squared?.toFixed(3) || '—'} | MAPE: ${methodResult.mape ? `${(methodResult.mape * 100).toFixed(1)}%` : '—'}`
+      : `Forecast Method: ${selectedMethod}`;
 
   const aiContext = useMemo(() => ({
     metric: selectedMetric,
     method: selectedMethod,
     granularity,
     forecast_periods: forecastPeriods,
-    r_squared: methodResult?.r_squared,
-    mape: methodResult?.mape,
-    model_name: (methodResult as any)?.model_name,
-    business_interpretation: (methodResult as any)?.business_interpretation,
-    extrapolation_risk: (methodResult as any)?.extrapolation_risk,
-    confidence: (methodResult as any)?.confidence,
-    alternatives: methodResult?.alternatives?.map(a => ({ method: a.method, r_squared: a.r_squared })),
-  }), [selectedMethod, selectedMetric, granularity, forecastPeriods, methodResult]);
+    ...(isModelConstruction
+      ? { model_id: mcResult?.model_id, event_count: mcResult?.event_chain?.events.length }
+      : {
+          r_squared: methodResult?.r_squared,
+          mape: methodResult?.mape,
+          model_name: methodResult?.model_name,
+          business_interpretation: methodResult?.business_interpretation,
+          extrapolation_risk: methodResult?.extrapolation_risk,
+          confidence: methodResult?.confidence,
+          alternatives: methodResult?.alternatives?.map(a => ({ method: a.method, r_squared: a.r_squared })),
+        }),
+  }), [selectedMethod, selectedMetric, granularity, forecastPeriods, methodResult, isModelConstruction, mcResult]);
 
   const configBar = (
     <>
-      <div className="flex items-center gap-1.5">
-        <span className="text-muted-foreground">Metric:</span>
-        <Select value={selectedMetric} onValueChange={(v) => setSelectedMetric(v as ForecastMetric)}>
-          <SelectTrigger className="h-6 w-[130px] text-[11px]"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="revenue">Revenue</SelectItem>
-            <SelectItem value="ebitda">EBITDA</SelectItem>
-            <SelectItem value="gross_profit">Gross Profit</SelectItem>
-            <SelectItem value="total_opex">Total OpEx</SelectItem>
-            <SelectItem value="free_cash_flow">Free Cash Flow</SelectItem>
-            <SelectItem value="cogs">COGS</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+      {!isModelConstruction && (
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">Metric:</span>
+          <Select value={selectedMetric} onValueChange={(v) => setSelectedMetric(v as ForecastMetric)}>
+            <SelectTrigger className="h-6 w-[130px] text-[11px]"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="revenue">Revenue</SelectItem>
+              <SelectItem value="ebitda">EBITDA</SelectItem>
+              <SelectItem value="gross_profit">Gross Profit</SelectItem>
+              <SelectItem value="total_opex">Total OpEx</SelectItem>
+              <SelectItem value="free_cash_flow">Free Cash Flow</SelectItem>
+              <SelectItem value="cogs">COGS</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
       <div className="flex items-center gap-1.5">
         <span className="text-muted-foreground">Method:</span>
         <Select value={selectedMethod} onValueChange={(v) => setSelectedMethod(v as ForecastMethod)}>
-          <SelectTrigger className="h-6 w-[140px] text-[11px]"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="h-6 w-[160px] text-[11px]"><SelectValue /></SelectTrigger>
           <SelectContent>
+            <SelectItem value="model_construction">Model Construction</SelectItem>
             <SelectItem value="auto">Auto (best fit)</SelectItem>
             <SelectItem value="linear">Linear</SelectItem>
             <SelectItem value="polynomial">Polynomial</SelectItem>
@@ -172,36 +286,40 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
             <SelectItem value="piecewise_linear">Piecewise Linear</SelectItem>
             <SelectItem value="weighted_linear">Weighted Linear</SelectItem>
             <SelectItem value="seasonal">Seasonal</SelectItem>
-            <SelectItem value="driver-based">Driver-based</SelectItem>
+            <SelectItem value="driver-based">Connected P&L</SelectItem>
           </SelectContent>
         </Select>
       </div>
-      <div className="flex items-center gap-1.5">
-        <span className="text-muted-foreground">Chart:</span>
-        <Select value={chartMode} onValueChange={(v) => setChartMode(v as ChartMode)}>
-          <SelectTrigger className="h-6 w-[130px] text-[11px]"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="branched_line">Scenario Branches</SelectItem>
-            <SelectItem value="regression_line">Regression Fit</SelectItem>
-            <SelectItem value="line">Line</SelectItem>
-            <SelectItem value="stacked_bar">Stacked Bar</SelectItem>
-            <SelectItem value="bar_comparison">Grouped Bar</SelectItem>
-            <SelectItem value="monte_carlo_fan">MC Fan</SelectItem>
-            <SelectItem value="treemap">Treemap</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="text-muted-foreground">View:</span>
-        <Select value={granularity} onValueChange={(v) => setGranularity(v as ForecastGranularity)}>
-          <SelectTrigger className="h-6 w-[90px] text-[11px]"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="monthly">Monthly</SelectItem>
-            <SelectItem value="quarterly">Quarterly</SelectItem>
-            <SelectItem value="annual">Annual</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+      {!isModelConstruction && (
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">Chart:</span>
+          <Select value={chartMode} onValueChange={(v) => setChartMode(v as ChartMode)}>
+            <SelectTrigger className="h-6 w-[130px] text-[11px]"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="branched_line">Scenario Branches</SelectItem>
+              <SelectItem value="regression_line">Regression Fit</SelectItem>
+              <SelectItem value="line">Line</SelectItem>
+              <SelectItem value="stacked_bar">Stacked Bar</SelectItem>
+              <SelectItem value="bar_comparison">Grouped Bar</SelectItem>
+              <SelectItem value="monte_carlo_fan">MC Fan</SelectItem>
+              <SelectItem value="treemap">Treemap</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+      {!isModelConstruction && (
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">View:</span>
+          <Select value={granularity} onValueChange={(v) => setGranularity(v as ForecastGranularity)}>
+            <SelectTrigger className="h-6 w-[90px] text-[11px]"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="monthly">Monthly</SelectItem>
+              <SelectItem value="quarterly">Quarterly</SelectItem>
+              <SelectItem value="annual">Annual</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
       <div className="flex items-center gap-1.5">
         <span className="text-muted-foreground">Periods:</span>
         <Select value={String(forecastPeriods)} onValueChange={(v) => setForecastPeriods(Number(v))}>
@@ -216,7 +334,7 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
           </SelectContent>
         </Select>
       </div>
-      {!readOnly && (
+      {!readOnly && !isModelConstruction && (
         <Button variant="outline" size="sm" className="h-6 text-[11px] gap-1 ml-auto" onClick={handleBuildForecast} disabled={loading}>
           {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
           Build
@@ -225,8 +343,8 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
     </>
   );
 
-  // Method comparison cards
-  const methodCards = methodResult?.alternatives ? (
+  // Method comparison cards (standard mode only)
+  const methodCards = !isModelConstruction && methodResult?.alternatives ? (
     <div className="grid grid-cols-3 gap-1.5 mb-3">
       {[
         { method: methodResult.method, r_squared: methodResult.r_squared, mape: methodResult.mape, active: true },
@@ -253,18 +371,69 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
       onDelete={onDelete}
       readOnly={readOnly}
     >
-      {methodCards}
-      <div className="w-full">
-        {chartData ? (
-          <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={280} citations={chartCitations} />
-        ) : (
-          <div className="flex items-center justify-center h-[200px] text-xs text-muted-foreground">
-            Build a forecast to see method fit and accuracy
+      {isModelConstruction ? (
+        <>
+          {/* NL Prompt input */}
+          {!readOnly && (
+            <div className="flex items-center gap-2 mb-3">
+              <div className="relative flex-1">
+                <MessageSquare className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  className="h-8 pl-7 text-sm"
+                  placeholder="Build me a 24-month forecast assuming Series A closes Q2..."
+                  value={mcPrompt}
+                  onChange={e => setMcPrompt(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleModelConstruction()}
+                  disabled={loading}
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-[11px] gap-1"
+                onClick={() => handleModelConstruction()}
+                disabled={loading || !mcPrompt.trim()}
+              >
+                {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                Construct
+              </Button>
+            </div>
+          )}
+
+          {/* CascadeModelView — branched line + stacked bar + narrative */}
+          <CascadeModelView result={mcResult} metric={selectedMetric} />
+
+          {/* ModelSpecEditor — event chain toggles + re-prompt */}
+          {mcResult?.event_chain && (
+            <div className="mt-4 pt-3 border-t border-border/30">
+              <ModelSpecEditor
+                eventChain={mcResult.event_chain}
+                onToggleEvent={handleToggleEvent}
+                onChangeProbability={handleChangeProbability}
+                onRePrompt={handleRePrompt}
+                onRun={handleReRun}
+                loading={loading}
+                readOnly={readOnly}
+              />
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          {methodCards}
+          <div className="w-full">
+            {chartData ? (
+              <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={280} citations={chartCitations} />
+            ) : (
+              <div className="flex items-center justify-center h-[200px] text-xs text-muted-foreground">
+                Build a forecast to see method fit and accuracy
+              </div>
+            )}
           </div>
-        )}
-      </div>
-      {chartExplanation && (
-        <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">{chartExplanation}</p>
+          {chartExplanation && (
+            <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">{chartExplanation}</p>
+          )}
+        </>
       )}
     </MemoSectionWrapper>
   );

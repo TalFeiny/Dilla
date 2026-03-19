@@ -207,7 +207,12 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
     if (!ctx) return;
     setActionLoading('forecast');
     try {
-      await ctx.buildForecast({ method });
+      await ctx.buildForecast({
+        method,
+        metric: 'revenue',
+        forecast_periods: 12,
+        granularity: 'monthly',
+      });
       // Auto-populate: add key sections so user sees results immediately
       const autoSections: DocumentSection[] = [
         { type: 'forecast_method' },
@@ -240,7 +245,7 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
     if (!ctx) return;
     setActionLoading('model');
     try {
-      await ctx.buildForecast({ method: 'driver-based', recompute: true });
+      await ctx.buildForecast({ method: 'driver-based', metric: 'revenue', forecast_periods: 12, granularity: 'monthly', recompute: true });
     } finally {
       setActionLoading(null);
     }
@@ -467,7 +472,7 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
                   <DropdownMenuItem onClick={() => handleBuildForecast('driver-based')} disabled={!!actionLoading}>
                     <Sliders className="h-3 w-3 mr-2" /> Driver-based
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleBuildForecast('regression')} disabled={!!actionLoading}>
+                  <DropdownMenuItem onClick={() => handleBuildForecast('linear')} disabled={!!actionLoading}>
                     <TrendingUp className="h-3 w-3 mr-2" /> Regression
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleBuildForecast('seasonal')} disabled={!!actionLoading}>
@@ -526,7 +531,7 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
       )}
 
       {/* Sections */}
-      <div ref={containerRef} className="flex-1 overflow-y-auto px-4 py-6 print:bg-white print:shadow-none print:p-0">
+      <div ref={containerRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-6 print:bg-white print:shadow-none print:p-0">
         <div className="memo-sections-scroll space-y-1">
         {sections.map((section, idx) => (
           <div

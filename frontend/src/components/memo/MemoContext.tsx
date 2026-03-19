@@ -87,12 +87,19 @@ export interface ForecastMeta {
   r_squared?: number;
   mape?: number;
   description?: string;
-  fit_data?: Array<Record<string, any>>;
+  // Chart shapes keyed by chart type: { branched_line: { data, citations, explanation }, ... }
+  fit_data?: Record<string, { data: any; citations?: any[]; explanation?: string }>;
   alternatives?: Array<{
     method: string;
     r_squared?: number;
     mape?: number;
   }>;
+  // Extended metadata from regression service
+  model_name?: string;
+  business_interpretation?: string;
+  extrapolation_risk?: string;
+  confidence?: string;
+  data_characteristics?: Record<string, any>;
 }
 
 // ---------------------------------------------------------------------------
@@ -360,114 +367,124 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
   }, [forkTree, bump]);
 
   // ---- Build forecast ----
+  // Regression methods → /api/fpa/regression
+  // Connected model (driver-based) → /api/fpa/forecast (full P&L cascade)
   const buildForecast = useCallback(async (params?: Record<string, any>) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/fpa/forecast`, {
+      const method = params?.method || 'auto';
+      const metric = params?.metric || 'revenue';
+      const forecastPeriods = params?.forecast_periods ?? 12;
+      const gran = params?.granularity || 'monthly';
+
+      // ── Connected model: driver-based uses the full P&L engine ──
+      if (method === 'driver-based') {
+        // Collect current driver overrides as assumptions
+        const driverOverrides: Record<string, any> = {};
+        const branchId = forkTree?.activeBranchId;
+        if (branchId && driverValues[branchId]) {
+          for (const dv of driverValues[branchId]) {
+            if (dv.source === 'override') driverOverrides[dv.id] = dv.value;
+          }
+        }
+
+        const res = await fetch(`/api/fpa/forecast`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            company_id: companyId,
+            forecast_periods: forecastPeriods,
+            granularity: gran,
+            assumptions: driverOverrides,
+          }),
+        });
+        if (!res.ok) throw new Error(`Connected forecast failed: ${res.status}`);
+        const data = await res.json();
+
+        // data.forecast is ForecastMonth[] with ALL metrics per period
+        const forecast: ForecastMonth[] = data.forecast || [];
+        if (forecast.length) {
+          applyForecastToGrid(forecast);
+        }
+
+        // Backend now returns fit_data with real actuals→forecast fork point,
+        // same contract as regression. Just pass through.
+        const runway = data.runway_months;
+        const runwayNote = runway ? ` Runway: ${runway} months.` : '';
+
+        setForecastMeta({
+          method: 'driver-based',
+          description: `Connected P&L model — all metrics cascade from revenue through to cash.${runwayNote}`,
+          fit_data: data.fit_data,
+          model_name: data.model_name || 'Connected P&L',
+          confidence: data.confidence || 'high',
+          business_interpretation: `Full P&L projection with ${forecastPeriods} ${gran} periods.${runwayNote}`,
+        });
+        bump();
+        return;
+      }
+
+      // ── Single-metric regression methods ──
+      const methodToRegType: Record<string, string> = {
+        auto: 'advanced', linear: 'linear', regression: 'advanced',
+        polynomial: 'polynomial',
+        exponential: 'exponential_growth', exponential_growth: 'exponential_growth',
+        logistic: 'logistic', power_law: 'power_law', gompertz: 'gompertz',
+        piecewise: 'piecewise_linear', piecewise_linear: 'piecewise_linear',
+        weighted_linear: 'weighted_linear', seasonal: 'advanced',
+      };
+      const regType = methodToRegType[method] || 'advanced';
+
+      const res = await fetch(`/api/fpa/regression`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ company_id: companyId, ...params }),
+        body: JSON.stringify({
+          regression_type: regType,
+          data: { company_id: companyId },
+          options: {
+            metric,
+            forecast_periods: forecastPeriods,
+            granularity: gran,
+          },
+        }),
       });
       if (!res.ok) throw new Error(`Forecast failed: ${res.status}`);
       const data = await res.json();
 
-      // Apply forecast data to grid — backend returns { forecast: [...periods] }
-      if (data.forecast && Array.isArray(data.forecast)) {
-        applyForecastToGrid(data.forecast);
+      // Apply regression forecast to grid
+      const forecastVals: number[] = data.forecast || data.best_model?.predictions || [];
+      const forecastLabels: string[] = data.forecast_labels || [];
+
+      if (forecastVals.length > 0 && forecastLabels.length > 0) {
+        // Build ForecastMonth[] from regression output
+        const forecastMonths = forecastLabels.map((period: string, i: number) => ({
+          period,
+          [metric]: forecastVals[i],
+        }));
+        applyForecastToGrid(forecastMonths);
       }
 
-      // Fallback: if backend returns { rows: [...] } format (waterfall/pnl endpoint)
-      if (data.rows && !data.forecast) {
-        setMatrixData(prev => {
-          const rowMap = new Map(prev.rows.map(r => [r.id, r]));
-          for (const row of data.rows) {
-            if (rowMap.has(row.id)) {
-              const existing = rowMap.get(row.id)!;
-              rowMap.set(row.id, { ...existing, cells: { ...existing.cells, ...row.cells } });
-            } else {
-              rowMap.set(row.id, row);
-            }
-          }
-          return {
-            ...prev,
-            rows: Array.from(rowMap.values()),
-            metadata: { ...prev.metadata, forecastStartIndex: data.forecastStartIndex },
-          };
-        });
-      }
-
-      // Update metrics and signals if returned
-      if (data.metrics) setMetrics(data.metrics);
-      if (data.signals) setSignals(data.signals);
-      if (data.drivers) setDriverRegistry(data.drivers);
-      if (data.driverValues) setDriverValues(data.driverValues);
-
-      // Capture forecast metadata (method, R², explanation)
-      if (data.method || data.forecast_method || data.r_squared) {
-        setForecastMeta({
-          method: data.method || data.forecast_method || params?.method || 'auto',
-          r_squared: data.r_squared,
-          mape: data.mape,
-          description: data.description || data.explanation,
-          fit_data: data.fit_data,
-          alternatives: data.alternatives,
-        });
-      }
-
-      // Fetch regression fit data using the advanced toolkit
-      try {
-        const methodToRegType: Record<string, string> = {
-          auto: 'advanced', linear: 'linear', regression: 'advanced',
-          advanced_regression: 'advanced', polynomial: 'polynomial',
-          exponential: 'exponential_growth', exponential_growth: 'exponential_growth',
-          logistic: 'logistic', power_law: 'power_law', gompertz: 'gompertz',
-          piecewise: 'piecewise_linear', piecewise_linear: 'piecewise_linear',
-          weighted_linear: 'weighted_linear', seasonal: 'advanced',
-          'driver-based': 'advanced', driver_based: 'advanced',
-        };
-        const regType = methodToRegType[params?.method || 'auto'] || 'advanced';
-        const regRes = await fetch(`/api/fpa/regression`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            regression_type: regType,
-            data: { company_id: companyId },
-            options: {
-              metric: params?.metric || 'revenue',
-              forecast_periods: params?.forecast_periods ?? 12,
-              granularity: params?.granularity || 'monthly',
-            },
-          }),
-        });
-        if (regRes.ok) {
-          const regData = await regRes.json();
-          setForecastMeta(prev => ({
-            method: prev?.method || params?.method || 'auto',
-            ...prev,
-            r_squared: regData.r_squared ?? prev?.r_squared,
-            mape: regData.mape ?? prev?.mape,
-            description: regData.description ?? regData.selection_reasoning ?? prev?.description,
-            fit_data: regData.fit_data ?? prev?.fit_data,
-            alternatives: regData.all_models_ranked ?? regData.alternatives ?? prev?.alternatives,
-            model_name: regData.best_model?.model_name ?? regData.model_name,
-            business_interpretation: regData.best_model?.business_interpretation,
-            extrapolation_risk: regData.best_model?.extrapolation_risk,
-            confidence: regData.best_model?.confidence,
-            data_characteristics: regData.data_characteristics,
-          }));
-        } else {
-          const errText = await regRes.text().catch(() => 'Unknown error');
-          console.warn(`Regression endpoint returned ${regRes.status}: ${errText}`);
-        }
-      } catch (err) {
-        console.warn('Regression fetch failed:', err);
-      }
+      // Set full forecast metadata — everything the backend computes
+      const bestModel = data.best_model || data;
+      setForecastMeta({
+        method: bestModel.model_name || method || 'auto',
+        r_squared: data.r_squared ?? bestModel.r_squared,
+        mape: data.mape ?? null,
+        description: data.description || data.selection_reasoning,
+        fit_data: data.fit_data,
+        alternatives: data.all_models_ranked || data.alternatives,
+        model_name: bestModel.model_name,
+        business_interpretation: bestModel.business_interpretation,
+        extrapolation_risk: bestModel.extrapolation_risk,
+        confidence: bestModel.confidence,
+        data_characteristics: data.data_characteristics,
+      });
 
       bump();
     } finally {
       setLoading(false);
     }
-  }, [companyId, setMatrixData, bump]);
+  }, [companyId, bump, applyForecastToGrid, forkTree?.activeBranchId, driverValues]);
 
   // ---- AI narrative (uses correct unified-brain request shape) ----
   const requestNarrative = useCallback(async (sectionType: string, dataContext: Record<string, any>): Promise<string> => {

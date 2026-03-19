@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 METHODS = {
     "growth_rate", "regression", "advanced_regression", "driver_based",
-    "seasonal", "budget_pct", "manual",
+    "seasonal", "budget_pct", "manual", "model_construction",
 }
 
 

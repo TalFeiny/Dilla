@@ -826,36 +826,80 @@ class AdvancedRegressionService:
         """Build CFO-readable explanation of why this model was selected."""
         parts = []
 
-        parts.append(
-            f"Evaluated {len(all_models)} regression models on {data_chars['n_points']} "
-            f"periods of {metric_name} data."
+        # Friendly metric label
+        metric_label = metric_name.replace("_", " ").title()
+
+        # Confidence framing instead of R² numbers
+        r2 = best.adjusted_r_squared if best.adjusted_r_squared else 0
+        if r2 >= 0.9:
+            confidence_desc = "high confidence"
+        elif r2 >= 0.7:
+            confidence_desc = "moderate confidence"
+        else:
+            confidence_desc = "low confidence — treat projections as directional only"
+
+        # Model name in business terms
+        model_names_friendly = {
+            "linear": "steady growth",
+            "polynomial": "accelerating growth",
+            "exponential_growth": "compounding growth",
+            "logistic": "S-curve (market saturation)",
+            "power_law": "diminishing-returns growth",
+            "gompertz": "mature-market growth curve",
+            "piecewise_linear": "multi-phase growth",
+            "weighted_linear": "recent-trend-weighted growth",
+        }
+        model_friendly = model_names_friendly.get(
+            best.model_name, best.model_name.replace("_", " ")
         )
 
-        # Top 3 models
-        top3 = all_models[:3]
-        rankings = ", ".join(
-            f"{m.model_name} (adj R²={m.adjusted_r_squared:.3f})" for m in top3
+        # Lead with the business takeaway
+        total_growth = data_chars.get('total_growth', 0)
+        trend = data_chars.get('trend', 'stable')
+        parts.append(
+            f"{metric_label} shows a {trend} trajectory with "
+            f"{abs(total_growth):.0%} {'growth' if total_growth >= 0 else 'decline'} over the period."
         )
-        parts.append(f"Top models: {rankings}.")
 
         parts.append(
-            f"Selected {best.model_name} — {best.qualitative_assessment}"
+            f"Best-fit pattern: {model_friendly} ({confidence_desc})."
         )
 
-        # Data context
-        parts.append(
-            f"Data shows {data_chars['trend']} trend with {data_chars['volatility']} volatility "
-            f"({data_chars['acceleration']} growth). "
-            f"Total growth over period: {data_chars['total_growth']:.0%}."
-        )
+        # Business interpretation from the model itself
+        if best.business_interpretation:
+            parts.append(best.business_interpretation)
+
+        # Volatility context in business terms
+        vol = data_chars.get('volatility', 'moderate')
+        if vol == 'high':
+            parts.append(
+                "Note: significant month-to-month variability — "
+                "consider scenario analysis alongside point forecasts."
+            )
 
         if data_chars.get("s_curve_signal"):
-            parts.append("S-curve signal detected: growth is decelerating while values increase.")
+            parts.append(
+                "Growth is showing signs of deceleration, which may indicate "
+                "approaching market saturation or the need for a new growth lever."
+            )
 
         if data_chars.get("breakpoint_signal"):
-            parts.append("Regime change detected: growth rate shifted significantly mid-series.")
+            parts.append(
+                "A significant shift in the growth trajectory was detected mid-period — "
+                "recent performance may be more predictive than earlier data."
+            )
 
-        parts.append(f"Extrapolation risk: {best.extrapolation_risk}.")
+        # Extrapolation risk in plain language
+        risk = best.extrapolation_risk
+        if risk == "high":
+            parts.append(
+                "Forecast horizon extends well beyond observed data — "
+                "projections beyond 6 months carry material uncertainty."
+            )
+        elif risk == "medium":
+            parts.append(
+                "Moderate forecast uncertainty — recommend reviewing assumptions quarterly."
+            )
 
         return " ".join(parts)
 

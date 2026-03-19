@@ -208,6 +208,10 @@ class ScenarioBranchService:
             if "contract_changes" in raw:
                 merged.setdefault("contract_changes", []).extend(raw["contract_changes"])
 
+            # Model spec — child's spec wins (replaces parent entirely)
+            if "model_spec" in raw:
+                merged["model_spec"] = raw["model_spec"]
+
         return merged
 
     # ------------------------------------------------------------------
@@ -239,13 +243,22 @@ class ScenarioBranchService:
         leaf = chain[-1]
         merged = self.merge_assumptions(chain)
 
-        base_data = pull_company_data(company_id).to_forecast_seed()
+        company_data_obj = pull_company_data(company_id)
+        base_data = company_data_obj.to_forecast_seed()
         if not base_data.get("revenue"):
             return {"error": "No actuals data. Upload financials first."}
 
         if not start_period:
             today = date.today()
             start_period = f"{today.year}-{today.month:02d}"
+
+        # Model construction path — branch carries a ModelSpec in assumptions
+        model_spec_data = merged.get("model_spec")
+        if model_spec_data:
+            return self._execute_model_spec_branch(
+                branch_id, leaf, chain, merged, model_spec_data,
+                base_data, forecast_months, start_period, company_id,
+            )
 
         fork_period = leaf.get("fork_period")
         fork_idx = self._period_to_index(fork_period, start_period) if fork_period else 0
@@ -340,6 +353,82 @@ class ScenarioBranchService:
             )
 
         return result
+
+    # ------------------------------------------------------------------
+    # Model spec branch execution
+    # ------------------------------------------------------------------
+
+    def _execute_model_spec_branch(
+        self,
+        branch_id: str,
+        leaf: Dict[str, Any],
+        chain: List[Dict],
+        merged: Dict[str, Any],
+        model_spec_data: Dict[str, Any],
+        base_data: Dict[str, Any],
+        forecast_months: int,
+        start_period: str,
+        company_id: str,
+    ) -> Dict[str, Any]:
+        """Execute a branch that carries a ModelSpec instead of simple overrides.
+
+        The ModelSpec (stored as JSON in branch assumptions) gets deserialized
+        and run through ModelSpecExecutor, producing the same forecast shape
+        as the default cascade but with LLM-constructed curves + confidence bands.
+        """
+        from app.services.model_spec_schema import ModelSpec
+        from app.services.model_spec_executor import ModelSpecExecutor
+
+        spec = ModelSpec(**model_spec_data)
+        executor = ModelSpecExecutor()
+
+        # Resolve parent model if spec inherits from another branch's spec
+        parent_result = None
+        if spec.parent_model:
+            for ancestor in chain[:-1]:
+                ancestor_spec = (ancestor.get("assumptions") or {}).get("model_spec")
+                if ancestor_spec and ancestor_spec.get("model_id") == spec.parent_model:
+                    parent_spec = ModelSpec(**ancestor_spec)
+                    parent_result = executor.execute(
+                        parent_spec, base_data,
+                        months=forecast_months, start_period=start_period,
+                    )
+                    break
+
+        result = executor.execute(
+            spec, base_data,
+            months=forecast_months,
+            start_period=start_period,
+            parent_result=parent_result,
+        )
+
+        # Build base forecast for comparison (same as default path)
+        base_forecast = self._load_active_forecast_data(company_id)
+        if base_forecast and len(base_forecast) >= forecast_months:
+            base_forecast = base_forecast[:forecast_months]
+        else:
+            base_forecast = self._cfp.build_monthly_cash_flow_model(
+                base_data, months=forecast_months, start_period=start_period,
+            )
+
+        return {
+            "branch_id": branch_id,
+            "name": leaf.get("name", ""),
+            "probability": leaf.get("probability"),
+            "chain": [{"id": b["id"], "name": b["name"]} for b in chain],
+            "assumptions": merged,
+            "forecast": result.forecast,
+            "base_forecast": base_forecast,
+            "source_map": ["model_spec"] * len(result.forecast),
+            "fork_month_index": 0,
+            "model_spec": {
+                "model_id": result.model_id,
+                "narrative": result.narrative,
+                "confidence_bands": result.confidence_bands,
+                "milestones": result.milestones,
+                "curves": result.curves,
+            },
+        }
 
     # ------------------------------------------------------------------
     # Multi-branch comparison

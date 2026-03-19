@@ -359,7 +359,79 @@ def ingest_time_series(
         on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
     ).execute()
 
+    # Bayesian updating — adjust priors on any model specs stored in branches
+    _update_model_spec_priors(sb, company_id, rows)
+
     return len(rows)
+
+
+def _update_model_spec_priors(sb, company_id: str, rows: List[Dict]) -> None:
+    """Find branches with model_specs for this company and update priors.
+
+    Non-fatal — logs and moves on if anything fails.
+    """
+    try:
+        branch_result = (
+            sb.table("scenario_branches")
+            .select("id, assumptions")
+            .eq("company_id", company_id)
+            .execute()
+        )
+        if not branch_result.data:
+            return
+
+        # Collect latest actuals by category from the ingested rows
+        actuals_by_cat: Dict[str, float] = {}
+        for row in rows:
+            cat = row.get("category", "")
+            if cat and not row.get("subcategory"):
+                actuals_by_cat[cat] = row.get("amount", 0)
+
+        if not actuals_by_cat:
+            return
+
+        from app.services.model_spec_schema import ModelSpec
+        from app.services.model_spec_executor import update_model_with_actuals
+        from app.core.date_utils import parse_period_to_date
+
+        # Determine period index from the latest ingested period
+        periods = [r.get("period", "") for r in rows if r.get("period")]
+        if not periods:
+            return
+        latest_period = max(periods)
+
+        for branch in branch_result.data:
+            assumptions = branch.get("assumptions") or {}
+            spec_data = assumptions.get("model_spec")
+            if not spec_data:
+                continue
+
+            spec = ModelSpec(**spec_data)
+
+            # Compute period index relative to spec metadata start_period
+            start_period = spec.metadata.get("start_period")
+            if not start_period:
+                continue
+            start_dt = parse_period_to_date(start_period)
+            actual_dt = parse_period_to_date(latest_period[:10])
+            period_idx = (actual_dt.year - start_dt.year) * 12 + (actual_dt.month - start_dt.month)
+            if period_idx < 0:
+                continue
+
+            updated = update_model_with_actuals(spec, actuals_by_cat, period_idx)
+            assumptions["model_spec"] = updated.model_dump()
+
+            sb.table("scenario_branches").update(
+                {"assumptions": assumptions}
+            ).eq("id", branch["id"]).execute()
+
+            logger.info(
+                "Updated model spec priors on branch %s (period_idx=%d)",
+                branch["id"], period_idx,
+            )
+
+    except Exception as e:
+        logger.warning("Model spec prior update failed (non-fatal): %s", e)
 
 
 def get_company_financials_snapshot(company_id: str) -> Dict[str, Any]:

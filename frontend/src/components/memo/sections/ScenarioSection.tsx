@@ -38,41 +38,82 @@ export function ScenarioSection({ onDelete, readOnly = false }: ScenarioSectionP
   const forecasts = ctx.forecasts;
   const baseForecast = ctx.baseForecast;
 
-  // Build branched_line data: base + each branch as separate series
+  // Build branched_line data in the format the chart expects:
+  // { x_axis: string[], series: Array<{ name, data, color?, style?, branch_id? }>, annotations?, format? }
   const chartData = useMemo(() => {
+    // Collect periods (x_axis)
+    let periods: string[] = [];
+    const seriesMap: Record<string, number[]> = {};
+
     if (!baseForecast || baseForecast.length === 0) {
       // Fallback: derive from grid
       const pnlRows = ctx.getPnlRows();
       const cols = ctx.matrixData.columns.filter(c => c.id !== 'lineItem');
-      if (cols.length === 0) return [];
+      if (cols.length === 0) return { x_axis: [], series: [] };
 
+      periods = cols.map(c => c.id);
       const revRow = pnlRows.find(r => r.id === 'revenue' || r.id === 'total_revenue');
-      return cols.map(col => {
-        const entry: Record<string, any> = { period: col.id };
+      seriesMap['Base'] = cols.map(col => {
         if (revRow?.cells[col.id]) {
           const v = revRow.cells[col.id].value;
-          entry['Base'] = typeof v === 'number' ? v : parseFloat(v) || 0;
+          return typeof v === 'number' ? v : parseFloat(v) || 0;
         }
-        return entry;
+        return 0;
+      });
+    } else {
+      periods = baseForecast.map(f => f.period);
+      seriesMap['Base'] = baseForecast.map(
+        (f: any) => f[comparisonMetric] ?? 0
+      );
+
+      for (const branch of branches) {
+        const bf = forecasts[branch.id];
+        if (bf && bf.length > 0) {
+          seriesMap[branch.name] = periods.map(
+            (_, i) => (bf[i] as any)?.[comparisonMetric] ?? 0
+          );
+        }
+      }
+    }
+
+    const COLORS = ['#4e79a7', '#e15759', '#59a14f', '#f28e2b', '#76b7b2', '#edc948'];
+    const series = Object.entries(seriesMap).map(([name, data], idx) => ({
+      name,
+      data,
+      color: COLORS[idx % COLORS.length],
+      style: idx === 0 ? 'solid' : 'dashed',
+      ...(idx > 0 ? { branch_id: branches[idx - 1]?.id } : {}),
+    }));
+
+    // Build fork_point annotations for branches
+    const annotations: any[] = [];
+    for (const branch of branches) {
+      const bf = forecasts[branch.id];
+      if (!bf || bf.length === 0) continue;
+      // Find first period where branch diverges from base
+      const baseData = seriesMap['Base'] || [];
+      const branchData = seriesMap[branch.name] || [];
+      let forkIdx = 0;
+      for (let i = 0; i < baseData.length; i++) {
+        if (branchData[i] !== baseData[i]) {
+          forkIdx = Math.max(0, i - 1);
+          break;
+        }
+      }
+      annotations.push({
+        type: 'fork_point',
+        x: forkIdx,
+        x_index: forkIdx,
+        label: branch.name,
       });
     }
 
-    // Base forecast periods
-    const periods = baseForecast.map(f => f.period);
-    return periods.map((period, i) => {
-      const entry: Record<string, any> = { period };
-      const baseVal = (baseForecast[i] as any)?.[comparisonMetric] ?? 0;
-      entry['Base'] = baseVal;
-
-      // Each branch overlay
-      for (const branch of branches) {
-        const branchForecasts = forecasts[branch.id];
-        if (branchForecasts?.[i]) {
-          entry[branch.name] = (branchForecasts[i] as any)?.[comparisonMetric] ?? 0;
-        }
-      }
-      return entry;
-    });
+    return {
+      x_axis: periods,
+      series,
+      annotations,
+      format: '$',
+    };
   }, [baseForecast, branches, forecasts, comparisonMetric, ctx]);
 
   // Deltas between branches and base
@@ -252,7 +293,7 @@ export function ScenarioSection({ onDelete, readOnly = false }: ScenarioSectionP
 
       {/* Chart */}
       <div className="w-full" style={{ height: 320 }}>
-        {chartData.length > 0 ? (
+        {chartData.x_axis.length > 0 ? (
           <TableauLevelCharts
             data={chartData}
             type={chartMode}

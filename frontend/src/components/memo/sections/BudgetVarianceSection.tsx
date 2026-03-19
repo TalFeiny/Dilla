@@ -91,16 +91,15 @@ export function BudgetVarianceSection({ onDelete, readOnly = false }: BudgetVari
   }, [ctx.companyId, ctx.matrixData.columns, period]);
 
   const chartData = useMemo(() => {
-    if (varianceData.length === 0) return [];
+    if (varianceData.length === 0) return null;
 
-    return varianceData.map(row => ({
-      name: row.line_item,
-      Budget: row.budget,
-      Actual: row.actual,
-      Variance: row.variance,
-      variance_pct: row.variance_pct,
-      favorable: row.favorable,
-    }));
+    return {
+      labels: varianceData.map(row => row.line_item),
+      datasets: [
+        { label: 'Budget', data: varianceData.map(row => row.budget) },
+        { label: 'Actual', data: varianceData.map(row => row.actual) },
+      ],
+    };
   }, [varianceData]);
 
   const totalVariance = varianceData.reduce((sum, r) => sum + r.variance, 0);
@@ -195,7 +194,7 @@ export function BudgetVarianceSection({ onDelete, readOnly = false }: BudgetVari
       readOnly={readOnly}
     >
       <div className="w-full" style={{ height: 320 }}>
-        {chartData.length > 0 ? (
+        {chartData ? (
           <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={300} />
         ) : (
           <div className="flex items-center justify-center h-full text-xs text-muted-foreground">

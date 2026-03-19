@@ -27,6 +27,7 @@ class StepType(str, Enum):
     REVENUE_PROJECTION = "revenue_projection"
     VALUATION = "valuation"
     SCENARIO_BRANCH = "scenario_branch"
+    MODEL_CONSTRUCTION = "model_construction"
     CUSTOM = "custom"
 
 
@@ -86,6 +87,15 @@ _QUERY_TYPE_PATTERNS = {
         r"\braise\b.*\b(round|funding|capital)\b",
         r"\brev(enue)?\b.*\b(drop|fall|decline|increase)\b",
     ],
+    "model_construction": [
+        r"\bbuild\b.*\b(model|forecast|projection)\b",
+        r"\bcustom\b.*\b(model|curve|forecast)\b",
+        r"\bpriors?\b", r"\bconfidence\b.*\bband",
+        r"\bcomposite\b.*\b(curve|model)\b",
+        r"\bmulti[\s-]?(model|scenario)\b.*\b(forecast|project)\b",
+        r"\bseries\s+[a-d]\b.*\bby\b",
+        r"\bimpact\b.*\b(war|recession|tariff|rate)\b",
+    ],
 }
 
 _STEP_PATTERNS: Dict[str, List[str]] = {
@@ -109,6 +119,9 @@ _STEP_PATTERNS: Dict[str, List[str]] = {
     "scenario_branch": [
         r"\bwhat if\b.*\b(hire|cut|raise|drop|increase|reduce|grow|add|remove)\b",
         r"\bwhat would happen if\b",
+    ],
+    "model_construction": [
+        r"\b(build|construct|create)\b.*\b(model|forecast)\b.*\b(with|using|from)\b",
     ],
 }
 
@@ -344,6 +357,7 @@ class NLFPAParser:
                 "regression": StepType.REVENUE_PROJECTION,
                 "scenario": StepType.CUSTOM,
                 "scenario_branch": StepType.SCENARIO_BRANCH,
+                "model_construction": StepType.MODEL_CONSTRUCTION,
             }.get(query_type, StepType.REVENUE_PROJECTION)
 
             steps.append(ParsedStep(
@@ -391,6 +405,10 @@ class NLFPAParser:
             payload["amount"] = params.get("amounts", [0])[0] if params.get("amounts") else None
         elif step_type == "scenario_branch":
             payload.update(self._build_scenario_branch_payload(params))
+        elif step_type == "model_construction":
+            payload["prompt"] = params.get("_original_query", "")
+            payload["periods"] = params.get("periods", 24)
+            payload["period_unit"] = params.get("period_unit", "month")
 
         return payload
 

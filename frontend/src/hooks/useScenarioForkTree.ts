@@ -182,7 +182,7 @@ export function useScenarioForkTree(companyId: string | undefined): UseScenarioF
       const res = await fetch(`/api/fpa/scenarios/branch/${branchId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assumptions: drivers }),
+        body: JSON.stringify({ drivers }),
       });
       if (!res.ok) throw new Error(`Failed to update fork: ${res.status}`);
       const data = await res.json();

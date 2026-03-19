@@ -42,19 +42,20 @@ const CF_CHART_LABELS: Record<string, string> = {
   net_burn_rate: 'Net Burn',
 };
 
-function buildChartFromResponse(data: CFResponse): Record<string, any>[] {
-  if (!data.periods || !data.rows) return [];
+function buildChartFromResponse(data: CFResponse): { labels: string[]; datasets: { label: string; data: (number | null)[] }[] } | null {
+  if (!data.periods?.length || !data.rows?.length) return null;
   const rowMap: Record<string, Record<string, number | null>> = {};
   for (const row of data.rows) {
     rowMap[row.id] = row.values;
   }
-  return data.periods.map(period => {
-    const entry: Record<string, any> = { period };
-    for (const id of CF_CHART_IDS) {
-      entry[CF_CHART_LABELS[id] || id] = rowMap[id]?.[period] ?? 0;
-    }
-    return entry;
-  });
+  const labels = data.periods;
+  const datasets = CF_CHART_IDS
+    .filter(id => rowMap[id])
+    .map(id => ({
+      label: CF_CHART_LABELS[id] || id,
+      data: data.periods.map(p => rowMap[id]?.[p] ?? null),
+    }));
+  return datasets.length > 0 ? { labels, datasets } : null;
 }
 
 export interface CashFlowSectionProps {
@@ -90,14 +91,16 @@ export function CashFlowSection({ onDelete, readOnly = false }: CashFlowSectionP
     handleFetch();
   }, [handleFetch]);
 
-  const chartData = useMemo(() => cfData ? buildChartFromResponse(cfData) : [], [cfData]);
+  const chartData = useMemo(() => cfData ? buildChartFromResponse(cfData) : null, [cfData]);
 
-  const latest = chartData[chartData.length - 1];
-  const collapsedSummary = latest
-    ? `FCF: ${fmtCurrency(latest['Free Cash Flow'] || 0)} | Cash: ${fmtCurrency(latest['Cash Balance'] || 0)}`
-    : 'Cash Flow — no data';
+  const collapsedSummary = useMemo(() => {
+    if (!chartData) return 'Cash Flow — no data';
+    const lastIdx = chartData.labels.length - 1;
+    const findVal = (label: string) => chartData.datasets.find(d => d.label === label)?.data[lastIdx] ?? 0;
+    return `FCF: ${fmtCurrency(findVal('Free Cash Flow'))} | Cash: ${fmtCurrency(findVal('Cash Balance'))}`;
+  }, [chartData]);
 
-  const aiContext = useMemo(() => ({ cfData: chartData, latest }), [chartData, latest]);
+  const aiContext = useMemo(() => ({ cfData: chartData }), [chartData]);
 
   const configBar = (
     <div className="flex items-center gap-1.5">
@@ -176,7 +179,7 @@ export function CashFlowSection({ onDelete, readOnly = false }: CashFlowSectionP
           </div>
         ) : error ? (
           <div className="flex items-center justify-center h-full text-xs text-red-500">{error}</div>
-        ) : chartData.length > 0 ? (
+        ) : chartData ? (
           <TableauLevelCharts data={chartData} type={chartMode} title="" width="100%" height={300} />
         ) : (
           <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
