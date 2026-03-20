@@ -379,7 +379,10 @@ def build_all_chart_shapes(
         "stacked_bar": to_stacked_bar(
             periods, actuals, forecast_periods, forecast_vals, category, subcategories,
         ),
-        "treemap": to_treemap(actuals, forecast_vals, category),
+        "treemap": to_treemap(
+            actuals, forecast_vals, category,
+            subcategories={k: v[-1] for k, v in subcategories.items() if v} if subcategories else None,
+        ),
         "line": to_line_chart(periods, actuals, predictions, forecast_periods, forecast_vals),
         "regression_line": to_line_chart(periods, actuals, predictions, forecast_periods, forecast_vals),
         "bar_comparison": to_line_chart(periods, actuals, predictions, forecast_periods, forecast_vals),

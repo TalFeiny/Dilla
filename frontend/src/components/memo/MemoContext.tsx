@@ -134,6 +134,9 @@ export interface MemoContextValue {
   // Forecast metadata — method, accuracy, explanation (set after buildForecast)
   forecastMeta: ForecastMeta | null;
 
+  // Actual forecast rows — the computed ForecastMonth[] from the last buildForecast call
+  forecastRows: ForecastMonth[];
+
   // Revision counter — bumped on any mutation, triggers re-renders
   dataRevision: number;
 
@@ -221,6 +224,7 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
   const [metrics, setMetrics] = useState<ComputedMetric[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [forecastMeta, setForecastMeta] = useState<ForecastMeta | null>(null);
+  const [forecastRows, setForecastRows] = useState<ForecastMonth[]>([]);
   const [dataRevision, setDataRevision] = useState(0);
   const [loading, setLoading] = useState(false);
 
@@ -403,6 +407,7 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
 
         // data.forecast is ForecastMonth[] with ALL metrics per period
         const forecast: ForecastMonth[] = data.forecast || [];
+        setForecastRows(forecast);
         if (forecast.length) {
           applyForecastToGrid(forecast);
         }
@@ -461,6 +466,7 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
           period,
           [metric]: forecastVals[i],
         }));
+        setForecastRows(forecastMonths);
         applyForecastToGrid(forecastMonths);
       }
 
@@ -486,10 +492,14 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
     }
   }, [companyId, bump, applyForecastToGrid, forkTree?.activeBranchId, driverValues]);
 
-  // ---- AI narrative (uses correct unified-brain request shape) ----
-  const requestNarrative = useCallback(async (sectionType: string, dataContext: Record<string, any>): Promise<string> => {
-    return apiRequestNarrative(companyId, sectionType, dataContext);
-  }, [companyId]);
+  // ---- AI narrative — backend pulls all data server-side ----
+  const requestNarrative = useCallback(async (sectionType: string, _dataContext?: Record<string, any>): Promise<string> => {
+    // No frontend hydration. Backend calls pull_company_data + loads active
+    // forecast. We only forward branch_id so the backend can apply overrides.
+    return apiRequestNarrative(companyId, sectionType, {
+      branch_id: forkTree?.activeBranchId || null,
+    });
+  }, [companyId, forkTree?.activeBranchId]);
 
   // ---- Row helpers (dynamic section-based, no hardcoded ID sets) ----
   const getPnlRows = useCallback(() => getAllPnlRows(matrixData), [matrixData]);
@@ -525,6 +535,7 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
     metrics,
     signals,
     forecastMeta,
+    forecastRows,
     dataRevision,
     loading: loading || (forkTree?.loading ?? false),
     updateCell,
@@ -541,7 +552,7 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
   }), [
     companyId, companyName, fundId, matrixData, setMatrixData,
     forkTree?.branches, forkTree?.activeBranchId, forkTree?.forecasts, forkTree?.baseForecast, forkTree?.charts, forkTree?.loading,
-    driverRegistry, driverValues, metrics, signals, forecastMeta, dataRevision,
+    driverRegistry, driverValues, metrics, signals, forecastMeta, forecastRows, dataRevision,
     loading, updateCell, updateDrivers, createFork, deleteFork, setActiveBranch,
     buildForecast, requestNarrative, getPnlRows, getBalanceSheetRows, getCashFlowRows, getRowValues,
   ]);

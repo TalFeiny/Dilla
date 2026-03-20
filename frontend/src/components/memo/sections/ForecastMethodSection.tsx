@@ -165,7 +165,7 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
 
   const methodResult = ctx.forecastMeta;
 
-  // Auto-generate narrative cards when forecast metadata updates
+  // Build static narrative cards from forecast metadata (no LLM call)
   useEffect(() => {
     if (!methodResult || isModelConstruction) return;
     const cards: NarrativeCard[] = [];
@@ -193,29 +193,7 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
     }
 
     setNarrativeCards(cards);
-
-    if (ctx.requestNarrative && methodResult.method) {
-      ctx.requestNarrative('forecast_method', {
-        metric: selectedMetric,
-        method: methodResult.method,
-        r_squared: methodResult.r_squared,
-        mape: methodResult.mape,
-        model_name: methodResult.model_name,
-        business_interpretation: methodResult.business_interpretation,
-        extrapolation_risk: methodResult.extrapolation_risk,
-        confidence: methodResult.confidence,
-        alternatives: methodResult.alternatives?.slice(0, 3),
-        data_characteristics: methodResult.data_characteristics,
-      }).then(narrative => {
-        if (narrative) {
-          setNarrativeCards(prev => [
-            ...prev.filter(c => c.id !== 'forecast-ai-narrative'),
-            { id: 'forecast-ai-narrative', text: narrative, severity: 'info' as const },
-          ]);
-        }
-      }).catch(err => console.warn('Forecast AI narrative failed:', err));
-    }
-  }, [methodResult, ctx, selectedMetric, isModelConstruction]);
+  }, [methodResult, isModelConstruction]);
 
   // Backend returns pre-built chart shapes keyed by chart type
   const chartShape = useMemo(() => {
@@ -239,18 +217,13 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
     method: selectedMethod,
     granularity,
     forecast_periods: forecastPeriods,
-    ...(isModelConstruction
-      ? { model_id: mcResult?.model_id, event_count: mcResult?.event_chain?.events.length }
-      : {
-          r_squared: methodResult?.r_squared,
-          mape: methodResult?.mape,
-          model_name: methodResult?.model_name,
-          business_interpretation: methodResult?.business_interpretation,
-          extrapolation_risk: methodResult?.extrapolation_risk,
-          confidence: methodResult?.confidence,
-          alternatives: methodResult?.alternatives?.map(a => ({ method: a.method, r_squared: a.r_squared })),
-        }),
-  }), [selectedMethod, selectedMetric, granularity, forecastPeriods, methodResult, isModelConstruction, mcResult]);
+    r_squared: methodResult?.r_squared,
+    mape: methodResult?.mape,
+    model_name: methodResult?.model_name,
+    // Actual forecast data — requestNarrative auto-hydrates from ctx.forecastRows,
+    // but also include it here so the Analyze button payload is explicit
+    forecast_data: ctx.forecastRows.length > 0 ? ctx.forecastRows : undefined,
+  }), [selectedMethod, selectedMetric, granularity, forecastPeriods, methodResult, ctx.forecastRows]);
 
   const configBar = (
     <>

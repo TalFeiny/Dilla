@@ -4455,15 +4455,15 @@ class UnifiedMCPOrchestrator:
         - _crystallize_and_execute: SYNTHESIS in CONVERGING/EXECUTING with 4+ exchanges
         - _conversational_loop: everything else (incl. STATUS, STEERING) — standard tool-use loop
         """
-        # ── 0. Section analysis — not agentic ──
-        # When context has section_type, this came from a memo block button
-        # click, not a user typing in chat. The prompt is pre-built with all
-        # data baked in. No classification, no history, no tools — just one
-        # completion.
+        # ── 0. Section analysis — non-agentic, server-side data ──
+        # When context has section_type, this came from a memo section button.
+        # Backend pulls ALL data via pull_company_data + active forecast.
+        # Frontend sends only company_id + section_type. Single LLM call,
+        # no tools, no history, no classification.
         _section_type = (context or {}).get("section_type")
         if _section_type:
             turn_type = TurnType.ANALYSIS
-            logger.info(f"[FAST_PATH] section_type={_section_type} — single completion, no classification/history")
+            logger.info(f"[SECTION_ANALYSIS] section_type={_section_type} — server-side data pull, single completion")
             self._turn_type_history.append(turn_type)
             if len(self._turn_type_history) > 10:
                 self._turn_type_history = self._turn_type_history[-10:]
@@ -4476,13 +4476,13 @@ class UnifiedMCPOrchestrator:
             }
 
             self._turn_result = {"full_text": "", "tool_calls_made": []}
-            async for event in self._fast_reply(prompt, context, turn_type):
+            async for event in self._section_analysis(_section_type, context):
                 yield event
 
             tr = self._turn_result
             await self._update_turn_state(
                 turn_type, TURN_BUDGETS[turn_type] or 4096,
-                tr["full_text"], tr["tool_calls_made"], prompt,
+                tr["full_text"], tr["tool_calls_made"], f"[section_analysis:{_section_type}]",
             )
             yield {
                 "type": "complete",
@@ -4492,6 +4492,7 @@ class UnifiedMCPOrchestrator:
                         "content": tr["full_text"],
                         "narrative": tr["full_text"],
                         "turn_type": turn_type.value,
+                        "section_type": _section_type,
                     },
                 },
             }
@@ -4648,6 +4649,249 @@ class UnifiedMCPOrchestrator:
             )
         except Exception as e:
             logger.error(f"[FAST_REPLY] LLM call failed: {e}")
+            yield {"type": "error", "error": str(e)}
+            self._turn_result = {"full_text": "", "tool_calls_made": []}
+            return
+
+        text_parts = result.get("text_parts", [])
+        for text in text_parts:
+            yield {"type": "token", "content": text}
+
+        self._turn_result = {
+            "full_text": "\n".join(text_parts),
+            "tool_calls_made": [],
+        }
+
+    # ------------------------------------------------------------------
+    # Section analysis — non-agentic, server-side data pull
+    # ------------------------------------------------------------------
+
+    _SECTION_GUIDANCE = {
+        "forecast_method": (
+            "Explain what the forecast pattern means for the business trajectory. "
+            "Identify inflection points, growth sustainability, and what would cause "
+            "the forecast to break. Recommend what to monitor."
+        ),
+        "pnl": (
+            "Analyze profitability trends, margin expansion or compression, and cost "
+            "structure. Identify the biggest lever for improving the bottom line. "
+            "Flag any line items growing faster than revenue."
+        ),
+        "balance_sheet": (
+            "Assess liquidity, working capital efficiency, and capital structure. "
+            "Identify risks (e.g. rising receivables, debt maturity)."
+        ),
+        "bs": (
+            "Assess liquidity, working capital efficiency, and capital structure. "
+            "Identify risks (e.g. rising receivables, debt maturity)."
+        ),
+        "cash_flow": (
+            "Evaluate cash generation quality, burn rate sustainability, and runway "
+            "implications. Distinguish between operating cash flow and one-time items."
+        ),
+        "cf": (
+            "Evaluate cash generation quality, burn rate sustainability, and runway "
+            "implications. Distinguish between operating cash flow and one-time items."
+        ),
+        "drivers": (
+            "Explain which business drivers have the most impact on financial outcomes. "
+            "Identify which levers management should prioritize and which are at risk."
+        ),
+        "metrics": (
+            "Interpret the key metrics in business context. Flag any trending in a "
+            "concerning direction. Compare to SaaS/industry benchmarks where relevant."
+        ),
+        "scenario": (
+            "Compare scenario outcomes and quantify the range of potential results. "
+            "Identify which assumptions drive the biggest variance between scenarios."
+        ),
+        "board_summary": (
+            "Write a board-ready executive summary. Lead with the headline, cover "
+            "financial health, growth trajectory, key risks, and 1-2 recommendations."
+        ),
+        "cap_table": (
+            "Analyze the ownership structure. Identify dilution risks, investor "
+            "alignment, and implications for the next round."
+        ),
+        "valuation": (
+            "Assess valuation reasonableness. Compare implied multiples to market "
+            "comps. Identify key sensitivities."
+        ),
+        "monte_carlo": (
+            "Interpret the probability distribution. Identify the most likely outcomes, "
+            "tail risks, and which inputs drive the most variance."
+        ),
+        "sensitivity": (
+            "Identify which variables have the greatest impact on outcomes. "
+            "Flag any non-linear sensitivities or threshold effects."
+        ),
+        "budget_variance": (
+            "Analyze actuals vs budget. Identify the largest variances, whether "
+            "they're one-time or structural, and what to adjust."
+        ),
+        "health_score": (
+            "Summarize the company's financial health. Flag critical weaknesses "
+            "and recommend immediate actions."
+        ),
+        "cost_of_capital": (
+            "Assess the WACC components and whether the cost of capital is reasonable "
+            "for the company's stage and risk profile."
+        ),
+    }
+
+    @staticmethod
+    def _build_section_data_context(company_data, forecast_data=None) -> str:
+        """Build financial context string from pull_company_data + active forecast."""
+        parts = []
+
+        key_cats = ["revenue", "cogs", "gross_profit", "opex_total", "ebitda",
+                    "cash_balance", "opex_rd", "opex_sm", "opex_ga"]
+        periods = company_data.periods[-6:] if company_data.periods else []
+
+        if periods:
+            parts.append(f"Data: {periods[0]} to {periods[-1]} ({len(company_data.periods)} months)")
+
+        for cat in key_cats:
+            series = company_data.time_series.get(cat, {})
+            if not series:
+                continue
+            recent = {p: series[p] for p in periods if p in series}
+            if recent:
+                vals_str = ", ".join(f"{p}: ${v:,.0f}" for p, v in sorted(recent.items()))
+                parts.append(f"{cat}: {vals_str}")
+
+        # Latest snapshot
+        latest = company_data.latest
+        if latest:
+            snap = []
+            for k in ["revenue", "cogs", "gross_profit", "opex_total", "ebitda", "cash_balance"]:
+                v = latest.get(k)
+                if v is not None and v != 0:
+                    snap.append(f"{k}: ${v:,.0f}")
+            if snap:
+                parts.append(f"Latest: {', '.join(snap)}")
+
+        # Analytics
+        a = company_data.analytics or {}
+        if a.get("growth_rate") is not None:
+            parts.append(f"Revenue growth (annualized): {a['growth_rate']:.1%}")
+        if a.get("gross_margin") is not None:
+            parts.append(f"Gross margin: {a['gross_margin']:.1%}")
+        if a.get("burn_rate") is not None:
+            parts.append(f"Monthly burn: ${a['burn_rate']:,.0f}")
+        if a.get("net_burn") is not None:
+            parts.append(f"Net burn: ${a['net_burn']:,.0f}")
+        if a.get("runway_months") is not None:
+            parts.append(f"Runway: {a['runway_months']:.1f} months")
+        if a.get("_growth_trend"):
+            parts.append(f"Growth trend: {a['_growth_trend']}")
+        dq = a.get("_data_quality", {})
+        if dq.get("recommended_method"):
+            parts.append(f"Recommended forecast method: {dq['recommended_method']}")
+
+        # Active forecast lines
+        if forecast_data:
+            lines = forecast_data.get("lines", [])
+            method = forecast_data.get("method", "unknown")
+            horizon = forecast_data.get("horizon_months", "?")
+            parts.append(f"\nActive forecast: method={method}, horizon={horizon}mo, {len(lines)} lines")
+            if lines:
+                from collections import defaultdict as _dd
+                by_cat = _dd(list)
+                for line in lines:
+                    by_cat[line.get("category", "?")].append(line)
+                for cat, cat_lines in sorted(by_cat.items()):
+                    sl = sorted(cat_lines, key=lambda x: x.get("period", ""))
+                    if sl:
+                        parts.append(
+                            f"  {cat}: {sl[0].get('period')}=${sl[0].get('amount', 0):,.0f} → "
+                            f"{sl[-1].get('period')}=${sl[-1].get('amount', 0):,.0f}"
+                        )
+
+        return "\n".join(parts)
+
+    async def _section_analysis(
+        self,
+        section_type: str,
+        context: Optional[Dict[str, Any]],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Non-agentic section analysis — server-side data pull, single LLM call.
+
+        Pulls company data via pull_company_data(), loads active forecast,
+        builds prompt with real numbers, fires one completion. No tools,
+        no conversation history, no classification.
+        """
+        company_id = (context or {}).get("company_id") or (context or {}).get("companyId")
+        branch_id = (context or {}).get("branch_id") or (context or {}).get("branchId")
+
+        yield {"type": "progress", "stage": "pulling_data", "message": "Pulling company data..."}
+
+        # 1. Pull company data server-side
+        try:
+            from app.services.company_data_pull import pull_company_data, apply_branch_overrides
+            company_data = pull_company_data(company_id) if company_id else None
+            if company_data and branch_id:
+                company_data = apply_branch_overrides(company_data, branch_id)
+        except Exception as e:
+            logger.error(f"[SECTION_ANALYSIS] pull_company_data failed: {e}")
+            company_data = None
+
+        if not company_data or not company_data.periods:
+            self._turn_result = {
+                "full_text": "No financial data available for this company yet. Upload actuals to get started.",
+                "tool_calls_made": [],
+            }
+            yield {"type": "token", "content": self._turn_result["full_text"]}
+            return
+
+        # 2. Load active forecast
+        forecast_data = None
+        try:
+            from app.services.forecast_persistence_service import ForecastPersistenceService
+            fps = ForecastPersistenceService()
+            active = fps.get_active_forecast(company_id)
+            if active:
+                forecast_data = fps.load_forecast(active["id"])
+        except Exception as e:
+            logger.warning(f"[SECTION_ANALYSIS] forecast load failed: {e}")
+
+        # 3. Build prompt from real data
+        data_context = self._build_section_data_context(company_data, forecast_data)
+        section_label = section_type.replace("_", " ")
+        guidance = self._SECTION_GUIDANCE.get(
+            section_type,
+            "Provide specific, actionable CFO-level insight grounded in the numbers.",
+        )
+
+        prompt = (
+            f"You are a strategic CFO writing an internal memo. "
+            f"Analyze the following {section_label} data.\n\n"
+            f"Financial data:\n{data_context}\n\n"
+            f"{guidance}\n\n"
+            f"Be specific about dollar amounts, percentages, and trends. "
+            f"Write 3-5 sentences. No filler, no hedging — go straight to the insight."
+        )
+
+        system_prompt = (
+            "You are a sharp, opinionated CFO. You lead with the number that matters "
+            "most, explain what it means, and say what to do about it. Never hedge, "
+            "never use corporate speak. Be direct and specific."
+        )
+
+        yield {"type": "progress", "stage": "thinking", "message": "Analyzing..."}
+
+        # 4. Single LLM call — no tools, no history
+        try:
+            result = await self.model_router.get_completion_with_tools(
+                messages=[{"role": "user", "content": prompt}],
+                system_prompt=system_prompt,
+                tools=[],
+                max_tokens=1024,
+                temperature=0.4,
+                caller_context=f"section_analysis_{section_type}",
+            )
+        except Exception as e:
+            logger.error(f"[SECTION_ANALYSIS] LLM call failed: {e}")
             yield {"type": "error", "error": str(e)}
             self._turn_result = {"full_text": "", "tool_calls_made": []}
             return
@@ -6113,6 +6357,51 @@ JUST THE JSON:"""
             actual_prompt = prompt
         
         logger.debug(f"[ORCHESTRATOR] output_format: {output_format}")
+
+        # ── tool_hint fast-path ──────────────────────────────────────
+        # When context carries a tool_hint, execute the tool directly
+        # instead of entering the LLM agent loop.  The frontend already
+        # knows exactly which tool it wants — no reason to ask the model.
+        if context and context.get("tool_hint"):
+            tool_name = context["tool_hint"]
+            tool_inputs = context.get("tool_inputs", {})
+            logger.info(f"[TOOL_HINT] Deterministic execution: {tool_name}")
+
+            # Resolve company_id into shared_data so tool handlers can find it
+            _cid = (
+                tool_inputs.get("company_id")
+                or context.get("company_id")
+            )
+            if _cid:
+                async with self.shared_data_lock:
+                    self.shared_data["company_id"] = _cid
+                # Pre-pull company data for tools that need it
+                if pull_company_data:
+                    try:
+                        _cd = pull_company_data(_cid)
+                        if _cd and _cd.periods:
+                            async with self.shared_data_lock:
+                                self.shared_data["company_fpa_data"] = {
+                                    "latest": _cd.latest,
+                                    "time_series": _cd.time_series,
+                                    "periods": _cd.periods,
+                                    "metadata": _cd.metadata,
+                                }
+                    except Exception as _dp_err:
+                        logger.warning(f"[TOOL_HINT] company data pull failed: {_dp_err}")
+
+            tool_def = AGENT_TOOL_MAP.get(tool_name)
+            if not tool_def:
+                return {"success": False, "error": f"Unknown tool: {tool_name}"}
+
+            try:
+                handler_fn = getattr(self, tool_def.handler)
+                tool_result = await handler_fn(tool_inputs)
+                return {"success": True, "result": tool_result}
+            except Exception as tool_err:
+                logger.error(f"[TOOL_HINT] {tool_name} failed: {tool_err}", exc_info=True)
+                return {"success": False, "error": str(tool_err)}
+        # ── end tool_hint fast-path ──────────────────────────────────
 
         result = None
         error_message = None

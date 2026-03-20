@@ -2845,8 +2845,44 @@ async def run_regression(request: FPARegressionRequest):
                     next_p = last_period + relativedelta(months=i)
                     forecast_labels.append(next_p.strftime("%Y-%m"))
 
-            # Build all chart shapes so frontend can toggle without re-fetching
+            # Cascade regression-projected revenue through full P&L so
+            # charts (stacked bar, treemap) have real subcategories and the
+            # grid shows the curve-fit forecast instead of rolling growth.
             from app.services.forecast_chart_transforms import build_all_chart_shapes
+            from app.services.cash_flow_planning_service import CashFlowPlanningService
+            from app.services.forecast_persistence_service import FORECAST_KEY_TO_CATEGORY
+
+            cascaded_forecast: list[dict] = []
+            subcategories: dict[str, list[float]] | None = None
+            _cat_to_fc_key = {v: k for k, v in FORECAST_KEY_TO_CATEGORY.items()}
+
+            if company_id and forecast_labels and forecast_vals:
+                try:
+                    cd = pull_company_data(company_id)
+                    seed = cd.to_forecast_seed()
+                    revenue_trajectory = [
+                        {"period": p, "revenue": float(v)}
+                        for p, v in zip(forecast_labels, forecast_vals)
+                    ]
+                    svc = CashFlowPlanningService()
+                    cascaded_forecast = svc.build_projection(
+                        company_data=seed,
+                        granularity="monthly",
+                        horizon=len(forecast_vals),
+                        revenue_trajectory=revenue_trajectory,
+                    )
+                    # Build subcategories dynamically from all actuals categories
+                    subcategories = {}
+                    for cat, ts_data in cd.time_series.items():
+                        act_vals = [ts_data.get(p, 0) for p in period_labels]
+                        fc_key = _cat_to_fc_key.get(cat, cat)
+                        fc_vals = [r.get(fc_key, 0) for r in cascaded_forecast]
+                        subcategories[cat] = act_vals + fc_vals
+                    result["cascaded_forecast"] = cascaded_forecast
+                except Exception as cascade_err:
+                    logger.warning("Regression P&L cascade failed (charts will lack subcategories): %s", cascade_err)
+
+            # Build all chart shapes so frontend can toggle without re-fetching
             confidence_intervals = result.get("forecast_confidence_intervals")
             model_meta = result.get("best_model") or result
             charts = build_all_chart_shapes(
@@ -2858,10 +2894,30 @@ async def run_regression(request: FPARegressionRequest):
                 category=category,
                 model_meta=model_meta,
                 confidence_intervals=confidence_intervals,
+                subcategories=subcategories,
             )
             result["fit_data"] = charts
             result["period_labels"] = period_labels
             result["forecast_labels"] = forecast_labels
+
+            # Persist regression forecast as the active forecast so PnlBuilder
+            # picks it up instead of falling back to rolling forecast
+            if company_id and cascaded_forecast:
+                try:
+                    from app.services.forecast_persistence_service import ForecastPersistenceService
+                    fps = ForecastPersistenceService()
+                    fps.save_forecast(
+                        company_id=company_id,
+                        forecast=cascaded_forecast,
+                        method=request.regression_type,
+                        seed_snapshot={"metric": metric, "forecast_periods": forecast_periods},
+                        assumptions={"r_squared": result.get("r_squared"), "model": model_meta.get("model_name", request.regression_type)},
+                        name=f"{model_meta.get('model_name', request.regression_type).title()} Regression Forecast",
+                        activate=True,
+                        created_by="regression_endpoint",
+                    )
+                except Exception as persist_err:
+                    logger.warning("Regression forecast persistence failed: %s", persist_err)
 
         elif request.regression_type == "exponential":
             data = request.data.get("data", [])
@@ -3153,6 +3209,23 @@ async def generate_forecast(request: FPAForecastRequest):
                 branch_name="Forecast Projection",
             )
 
+            # Persist as active forecast so PnlBuilder picks it up
+            # instead of falling back to rolling forecast
+            try:
+                from app.services.forecast_persistence_service import ForecastPersistenceService
+                fps = ForecastPersistenceService()
+                fps.save_forecast(
+                    company_id=request.company_id,
+                    forecast=forecast,
+                    method="connected_pnl",
+                    seed_snapshot=company_data,
+                    assumptions=branch_assumptions,
+                    activate=True,
+                    created_by="forecast_endpoint",
+                )
+            except Exception as fps_err:
+                logger.warning("Active forecast persistence failed: %s", fps_err)
+
         # ── Build chart-ready fit_data (same contract as regression) ──
         # Uses real actuals from CompanyData so branched_line gets a proper
         # fork point where actuals end and forecast begins.
@@ -3191,6 +3264,17 @@ async def generate_forecast(request: FPAForecastRequest):
                         "color": color,
                     })
 
+            # Build subcategories dynamically from all actuals categories
+            from app.services.forecast_persistence_service import FORECAST_KEY_TO_CATEGORY
+            _cat_to_fc_key = {v: k for k, v in FORECAST_KEY_TO_CATEGORY.items()}
+
+            connected_subcategories = {}
+            for cat, ts_data in cd_obj.time_series.items():
+                act_vals = [ts_data.get(p, 0) for p in actual_periods]
+                fc_key = _cat_to_fc_key.get(cat, cat)
+                fc_vals = [r.get(fc_key, 0) for r in forecast if isinstance(r, dict)]
+                connected_subcategories[cat] = act_vals + fc_vals
+
             fit_data = build_all_chart_shapes(
                 periods=actual_periods,
                 actuals=actual_values,
@@ -3205,6 +3289,7 @@ async def generate_forecast(request: FPAForecastRequest):
                     "confidence": "high",
                 },
                 branches=branches,
+                subcategories=connected_subcategories,
             )
 
         # Runway from last forecast period

@@ -164,6 +164,10 @@ class ForecastMethodRouter:
             forecast = self._build_budget_pct(company_id, seed_data, months, provenance, company_data)
         elif method == "manual":
             forecast = self._build_manual(assumptions, months)
+        elif method == "model_construction":
+            forecast = self._build_model_construction(
+                company_id, seed_data, months, start_period, provenance, company_data
+            )
         else:
             forecast = self._build_growth_rate(seed_data, months, assumptions)
 
@@ -261,6 +265,88 @@ class ForecastMethodRouter:
         return svc.build_monthly_cash_flow_model(
             enriched, months=months, monthly_overrides=assumptions,
         )
+
+    def _build_model_construction(
+        self, company_id: str, seed_data: Dict, months: int,
+        start_period: str, provenance: Dict, company_data=None,
+    ) -> List[Dict]:
+        """Full model construction engine: AgentModelConstructor → ModelSpecExecutor.
+
+        Uses macro/business event analysis, strategic signals, driver sensitivity,
+        and causal event chains to build a proper forecast instead of basic growth decay.
+        """
+        import asyncio
+        from app.services.model_router import get_model_router
+        from app.services.agent_model_constructor import AgentModelConstructor
+        from app.services.model_spec_executor import ModelSpecExecutor
+
+        model_router = get_model_router()
+        constructor = AgentModelConstructor(model_router)
+
+        # Build a prompt from the seed data context so the constructor
+        # has something to reason about even without an explicit user prompt
+        stage = seed_data.get("stage", "growth")
+        revenue = seed_data.get("revenue", 0)
+        growth = seed_data.get("growth_rate", 0)
+        prompt = (
+            f"Build a {months}-month forecast for this {stage}-stage company. "
+            f"Current monthly revenue: ${revenue:,.0f}, growth rate: {growth:.0%}. "
+            f"Use all available signals, macro context, and business events."
+        )
+
+        try:
+            # AgentModelConstructor is async — bridge into sync context
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    specs = pool.submit(
+                        asyncio.run,
+                        constructor.construct_models(
+                            prompt=prompt,
+                            company_data=company_data,
+                            company_id=company_id,
+                        ),
+                    ).result()
+            else:
+                specs = loop.run_until_complete(
+                    constructor.construct_models(
+                        prompt=prompt,
+                        company_data=company_data,
+                        company_id=company_id,
+                    )
+                )
+
+            if not specs:
+                logger.warning("model_construction returned no specs, falling back to growth_rate")
+                return self._build_growth_rate(seed_data, months)
+
+            # Execute the first spec
+            executor = ModelSpecExecutor()
+            result = executor.execute(
+                spec=specs[0],
+                company_data=seed_data,
+                months=months,
+                start_period=start_period,
+            )
+
+            provenance["model_id"] = specs[0].model_id
+            provenance["event_chain_events"] = len(
+                specs[0].event_chain.events if specs[0].event_chain else []
+            )
+            provenance["curves"] = list(specs[0].curves.keys())
+
+            # Return the forecast rows from execution result
+            if result.forecast:
+                return result.forecast
+
+            logger.warning("model_construction execution returned no forecast rows")
+            return self._build_growth_rate(seed_data, months)
+
+        except Exception as e:
+            logger.error(f"model_construction failed: {e}", exc_info=True)
+            provenance["model_construction_error"] = str(e)
+            return self._build_growth_rate(seed_data, months)
 
     def _build_seasonal(
         self, company_id: str, seed_data: Dict, months: int,
