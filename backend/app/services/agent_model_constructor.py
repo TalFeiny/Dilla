@@ -433,8 +433,27 @@ class AgentModelConstructor:
 Output a JSON object:
 {{
   "event_chain": {{
-    "events": [...],
-    "links": [...],
+    "events": [
+      {{
+        "id": "short-slug",
+        "event": "Human-readable description of what happens",
+        "category": "business | market | macro | funding | operational",
+        "probability": 0.8,
+        "timing": "2026-03",
+        "duration_months": 12,
+        "reasoning": "Why this event matters"
+      }}
+    ],
+    "links": [
+      {{
+        "source": "event-id-or-metric",
+        "target": "event-id-or-metric",
+        "effect": "amplifies | dampens | triggers | blocks | shifts_timing | sets_ceiling | sets_floor | scales",
+        "magnitude": 0.3,
+        "delay_months": 2,
+        "reasoning": "Why this causal connection exists"
+      }}
+    ],
     "param_origins": {{"metric.param": ["event-id", ...]}},
     "summary": "..."
   }},

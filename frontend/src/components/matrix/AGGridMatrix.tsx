@@ -854,6 +854,9 @@ export function AGGridMatrix({
       if (actionInProgressRef?.current) return;
 
       try {
+        // Save first visible row index before replacing data so we can restore scroll
+        const savedFirstRow = rowDataChanged ? gridApi!.getFirstDisplayedRowIndex?.() ?? 0 : 0;
+
         if (columnDefsChanged && columnDefs?.length) {
           gridApi!.setGridOption('columnDefs', columnDefs);
           prevColumnDefsRef.current = columnDefs;
@@ -863,6 +866,15 @@ export function AGGridMatrix({
           prevRowDataRef.current = rowData;
         }
         gridApi!.refreshCells({ force: true });
+
+        // Restore scroll position after row data replacement (AG Grid resets it)
+        if (rowDataChanged && savedFirstRow > 0) {
+          requestAnimationFrame(() => {
+            try {
+              gridApi!.ensureIndexVisible(savedFirstRow, 'top');
+            } catch { /* grid may have been destroyed */ }
+          });
+        }
       } catch (error) {
         console.error('[AGGridMatrix] Error syncing data:', error);
         isGridReadyRef.current = false;

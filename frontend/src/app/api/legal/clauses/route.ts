@@ -93,15 +93,18 @@ export async function GET(request: NextRequest) {
       const clauseKey = `${c.company_id}::${c.clause_id}::${c.document_id ?? 'none'}`;
       seenClauseKeys.add(clauseKey);
 
+      // metadata JSONB holds document-level fields (no dedicated DB columns for these)
+      const meta = (c.metadata ?? {}) as Record<string, unknown>;
+
       const values: Record<string, unknown> = {
         documentName: c.document_name,
         contractType: c.clause_type ?? c.contract_type,
         party: c.party,
-        counterparty: c.counterparty,
+        counterparty: c.counterparty ?? meta.counterparty ?? '',
         status: c.status ?? 'active',
-        effectiveDate: c.effective_date,
-        expiryDate: c.expiry_date ?? c.obligation_deadline,
-        totalValue: c.total_value,
+        effectiveDate: c.effective_date ?? meta.effective_date ?? null,
+        expiryDate: c.expiry_date ?? meta.expiry_date ?? c.obligation_deadline,
+        totalValue: c.total_value ?? meta.total_value ?? null,
         annualValue: c.annual_value,
         keyTerms: c.key_terms ?? c.title,
         flags: Array.isArray(c.flags) ? (c.flags as string[]).join(', ') : '',

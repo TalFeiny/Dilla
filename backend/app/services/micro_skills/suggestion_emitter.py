@@ -770,50 +770,35 @@ LEGAL_FIELD_TO_COLUMN = {
 
 
 def _build_clause_reasoning(clause: Dict, value_explanations: Dict, document_name: str) -> str:
-    """Build reasoning chain for a clause: verbatim quote → interpretation → flag/impact.
-
-    Same pattern as financial value_explanations: '"source quote" → why → impact'.
+    """Build reasoning for a clause: prefer LLM's value_explanation (actual analysis),
+    fall back to flags. Never just copy raw clause text — that's useless to the user.
     """
+    clause_id = clause.get("id", "")
     clause_type = clause.get("clause_type", "other")
 
-    # Check if there's a value_explanation for this clause type
-    explanation = value_explanations.get(clause_type) or value_explanations.get(clause.get("id", ""))
+    # Best case: LLM wrote a real explanation for this clause
+    explanation = (
+        value_explanations.get(clause_id)
+        or value_explanations.get(clause_type)
+    )
     if explanation:
         return explanation[:500]
 
-    # Build reasoning from clause data
-    parts = []
-
-    # Verbatim quote (first 150 chars)
-    text = clause.get("text", "")
-    if text:
-        quote = text[:150].strip()
-        if len(text) > 150:
-            quote += "..."
-        parts.append(f'"{quote}"')
-
-    # Interpretation — flags and obligations
+    # Second best: flags are now natural-language, so they ARE the reasoning
     flags = clause.get("flags", [])
     if flags:
-        parts.append(f"Flags: {', '.join(flags)}")
+        return " · ".join(flags)[:500]
 
+    # Obligations as reasoning
     obligations = clause.get("obligations", [])
     if obligations:
-        ob = obligations[0]
-        desc = ob.get("description", "")
+        desc = obligations[0].get("description", "")
         if desc:
-            parts.append(f"Obligation: {desc[:100]}")
+            return desc[:500]
 
-    # Cross-reference impact
-    xrefs = clause.get("cross_references", [])
-    if xrefs:
-        xr = xrefs[0]
-        parts.append(f"Cross-ref: {xr.get('to_service', '')} → {xr.get('field', '')} = {xr.get('value', '')}")
-
-    if not parts:
-        return f"Extracted from {document_name}: {clause_type} clause"
-
-    return " → ".join(parts)[:500]
+    # Last resort — just say what we found
+    title = clause.get("title") or clause_type
+    return f"Extracted from {document_name}: {title}"
 
 
 def emit_legal_suggestions(
@@ -888,35 +873,37 @@ def emit_legal_suggestions(
         flags = clause.get("flags") or []
         flags_str = ", ".join(flags) if flags else ""
 
-        # Build the clause row — one pending_suggestion per clause field
-        # Use a composite column_id: "legal:{clause_id}:{field}" for uniqueness
+        # Document-level dates/values (not per-clause in most contracts)
+        doc_effective_date = extracted_data.get("effective_date")
+        doc_expiry_date = extracted_data.get("expiration_date") or extracted_data.get("expiry_date")
+        doc_total_value = (
+            extracted_data.get("investment_amount")
+            or erp.get("annual_value")
+            or extracted_data.get("valuation_post_money")
+        )
+
+        # Build the clause row — field names match LEGAL_COLUMNS grid IDs
         clause_fields = {
             "clauseId": clause_id,
-            "title": clause.get("title", ""),
-            "clauseType": clause.get("clause_type", "other"),
-            "text": (clause.get("text") or "")[:500],
+            "documentName": document_name or f"doc:{document_id}",
+            "contractType": clause.get("clause_type", "other"),
             "party": party,
             "counterparty": counterparty,
-            "flags": flags_str,
-            "obligationDesc": primary_ob.get("description", ""),
-            "obligationDeadline": primary_ob.get("deadline"),
-            "crossRefService": primary_xref.get("to_service", ""),
-            "crossRefField": primary_xref.get("field", ""),
-            "crossRefValue": str(primary_xref.get("value", "")) if primary_xref.get("value") is not None else "",
-            "erpCategory": erp.get("category", ""),
-            "erpSubcategory": erp.get("subcategory", ""),
+            "status": "active",
+            "effectiveDate": doc_effective_date,
+            "expiryDate": doc_expiry_date or primary_ob.get("deadline"),
+            "totalValue": doc_total_value,
             "annualValue": erp.get("annual_value"),
-            "monthlyAmount": erp.get("monthly_amount"),
-            "documentName": document_name or f"doc:{document_id}",
+            "keyTerms": clause.get("title", ""),
+            "flags": flags_str,
+            "obligations": primary_ob.get("description", ""),
+            "nextDeadline": primary_ob.get("deadline"),
             "reasoning": reasoning,
         }
 
-        # Confidence based on flags — flagged clauses get higher confidence
-        # so they surface first in the suggestion UI
+        # Confidence — flagged clauses get higher confidence (flags are now free-form)
         confidence = 0.80
-        if any(f in flags for f in ("unfavorable", "above_market", "non_standard", "auto_renew_risk", "missing")):
-            confidence = 0.92
-        elif any(f in flags for f in ("material", "favorable")):
+        if flags:
             confidence = 0.85
 
         # Each clause → one row keyed by legal:{clauseId} so each clause

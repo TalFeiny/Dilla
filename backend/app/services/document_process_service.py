@@ -87,7 +87,10 @@ LEGAL_BASE_SCHEMA = {
             "'payment_terms', 'liability_cap', 'minimum_commitment', 'data_processing', "
             "'change_of_control', 'most_favored_nation', 'pro_rata', 'board_seat', "
             "'drag_along', 'tag_along', 'exclusivity', 'warranty', 'sla', 'force_majeure'), "
-        "flags: array of strings (e.g. 'above_market', 'non_standard', 'material', 'favorable', 'unfavorable', 'missing', 'auto_renew_risk'), "
+        "flags: array of strings — short natural-language flags describing what is notable, risky, or unusual about THIS clause. "
+            "Be specific to the actual content (e.g. '90-day auto-renew with 10-day notice window', 'uncapped indemnity for IP claims', "
+            "'no termination for convenience', 'liability cap 5x annual fees — above market', 'exclusivity blocks competing vendors for 3 years'). "
+            "Do NOT use generic labels. Every flag must tell the reader something concrete about THIS clause. Empty array if nothing notable, "
         "obligations: array of objects [{party: string, description: string, deadline: string or null, recurring: boolean}], "
         "cross_references: array of objects [{"
             "to_service: string (cap_table | liquidation_waterfall | anti_dilution | pnl | cash_flow), "
@@ -111,9 +114,16 @@ LEGAL_BASE_SCHEMA = {
             "rate": "number or null (per-unit rate)",
         },
     },
-    "red_flags": "array of strings (unfavorable terms, missing protections, unusual provisions)",
+    "red_flags": "array of strings — concrete issues, not generic labels. Say what's wrong, whether it's market, and what the impact is. "
+        "e.g. 'No liability cap — unlimited exposure on a $50K/yr vendor contract', 'Auto-renew with only 10-day notice — easy to miss exit window', "
+        "'Personal guarantee from CEO for equipment lease — unusual for this deal size'",
     "key_dates": "array of objects [{event: string, date: string ISO, auto_action: string or null (e.g. 'auto_renew', 'terminate')}]",
-    "value_explanations": "object: { [field_key]: string } — '\"verbatim quote\" → interpretation → impact'. e.g. liquidation_pref: '\"2x non-participating\" → Series A gets 2x before common → reduces common payout by ~$4M at $20M exit'",
+    "value_explanations": "object: { [clause_id]: string } — for EACH clause, write a 1-2 sentence explanation of what the clause actually means "
+        "and why it matters. Do NOT just copy the clause text — interpret it. Say whether it's market standard or not, "
+        "what the practical impact is, and what the reader should care about. "
+        "e.g. '4.1': 'Liability capped at 1x annual fees ($120K). Market for this contract size — no action needed.' "
+        "e.g. '7.2': 'Auto-renewal every 12 months with 90-day notice requirement. Aggressive — typical notice is 30 days. Must calendar the exit window.' "
+        "e.g. '3.1': '2x non-participating liquidation preference. Series A gets 2x back before common sees anything. Reduces common payout by ~$4M at a $20M exit.'",
 }
 
 # Term sheet extension — investment deal terms
@@ -305,7 +315,7 @@ def _legal_extraction_prompt(text: str, document_type: str, schema_desc: str, **
         "You are a legal analyst AI specializing in contract clause extraction. "
         "You extract EVERY material clause from legal documents into a structured hierarchy. "
         "You identify parent-child relationships between clauses (Section 4 → 4.1 → 4.1(a)). "
-        "You flag non-standard, above-market, or unfavorable terms. "
+        "You flag what matters about each clause — whether terms are market standard, aggressive, or favorable, and what the concrete impact is. "
         "You identify cross-references to financial services (cap table, P&L, cash flow). "
         "You map ALL commercial contracts to ERP categories (revenue AND cost). "
         "Return ONLY valid JSON matching the schema. No markdown. No explanation."
@@ -317,7 +327,9 @@ def _legal_extraction_prompt(text: str, document_type: str, schema_desc: str, **
         "- Extract EVERY material clause with hierarchical IDs (e.g. '1', '1.1', '1.1.a')\n"
         "- Set parent_id for child clauses (e.g. '1.1' has parent_id '1')\n"
         "- Set children arrays (e.g. '1' has children ['1.1', '1.2'])\n"
-        "- Flag non-standard terms: above_market, unfavorable, auto_renew_risk, missing\n"
+        "- flags: For each clause, write short concrete flags about what matters. Say whether terms are market/aggressive/favorable and WHY. "
+        "e.g. 'Liability cap at 12x annual fees — aggressive, market is 1-2x', 'No termination for convenience — locked in', "
+        "'Anti-dilution is broad-based weighted avg — market standard'. Don't use generic labels like 'unfavorable' — say what's unfavorable and whether it's market.\n"
         "- For ALL commercial contracts, ALWAYS populate erp_attribution with category + subcategory:\n"
         "  * Client/customer/revenue contracts → category: 'revenue', subcategory: e.g. 'saas_recurring', 'consulting', 'licensing', 'product_sales', 'subscriptions'\n"
         "  * Vendor contracts, MSAs, SOWs → category: 'cogs' or 'opex_rd'/'opex_sm'/'opex_ga', subcategory from service type\n"
@@ -329,6 +341,13 @@ def _legal_extraction_prompt(text: str, document_type: str, schema_desc: str, **
         "- For investment docs: identify cross-references to cap_table, liquidation_waterfall, anti_dilution\n"
         "- Include obligations with party, description, deadline, recurring\n"
         "- Extract verbatim clause text (first 500 chars)\n"
+        "- ALWAYS extract document-level dates and numbers:\n"
+        "  * effective_date: when the agreement takes effect\n"
+        "  * expiration_date: when it expires or terminates\n"
+        "  * For term sheets/investment docs: investment_amount, valuation_pre_money, valuation_post_money\n"
+        "  * For commercial contracts: erp_attribution.annual_value, erp_attribution.monthly_amount\n"
+        "  * parties: extract ALL parties with name and role\n"
+        "- value_explanations: write one for EVERY clause — this is critical. Interpret the clause, don't copy it.\n"
     )
     # Inject ERP context hint if provided (from P&L row context)
     erp_category_hint = kwargs.get("erp_category_hint")
@@ -1465,7 +1484,7 @@ def _enrich_clause_flags(
     xrefs = clause.get("cross_references") or []
     key_dates = extracted_data.get("key_dates") or []
 
-    # 1. Deadline proximity — obligation due within 90 days
+    # 1. Deadline proximity — obligation due within 90 days (concrete dates, not generic labels)
     from datetime import datetime as _dt, timedelta as _td
     now = _dt.utcnow()
     for ob in obligations:
@@ -1477,10 +1496,13 @@ def _enrich_clause_flags(
         except (ValueError, TypeError):
             continue
         days_out = (deadline - now).days
-        if 0 < days_out <= 90 and "deadline_approaching" not in flags:
-            flags.append("deadline_approaching")
-        elif days_out <= 0 and "deadline_passed" not in flags:
-            flags.append("deadline_passed")
+        date_fmt = deadline.strftime("%d %b %Y")
+        if 0 < days_out <= 90:
+            desc = ob.get("description", "obligation")[:60]
+            flags.append(f"Deadline in {days_out} days ({date_fmt}) — {desc}")
+        elif days_out <= 0:
+            desc = ob.get("description", "obligation")[:60]
+            flags.append(f"Deadline passed ({date_fmt}) — {desc}")
 
     # 2. Auto-renewal trap — auto_renewal clause without termination_for_convenience
     if clause_type in ("auto_renewal", "renewal"):
@@ -1488,21 +1510,18 @@ def _enrich_clause_flags(
             c.get("clause_type") == "termination" and "convenience" in (c.get("text") or "").lower()
             for c in (extracted_data.get("clauses") or [])
         )
-        if not has_convenience_termination and "auto_renew_no_exit" not in flags:
-            flags.append("auto_renew_no_exit")
+        if not has_convenience_termination:
+            flags.append("Auto-renews with no termination for convenience")
 
     # 3. Exposure detection — uncapped liability, personal guarantees, cross-defaults
     if clause_type == "liability_cap":
         text = (clause.get("text") or "").lower()
         if "unlimited" in text or "uncapped" in text or "no limit" in text:
-            if "uncapped_liability" not in flags:
-                flags.append("uncapped_liability")
+            flags.append("Uncapped liability — unlimited exposure")
     if clause_type in ("personal_guarantee", "parent_guarantee"):
-        if "personal_exposure" not in flags:
-            flags.append("personal_exposure")
+        flags.append("Personal guarantee — individual liability for principals")
     if clause_type == "cross_default":
-        if "cross_default_risk" not in flags:
-            flags.append("cross_default_risk")
+        flags.append("Cross-default — breach here triggers default on other agreements")
 
     # 4. Key dates approaching — from document-level key_dates
     for kd in key_dates:
@@ -1515,16 +1534,20 @@ def _enrich_clause_flags(
         except (ValueError, TypeError):
             continue
         days_out = (kd_date - now).days
-        if 0 < days_out <= 60 and auto_action == "auto_renew" and "auto_renew_imminent" not in flags:
-            flags.append("auto_renew_imminent")
-        elif 0 < days_out <= 30 and auto_action == "terminate" and "termination_imminent" not in flags:
-            flags.append("termination_imminent")
+        date_fmt = kd_date.strftime("%d %b %Y")
+        event = kd.get("event", auto_action or "event")[:40]
+        if 0 < days_out <= 60 and auto_action == "auto_renew":
+            flags.append(f"Auto-renews in {days_out} days ({date_fmt}) — {event}")
+        elif 0 < days_out <= 30 and auto_action == "terminate":
+            flags.append(f"Termination in {days_out} days ({date_fmt}) — {event}")
 
     # 5. High-value cross-references — flags clauses that define financial engine inputs
     for xref in xrefs:
         relationship = (xref.get("relationship") or "").lower()
-        if relationship in ("defines", "overrides") and "financial_impact" not in flags:
-            flags.append("financial_impact")
+        field = xref.get("field", "")
+        to_service = xref.get("to_service", "")
+        if relationship in ("defines", "overrides"):
+            flags.append(f"{relationship.title()}s {to_service}.{field}" if field else f"{relationship.title()}s {to_service}")
             break
 
     return flags
@@ -1560,6 +1583,22 @@ def _upsert_clauses_to_document_clauses(
     if not sb:
         logger.warning("[CLAUSE_UPSERT] Supabase unavailable — clauses not persisted")
         return 0
+
+    # Document-level fields for grid columns (not per-clause in the DB schema,
+    # so we store in metadata and let the frontend route read them)
+    doc_effective_date = extracted_data.get("effective_date")
+    doc_expiry_date = extracted_data.get("expiration_date") or extracted_data.get("expiry_date")
+    doc_total_value = (
+        _ensure_numeric(extracted_data.get("investment_amount"))
+        or _ensure_numeric(erp.get("annual_value"))
+        or _ensure_numeric(extracted_data.get("valuation_post_money"))
+    )
+    # Counterparty: second party in parties list (first is usually "us")
+    doc_counterparty = ""
+    if len(parties) >= 2:
+        doc_counterparty = parties[1].get("name", "")
+    elif len(parties) == 1:
+        doc_counterparty = parties[0].get("name", "")
 
     rows = []
     for clause in clauses:
@@ -1599,28 +1638,38 @@ def _upsert_clauses_to_document_clauses(
                 if re.match(r"^\d{4}-\d{2}-\d{2}$", str(deadline_raw)):
                     deadline_date = str(deadline_raw)
 
-        # Build reasoning from value_explanations
-        explanation = value_explanations.get(clause.get("clause_type", ""), "")
-        clause_text = (clause.get("text") or "")[:500]
-        reasoning_parts = []
-        if clause_text:
-            reasoning_parts.append(f'"{clause_text[:120]}..."')
-        if enriched_flags:
-            reasoning_parts.append(f"Flags: {', '.join(enriched_flags)}")
+        # Build reasoning: prefer LLM's value_explanation (actual analysis),
+        # fall back to flags. Never just copy raw clause text — that's useless.
+        clause_id_str = clause.get("id", "")
+        explanation = (
+            value_explanations.get(clause_id_str)
+            or value_explanations.get(clause.get("clause_type", ""))
+            or ""
+        )
         if explanation:
-            reasoning_parts.append(explanation)
-        reasoning = " → ".join(reasoning_parts) if reasoning_parts else ""
+            # LLM wrote a real explanation — use it directly
+            reasoning = explanation[:500]
+        elif enriched_flags:
+            # No explanation but we have flags — use those as reasoning
+            reasoning = " · ".join(enriched_flags)
+        else:
+            # Last resort — clause title/type, not raw text
+            title = clause.get("title") or clause.get("clause_type") or "clause"
+            reasoning = f"Extracted: {title}"
 
-        # Confidence — flagged clauses get higher confidence
+        # Confidence — clauses with flags get higher confidence (flags are now free-form)
         confidence = 0.80
-        risk_flags = {"unfavorable", "above_market", "non_standard", "auto_renew_risk",
-                      "missing", "uncapped_liability", "personal_exposure", "cross_default_risk",
-                      "deadline_approaching", "deadline_passed", "auto_renew_no_exit",
-                      "auto_renew_imminent", "termination_imminent"}
-        if any(f in risk_flags for f in enriched_flags):
-            confidence = 0.92
-        elif any(f in ("material", "favorable", "financial_impact") for f in enriched_flags):
-            confidence = 0.85
+        if enriched_flags:
+            # Any flagged clause is higher confidence — the LLM found something notable
+            # Risk-indicating keywords in free-form flags boost further
+            flag_text = " ".join(enriched_flags).lower()
+            risk_keywords = ("uncapped", "unlimited", "no cap", "personal", "guarantee",
+                             "cross-default", "passed", "aggressive", "above market",
+                             "no termination", "locked in", "one-sided")
+            if any(kw in flag_text for kw in risk_keywords):
+                confidence = 0.92
+            else:
+                confidence = 0.85
 
         row = {
             "fund_id": fund_id or _UNLINKED,
@@ -1653,6 +1702,11 @@ def _upsert_clauses_to_document_clauses(
                 "all_cross_references": xrefs,
                 "red_flags": red_flags,
                 "enriched_flags": [f for f in enriched_flags if f not in (clause.get("flags") or [])],
+                # Document-level fields for grid columns (no dedicated DB columns)
+                "effective_date": doc_effective_date,
+                "expiry_date": doc_expiry_date,
+                "total_value": doc_total_value,
+                "counterparty": doc_counterparty,
             },
         }
         rows.append(row)
