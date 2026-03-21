@@ -128,6 +128,8 @@ export async function POST(request: NextRequest) {
             date: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
             quarter: `Q${Math.ceil((new Date().getMonth() + 1) / 3)} ${new Date().getFullYear()}`,
           },
+          // Chip workflow: structured multi-step tool execution from inline chips
+          chip_workflow: body.chip_workflow || undefined,
         },
         // Agent context for conversation continuity (recent analyses, active company, summary, memo)
         agent_context: {

@@ -92,6 +92,7 @@ export async function POST(request: NextRequest) {
             date: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
             quarter: `Q${Math.ceil((new Date().getMonth() + 1) / 3)} ${new Date().getFullYear()}`,
           },
+          chip_workflow: body.chip_workflow || undefined,
         },
         agent_context: {
           ...(body.agent_context || {}),

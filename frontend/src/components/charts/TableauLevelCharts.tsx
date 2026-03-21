@@ -1634,11 +1634,40 @@ export default function TableauLevelCharts({
     );
   };
 
-  // Render Line/Bar chart (labels + datasets format from Chart.js)
+  // Render Line/Bar chart — normalizes three backend data shapes:
+  //   1. {labels, datasets}       — Chart.js style (line/regression_line/monte_carlo_fan)
+  //   2. {x_axis, series}         — FPA standard (branched_line, build_fpa_stacked_bar)
+  //   3. [{period, cat1, cat2}]   — flat rows (to_stacked_bar from forecast_chart_transforms)
   const renderLineOrBarChart = () => {
     const raw = data?.data || data;
-    const labels = raw?.labels || [];
-    const datasets = raw?.datasets || [];
+
+    let labels: string[] = [];
+    let datasets: any[] = [];
+
+    if (raw?.labels && raw?.datasets) {
+      // Shape 1: {labels, datasets} — use directly
+      labels = raw.labels;
+      datasets = raw.datasets;
+    } else if (raw?.x_axis && raw?.series) {
+      // Shape 2: {x_axis, series} — convert series→datasets
+      labels = raw.x_axis;
+      datasets = (raw.series || []).map((s: any) => ({
+        label: s.name || s.label,
+        data: s.data || [],
+        backgroundColor: s.color,
+        borderColor: s.color,
+        strokeDasharray: s.style === 'dashed' ? '6 3' : undefined,
+      }));
+    } else if (Array.isArray(raw) && raw.length > 0 && raw[0]?.period != null) {
+      // Shape 3: [{period, cat1, cat2, ...}] — extract keys as series
+      labels = raw.map((r: any) => r.period);
+      const keys = Object.keys(raw[0]).filter(k => k !== 'period' && k !== '_type');
+      datasets = keys.map((key: string) => ({
+        label: key.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
+        data: raw.map((r: any) => r[key] ?? null),
+      }));
+    }
+
     if (!labels.length || !datasets.length) {
       return (
         <div className="flex items-center justify-center h-full text-gray-500">

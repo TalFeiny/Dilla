@@ -3786,29 +3786,18 @@ class UnifiedMCPOrchestrator:
     async def _classify_turn(self, prompt: str) -> TurnType:
         """Classify what kind of conversational turn this is.
 
-        Haiku-primary: LLM classifies all non-trivial messages. Only PHATIC
-        gets a fast keyword check (greetings/acks don't need an LLM call).
-        Keywords are the FALLBACK if the LLM call fails.
+        Keyword-only: deterministic keyword matching handles all 7 turn types.
+        No LLM call needed — saves ~300-500ms latency per message.
         """
         lower = prompt.lower().strip()
         words = lower.split()
         msg_len = len(words)
 
-        # ── 1. PHATIC fast-path: very short social/ack messages ──
-        # These are unambiguous and don't need an LLM call.
+        # ── PHATIC fast-path: very short social/ack messages ──
         if msg_len <= 5 and self._RE_PHATIC.match(lower):
             return TurnType.PHATIC
 
-        # ── 2. Primary: Haiku LLM classification ──
-        try:
-            turn_type = await self._llm_classify_turn(prompt, msg_len)
-            if turn_type is not None:
-                return turn_type
-        except Exception as e:
-            logger.warning(f"[CADENCE] LLM turn classification failed: {e}")
-
-        # ── 3. Fallback: keyword matching (only if LLM failed) ──
-        logger.info(f"[CADENCE] LLM unavailable — falling back to keywords ({msg_len} words)")
+        # ── Keyword classification (deterministic, no LLM) ──
         return self._keyword_classify_turn(prompt)
 
     def _keyword_classify_turn(self, prompt: str) -> TurnType:
@@ -3901,95 +3890,6 @@ class UnifiedMCPOrchestrator:
         if msg_len < 8:
             return TurnType.RETRIEVAL
         return TurnType.ANALYSIS
-
-    async def _llm_classify_turn(self, prompt: str, msg_len: int) -> Optional[TurnType]:
-        """Cheap LLM call (Haiku-class) for ambiguous turn classification.
-
-        Only called when keywords don't produce a clear match.  Includes
-        the last assistant message for context on follow-ups.
-        """
-        prev_turn = self._prev_turn_type.value if self._prev_turn_type else "none"
-        prev_had_tools = bool(self._prev_tool_calls)
-        phase = self._conversation_phase.value if self._conversation_phase else "exploring"
-
-        # Get last assistant message for context (truncated)
-        last_assistant = ""
-        for msg in reversed(self._conversation_history):
-            if msg.get("role") == "assistant":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    last_assistant = content[:300]
-                elif isinstance(content, list):
-                    text_parts = [b.get("text", "") for b in content if b.get("type") == "text"]
-                    last_assistant = " ".join(text_parts)[:300]
-                break
-
-        classify_prompt = (
-            f"Classify this user message into exactly one turn type. Return JSON only.\n\n"
-            f"User message: {prompt[:500]}\n"
-            f"Previous turn type: {prev_turn}\n"
-            f"Tools ran last turn: {prev_had_tools}\n"
-            f"Conversation phase: {phase}\n"
-            f"Word count: {msg_len}\n"
-        )
-        if last_assistant:
-            classify_prompt += f"Last assistant response (truncated): {last_assistant}\n"
-
-        classify_prompt += (
-            "\nTurn types (pick ONE):\n"
-            "- phatic: Social glue only — 'thanks', 'ok', 'hey'. Never for questions.\n"
-            "- status: Single-metric lookup, < 8 words. 'What's our burn?' 'Current ARR?'\n"
-            "- retrieval: Fetch & present existing data. 'Show me the P&L.' 'Pull up the cap table.'\n"
-            "- iteration: Tweak a parameter from previous result. 'What if 50M instead?' 'Try 30%.' ONLY after recent work.\n"
-            "- steering: Adjust format/scope of previous output. 'Just top 3.' 'More detail.' ONLY after recent work.\n"
-            "- analysis: ANY strategic question, investigation, recommendation, forecast, scenario, or multi-step reasoning. "
-            "This is the DEFAULT for substantive questions. 'What levers should I pull?' 'Forecast revenue.' "
-            "'Compare our burn to benchmarks.' 'Tell me about our financial health.'\n"
-            "- synthesis: Produce a formal deliverable — memo, deck, report. 'Write a board memo.' 'Draft investor update.'\n\n"
-            "Critical rules:\n"
-            "- 'forecast', 'model', 'analyze', 'compare', 'what should I', 'tell me about' → analysis (NOT retrieval)\n"
-            "- Action verbs like 'build', 'generate', 'create' + a topic → analysis (they're asking for work, not confirming)\n"
-            "- iteration/steering ONLY if prev turn had tools or was analysis/synthesis/retrieval\n"
-            "- When in doubt → analysis. It's the safest default.\n"
-            "- Short confirmations like 'do it', 'go ahead', 'approved' after recent work → analysis (let the agent decide next steps)\n\n"
-            'Return: {"turn_type": "<type>"}'
-        )
-
-        result = await self.model_router.get_completion(
-            prompt=classify_prompt,
-            system_prompt="Classify conversational turns. Return valid JSON only. No markdown fences.",
-            capability=ModelCapability.FAST,
-            max_tokens=40,
-            temperature=0.0,
-            caller_context="turn_classification",
-        )
-
-        response_text = result.get("response", "") if isinstance(result, dict) else str(result)
-        response_text = response_text.strip()
-        if response_text.startswith("```"):
-            response_text = response_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-        import json as _json
-        parsed = _json.loads(response_text)
-        turn_str = parsed.get("turn_type", "").lower().strip()
-
-        type_map = {t.value: t for t in TurnType}
-        turn_type = type_map.get(turn_str)
-
-        if turn_type is None:
-            logger.warning(f"[CADENCE] LLM returned unknown turn type: {turn_str}")
-            return None
-
-        # Guard: iteration/steering only valid after recent work
-        _recent_work = bool(self._prev_tool_calls) or self._prev_turn_type in (
-            TurnType.ANALYSIS, TurnType.SYNTHESIS, TurnType.RETRIEVAL,
-        )
-        if turn_type in (TurnType.ITERATION, TurnType.STEERING) and not _recent_work:
-            logger.info(f"[CADENCE] LLM said {turn_str} but no recent work — upgrading to analysis")
-            turn_type = TurnType.ANALYSIS
-
-        logger.info(f"[CADENCE] LLM classified: {turn_type.value}")
-        return turn_type
 
     def _detect_phase(self) -> ConversationPhase:
         """Detect conversational phase from recent turn history.
@@ -6403,6 +6303,335 @@ JUST THE JSON:"""
                 return {"success": False, "error": str(tool_err)}
         # ── end tool_hint fast-path ──────────────────────────────────
 
+        # ── chip_workflow fast-path ─────────────────────────────────
+        # Chips tell us WHICH tools to run — skip classification & tool
+        # selection LLM calls.  Execute each step deterministically,
+        # then make ONE LLM call to synthesize NL response from results.
+        if context and context.get("chip_workflow"):
+            workflow = context["chip_workflow"]
+            steps = workflow.get("steps", [])
+            nl_context = workflow.get("nl_context", "")
+            logger.info(f"[CHIP_WORKFLOW] {len(steps)} steps, nl={nl_context[:80]!r}")
+
+            # Resolve company_id into shared_data
+            _cid = context.get("company_id")
+            if _cid:
+                async with self.shared_data_lock:
+                    self.shared_data["company_id"] = _cid
+                if pull_company_data:
+                    try:
+                        _cd = pull_company_data(_cid)
+                        if _cd and _cd.periods:
+                            async with self.shared_data_lock:
+                                self.shared_data["company_fpa_data"] = {
+                                    "latest": _cd.latest,
+                                    "time_series": _cd.time_series,
+                                    "periods": _cd.periods,
+                                    "metadata": _cd.metadata,
+                                }
+                    except Exception as _dp_err:
+                        logger.warning(f"[CHIP_WORKFLOW] company data pull failed: {_dp_err}")
+
+            # ── Kind-aware deterministic execution ──
+            step_results = []
+            prior_output = None
+            skip_next = False  # For conditionals that fail
+
+            i = 0
+            while i < len(steps):
+                step = steps[i]
+                kind = step.get("kind", "tool")
+                tool_name = step.get("tool")
+                params = step.get("params", {})
+                chip_id = step.get("chip_id", "")
+                depends_on = step.get("depends_on")
+
+                # ── Skip if previous conditional gated this step ──
+                if skip_next:
+                    skip_next = False
+                    step_results.append({
+                        "step": i, "chip_id": chip_id, "tool": tool_name,
+                        "success": True, "data": {"skipped": True, "reason": "conditional_gate"},
+                    })
+                    i += 1
+                    continue
+
+                logger.info(f"[CHIP_WORKFLOW] Step {i+1}/{len(steps)}: kind={kind} tool={tool_name}")
+
+                try:
+                    result = None
+
+                    if kind == "formula":
+                        # Computed metric — call fpa_computed_metrics with preset metric param
+                        tool_inputs = {**params}
+                        if depends_on and prior_output:
+                            tool_inputs["prior_step_output"] = prior_output
+                        if nl_context:
+                            tool_inputs.setdefault("nl_context", nl_context)
+                        result = await self._execute_tool(
+                            tool_name or "fpa_computed_metrics", tool_inputs
+                        )
+
+                    elif kind == "loop":
+                        # Iterate over collection, execute body steps per item
+                        loop_over = step.get("loop_over", "companies")
+                        collection = self._resolve_loop_collection(loop_over, prior_output)
+                        # Body steps = subsequent steps until next non-body step or end
+                        body_steps = []
+                        j = i + 1
+                        while j < len(steps):
+                            nxt = steps[j]
+                            nxt_kind = nxt.get("kind", "tool")
+                            # Stop at next loop or conditional (control flow boundary)
+                            if nxt_kind in ("loop", "conditional"):
+                                break
+                            body_steps.append(nxt)
+                            j += 1
+
+                        loop_results = []
+                        for item in collection:
+                            item_prior = item if isinstance(item, dict) else {"item": item}
+                            item_results = []
+                            for bs in body_steps:
+                                bs_tool = bs.get("tool")
+                                bs_params = {**bs.get("params", {})}
+                                bs_params["prior_step_output"] = item_prior
+                                if nl_context:
+                                    bs_params.setdefault("nl_context", nl_context)
+                                bs_kind = bs.get("kind", "tool")
+                                # For body steps, validate tool exists (skip virtual)
+                                if bs_tool and bs_tool.startswith("_"):
+                                    continue
+                                if bs_tool and not AGENT_TOOL_MAP.get(bs_tool):
+                                    item_results.append({"tool": bs_tool, "error": f"Unknown tool: {bs_tool}"})
+                                    break
+                                if bs_tool:
+                                    bs_result = await self._execute_tool(bs_tool, bs_params)
+                                    item_results.append({"tool": bs_tool, "data": bs_result})
+                                    item_prior = bs_result
+                            loop_results.append({"item": item, "results": item_results})
+
+                        result = {"loop_results": loop_results, "item_count": len(collection), "loop_over": loop_over}
+                        # Skip body steps (already executed inside loop)
+                        i = j
+                        step_results.append({
+                            "step": i, "chip_id": chip_id, "tool": tool_name or "_loop",
+                            "success": True, "data": result,
+                        })
+                        prior_output = result
+                        continue  # Skip the i += 1 at bottom
+
+                    elif kind == "conditional":
+                        # Evaluate condition — gate the NEXT step
+                        cond_metric = step.get("condition_metric", "")
+                        cond_op = step.get("condition_op", "<")
+                        threshold = params.get("threshold", 0)
+                        metric_val = await self._resolve_metric(cond_metric, prior_output)
+                        passes = self._eval_condition(metric_val, cond_op, threshold)
+                        result = {
+                            "condition_met": passes,
+                            "metric": cond_metric,
+                            "value": metric_val,
+                            "op": cond_op,
+                            "threshold": threshold,
+                        }
+                        if not passes:
+                            skip_next = True
+
+                    elif kind == "bridge":
+                        # Execute tool chain in order
+                        bridge_tools = step.get("bridge_tools", [tool_name] if tool_name else [])
+                        bridge_data = prior_output
+                        for bt in bridge_tools:
+                            if not AGENT_TOOL_MAP.get(bt):
+                                result = {"error": f"Unknown bridge tool: {bt}"}
+                                break
+                            bt_inputs = {**params, "prior_step_output": bridge_data}
+                            if nl_context:
+                                bt_inputs.setdefault("nl_context", nl_context)
+                            bridge_data = await self._execute_tool(bt, bt_inputs)
+                        result = bridge_data
+
+                    elif kind == "assumption":
+                        # Inject driver bundle into shared_data for ALL subsequent steps
+                        assumption_keys = step.get("assumption_keys", [])
+                        applied = {}
+                        async with self.shared_data_lock:
+                            for k in assumption_keys:
+                                if k in params:
+                                    self.shared_data[f"assumption_{k}"] = params[k]
+                                    applied[k] = params[k]
+                        result = {"applied_assumptions": applied}
+
+                    elif kind == "event":
+                        # Real tool call (analyse_business_event, analyse_macro_event, etc.)
+                        # AND accumulate event for downstream model construction
+                        event_data = {
+                            "event": params.get("event", ""),
+                            "category": step.get("event_category", "business"),
+                            "probability": params.get("probability", 0.8),
+                            "timing": params.get("timing"),
+                        }
+                        async with self.shared_data_lock:
+                            pending = self.shared_data.get("pending_events", [])
+                            pending.append(event_data)
+                            self.shared_data["pending_events"] = pending
+                        # Call the real tool if it exists
+                        if tool_name and not tool_name.startswith("_") and AGENT_TOOL_MAP.get(tool_name):
+                            tool_inputs = {**params}
+                            if depends_on and prior_output:
+                                tool_inputs["prior_step_output"] = prior_output
+                            if nl_context:
+                                tool_inputs.setdefault("nl_context", nl_context)
+                            result = await self._execute_tool(tool_name, tool_inputs)
+                            result = {"event_registered": event_data, "tool_result": result}
+                        else:
+                            result = {"event_registered": event_data}
+
+                    elif kind == "prior":
+                        # Accumulate prior for downstream model construction
+                        prior_data = {
+                            "confidence": params.get("confidence", 0.8),
+                            "distribution": params.get("distribution", "normal"),
+                            "floor": params.get("floor"),
+                            "ceiling": params.get("ceiling"),
+                            "metric": params.get("metric"),
+                            "prior_keys": step.get("prior_keys", []),
+                        }
+                        async with self.shared_data_lock:
+                            pending = self.shared_data.get("pending_priors", [])
+                            pending.append(prior_data)
+                            self.shared_data["pending_priors"] = pending
+                        result = {"prior_registered": prior_data}
+
+                    elif kind == "chart":
+                        # Route to generate_chart with prior output as data
+                        tool_inputs = {
+                            "chart_type": params.get("type", "bar"),
+                            **params,
+                        }
+                        if prior_output:
+                            tool_inputs["data"] = prior_output
+                        if nl_context:
+                            tool_inputs.setdefault("nl_context", nl_context)
+                        result = await self._execute_tool("generate_chart", tool_inputs)
+
+                    else:
+                        # Standard tool / driver / operational — execute directly
+                        if not tool_name:
+                            step_results.append({
+                                "step": i, "chip_id": chip_id,
+                                "success": False, "error": "No tool specified",
+                            })
+                            i += 1
+                            continue
+
+                        tool_def = AGENT_TOOL_MAP.get(tool_name)
+                        if not tool_def:
+                            step_results.append({
+                                "step": i, "chip_id": chip_id, "tool": tool_name,
+                                "success": False, "error": f"Unknown tool: {tool_name}",
+                            })
+                            break
+
+                        tool_inputs = {**params}
+                        if depends_on and prior_output:
+                            tool_inputs["prior_step_output"] = prior_output
+                        if nl_context:
+                            tool_inputs.setdefault("nl_context", nl_context)
+
+                        # Inject assumptions from shared_data
+                        async with self.shared_data_lock:
+                            for k, v in self.shared_data.items():
+                                if k.startswith("assumption_"):
+                                    tool_inputs.setdefault("driver_overrides", {})
+                                    tool_inputs["driver_overrides"][k.replace("assumption_", "")] = v
+
+                        # Inject pending events/priors for model construction tools
+                        if tool_name in ("construct_forecast_model", "execute_forecast_model", "fpa_forecast"):
+                            async with self.shared_data_lock:
+                                pending_events = self.shared_data.pop("pending_events", [])
+                                pending_priors = self.shared_data.pop("pending_priors", [])
+                            if pending_events:
+                                tool_inputs["events"] = pending_events
+                            if pending_priors:
+                                tool_inputs["priors"] = pending_priors
+
+                        result = await self._execute_tool(tool_name, tool_inputs)
+
+                    # Record step result
+                    is_error = isinstance(result, dict) and "error" in result and not isinstance(result.get("error"), dict)
+                    step_results.append({
+                        "step": i, "chip_id": chip_id, "tool": tool_name or f"_{kind}",
+                        "success": not is_error,
+                        "data": result,
+                        **({"error": result["error"]} if is_error else {}),
+                    })
+                    if is_error:
+                        logger.error(f"[CHIP_WORKFLOW] Step {i+1} failed: {result.get('error')}")
+                        break
+                    prior_output = result
+
+                except Exception as step_err:
+                    logger.error(f"[CHIP_WORKFLOW] Step {i+1} exception: {step_err}", exc_info=True)
+                    step_results.append({
+                        "step": i, "chip_id": chip_id, "tool": tool_name or f"_{kind}",
+                        "success": False, "error": str(step_err),
+                    })
+                    break
+
+                i += 1
+
+            # ── Single LLM call: synthesize NL response from results ──
+            synthesis = ""
+            if nl_context and step_results:
+                try:
+                    results_summary = []
+                    for sr in step_results:
+                        data = sr.get("data", {})
+                        # Truncate large results for the synthesis prompt
+                        data_str = str(data)
+                        if len(data_str) > 3000:
+                            data_str = data_str[:3000] + "... (truncated)"
+                        results_summary.append(
+                            f"Step {sr['step']+1} ({sr.get('tool', '?')}): "
+                            f"{'OK' if sr.get('success') else 'FAILED'}\n{data_str}"
+                        )
+                    synthesis_prompt = (
+                        f"The user composed a chip workflow: \"{nl_context}\"\n\n"
+                        f"The following tools were executed:\n\n"
+                        + "\n\n".join(results_summary)
+                        + "\n\nSynthesize a clear, concise response for the user. "
+                        "Highlight key findings, numbers, and insights. "
+                        "If any step failed, explain what went wrong."
+                    )
+                    synthesis_resp = await self.model_router.generate(
+                        prompt=synthesis_prompt,
+                        max_tokens=2000,
+                        temperature=0.3,
+                    )
+                    synthesis = (
+                        synthesis_resp.get("text", "")
+                        if isinstance(synthesis_resp, dict)
+                        else str(synthesis_resp)
+                    )
+                except Exception as synth_err:
+                    logger.warning(f"[CHIP_WORKFLOW] Synthesis LLM failed: {synth_err}")
+                    synthesis = ""
+
+            all_ok = all(s.get("success") for s in step_results)
+            return {
+                "success": all_ok,
+                "result": {
+                    "workflow": True,
+                    "steps": step_results,
+                    "step_count": len(step_results),
+                    "nl_context": nl_context,
+                    "synthesis": synthesis,
+                },
+            }
+        # ── end chip_workflow fast-path ──────────────────────────────
+
         result = None
         error_message = None
 
@@ -7402,6 +7631,73 @@ Answer using specific company names and numbers from the portfolio grid above.""
         if companies:
             self.shared_data["companies"] = companies
             logger.info(f"[WIRING] Auto-populated {len(companies)} companies from grid")
+
+    # ── Chip workflow helpers ─────────────────────────────────────
+    def _resolve_loop_collection(self, loop_over: str, prior_output) -> list:
+        """Get the collection to iterate over for a loop chip."""
+        if loop_over == "companies":
+            # From grid/portfolio data in shared_data, or prior output
+            companies = self.shared_data.get("companies", [])
+            if not companies and isinstance(prior_output, dict):
+                companies = prior_output.get("companies", [])
+            # Also check matrix_context for company names
+            if not companies:
+                mc = self.shared_data.get("matrix_context", {})
+                if mc and mc.get("companyNames"):
+                    companies = mc["companyNames"]
+            return companies
+        elif loop_over == "scenarios":
+            tree = self.shared_data.get("fpa_scenario_tree", {})
+            if isinstance(tree, dict) and tree.get("branches"):
+                return tree["branches"]
+            if isinstance(prior_output, dict):
+                return prior_output.get("scenarios", prior_output.get("branches", []))
+            return []
+        elif loop_over == "periods":
+            fpa = self.shared_data.get("company_fpa_data", {})
+            if isinstance(fpa, dict) and fpa.get("periods"):
+                return fpa["periods"]
+            if isinstance(prior_output, dict):
+                return prior_output.get("periods", [])
+            return []
+        return []
+
+    async def _resolve_metric(self, metric: str, prior_output) -> float:
+        """Get a metric value — from prior output or by computing it."""
+        # Check prior output first
+        if isinstance(prior_output, dict):
+            if metric in prior_output:
+                val = prior_output[metric]
+                if isinstance(val, (int, float)):
+                    return float(val)
+            # Check nested 'data' or 'metrics' keys
+            for nested_key in ("data", "metrics", "result"):
+                nested = prior_output.get(nested_key, {})
+                if isinstance(nested, dict) and metric in nested:
+                    val = nested[metric]
+                    if isinstance(val, (int, float)):
+                        return float(val)
+        # Compute it via fpa_computed_metrics
+        try:
+            result = await self._execute_tool("fpa_computed_metrics", {"metric": metric})
+            if isinstance(result, dict):
+                return float(result.get("value", result.get(metric, 0)))
+        except Exception as e:
+            logger.warning(f"[CHIP_WORKFLOW] Failed to resolve metric {metric}: {e}")
+        return 0.0
+
+    def _eval_condition(self, value: float, op: str, threshold) -> bool:
+        """Evaluate a conditional chip's condition."""
+        threshold = float(threshold) if threshold is not None else 0.0
+        ops = {
+            "<": lambda a, b: a < b,
+            ">": lambda a, b: a > b,
+            "==": lambda a, b: abs(a - b) < 0.001,
+            "<=": lambda a, b: a <= b,
+            ">=": lambda a, b: a >= b,
+        }
+        return ops.get(op, lambda a, b: False)(value, threshold)
+    # ── end chip workflow helpers ───────────────────────────────
 
     async def _execute_tool_raw(self, tool_name: str, tool_input: dict, max_retries: int = 2) -> dict:
         """Low-level tool dispatch — NO prerequisite resolution (avoids recursion).
@@ -16490,121 +16786,33 @@ Rules:
         # Track correction count at loop start for mid-loop interruption detection
         _correction_count_at_start = len(self.shared_data.get("session_corrections", []))
 
-        # ── Extract structured goals from user request (LLM-driven, no keywords) ──
-        _company_names_json = json.dumps((entities or {}).get('companies', []))
-        # Gate memo goal extraction on response mode
-        _resp_mode = classification.response_mode if classification else "reply"
-        _memo_rule = ""
-        if _resp_mode == "task":
-            _memo_rule = (
-                "MEMO RULE — when to include memo_count > 0:\n"
-                "Include a memo goal ONLY when the request explicitly asks for:\n"
-                "- An IC memo, report, deck, or write-up\n"
-                "- A comprehensive analysis that warrants a document\n\n"
-                "SKIP memo goals for:\n"
-                "- Single data lookups, simple analysis, forecasting, grid edits\n"
-                "- Questions that can be answered in 1-3 sentences\n"
-                "- Actions like 'update X', 'forecast Y', 'edit Z'\n\n"
-                "DEFAULT: If in doubt, SKIP the memo goal. Only generate memos when explicitly requested or the task clearly warrants a document.\n\n"
-            )
-        elif _resp_mode in ("reply", "action"):
-            _memo_rule = f"MEMO RULE: NEVER include memo goals. This is a quick {_resp_mode} — no documents.\n\n"
+        # ── Goals: no LLM call — let the main reasoning model decide ──
+        _extracted_goals: list[dict] = []
+        logger.info("[AGENT_LOOP] Skipping LLM goal extraction — main model will reason about goals directly")
 
-        _goal_extraction_prompt = (
-            f"User request: {prompt}\n"
-            f"Companies mentioned: {_company_names_json}\n\n"
-            "Extract the concrete goals the user wants achieved. Each goal should map to a tool outcome.\n"
-            "Each goal: {\"id\": \"short_slug\", \"description\": \"what must be true when done\", \"check\": \"scoreboard check\"}\n\n"
-            f"{_memo_rule}"
-            "Examples:\n"
-            '- "portfolio performance and financing needs" -> [{"id":"enrich","description":"Fetch data for all portfolio companies","check":"fetch_count > 0"},{"id":"analyze","description":"Run valuations and metrics","check":"valuation_count > 0"}]\n'
-            '- "analyze @Ramp" -> [{"id":"enrich_ramp","description":"Fetch and enrich Ramp data","check":"fetch_count > 0"},{"id":"valuate_ramp","description":"Run valuation on Ramp","check":"valuation_count > 0"}]\n'
-            '- "who are the winners and losers" -> [{"id":"enrich","description":"Fetch portfolio data","check":"fetch_count > 0"},{"id":"rank","description":"Score and rank companies by performance","check":"analysis_count > 0"}]\n'
-            '- "what is Mercury\'s revenue?" -> [{"id":"quick_look","description":"Look up Mercury revenue","check":"fetch_count > 0"}]\n'
-            '- "write me an IC memo on @Stripe" -> [{"id":"enrich_stripe","description":"Fetch Stripe data","check":"fetch_count > 0"},{"id":"analyze_stripe","description":"Run valuation and metrics","check":"valuation_count > 0"},{"id":"write_memo","description":"Generate IC memo for Stripe","check":"memo_count > 0"}]\n\n'
-            "RESPOND WITH JUST THE JSON ARRAY. NO MARKDOWN. NO EXPLANATION. NO PROSE. 1-5 goals max.\n"
-            "JUST THE JSON ARRAY:"
-        )
-
-        try:
-            _goal_response = await self.model_router.get_completion(
-                prompt=_goal_extraction_prompt,
-                system_prompt="You are a JSON extraction machine. Return ONLY a raw JSON array. No markdown fences. No ```json. No explanation. Just [{...}]. NOTHING ELSE.",
-                capability=ModelCapability.FAST,
-                max_tokens=300,
-                temperature=0.0,
-                json_mode=True,
-                caller_context="agent_loop_goal_extraction",
-            )
-            _goal_text = _goal_response.get("response", "[]") if isinstance(_goal_response, dict) else str(_goal_response)
-            # Use robust JSON parser that handles fences, prose, partial arrays
-            from app.services.micro_skills.search_skills import _parse_llm_json
-            _parsed = _parse_llm_json(_goal_text, "goal_extraction", "goals")
-            if isinstance(_parsed, list):
-                _extracted_goals = _parsed
-            elif isinstance(_parsed, dict):
-                _extracted_goals = _parsed.get("goals", []) if isinstance(_parsed.get("goals"), list) else [_parsed]
-            else:
-                _extracted_goals = []
-        except Exception as e:
-            logger.warning(f"[AGENT_LOOP] Goal extraction failed: {e}")
-            _extracted_goals = []
-
-        _goals_text = "\n".join(f"  - [{g.get('id', '?')}] {g.get('description', '?')}" for g in _extracted_goals)
-        logger.info(f"[AGENT_LOOP] Extracted {len(_extracted_goals)} goals:\n{_goals_text}")
-
-        # ── TaskLedger: built from TaskPlanner output (not keywords) ────────
+        # ── TaskLedger: built from TaskPlanner output ────────
         from app.services.session_state import TaskLedger
-        # Placeholder — populated from plan tasks after TaskPlanner runs below
         ledger = TaskLedger([])
 
-        # ── TaskPlanner: LLM-powered task decomposition (Phase 2) ────────
-        # Primary: async LLM decomposition with full tool catalog + fingerprint.
-        # Fallback: classification-based chain → entity-based defaults.
+        # ── TaskPlanner: deterministic classification-chain only (no LLM call) ──
         _deterministic_plan: Optional[List] = None
         _completion_criteria: list[dict] = []
 
         if TaskPlanner and not session_plan and not approved_plan:
-            # First try: async LLM decomposition (one call → full task DAG)
             try:
-                _decomp_result = await TaskPlanner.plan_async(
+                _deterministic_plan = TaskPlanner.plan(
                     prompt=prompt,
                     state=state,
                     entities=entities,
+                    classification=classification,
                     goals=_extracted_goals,
-                    model_router=self.model_router if hasattr(self, 'model_router') else None,
                 )
-                if _decomp_result:
-                    _deterministic_plan, _completion_criteria = _decomp_result
-                    logger.info(
-                        f"[AGENT_LOOP] LLM decomposition produced {len(_deterministic_plan)} tasks "
-                        f"with {len(_completion_criteria)} completion criteria"
-                    )
-                    # Merge LLM completion criteria into extracted goals
-                    if _completion_criteria:
-                        _existing_checks = {g.get("check") for g in _extracted_goals}
-                        for cc in _completion_criteria:
-                            if cc.get("check") and cc["check"] not in _existing_checks:
-                                _extracted_goals.append(cc)
             except Exception as e:
-                logger.warning(f"[AGENT_LOOP] LLM decomposition failed: {e}")
-
-            # Second try: classification chain fallback
-            if not _deterministic_plan:
-                try:
-                    _deterministic_plan = TaskPlanner.plan(
-                        prompt=prompt,
-                        state=state,
-                        entities=entities,
-                        classification=classification,
-                        goals=_extracted_goals,
-                    )
-                except Exception as e:
-                    logger.warning(f"[AGENT_LOOP] TaskPlanner fallback failed: {e}")
-                    _deterministic_plan = None
+                logger.warning(f"[AGENT_LOOP] TaskPlanner classification-chain failed: {e}")
+                _deterministic_plan = None
 
         if _deterministic_plan:
-            _source = "llm_decomposition" if _completion_criteria else "classification_chain"
+            _source = "classification_chain"
             logger.info(f"[AGENT_LOOP] TaskPlanner ({_source}) produced {len(_deterministic_plan)} tasks — skipping LLM REASON")
             # Convert to SessionPlan for lifecycle tracking
             _det_steps = [
@@ -17990,6 +18198,251 @@ ABSOLUTE RULES:
                         self.shared_data['fund_context'].update(fund_params)
                         logger.info(f"[CONTEXT] Extracted fund params from prompt: {fund_params}")
             
+            # ── chip_workflow fast-path (streaming, kind-aware) ─────────
+            # Chips specify which tools to run — skip classification & tool
+            # selection.  Kind-aware dispatch handles loops, conditionals,
+            # assumptions, events/priors, bridges, charts, formulas.
+            if context and context.get("chip_workflow"):
+                workflow = context["chip_workflow"]
+                _cw_steps = workflow.get("steps", [])
+                _cw_nl = workflow.get("nl_context", "")
+                logger.info(f"[CHIP_WORKFLOW] Streaming path: {len(_cw_steps)} steps")
+
+                yield {"type": "progress", "stage": "chip_workflow", "message": f"Running {len(_cw_steps)} tool(s)..."}
+
+                _cw_results = []
+                _cw_prior = None
+                _cw_skip_next = False
+
+                _ci = 0
+                while _ci < len(_cw_steps):
+                    _cs = _cw_steps[_ci]
+                    _ck = _cs.get("kind", "tool")
+                    _ct_name = _cs.get("tool")
+                    _ct_params = _cs.get("params", {})
+                    _ct_chip_id = _cs.get("chip_id", "")
+                    _ct_depends = _cs.get("depends_on")
+
+                    # Skip if previous conditional gated this step
+                    if _cw_skip_next:
+                        _cw_skip_next = False
+                        _cw_results.append({"step": _ci, "chip_id": _ct_chip_id, "tool": _ct_name, "success": True, "data": {"skipped": True, "reason": "conditional_gate"}})
+                        _ci += 1
+                        continue
+
+                    yield {"type": "progress", "stage": "chip_workflow", "message": f"Step {_ci+1}/{len(_cw_steps)}: {_ct_name or _ck}"}
+
+                    try:
+                        _ct_result = None
+
+                        if _ck == "formula":
+                            _ct_inputs = {**_ct_params}
+                            if _ct_depends and _cw_prior:
+                                _ct_inputs["prior_step_output"] = _cw_prior
+                            if _cw_nl:
+                                _ct_inputs.setdefault("nl_context", _cw_nl)
+                            _ct_result = await self._execute_tool(_ct_name or "fpa_computed_metrics", _ct_inputs)
+
+                        elif _ck == "loop":
+                            _loop_over = _cs.get("loop_over", "companies")
+                            _collection = self._resolve_loop_collection(_loop_over, _cw_prior)
+                            _body_steps = []
+                            _lj = _ci + 1
+                            while _lj < len(_cw_steps):
+                                if _cw_steps[_lj].get("kind", "tool") in ("loop", "conditional"):
+                                    break
+                                _body_steps.append(_cw_steps[_lj])
+                                _lj += 1
+                            _loop_results = []
+                            for _item in _collection:
+                                _item_prior = _item if isinstance(_item, dict) else {"item": _item}
+                                _item_results = []
+                                for _bs in _body_steps:
+                                    _bs_tool = _bs.get("tool")
+                                    _bs_params = {**_bs.get("params", {}), "prior_step_output": _item_prior}
+                                    if _cw_nl:
+                                        _bs_params.setdefault("nl_context", _cw_nl)
+                                    if _bs_tool and _bs_tool.startswith("_"):
+                                        continue
+                                    if _bs_tool and not AGENT_TOOL_MAP.get(_bs_tool):
+                                        _item_results.append({"tool": _bs_tool, "error": f"Unknown tool: {_bs_tool}"})
+                                        break
+                                    if _bs_tool:
+                                        _bs_result = await self._execute_tool(_bs_tool, _bs_params)
+                                        _item_results.append({"tool": _bs_tool, "data": _bs_result})
+                                        _item_prior = _bs_result
+                                _loop_results.append({"item": _item, "results": _item_results})
+                            _ct_result = {"loop_results": _loop_results, "item_count": len(_collection), "loop_over": _loop_over}
+                            _cw_results.append({"step": _ci, "chip_id": _ct_chip_id, "tool": _ct_name or "_loop", "success": True, "data": _ct_result})
+                            _cw_prior = _ct_result
+                            _ci = _lj
+                            continue
+
+                        elif _ck == "conditional":
+                            _cond_metric = _cs.get("condition_metric", "")
+                            _cond_op = _cs.get("condition_op", "<")
+                            _threshold = _ct_params.get("threshold", 0)
+                            _metric_val = await self._resolve_metric(_cond_metric, _cw_prior)
+                            _passes = self._eval_condition(_metric_val, _cond_op, _threshold)
+                            _ct_result = {"condition_met": _passes, "metric": _cond_metric, "value": _metric_val, "op": _cond_op, "threshold": _threshold}
+                            if not _passes:
+                                _cw_skip_next = True
+
+                        elif _ck == "bridge":
+                            _bridge_tools = _cs.get("bridge_tools", [_ct_name] if _ct_name else [])
+                            _bridge_data = _cw_prior
+                            for _bt in _bridge_tools:
+                                if not AGENT_TOOL_MAP.get(_bt):
+                                    _ct_result = {"error": f"Unknown bridge tool: {_bt}"}
+                                    break
+                                _bt_inputs = {**_ct_params, "prior_step_output": _bridge_data}
+                                if _cw_nl:
+                                    _bt_inputs.setdefault("nl_context", _cw_nl)
+                                _bridge_data = await self._execute_tool(_bt, _bt_inputs)
+                            if _ct_result is None:
+                                _ct_result = _bridge_data
+
+                        elif _ck == "assumption":
+                            _ak = _cs.get("assumption_keys", [])
+                            _applied = {}
+                            async with self.shared_data_lock:
+                                for _k in _ak:
+                                    if _k in _ct_params:
+                                        self.shared_data[f"assumption_{_k}"] = _ct_params[_k]
+                                        _applied[_k] = _ct_params[_k]
+                            _ct_result = {"applied_assumptions": _applied}
+
+                        elif _ck == "event":
+                            _ev_data = {
+                                "event": _ct_params.get("event", ""),
+                                "category": _cs.get("event_category", "business"),
+                                "probability": _ct_params.get("probability", 0.8),
+                                "timing": _ct_params.get("timing"),
+                            }
+                            async with self.shared_data_lock:
+                                _pev = self.shared_data.get("pending_events", [])
+                                _pev.append(_ev_data)
+                                self.shared_data["pending_events"] = _pev
+                            if _ct_name and not _ct_name.startswith("_") and AGENT_TOOL_MAP.get(_ct_name):
+                                _ct_inputs = {**_ct_params}
+                                if _ct_depends and _cw_prior:
+                                    _ct_inputs["prior_step_output"] = _cw_prior
+                                if _cw_nl:
+                                    _ct_inputs.setdefault("nl_context", _cw_nl)
+                                _tool_res = await self._execute_tool(_ct_name, _ct_inputs)
+                                _ct_result = {"event_registered": _ev_data, "tool_result": _tool_res}
+                            else:
+                                _ct_result = {"event_registered": _ev_data}
+
+                        elif _ck == "prior":
+                            _pr_data = {
+                                "confidence": _ct_params.get("confidence", 0.8),
+                                "distribution": _ct_params.get("distribution", "normal"),
+                                "floor": _ct_params.get("floor"),
+                                "ceiling": _ct_params.get("ceiling"),
+                                "metric": _ct_params.get("metric"),
+                                "prior_keys": _cs.get("prior_keys", []),
+                            }
+                            async with self.shared_data_lock:
+                                _ppr = self.shared_data.get("pending_priors", [])
+                                _ppr.append(_pr_data)
+                                self.shared_data["pending_priors"] = _ppr
+                            _ct_result = {"prior_registered": _pr_data}
+
+                        elif _ck == "chart":
+                            _ct_inputs = {"chart_type": _ct_params.get("type", "bar"), **_ct_params}
+                            if _cw_prior:
+                                _ct_inputs["data"] = _cw_prior
+                            if _cw_nl:
+                                _ct_inputs.setdefault("nl_context", _cw_nl)
+                            _ct_result = await self._execute_tool("generate_chart", _ct_inputs)
+
+                        else:
+                            # Standard tool / driver / operational
+                            if not _ct_name:
+                                _cw_results.append({"step": _ci, "chip_id": _ct_chip_id, "success": False, "error": "No tool"})
+                                _ci += 1
+                                continue
+                            if not AGENT_TOOL_MAP.get(_ct_name):
+                                _cw_results.append({"step": _ci, "chip_id": _ct_chip_id, "tool": _ct_name, "success": False, "error": f"Unknown tool: {_ct_name}"})
+                                break
+
+                            _ct_inputs = {**_ct_params}
+                            if _ct_depends and _cw_prior:
+                                _ct_inputs["prior_step_output"] = _cw_prior
+                            if _cw_nl:
+                                _ct_inputs.setdefault("nl_context", _cw_nl)
+                            # Inject assumptions
+                            async with self.shared_data_lock:
+                                for _k, _v in self.shared_data.items():
+                                    if _k.startswith("assumption_"):
+                                        _ct_inputs.setdefault("driver_overrides", {})
+                                        _ct_inputs["driver_overrides"][_k.replace("assumption_", "")] = _v
+                            # Inject pending events/priors for model construction
+                            if _ct_name in ("construct_forecast_model", "execute_forecast_model", "fpa_forecast"):
+                                async with self.shared_data_lock:
+                                    _pe = self.shared_data.pop("pending_events", [])
+                                    _pp = self.shared_data.pop("pending_priors", [])
+                                if _pe:
+                                    _ct_inputs["events"] = _pe
+                                if _pp:
+                                    _ct_inputs["priors"] = _pp
+                            _ct_result = await self._execute_tool(_ct_name, _ct_inputs)
+
+                        # Record result
+                        _ct_err = isinstance(_ct_result, dict) and "error" in _ct_result and not isinstance(_ct_result.get("error"), dict)
+                        _cw_results.append({
+                            "step": _ci, "chip_id": _ct_chip_id, "tool": _ct_name or f"_{_ck}",
+                            "success": not _ct_err, "data": _ct_result,
+                            **({"error": _ct_result["error"]} if _ct_err else {}),
+                        })
+                        if _ct_err:
+                            break
+                        _cw_prior = _ct_result
+
+                    except Exception as _ct_ex:
+                        logger.error(f"[CHIP_WORKFLOW] Step {_ci+1} exception: {_ct_ex}", exc_info=True)
+                        _cw_results.append({"step": _ci, "chip_id": _ct_chip_id, "tool": _ct_name or f"_{_ck}", "success": False, "error": str(_ct_ex)})
+                        break
+
+                    _ci += 1
+
+                # Single LLM call: synthesize NL response from results
+                _cw_synth = ""
+                if _cw_nl and _cw_results:
+                    try:
+                        _cw_summaries = []
+                        for _sr in _cw_results:
+                            _d = str(_sr.get("data", {}))
+                            if len(_d) > 3000:
+                                _d = _d[:3000] + "...(truncated)"
+                            _cw_summaries.append(f"Step {_sr['step']+1} ({_sr.get('tool','?')}): {'OK' if _sr.get('success') else 'FAILED'}\n{_d}")
+                        _synth_prompt = (
+                            f"The user composed a chip workflow: \"{_cw_nl}\"\n\n"
+                            f"Tools executed:\n\n" + "\n\n".join(_cw_summaries) +
+                            "\n\nSynthesize a clear, concise response. Highlight key findings and numbers. If any step failed, explain what went wrong."
+                        )
+                        _synth_resp = await self.model_router.generate(prompt=_synth_prompt, max_tokens=2000, temperature=0.3)
+                        _cw_synth = _synth_resp.get("text", "") if isinstance(_synth_resp, dict) else str(_synth_resp)
+                    except Exception as _synth_err:
+                        logger.warning(f"[CHIP_WORKFLOW] Synthesis failed: {_synth_err}")
+
+                _cw_ok = all(s.get("success") for s in _cw_results)
+                yield {
+                    "type": "complete",
+                    "result": {
+                        "success": _cw_ok,
+                        "content": _cw_synth,
+                        "narrative": _cw_synth,
+                        "workflow": True,
+                        "steps": _cw_results,
+                        "step_count": len(_cw_results),
+                        "nl_context": _cw_nl,
+                    },
+                }
+                return
+            # ── end chip_workflow fast-path (streaming) ────────────────
+
             # ── NEW CONVERSATIONAL PATH ──────────────────────────────────
             # When enabled, bypass the classify → dispatch → agent loop chain.
             # The model gets system prompt + fingerprint + tools + history

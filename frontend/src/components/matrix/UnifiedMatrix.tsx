@@ -5690,8 +5690,8 @@ export function UnifiedMatrix({
       </div>
       )}
 
-      {/* Memo panel below grid — always visible */}
-      <div className={`border-t bg-card/50 ${gridCollapsed ? 'flex-1 flex flex-col min-h-0' : ''}`}>
+      {/* Memo panel below grid — always visible, shrink-0 prevents grid from squishing it */}
+      <div className={`border-t bg-card/50 ${gridCollapsed ? 'flex-1 flex flex-col min-h-0' : 'shrink-0'}`}>
           <button
             className="w-full flex items-center justify-between px-4 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
             onClick={() => setMemoPanelExpanded(prev => !prev)}

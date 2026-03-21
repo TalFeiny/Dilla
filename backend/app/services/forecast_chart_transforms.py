@@ -76,6 +76,114 @@ def format_period(period: str, granularity: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Granularity aggregation — always project monthly, aggregate for display
+# ---------------------------------------------------------------------------
+
+# Flow metrics (revenue, costs, income): SUM within period
+_FLOW_KEYS = {
+    "revenue", "cogs", "gross_profit", "rd_spend", "sm_spend", "ga_spend",
+    "total_opex", "ebitda", "free_cash_flow", "capex", "interest",
+    "tax", "net_income", "arr", "mrr",
+}
+
+# Balance/stock metrics: take LAST value in period
+_BALANCE_KEYS = {
+    "cash_balance", "runway_months", "total_assets", "total_liabilities",
+    "total_equity", "debt_balance", "accounts_receivable", "accounts_payable",
+}
+
+# Rate/ratio metrics: AVERAGE within period
+_RATE_KEYS = {
+    "ebitda_margin", "gross_margin", "growth_rate", "burn_multiple",
+    "ltv_cac_ratio", "magic_number",
+}
+
+
+def _quarter_key(period: str) -> str:
+    """'2025-03' → 'Q1 \\'25'"""
+    try:
+        parts = period.split("-")
+        q = (int(parts[1]) - 1) // 3 + 1
+        return f"Q{q} '{parts[0][2:]}"
+    except (IndexError, ValueError):
+        return period
+
+
+def _year_key(period: str) -> str:
+    """'2025-03' → '2025'"""
+    return period[:4]
+
+
+def aggregate_forecast(
+    rows: list[dict],
+    granularity: str,
+) -> list[dict]:
+    """Aggregate monthly forecast rows to quarterly or annual.
+
+    Flow metrics (revenue, cogs, opex, ebitda): SUM
+    Balance metrics (cash_balance, runway): LAST of period
+    Rate metrics (growth_rate, margin): AVERAGE
+    """
+    if granularity == "monthly" or not rows:
+        return rows
+
+    key_fn = _quarter_key if granularity == "quarterly" else _year_key
+
+    # Group rows by period bucket, preserving order
+    from collections import OrderedDict
+    buckets: OrderedDict[str, list[dict]] = OrderedDict()
+    for row in rows:
+        period = row.get("period", "")
+        bucket = key_fn(period)
+        buckets.setdefault(bucket, []).append(row)
+
+    aggregated = []
+    for bucket_label, bucket_rows in buckets.items():
+        agg: dict = {"period": bucket_label}
+
+        # Collect all numeric keys from the rows
+        all_keys = set()
+        for r in bucket_rows:
+            all_keys.update(k for k, v in r.items() if isinstance(v, (int, float)) and k != "period")
+
+        for key in all_keys:
+            vals = [r.get(key, 0) or 0 for r in bucket_rows]
+            if key in _BALANCE_KEYS:
+                agg[key] = vals[-1]  # last of period
+            elif key in _RATE_KEYS:
+                agg[key] = round(sum(vals) / len(vals), 4) if vals else 0  # average
+            else:
+                # Default to SUM (flow metrics + anything unrecognized)
+                agg[key] = round(sum(vals), 2)
+
+        aggregated.append(agg)
+
+    return aggregated
+
+
+def aggregate_series_data(
+    periods: list[str],
+    values: list[float],
+    granularity: str,
+) -> tuple[list[str], list[float]]:
+    """Aggregate period+values arrays (actuals/predictions/forecast) to quarterly/annual."""
+    if granularity == "monthly" or not periods:
+        return periods, values
+
+    key_fn = _quarter_key if granularity == "quarterly" else _year_key
+
+    from collections import OrderedDict
+    buckets: OrderedDict[str, list[float]] = OrderedDict()
+    for p, v in zip(periods, values):
+        bucket = key_fn(p)
+        buckets.setdefault(bucket, []).append(v if v is not None else 0)
+
+    agg_periods = list(buckets.keys())
+    agg_values = [round(sum(vs), 2) for vs in buckets.values()]
+    return agg_periods, agg_values
+
+
+# ---------------------------------------------------------------------------
 # Citation + explanation builders
 # ---------------------------------------------------------------------------
 

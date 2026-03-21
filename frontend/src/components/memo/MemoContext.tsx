@@ -493,10 +493,9 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
   }, [companyId, bump, applyForecastToGrid, forkTree?.activeBranchId, driverValues]);
 
   // ---- AI narrative — backend pulls all data server-side ----
-  const requestNarrative = useCallback(async (sectionType: string, _dataContext?: Record<string, any>): Promise<string> => {
-    // No frontend hydration. Backend calls pull_company_data + loads active
-    // forecast. We only forward branch_id so the backend can apply overrides.
+  const requestNarrative = useCallback(async (sectionType: string, dataContext?: Record<string, any>): Promise<string> => {
     return apiRequestNarrative(companyId, sectionType, {
+      ...dataContext,
       branch_id: forkTree?.activeBranchId || null,
     });
   }, [companyId, forkTree?.activeBranchId]);

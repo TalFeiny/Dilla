@@ -341,6 +341,7 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
       narrativeCards={narrativeCards}
       onNarrativeCardsChange={setNarrativeCards}
       aiDataContext={aiContext}
+      showAnalyze={false}
       onDelete={onDelete}
       readOnly={readOnly}
     >

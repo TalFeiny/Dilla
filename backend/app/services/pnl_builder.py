@@ -437,8 +437,9 @@ class PnlBuilder:
         from app.services.cash_flow_planning_service import CashFlowPlanningService
         from app.services.company_data_pull import pull_company_data
 
+        cd = self._company_data
         try:
-            cd = self._company_data or pull_company_data(self.company_id)
+            cd = cd or pull_company_data(self.company_id)
             company_data = cd.to_forecast_seed()
         except Exception:
             company_data = {"revenue": 0, "growth_rate": 0.5}

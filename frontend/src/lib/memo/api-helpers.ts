@@ -141,22 +141,25 @@ export async function fetchRollingForecast(
 export async function requestNarrative(
   companyId: string,
   sectionType: string,
-  _dataContext?: Record<string, any>,
+  dataContext?: Record<string, any>,
 ): Promise<string> {
-  // Backend pulls ALL data server-side via pull_company_data + active forecast.
-  // Frontend sends only company_id + section_type. No data assembly, no prompt
-  // building, no hydration. _dataContext kept for signature compat but only
-  // branch_id is forwarded — everything else comes from the backend.
+  // Backend pulls actuals + forecast from Supabase via pull_company_data
+  // and the active branch. We forward the full data context so the AI
+  // has real numbers to work with.
+  const branchId = dataContext?.branch_id || dataContext?.branchId || null;
   try {
     const res = await fetch(
       `/api/agent/unified-brain`,
       json({
-        prompt: `Analyze ${sectionType.replace(/_/g, ' ')} section`,
+        prompt: `Analyze the ${sectionType.replace(/_/g, ' ')} for this company. Use pull_company_data to get actuals from Supabase${branchId ? ` and execute branch ${branchId} for the forecast` : ' and load the active forecast'}. Identify key trends, inflection points, and risks from the real numbers. Be specific — cite actual figures and periods.`,
         output_format: 'analysis',
         context: {
           company_id: companyId,
           section_type: sectionType,
-          branch_id: _dataContext?.branch_id || _dataContext?.branchId || null,
+          branch_id: branchId,
+          include_actuals: true,
+          include_forecast: true,
+          ...(dataContext || {}),
         },
       }),
     );
@@ -657,17 +660,10 @@ export async function executeForecastModel(
   modelId?: string,
   months: number = 24,
 ) {
+  if (!modelId) throw new Error('model_id is required for execution');
   const res = await fetch(
-    `/api/agent/unified-brain`,
-    json({
-      prompt: 'execute_forecast_model',
-      output_format: 'tool_result',
-      context: {
-        company_id: companyId,
-        tool_hint: 'execute_forecast_model',
-        tool_inputs: { company_id: companyId, model_id: modelId, months },
-      },
-    }),
+    `/api/fpa/models/${encodeURIComponent(modelId)}`,
+    json({ company_id: companyId, months }),
   );
   if (!res.ok) throw new Error(`Model execution failed: ${res.status}`);
   return res.json();

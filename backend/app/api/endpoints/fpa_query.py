@@ -85,6 +85,7 @@ class FPAForecastRequest(BaseModel):
     granularity: str = "monthly"  # "monthly" | "quarterly" | "annual"
     growth_rate: Optional[float] = None
     assumptions: Optional[Dict[str, Any]] = None
+    branch_ids: Optional[List[str]] = None  # scenario branch IDs to compare
 
 
 # Services are lazy-loaded via _get_nl_services() — see top of file
@@ -2697,21 +2698,60 @@ async def update_model_assumptions(
 
 
 @router.post("/models/{model_id}/execute")
-async def execute_model(model_id: str):
-    """Re-run a model with current formulas/assumptions"""
+async def execute_model(
+    model_id: str,
+    company_id: Optional[str] = Query(None),
+    months: int = Query(24),
+    start_period: Optional[str] = Query(None),
+):
+    """Execute a saved model via ModelSpecExecutor.
+
+    Loads the ModelSpec from the fpa_models table, pulls company data
+    (if company_id provided), and runs the full curve evaluation →
+    P&L cascade → confidence bands → cascade ripple pipeline.
+    """
+    from app.services.model_spec_schema import ModelSpec
+    from app.services.model_spec_executor import ModelSpecExecutor
+
     try:
         *_, model_editor, _ = _get_nl_services()
         model = await model_editor.get_model(model_id)
         if not model:
             raise HTTPException(status_code=404, detail="Model not found")
-        
-        # Rebuild workflow from model definition
-        # TODO: Implement model re-execution
-        return {"status": "executed", "model_id": model_id}
+
+        model_definition = model.get("model_definition", {})
+        if not model_definition:
+            raise HTTPException(status_code=400, detail="Model has no definition")
+
+        # Parse stored definition into ModelSpec
+        spec = ModelSpec(**model_definition)
+
+        # Build seed data from company actuals + stored assumptions
+        seed_data: Dict[str, Any] = {}
+        cid = company_id or model.get("company_id")
+        if cid:
+            from app.services.company_data_pull import pull_company_data
+            cd = pull_company_data(cid)
+            seed_data = cd.to_forecast_seed()
+
+        stored_assumptions = model.get("assumptions") or {}
+        if stored_assumptions:
+            seed_data.update(stored_assumptions)
+
+        # Execute
+        executor = ModelSpecExecutor()
+        result = executor.execute(
+            spec=spec,
+            company_data=seed_data,
+            months=months,
+            start_period=start_period,
+        )
+
+        return result.model_dump()
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error executing model: {e}")
+        logger.error(f"Error executing model: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2885,12 +2925,34 @@ async def run_regression(request: FPARegressionRequest):
             # Build all chart shapes so frontend can toggle without re-fetching
             confidence_intervals = result.get("forecast_confidence_intervals")
             model_meta = result.get("best_model") or result
+
+            # Aggregate to requested granularity (always project monthly, aggregate for display)
+            from app.services.forecast_chart_transforms import aggregate_series_data, aggregate_forecast as agg_fc
+            req_gran = options.get("granularity", "monthly")
+
+            chart_period_labels = period_labels or [f"t{i}" for i in range(len(y))]
+            chart_actuals = [float(v) for v in y]
+            chart_predictions = [float(v) for v in predictions]
+            chart_forecast_labels = forecast_labels
+            chart_forecast_vals = [float(v) for v in forecast_vals]
+
+            if req_gran != "monthly":
+                chart_period_labels, chart_actuals = aggregate_series_data(chart_period_labels, chart_actuals, req_gran)
+                _, chart_predictions = aggregate_series_data(period_labels or [], [float(v) for v in predictions], req_gran)
+                chart_forecast_labels, chart_forecast_vals = aggregate_series_data(forecast_labels, [float(v) for v in forecast_vals], req_gran)
+                # Aggregate subcategories too
+                if subcategories:
+                    all_src_periods = (period_labels or []) + forecast_labels
+                    for cat_key in list(subcategories.keys()):
+                        _, agg_vals = aggregate_series_data(all_src_periods, subcategories[cat_key], req_gran)
+                        subcategories[cat_key] = agg_vals
+
             charts = build_all_chart_shapes(
-                periods=period_labels or [f"t{i}" for i in range(len(y))],
-                actuals=[float(v) for v in y],
-                predictions=[float(v) for v in predictions],
-                forecast_periods=forecast_labels,
-                forecast_vals=[float(v) for v in forecast_vals],
+                periods=chart_period_labels,
+                actuals=chart_actuals,
+                predictions=chart_predictions,
+                forecast_periods=chart_forecast_labels,
+                forecast_vals=chart_forecast_vals,
                 category=category,
                 model_meta=model_meta,
                 confidence_intervals=confidence_intervals,
@@ -3230,6 +3292,7 @@ async def generate_forecast(request: FPAForecastRequest):
         # Uses real actuals from CompanyData so branched_line gets a proper
         # fork point where actuals end and forecast begins.
         fit_data = None
+        scenario_charts = None
         if cd_obj and forecast:
             from app.services.forecast_chart_transforms import build_all_chart_shapes
 
@@ -3248,21 +3311,70 @@ async def generate_forecast(request: FPAForecastRequest):
             # (no regression fit line — the model is driver-based, not curve-fit)
             predictions = list(actual_values)
 
-            # Build multi-series branches for the connected P&L metrics
-            # so branched_line shows revenue, EBITDA, cash diverging from fork
+            # ── Real scenario branches ──────────────────────────────
+            # If the company has scenario branches, use ScenarioBranchService
+            # to build real multi-branch charts with fork points.
+            # Falls back to metric-as-series view when no branches exist.
+            scenario_charts = None
             branches = []
-            for metric, label, color in [
-                ("gross_profit", "Gross Profit", "#59a14f"),
-                ("ebitda", "EBITDA", "#f28e2c"),
-                ("cash_balance", "Cash Balance", "#e15759"),
-            ]:
-                branch_vals = [r.get(metric, 0) for r in forecast if isinstance(r, dict)]
-                if any(v for v in branch_vals):
-                    branches.append({
-                        "name": label,
-                        "data": [round(v, 2) for v in branch_vals],
-                        "color": color,
-                    })
+            try:
+                from app.services.scenario_branch_service import ScenarioBranchService
+                sbs = ScenarioBranchService()
+
+                # Use explicit branch_ids, or auto-discover all for this company
+                branch_ids_to_use = request.branch_ids
+                if not branch_ids_to_use and request.company_id:
+                    from app.core.supabase_client import get_supabase_client
+                    sb = get_supabase_client()
+                    if sb:
+                        rows = (
+                            sb.table("scenario_branches")
+                            .select("id")
+                            .eq("company_id", request.company_id)
+                            .execute()
+                        )
+                        branch_ids_to_use = [r["id"] for r in (rows.data or [])]
+
+                if branch_ids_to_use:
+                    comparison = sbs.execute_comparison(
+                        company_id=request.company_id,
+                        branch_ids=branch_ids_to_use,
+                        forecast_months=request.forecast_periods,
+                    )
+                    if "error" not in comparison:
+                        scenario_charts = comparison.get("charts", [])
+                        # Extract revenue branches for the main branched_line shape
+                        for comp in comparison.get("comparisons", [])[1:]:
+                            rev_vals = [
+                                r.get("revenue", 0)
+                                for r in comp.get("forecast", [])
+                                if isinstance(r, dict)
+                            ]
+                            if rev_vals:
+                                branches.append({
+                                    "name": comp.get("name", "Scenario"),
+                                    "data": [round(v, 2) for v in rev_vals],
+                                    "color": comp.get("color"),
+                                    "branch_id": comp.get("branch_id"),
+                                    "fork_month_index": comp.get("fork_month_index", 0),
+                                })
+            except Exception as branch_err:
+                logger.warning("Scenario branch integration failed: %s", branch_err)
+
+            # Fallback: if no real branches, show key P&L metrics as series
+            if not branches:
+                for metric, label, color in [
+                    ("gross_profit", "Gross Profit", "#59a14f"),
+                    ("ebitda", "EBITDA", "#f28e2c"),
+                    ("cash_balance", "Cash Balance", "#e15759"),
+                ]:
+                    branch_vals = [r.get(metric, 0) for r in forecast if isinstance(r, dict)]
+                    if any(v for v in branch_vals):
+                        branches.append({
+                            "name": label,
+                            "data": [round(v, 2) for v in branch_vals],
+                            "color": color,
+                        })
 
             # Build subcategories dynamically from all actuals categories
             from app.services.forecast_persistence_service import FORECAST_KEY_TO_CATEGORY
@@ -3315,6 +3427,7 @@ async def generate_forecast(request: FPAForecastRequest):
             },
             "charts": _build_forecast_charts(forecast, boundary_index=0),
             "fit_data": fit_data,
+            "scenario_charts": scenario_charts,  # real multi-branch charts (per metric) when branches exist
             "model_name": "Connected P&L",
             "method": "driver-based",
             "confidence": "high",

@@ -7,6 +7,10 @@ import { Badge } from '@/components/ui/badge';
 // import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Textarea } from '@/components/ui/textarea';
 import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/hover-card';
+import { ChipTray } from '@/components/chips/ChipTray';
+import { ChipInput, type ChipInputRef } from '@/components/chips/ChipInput';
+import type { ChipDef, InputSegment } from '@/lib/chips/types';
+import { compose, buildPrompt } from '@/lib/chips/compose';
 import {
   ArrowUp,
   ArrowRight,
@@ -421,8 +425,10 @@ export default function AgentChat({
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const chipInputRef = useRef<ChipInputRef>(null);
   const uploadFileInputRef = useRef<HTMLInputElement>(null);
   const [dragOverInput, setDragOverInput] = useState(false);
+  const [chipTrayOpen, setChipTrayOpen] = useState(true);
   const [planModeOn, setPlanModeOn] = useState(false);
   const [memoContextOn, setMemoContextOn] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -569,9 +575,25 @@ export default function AgentChat({
   };
 
   const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+    // Support both chip input (contentEditable) and plain textarea
+    const chipSegments = chipInputRef.current?.getSegments() ?? [];
+    const hasChips = chipSegments.some(s => s.type === 'chip');
+    const hasChipContent = chipInputRef.current?.hasContent() ?? false;
+    const hasPlainContent = input.trim().length > 0;
 
-    const fullContent = input;
+    if (!(hasChipContent || hasPlainContent) || isLoading) return;
+
+    // Build the prompt: if chips are present, compose a workflow prompt
+    let fullContent: string;
+    let chipWorkflow: ReturnType<typeof compose> | undefined;
+
+    if (hasChips) {
+      chipWorkflow = compose(chipSegments);
+      fullContent = buildPrompt(chipWorkflow);
+      chipInputRef.current?.clear();
+    } else {
+      fullContent = input;
+    }
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -582,6 +604,7 @@ export default function AgentChat({
 
     setMessages(prev => [...prev, userMessage]);
     setInput('');
+    if (hasChips) chipInputRef.current?.clear();
     setIsLoading(true);
     onMessageSent?.(fullContent);
 
@@ -704,6 +727,26 @@ export default function AgentChat({
         },
         approved_plan: isApprovedPlan || undefined,
         stream: true,
+        // Chip workflow: structured tool hints from inline chips
+        ...(chipWorkflow && chipWorkflow.steps.length > 0 ? {
+          chip_workflow: {
+            steps: chipWorkflow.steps.map(s => ({
+              tool: s.chip.def.tool,
+              params: s.inputs,
+              chip_id: s.chip.def.id,
+              depends_on: s.dependsOn,
+              kind: s.chip.def.kind ?? 'tool',
+              loop_over: s.chip.def.loopOver,
+              condition_metric: s.chip.def.conditionMetric,
+              condition_op: s.chip.def.conditionOp,
+              assumption_keys: s.chip.def.assumptionKeys,
+              bridge_tools: s.chip.def.bridgeTools,
+              event_category: s.chip.def.eventCategory,
+              prior_keys: s.chip.def.priorKeys,
+            })),
+            nl_context: chipWorkflow.nlContext,
+          },
+        } : {}),
       };
 
       // Abort any in-flight request before starting a new one
@@ -2333,6 +2376,14 @@ export default function AgentChat({
               )}
             </div>
           )}
+          {/* Chip Tray — capability surface above input */}
+          <ChipTray
+            companyId={mode === 'pnl' ? matrixData?.rows?.find((r: any) => r.companyId)?.companyId : undefined}
+            onSelectChip={(def: ChipDef) => chipInputRef.current?.insertChip(def)}
+            collapsed={!chipTrayOpen}
+            onToggleCollapse={() => setChipTrayOpen(prev => !prev)}
+            className="mx-0.5 mb-1 rounded-lg"
+          />
           {/* Toolbar — toggles above input */}
           <div className="flex items-center gap-1 mb-1 mx-0.5">
             <Button
@@ -2362,19 +2413,22 @@ export default function AgentChat({
               <span className="text-[9px] text-indigo-500 dark:text-indigo-400">{memoArtifacts.length} context item{memoArtifacts.length !== 1 ? 's' : ''}</span>
             )}
           </div>
-          {/* Input box — clean, full width */}
+          {/* Input box — clean, full width. Supports inline chips + NL text. */}
           <div className="flex items-end gap-1.5 rounded-xl border border-input bg-muted/30 dark:bg-muted/20 px-2 py-1.5 focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background">
-            <div className="flex-1 relative min-w-0">
-              <Textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyPress}
-                placeholder={planModeOn ? 'Describe what to plan... (Enter to send)' : mode === 'pnl' ? 'Adjust forecast, ask about P&L... (Enter to send)' : mode === 'legal' ? 'Ask about a clause, upload a contract... (Enter to send)' : 'Message... (Enter to send)'}
-                className="min-h-[36px] max-h-[120px] resize-none text-sm border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground"
-                disabled={isLoading}
-              />
-            </div>
+            <ChipInput
+              ref={chipInputRef}
+              onSubmit={(segments) => handleSend()}
+              onChange={() => {
+                // Keep the plain text state in sync (for send button disabled check)
+                const segs = chipInputRef.current?.getSegments() ?? [];
+                const text = segs.filter(s => s.type === 'text').map(s => (s as any).text).join('');
+                setInput(text || (segs.some(s => s.type === 'chip') ? ' ' : ''));
+              }}
+              placeholder={planModeOn ? 'Describe what to plan... (Enter to send)' : mode === 'pnl' ? 'Adjust forecast, ask about P&L... (Enter to send)' : mode === 'legal' ? 'Ask about a clause, upload a contract... (Enter to send)' : 'Type or drag tools here... (Enter to send)'}
+              disabled={isLoading}
+              minHeight={36}
+              maxHeight={120}
+            />
             {onUploadDocument ? (
               <Button
                 variant="ghost"
@@ -2392,7 +2446,7 @@ export default function AgentChat({
               size="icon"
               className="h-8 w-8 shrink-0 rounded-lg"
               onClick={handleSend}
-              disabled={!input.trim() || isLoading}
+              disabled={(!input.trim() && !chipInputRef.current?.hasContent()) || isLoading}
               title="Send (Enter)"
             >
               {isLoading ? (
