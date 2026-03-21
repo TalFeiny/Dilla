@@ -129,7 +129,9 @@ export async function POST(request: NextRequest) {
             quarter: `Q${Math.ceil((new Date().getMonth() + 1) / 3)} ${new Date().getFullYear()}`,
           },
           // Chip workflow: structured multi-step tool execution from inline chips
-          chip_workflow: body.chip_workflow || undefined,
+          // Check top-level body.chip_workflow first (from workflow builder),
+          // then fall back to context-embedded variants
+          chip_workflow: body.chip_workflow || body.context?.chip_workflow || body.context?.workflow || undefined,
         },
         // Agent context for conversation continuity (recent analyses, active company, summary, memo)
         agent_context: {

@@ -64,6 +64,7 @@ import {
   Zap,
   MoreHorizontal,
   Scale,
+  Workflow,
 } from 'lucide-react';
 import { getSupabaseBrowser } from '@/lib/supabase/browser';
 import { cn } from '@/lib/utils';
@@ -78,6 +79,12 @@ import { ScenarioInput } from '@/components/matrix/ScenarioInput';
 import type { ToolCallEntry } from '@/components/matrix/AgentPanel';
 import { type PnlView, type Granularity, PNL_VIEW_CONFIGS, fetchPnlView } from '@/lib/matrix/pnl-views';
 import { buildPnlColumns, buildPnlSkeletonRows, buildBalanceSheetSkeletonRows, buildCashFlowSkeletonRows } from '@/lib/matrix/pnl-columns';
+import dynamic from 'next/dynamic';
+
+const WorkflowCanvas = dynamic(
+  () => import('@/components/workflow/WorkflowCanvas').then((m) => m.WorkflowCanvas),
+  { ssr: false }
+);
 
 const MAX_TOOL_CALL_ENTRIES = 100;
 
@@ -794,6 +801,7 @@ export default function MatrixControlPanel() {
     lp: Users,
     pnl: BarChart3,
     legal: Scale,
+    workflow: Workflow,
   };
 
   const currentModeConfig = getModeConfig(mode);
@@ -1237,7 +1245,11 @@ export default function MatrixControlPanel() {
       {/* Matrix Canvas: out-of-grid wrapper, flex-1 so grid + agent panel fill viewport */}
       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4 flex-1 min-h-0 flex flex-col">
-        {(mode === 'portfolio' || mode === 'lp' || mode === 'pnl') && !fundId ? (
+        {mode === 'workflow' ? (
+          <div className="flex-1 min-h-[520px]">
+            <WorkflowCanvas />
+          </div>
+        ) : (mode === 'portfolio' || mode === 'lp' || mode === 'pnl') && !fundId ? (
           <Card className="border-2 border-dashed">
             <CardContent className="flex flex-col items-center justify-center py-16 px-6 text-center">
               <FileSpreadsheet className="h-14 w-14 text-muted-foreground mb-4" />

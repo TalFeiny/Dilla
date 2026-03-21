@@ -65,6 +65,17 @@ class Settings(BaseSettings):
     XERO_CLIENT_ID: Optional[str] = Field(None, env="XERO_CLIENT_ID")
     XERO_CLIENT_SECRET: Optional[str] = Field(None, env="XERO_CLIENT_SECRET")
     XERO_REDIRECT_URI: Optional[str] = Field(None, env="XERO_REDIRECT_URI")
+
+    # QuickBooks Online integration (OAuth2)
+    QBO_CLIENT_ID: Optional[str] = Field(None, env="QBO_CLIENT_ID")
+    QBO_CLIENT_SECRET: Optional[str] = Field(None, env="QBO_CLIENT_SECRET")
+    QBO_REDIRECT_URI: Optional[str] = Field(None, env="QBO_REDIRECT_URI")
+    QBO_ENVIRONMENT: str = Field("production", env="QBO_ENVIRONMENT")  # "sandbox" or "production"
+
+    # NetSuite integration (OAuth2 + TBA)
+    NETSUITE_CLIENT_ID: Optional[str] = Field(None, env="NETSUITE_CLIENT_ID")
+    NETSUITE_CLIENT_SECRET: Optional[str] = Field(None, env="NETSUITE_CLIENT_SECRET")
+    NETSUITE_REDIRECT_URI: Optional[str] = Field(None, env="NETSUITE_REDIRECT_URI")
     
     # Model configuration for extraction with fallbacks
     PRIMARY_EXTRACTION_MODEL: str = Field("claude-sonnet-4-5", env="PRIMARY_EXTRACTION_MODEL")

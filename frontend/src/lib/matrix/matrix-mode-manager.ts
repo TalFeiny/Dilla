@@ -15,7 +15,7 @@ export interface ModeConfig {
   availableFields: string[];
   showQueryBar: boolean;
   showInsights: boolean;
-  primaryDataSource: 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal';
+  primaryDataSource: 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal' | 'workflow';
 }
 
 export const MODE_CONFIGS: Record<MatrixMode, ModeConfig> = {
@@ -93,6 +93,16 @@ export const MODE_CONFIGS: Record<MatrixMode, ModeConfig> = {
     showQueryBar: false,
     showInsights: true,
     primaryDataSource: 'legal',
+  },
+  workflow: {
+    mode: 'workflow',
+    label: 'Workflow',
+    description: 'Visual workflow builder: chain tools, drivers, and formulas',
+    defaultColumns: [],
+    availableFields: [],
+    showQueryBar: false,
+    showInsights: false,
+    primaryDataSource: 'workflow',
   },
 };
 

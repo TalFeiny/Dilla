@@ -94,6 +94,8 @@ OPTIONAL_ROUTERS = {
     "app.api.endpoints.portfolio_analysis": {"prefix": "/portfolio", "tags": ["portfolio-analysis"], "key": "portfolio_analysis"},
     "app.api.endpoints.compliance": {"prefix": "/compliance", "tags": ["compliance"], "key": "compliance"},
     "app.api.endpoints.xero_integration": {"tags": ["xero"], "key": "xero_integration"},
+    "app.api.endpoints.quickbooks_integration": {"tags": ["quickbooks"], "key": "quickbooks_integration"},
+    "app.api.endpoints.netsuite_integration": {"tags": ["netsuite"], "key": "netsuite_integration"},
 }
 
 for module_path, kwargs in OPTIONAL_ROUTERS.items():

@@ -460,7 +460,7 @@ const capitalChips: ChipDef[] = [
     domain: 'capital',
     icon: 'CircleDollarSign',
     description: 'Model a funding round',
-    tool: 'funding_round_model',
+    tool: 'cap_table_evolution',
     kind: 'tool',
     params: [],
     outputRenderer: 'table',
@@ -473,9 +473,11 @@ const capitalChips: ChipDef[] = [
     domain: 'capital',
     icon: 'LogOut',
     description: 'Model exit scenarios',
-    tool: 'exit_model',
+    tool: 'run_scenario',
     kind: 'tool',
-    params: [],
+    params: [
+      { key: 'scenario_type', label: 'Type', type: 'text', default: 'exit' },
+    ],
     outputRenderer: 'table',
     costTier: 'expensive',
     timeoutMs: 30000,
@@ -486,7 +488,7 @@ const capitalChips: ChipDef[] = [
     domain: 'capital',
     icon: 'Coins',
     description: 'Model round mechanics',
-    tool: 'round_model',
+    tool: 'cap_table_evolution',
     kind: 'tool',
     params: [],
     outputRenderer: 'table',
@@ -551,9 +553,10 @@ const fundingChips: ChipDef[] = [
     domain: 'funding',
     icon: 'Landmark',
     description: 'Model venture debt',
-    tool: 'advanced_debt/venture-debt',
+    tool: 'draft_contract',
     params: [
       { key: 'amount', label: 'Amount', type: 'currency', default: 3000000 },
+      { key: 'type', label: 'Type', type: 'text', default: 'venture_debt' },
     ],
     outputRenderer: 'table',
     costTier: 'cheap',
@@ -565,11 +568,12 @@ const fundingChips: ChipDef[] = [
     domain: 'funding',
     icon: 'Repeat',
     description: 'Model convertible debt',
-    tool: 'advanced_debt/convertible-debt',
+    tool: 'draft_contract',
     params: [
       { key: 'amount', label: 'Amount', type: 'currency', default: 2000000 },
       { key: 'cap', label: 'Cap', type: 'currency', default: 10000000 },
       { key: 'discount', label: 'Discount', type: 'percent', default: 20 },
+      { key: 'type', label: 'Type', type: 'text', default: 'convertible_debt' },
     ],
     outputRenderer: 'table',
     costTier: 'cheap',
@@ -712,8 +716,10 @@ const intelChips: ChipDef[] = [
     domain: 'intel',
     icon: 'Target',
     description: 'Competitive intelligence analysis',
-    tool: 'run_skill:competitive-intelligence',
-    params: [],
+    tool: 'run_skill',
+    params: [
+      { key: 'skill_name', label: 'Skill', type: 'text', default: 'competitive-intelligence' },
+    ],
     outputRenderer: 'narrative',
     costTier: 'expensive',
     timeoutMs: 45000,
@@ -724,7 +730,7 @@ const intelChips: ChipDef[] = [
     domain: 'intel',
     icon: 'BookOpen',
     description: 'Market research and sizing',
-    tool: 'market_research',
+    tool: 'web_search',
     params: [
       { key: 'sector', label: 'Sector', type: 'text', default: '' },
     ],
@@ -744,18 +750,7 @@ const intelChips: ChipDef[] = [
     costTier: 'expensive',
     timeoutMs: 45000,
   },
-  {
-    id: 'team_comparison',
-    label: 'Team Comparison',
-    domain: 'intel',
-    icon: 'UsersRound',
-    description: 'Compare team composition',
-    tool: 'team_comparison',
-    params: [],
-    outputRenderer: 'table',
-    costTier: 'cheap',
-    timeoutMs: 20000,
-  },
+  // team_comparison removed — no backend implementation
   {
     id: 'web_search',
     label: 'Web Search',
@@ -775,7 +770,7 @@ const intelChips: ChipDef[] = [
     domain: 'intel',
     icon: 'Database',
     description: 'Search the database',
-    tool: 'search_database',
+    tool: 'search_companies_db',
     kind: 'tool',
     params: [],
     outputRenderer: 'table',
@@ -873,20 +868,7 @@ const reportChips: ChipDef[] = [
     costTier: 'expensive',
     timeoutMs: 30000,
   },
-  {
-    id: 'lp_report',
-    label: 'LP Report',
-    domain: 'report',
-    icon: 'FileBarChart',
-    description: 'LP query response / reporting',
-    tool: 'lp_query_response',
-    params: [
-      { key: 'query', label: 'Query', type: 'text', default: '' },
-    ],
-    outputRenderer: 'narrative',
-    costTier: 'cheap',
-    timeoutMs: 20000,
-  },
+  // lp_query_response removed — no backend implementation
 ];
 
 // ---------------------------------------------------------------------------
@@ -894,30 +876,7 @@ const reportChips: ChipDef[] = [
 // ---------------------------------------------------------------------------
 
 const complianceChips: ChipDef[] = [
-  {
-    id: 'kyc',
-    label: 'KYC',
-    domain: 'compliance',
-    icon: 'UserCheck',
-    description: 'KYC check',
-    tool: 'kyc/check',
-    params: [],
-    outputRenderer: 'table',
-    costTier: 'expensive',
-    timeoutMs: 30000,
-  },
-  {
-    id: 'aml_screen',
-    label: 'AML Screen',
-    domain: 'compliance',
-    icon: 'ShieldAlert',
-    description: 'AML screening',
-    tool: 'aml/screen',
-    params: [],
-    outputRenderer: 'table',
-    costTier: 'expensive',
-    timeoutMs: 30000,
-  },
+  // kyc/check and aml/screen removed — no backend implementation
   {
     id: 'transfer_pricing',
     label: 'Transfer Pricing',
@@ -966,18 +925,7 @@ const complianceChips: ChipDef[] = [
     costTier: 'cheap',
     timeoutMs: 15000,
   },
-  {
-    id: 'redline_impact',
-    label: 'Redline Impact',
-    domain: 'compliance',
-    icon: 'FileDiff',
-    description: 'Redline contract impact analysis',
-    tool: 'redline/redline-impact',
-    params: [],
-    outputRenderer: 'delta',
-    costTier: 'cheap',
-    timeoutMs: 15000,
-  },
+  // redline/redline-impact removed — no backend implementation
 ];
 
 // ---------------------------------------------------------------------------
@@ -991,8 +939,10 @@ const portfolioChips: ChipDef[] = [
     domain: 'portfolio',
     icon: 'Layers',
     description: 'Valuate entire portfolio',
-    tool: 'bulk_valuation',
-    params: [],
+    tool: 'bulk_operation',
+    params: [
+      { key: 'operation', label: 'Operation', type: 'text', default: 'valuation' },
+    ],
     outputRenderer: 'table',
     costTier: 'expensive',
     timeoutMs: 60000,
@@ -1011,30 +961,7 @@ const portfolioChips: ChipDef[] = [
     costTier: 'expensive',
     timeoutMs: 60000,
   },
-  {
-    id: 'fund_pacing',
-    label: 'Fund Pacing',
-    domain: 'portfolio',
-    icon: 'Timer',
-    description: 'Fund pacing analysis',
-    tool: 'portfolio_pacing',
-    params: [],
-    outputRenderer: 'chart',
-    costTier: 'cheap',
-    timeoutMs: 15000,
-  },
-  {
-    id: 'graduation_rates',
-    label: 'Graduation Rates',
-    domain: 'portfolio',
-    icon: 'GraduationCap',
-    description: 'Portfolio company graduation rates',
-    tool: 'portfolio_graduation',
-    params: [],
-    outputRenderer: 'chart',
-    costTier: 'cheap',
-    timeoutMs: 15000,
-  },
+  // portfolio_pacing and portfolio_graduation removed — no backend implementation
   {
     id: 'fx_impact',
     label: 'FX Impact',
@@ -2145,7 +2072,7 @@ const eventChips: ChipDef[] = [
     domain: 'modeling',
     icon: 'Briefcase',
     description: 'Add a business event to model construction',
-    tool: 'analyse_business_event',
+    tool: 'analyse_macro_event',
     kind: 'event',
     eventCategory: 'business',
     params: [
@@ -2199,7 +2126,7 @@ const eventChips: ChipDef[] = [
     domain: 'modeling',
     icon: 'Settings',
     description: 'Add an operational event to model construction',
-    tool: 'analyse_business_event',
+    tool: 'analyse_macro_event',
     kind: 'event',
     eventCategory: 'operational',
     params: [

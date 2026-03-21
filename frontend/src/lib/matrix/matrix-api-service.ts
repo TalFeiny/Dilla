@@ -15,7 +15,7 @@ import { getSupabaseBrowser } from '@/lib/supabase/browser';
 // so it MUST NOT use the service-role server-only client.
 const supabaseBrowser = getSupabaseBrowser();
 
-export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal';
+export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal' | 'workflow';
 export type DataSource = 'manual' | 'agent' | 'document' | 'api' | 'formula';
 
 // ============================================================================

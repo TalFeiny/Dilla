@@ -6619,6 +6619,17 @@ JUST THE JSON:"""
                     logger.warning(f"[CHIP_WORKFLOW] Synthesis LLM failed: {synth_err}")
                     synthesis = ""
 
+            # ── Output format routing ──────────────────────────────────
+            output_routes = context.get("output_routes", [])
+            formatted_outputs = []
+            if output_routes:
+                try:
+                    formatted_outputs = await self._process_output_routes(
+                        output_routes, step_results, nl_context
+                    )
+                except Exception as or_err:
+                    logger.warning(f"[CHIP_WORKFLOW] Output route processing failed: {or_err}")
+
             all_ok = all(s.get("success") for s in step_results)
             return {
                 "success": all_ok,
@@ -6628,6 +6639,7 @@ JUST THE JSON:"""
                     "step_count": len(step_results),
                     "nl_context": nl_context,
                     "synthesis": synthesis,
+                    "outputs": formatted_outputs,
                 },
             }
         # ── end chip_workflow fast-path ──────────────────────────────
@@ -9498,6 +9510,141 @@ Answer using specific company names and numbers from the portfolio grid above.""
         except Exception as e:
             logger.warning(f"[TOOL] three_scenario_cash_flow failed: {e}")
             return {"error": str(e)}
+
+    # ── Output Format Router ──────────────────────────────────────────────
+    # Universal dispatch: any computation → formatted output for the right UI target.
+
+    async def _route_output(self, fmt: str, data: dict, params: dict, nl_context: str = "") -> dict:
+        """Route data to the correct output format handler."""
+        try:
+            if fmt == "chart":
+                chart_type = params.get("chart_type", "bar")
+                return await self._tool_chart({
+                    "chart_type": chart_type,
+                    "data": data,
+                    **{k: v for k, v in params.items() if k != "chart_type"},
+                })
+            elif fmt == "memo-section":
+                return self._build_memo_sections(data, params)
+            elif fmt == "deck-slide":
+                return self._build_slide(data, params)
+            elif fmt == "grid":
+                return self._build_grid_payload(data, params)
+            elif fmt == "table":
+                return self._build_table(data, params)
+            elif fmt == "narrative":
+                return await self._generate_narrative(data, nl_context, params)
+            elif fmt == "export":
+                return {"export_type": params.get("export_type", "pdf"), "data": data, "ready": True}
+            elif fmt == "scenario-branch":
+                return {"branch_data": data, "format": "scenario-branch"}
+            else:
+                return {"format": fmt, "data": data}
+        except Exception as e:
+            logger.warning(f"[OUTPUT_ROUTER] Format '{fmt}' failed: {e}")
+            return {"format": fmt, "data": data, "error": str(e)}
+
+    async def _process_output_routes(self, output_routes: list, step_results: list, nl_context: str = "") -> list:
+        """Process output routes: match upstream data, format each output node."""
+        result_by_chip = {sr["chip_id"]: sr for sr in step_results if sr.get("chip_id")}
+        formatted = []
+        for route in output_routes:
+            upstream = [
+                result_by_chip[sid]["data"]
+                for sid in route.get("sourceNodeIds", [])
+                if sid in result_by_chip and result_by_chip[sid].get("success")
+            ]
+            if not upstream:
+                formatted.append({
+                    "nodeId": route["nodeId"],
+                    "format": route["format"],
+                    "success": False,
+                    "error": "No upstream data",
+                })
+                continue
+            merged = upstream[0] if len(upstream) == 1 else {"sources": upstream}
+            data = await self._route_output(
+                route["format"], merged, route.get("params", {}), nl_context
+            )
+            formatted.append({
+                "nodeId": route["nodeId"],
+                "format": route["format"],
+                "success": True,
+                "data": data,
+            })
+        return formatted
+
+    def _build_memo_sections(self, data: dict, params: dict) -> dict:
+        """Build MemoEditor sections from data."""
+        title = params.get("title", "Analysis Result")
+        sections = []
+        sections.append({"type": "heading2", "content": title})
+        if isinstance(data, dict):
+            summary = data.get("summary") or data.get("synthesis") or data.get("content", "")
+            if summary:
+                sections.append({"type": "paragraph", "content": str(summary)[:2000]})
+            if data.get("chart_config"):
+                sections.append({"type": "chart", "config": data["chart_config"]})
+            if data.get("table") or data.get("rows"):
+                sections.append({"type": "table", "data": data.get("table") or {"rows": data.get("rows", [])}})
+        else:
+            sections.append({"type": "paragraph", "content": str(data)[:2000]})
+        return {"format": "memo-section", "sections": sections}
+
+    def _build_slide(self, data: dict, params: dict) -> dict:
+        """Build a deck slide dict from data."""
+        title = params.get("title", "Slide")
+        bullets = []
+        if isinstance(data, dict):
+            for key, val in list(data.items())[:8]:
+                if key in ("sources", "chart_config", "raw"):
+                    continue
+                bullets.append(f"{key}: {val}" if not isinstance(val, (dict, list)) else f"{key}: ...")
+        return {"format": "deck-slide", "slides": [{"title": title, "bullets": bullets, "data": data}]}
+
+    def _build_grid_payload(self, data: dict, params: dict) -> dict:
+        """Build grid cell update payload."""
+        if isinstance(data, dict) and "columns_to_create" in data:
+            return {"format": "grid", "columns_to_create": data["columns_to_create"], "values": data.get("values", {})}
+        if isinstance(data, dict) and "value" in data:
+            return {"format": "grid", "value": data["value"]}
+        return {"format": "grid", "data": data}
+
+    def _build_table(self, data: dict, params: dict) -> dict:
+        """Build {columns, rows} table from data."""
+        if isinstance(data, dict) and "columns" in data and "rows" in data:
+            return {"format": "table", "columns": data["columns"], "rows": data["rows"]}
+        if isinstance(data, list):
+            if len(data) > 0 and isinstance(data[0], dict):
+                columns = list(data[0].keys())
+                rows = data
+                return {"format": "table", "columns": columns, "rows": rows}
+        if isinstance(data, dict):
+            columns = list(data.keys())
+            rows = [data]
+            return {"format": "table", "columns": columns, "rows": rows}
+        return {"format": "table", "columns": ["result"], "rows": [{"result": str(data)}]}
+
+    async def _generate_narrative(self, data: dict, nl_context: str, params: dict) -> dict:
+        """LLM-synthesize a narrative from data."""
+        try:
+            data_str = str(data)
+            if len(data_str) > 4000:
+                data_str = data_str[:4000] + "...(truncated)"
+            prompt = (
+                f"Context: {nl_context}\n\n"
+                f"Data:\n{data_str}\n\n"
+                "Write a clear, concise narrative analysis of this data. "
+                "Highlight key insights, trends, and numbers."
+            )
+            resp = await self.model_router.generate(prompt=prompt, max_tokens=1500, temperature=0.3)
+            text = resp.get("text", "") if isinstance(resp, dict) else str(resp)
+            return {"format": "narrative", "text": text}
+        except Exception as e:
+            logger.warning(f"[OUTPUT_ROUTER] Narrative generation failed: {e}")
+            return {"format": "narrative", "text": str(data)[:1000]}
+
+    # ── End Output Format Router ────────────────────────────────────────────
 
     async def _tool_chart(self, inputs: dict) -> dict:
         """Generate chart config via ChartDataService — dispatches to specific generators."""
@@ -18427,6 +18574,17 @@ ABSOLUTE RULES:
                     except Exception as _synth_err:
                         logger.warning(f"[CHIP_WORKFLOW] Synthesis failed: {_synth_err}")
 
+                # ── Output format routing (streaming) ──────────────────
+                _cw_output_routes = context.get("output_routes", [])
+                _cw_formatted_outputs = []
+                if _cw_output_routes:
+                    try:
+                        _cw_formatted_outputs = await self._process_output_routes(
+                            _cw_output_routes, _cw_results, _cw_nl
+                        )
+                    except Exception as _or_err:
+                        logger.warning(f"[CHIP_WORKFLOW] Output route processing failed: {_or_err}")
+
                 _cw_ok = all(s.get("success") for s in _cw_results)
                 yield {
                     "type": "complete",
@@ -18438,6 +18596,7 @@ ABSOLUTE RULES:
                         "steps": _cw_results,
                         "step_count": len(_cw_results),
                         "nl_context": _cw_nl,
+                        "outputs": _cw_formatted_outputs,
                     },
                 }
                 return
