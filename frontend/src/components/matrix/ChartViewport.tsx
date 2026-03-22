@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState, useEffect, useCallback } from 'react';
+import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -13,16 +13,17 @@ import {
   DrawerDescription,
 } from '@/components/ui/drawer';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { BarChart3, Sparkles, FileText, X, Check, AlertCircle, AlertTriangle, Trophy, Lightbulb, Shield, RefreshCw, TrendingUp, RotateCcw, Send } from 'lucide-react';
+import { BarChart3, Sparkles, FileText, GitBranch, X, Check, AlertCircle, AlertTriangle, Trophy, Lightbulb, Shield, RefreshCw, TrendingUp, RotateCcw, Send } from 'lucide-react';
 import { Textarea } from '@/components/ui/textarea';
 import { MatrixData } from './UnifiedMatrix';
 import { MemoEditor, type DocumentSection } from '@/components/memo/MemoEditor';
+import { ScenarioSection } from '@/components/memo/sections/ScenarioSection';
 import { DocumentSuggestion, DocumentInsight, type SuggestionAcceptPayload } from './DocumentSuggestions';
 import { formatCurrency } from '@/lib/matrix/cell-formatters';
 import { cn } from '@/lib/utils';
 
-/** Charts + Insights + Memo; suggestions live in chat (Cursor-style). */
-export type ChartTab = 'charts' | 'insights' | 'memo';
+/** Charts + Insights + Memo + Scenarios; suggestions live in chat (Cursor-style). */
+export type ChartTab = 'charts' | 'scenarios' | 'insights' | 'memo';
 
 /** Chart config from cell metadata or MCP orchestrator */
 export interface ChartConfig {
@@ -77,6 +78,8 @@ interface ChartViewportProps {
   memoContainerRef?: React.RefObject<HTMLDivElement | null>;
   /** Scenario fork tree: branched_line charts from comparison */
   scenarioCharts?: ChartConfig[];
+  /** Number of active scenario branches — drives Scenarios tab badge + auto-switch */
+  scenarioBranchCount?: number;
 }
 
 export function ChartViewport({
@@ -103,6 +106,7 @@ export function ChartViewport({
   memoExportingPdf,
   memoContainerRef,
   scenarioCharts = [],
+  scenarioBranchCount = 0,
 }: ChartViewportProps & { initialTab?: ChartTab }) {
   const safeInitialTab: ChartTab = (initialTab as string) === 'suggestions' || !initialTab ? 'charts' : initialTab;
   const [activeTab, setActiveTab] = useState<ChartTab>(safeInitialTab);
@@ -115,6 +119,15 @@ export function ChartViewport({
       setActiveTab(initialTab);
     }
   }, [initialTab]);
+
+  // Auto-switch to scenarios tab when branches first appear
+  const prevBranchCount = useRef(0);
+  useEffect(() => {
+    if (scenarioBranchCount > 0 && prevBranchCount.current === 0 && activeTab === 'charts') {
+      setActiveTab('scenarios');
+    }
+    prevBranchCount.current = scenarioBranchCount;
+  }, [scenarioBranchCount]); // eslint-disable-line react-hooks/exhaustive-deps
   const [selectedSuggestions, setSelectedSuggestions] = useState<Set<string>>(new Set());
 
   // Portfolio overview charts (live NAV, DPI Sankey) - fetched when fundId + matrixData
@@ -330,6 +343,15 @@ export function ChartViewport({
                 <BarChart3 className="h-4 w-4" />
                 Charts ({charts.length})
               </TabsTrigger>
+              <TabsTrigger value="scenarios" className="gap-2">
+                <GitBranch className="h-4 w-4" />
+                Scenarios
+                {scenarioBranchCount > 0 && (
+                  <Badge variant="secondary" className="ml-1">
+                    {scenarioBranchCount}
+                  </Badge>
+                )}
+              </TabsTrigger>
               <TabsTrigger value="insights" className="gap-2">
                 <Sparkles className="h-4 w-4" />
                 Insights
@@ -398,6 +420,10 @@ export function ChartViewport({
                   ))}
                 </div>
               )}
+            </TabsContent>
+
+            <TabsContent value="scenarios" className="mt-0">
+              <ScenarioSection readOnly={false} />
             </TabsContent>
 
             <TabsContent value="insights" className="mt-0">

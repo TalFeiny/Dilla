@@ -545,6 +545,18 @@ export default function MatrixControlPanel() {
     setCompanySearchResults([]);
     setSearchQuery('');
     setAvailableCompanies([]);
+
+    // Sync company context into workflow store when entering workflow mode
+    if (newMode === 'workflow') {
+      const { useWorkflowStore } = require('@/lib/workflow/store');
+      const companyId = pnlCompanyId || undefined;
+      const companyName = pnlCompanies.find(c => c.id === companyId)?.name || null;
+      useWorkflowStore.getState().setCompanyContext(
+        companyId || null,
+        fundId || null,
+        companyName,
+      );
+    }
   };
 
   const handleQuery = async (queryText: string): Promise<MatrixData> => {

@@ -19,6 +19,7 @@ import {
   Network,
   CheckCircle2,
   Shield,
+  Upload,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -89,6 +90,17 @@ const segments = [
     title: 'PE Roll-Ups',
     description: 'Consolidate multiple entities, harmonise reporting, and model the group structure with full intercompany visibility.',
   },
+];
+
+const integrations = [
+  { name: 'QuickBooks', slug: 'quickbooks' },
+  { name: 'Xero', slug: 'xero' },
+  { name: 'NetSuite', slug: 'oracle' },
+  { name: 'SAP', slug: 'sap' },
+  { name: 'Salesforce', slug: 'salesforce' },
+  { name: 'Attio', slug: 'attio' },
+  { name: 'Workday', slug: 'workday' },
+  { name: 'BambooHR', slug: 'bamboohr' },
 ];
 
 const packages = [
@@ -175,6 +187,7 @@ export default function LandingPage() {
         <Hero />
         <ProductDemo />
         <Features />
+        <Integrations />
         <Segments />
         <Pricing />
         <CTA />
@@ -439,6 +452,60 @@ function Features() {
               <p className="text-sm text-muted-foreground leading-relaxed">{f.description}</p>
             </motion.div>
           ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Integrations
+// ---------------------------------------------------------------------------
+
+function Integrations() {
+  const ref = useRef(null);
+  const isInView = useInView(ref, { once: true, margin: '-80px' });
+
+  return (
+    <section ref={ref} className="marketing-section">
+      <div className="marketing-container space-y-10">
+        <div className="max-w-2xl">
+          <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Integrations</p>
+          <h2 className="mt-3 text-3xl font-semibold text-foreground sm:text-4xl">
+            Connect your stack. Or just upload a CSV.
+          </h2>
+          <p className="mt-3 text-base text-muted-foreground">
+            Pull actuals directly from your ERP, CRM, or HRIS. No connector? Drop a CSV and Dilla maps it automatically.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {integrations.map(({ name, slug }, i) => (
+            <motion.span
+              key={name}
+              initial={{ opacity: 0, y: 12 }}
+              animate={isInView ? { opacity: 1, y: 0 } : {}}
+              transition={{ duration: 0.3, delay: i * 0.04 }}
+              className="inline-flex items-center gap-2.5 rounded-full border border-border/60 bg-white px-5 py-2.5 text-sm font-medium text-foreground shadow-sm"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={`https://cdn.simpleicons.org/${slug}/1f2937`}
+                alt=""
+                className="h-4 w-4"
+                loading="lazy"
+              />
+              {name}
+            </motion.span>
+          ))}
+          <motion.span
+            initial={{ opacity: 0, y: 12 }}
+            animate={isInView ? { opacity: 1, y: 0 } : {}}
+            transition={{ duration: 0.3, delay: integrations.length * 0.04 }}
+            className="inline-flex items-center gap-2 rounded-full border border-dashed border-border bg-secondary/50 px-5 py-2.5 text-sm font-medium text-muted-foreground"
+          >
+            <Upload className="h-4 w-4" />
+            Upload CSV
+          </motion.span>
         </div>
       </div>
     </section>

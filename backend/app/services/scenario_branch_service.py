@@ -46,6 +46,10 @@ BRANCH_COLORS = [
     "#06b6d4",  # cyan
     "#f97316",  # orange
     "#ec4899",  # pink
+    "#14b8a6",  # teal
+    "#a855f7",  # purple
+    "#84cc16",  # lime
+    "#0ea5e9",  # sky
 ]
 
 

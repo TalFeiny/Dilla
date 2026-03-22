@@ -482,6 +482,16 @@ export function UnifiedMatrix({
   /** Scenario fork tree — active when mode === 'pnl' */
   const forkTree = useScenarioForkTree(mode === 'pnl' ? companyId : undefined);
 
+  // Listen for canvas workflow scenario-branch events → persist to forkTree
+  React.useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail) forkTree.addBranchFromAgentResponse(detail);
+    };
+    window.addEventListener('workflow:scenario-branch', handler);
+    return () => window.removeEventListener('workflow:scenario-branch', handler);
+  }, [forkTree.addBranchFromAgentResponse]);
+
   const handleAnalysisReady = useCallback((analysis: {
     sections: Array<{ title?: string; content?: string; level?: number }>;
     charts: Array<{ type: string; title?: string; data: any }>;
@@ -5684,6 +5694,7 @@ export function UnifiedMatrix({
                 }}
                 memoContainerRef={memoContainerRef}
                 scenarioCharts={forkTree.charts}
+                scenarioBranchCount={forkTree.branches.length}
               />
           </div>
         )}

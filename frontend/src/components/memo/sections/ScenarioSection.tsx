@@ -76,7 +76,10 @@ export function ScenarioSection({ onDelete, readOnly = false }: ScenarioSectionP
       }
     }
 
-    const COLORS = ['#4e79a7', '#e15759', '#59a14f', '#f28e2b', '#76b7b2', '#edc948'];
+    const COLORS = [
+      '#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4',
+      '#f97316', '#ec4899', '#14b8a6', '#a855f7', '#84cc16', '#0ea5e9',
+    ];
     const series = Object.entries(seriesMap).map(([name, data], idx) => ({
       name,
       data,
@@ -189,12 +192,20 @@ export function ScenarioSection({ onDelete, readOnly = false }: ScenarioSectionP
       <div className="flex items-center gap-1.5">
         <span className="text-muted-foreground">Metric:</span>
         <Select value={comparisonMetric} onValueChange={setComparisonMetric}>
-          <SelectTrigger className="h-6 w-[100px] text-[11px]"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="h-6 w-[120px] text-[11px]"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="revenue">Revenue</SelectItem>
+            <SelectItem value="gross_profit">Gross Profit</SelectItem>
+            <SelectItem value="cogs">COGS</SelectItem>
             <SelectItem value="ebitda">EBITDA</SelectItem>
+            <SelectItem value="total_opex">Total Opex</SelectItem>
+            <SelectItem value="rd_spend">R&D</SelectItem>
+            <SelectItem value="sm_spend">S&M</SelectItem>
+            <SelectItem value="ga_spend">G&A</SelectItem>
             <SelectItem value="net_income">Net Income</SelectItem>
+            <SelectItem value="free_cash_flow">Free Cash Flow</SelectItem>
             <SelectItem value="cash_balance">Cash</SelectItem>
+            <SelectItem value="capex">CapEx</SelectItem>
             <SelectItem value="runway_months">Runway</SelectItem>
           </SelectContent>
         </Select>

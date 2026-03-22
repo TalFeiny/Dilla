@@ -15,6 +15,8 @@ export function WorkflowToolbar({ onRun, onSave }: WorkflowToolbarProps) {
   const resetExecution = useWorkflowStore((s) => s.resetExecution);
   const clearCanvas = useWorkflowStore((s) => s.clearCanvas);
   const nodes = useWorkflowStore((s) => s.nodes);
+  const companyName = useWorkflowStore((s) => s.companyName);
+  const companyId = useWorkflowStore((s) => s.companyId);
 
   return (
     <div className="h-12 bg-gray-950 border-b border-gray-800 flex items-center justify-between px-4">
@@ -30,6 +32,13 @@ export function WorkflowToolbar({ onRun, onSave }: WorkflowToolbarProps) {
           </button>
         )}
         <span className="text-sm font-semibold text-gray-200">Workflow Builder</span>
+        {companyName ? (
+          <span className="ml-2 px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-[10px] font-medium border border-emerald-500/20">
+            {companyName}
+          </span>
+        ) : (
+          <span className="ml-2 text-[10px] text-amber-500">No company selected</span>
+        )}
         <span className="text-[10px] text-gray-600 ml-1">{nodes.length} nodes</span>
       </div>
 
@@ -37,7 +46,7 @@ export function WorkflowToolbar({ onRun, onSave }: WorkflowToolbarProps) {
       <div className="flex items-center gap-1.5">
         <button
           onClick={onRun}
-          disabled={isExecuting || nodes.length === 0}
+          disabled={isExecuting || nodes.length === 0 || !companyId}
           className={`
             flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors
             ${isExecuting

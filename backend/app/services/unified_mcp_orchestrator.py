@@ -4859,7 +4859,9 @@ class UnifiedMCPOrchestrator:
 
         # ── Accumulate structured data from tool outputs (mirrors _run_agent_loop) ──
         _grid_commands: List[Dict[str, Any]] = []
+        _grid_suggestions: List[Dict[str, Any]] = []
         _memo_sections: List[Dict[str, Any]] = []
+        _memo_updates: Optional[Dict[str, Any]] = None
         _charts: List[Dict[str, Any]] = []
         _suggestions: List[Dict[str, Any]] = []
         _todo_items: List[Dict[str, Any]] = []
@@ -5045,6 +5047,10 @@ class UnifiedMCPOrchestrator:
                         _grid_commands.append(tool_output["grid_command"])
                     if "grid_commands" in tool_output and isinstance(tool_output["grid_commands"], list):
                         _grid_commands.extend(tool_output["grid_commands"])
+                    if "grid_suggestions" in tool_output and isinstance(tool_output["grid_suggestions"], list):
+                        _grid_suggestions.extend(tool_output["grid_suggestions"])
+                    if "memo_updates" in tool_output and isinstance(tool_output["memo_updates"], dict):
+                        _memo_updates = tool_output["memo_updates"]
                     if "chart_config" in tool_output:
                         cc = tool_output["chart_config"]
                         cid = self.chart_registry.record_chart(
@@ -5070,8 +5076,12 @@ class UnifiedMCPOrchestrator:
         extra: Dict[str, Any] = {}
         if _grid_commands:
             extra["grid_commands"] = _grid_commands
+        if _grid_suggestions:
+            extra["grid_suggestions"] = _grid_suggestions
         if _memo_sections:
             extra["memo_sections"] = _memo_sections
+        if _memo_updates:
+            extra["memo_updates"] = _memo_updates
         if _charts:
             extra["charts"] = _charts
         if _suggestions:
@@ -5905,6 +5915,23 @@ class UnifiedMCPOrchestrator:
                 "category": SkillCategory.DATA_GATHERING,
                 "handler": self._execute_sparse_grid_enrich,
                 "description": "Auto-detect and fill sparse grid data via web search + benchmarks"
+            },
+
+            # Integration Analysis Skills (SAP, Salesforce, Workday, BambooHR)
+            "salesforce-pipeline-analysis": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_pipeline_analysis,
+                "description": "Analyze CRM pipeline: weighted forecast, win rates, coverage ratios"
+            },
+            "headcount-analysis": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_headcount_analysis,
+                "description": "Analyze headcount trends, comp costs, hiring velocity by department"
+            },
+            "revenue-reconciliation": {
+                "category": SkillCategory.ANALYSIS,
+                "handler": self._execute_revenue_reconciliation,
+                "description": "Compare Salesforce bookings vs accounting actuals for revenue rec"
             },
 
             # Phase 6: Grid skills - emit grid_commands for frontend to run via onRunService
@@ -12165,6 +12192,8 @@ Return JSON with ONLY these fields (use null if unknown):
             # Charts: revenue, EBITDA, cash, runway, OpEx stacked bar
             from app.services.scenario_branch_service import build_forecast_charts
             result["chart_data"] = build_forecast_charts(forecast)
+            result["charts"] = result["chart_data"]  # normalizeResponse looks for 'charts'
+            result["pnl_refresh"] = True  # signal PnL grid to refresh after forecast
 
             # Memo: forecast summary
             seeded = result.get("seeded_from", {})
@@ -35272,6 +35301,158 @@ Return a JSON with this structure:
     async def _execute_ma_modeling(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """M&A deal modeling with synergies and integration risk."""
         return await self._tool_ma_workflow(inputs)
+
+    async def _execute_pipeline_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze CRM pipeline from Salesforce data in fpa_actuals."""
+        company_id = inputs.get("company_id") or self.shared_data.get("company_id")
+        if not company_id:
+            return {"error": "company_id required"}
+
+        from app.core.supabase_client import get_supabase_client
+        sb = get_supabase_client()
+        if not sb:
+            return {"error": "Database unavailable"}
+
+        # Fetch pipeline and bookings data from fpa_actuals
+        result = sb.table("fpa_actuals").select("*").eq("company_id", company_id).in_(
+            "source", ["salesforce", "salesforce_pipeline"]
+        ).order("period", desc=True).execute()
+
+        rows = result.data or []
+        if not rows:
+            return {"result": "No Salesforce data found. Connect Salesforce first via /integrations/salesforce/connect."}
+
+        pipeline = [r for r in rows if r.get("source") == "salesforce_pipeline"]
+        bookings = [r for r in rows if r.get("source") == "salesforce"]
+
+        # Pipeline summary
+        pipeline_total = sum(float(r.get("amount", 0)) for r in pipeline)
+        commit = sum(float(r.get("amount", 0)) for r in pipeline if "commit" in (r.get("subcategory") or ""))
+        best_case = sum(float(r.get("amount", 0)) for r in pipeline if "best_case" in (r.get("subcategory") or ""))
+
+        # Bookings summary
+        bookings_total = sum(float(r.get("amount", 0)) for r in bookings)
+        new_biz = sum(float(r.get("amount", 0)) for r in bookings if "new_business" in (r.get("subcategory") or ""))
+        renewals = sum(float(r.get("amount", 0)) for r in bookings if "renewal" in (r.get("subcategory") or ""))
+        expansion = sum(float(r.get("amount", 0)) for r in bookings if "expansion" in (r.get("subcategory") or ""))
+
+        return {
+            "pipeline": {
+                "weighted_total": pipeline_total,
+                "commit": commit,
+                "best_case": best_case,
+                "upside": pipeline_total - commit,
+            },
+            "bookings": {
+                "total": bookings_total,
+                "new_business": new_biz,
+                "renewals": renewals,
+                "expansion": expansion,
+                "mix": {
+                    "new_pct": (new_biz / bookings_total * 100) if bookings_total else 0,
+                    "renewal_pct": (renewals / bookings_total * 100) if bookings_total else 0,
+                    "expansion_pct": (expansion / bookings_total * 100) if bookings_total else 0,
+                },
+            },
+            "coverage_ratio": (pipeline_total / bookings_total) if bookings_total else None,
+        }
+
+    async def _execute_headcount_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze headcount costs from HR data in fpa_actuals."""
+        company_id = inputs.get("company_id") or self.shared_data.get("company_id")
+        if not company_id:
+            return {"error": "company_id required"}
+
+        from app.core.supabase_client import get_supabase_client
+        sb = get_supabase_client()
+        if not sb:
+            return {"error": "Database unavailable"}
+
+        result = sb.table("fpa_actuals").select("*").eq("company_id", company_id).in_(
+            "source", ["workday", "bamboohr"]
+        ).order("period", desc=True).execute()
+
+        rows = result.data or []
+        if not rows:
+            return {"result": "No HR data found. Connect Workday or BambooHR first."}
+
+        # Group by category
+        by_category = {}
+        for r in rows:
+            cat = r.get("category", "")
+            subcat = r.get("subcategory", "")
+            amount = float(r.get("amount", 0))
+            key = f"{cat}/{subcat}"
+            by_category[key] = by_category.get(key, 0) + amount
+
+        total_comp = sum(float(r.get("amount", 0)) for r in rows)
+        rd_comp = sum(float(r.get("amount", 0)) for r in rows if r.get("category") == "opex_rd")
+        sm_comp = sum(float(r.get("amount", 0)) for r in rows if r.get("category") == "opex_sm")
+        ga_comp = sum(float(r.get("amount", 0)) for r in rows if r.get("category") == "opex_ga")
+
+        return {
+            "total_monthly_compensation": total_comp,
+            "by_function": {
+                "rd": rd_comp,
+                "sales_marketing": sm_comp,
+                "general_admin": ga_comp,
+            },
+            "rd_pct": (rd_comp / total_comp * 100) if total_comp else 0,
+            "detailed_breakdown": by_category,
+            "source": rows[0].get("source") if rows else None,
+        }
+
+    async def _execute_revenue_reconciliation(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Compare Salesforce bookings vs accounting actuals."""
+        company_id = inputs.get("company_id") or self.shared_data.get("company_id")
+        if not company_id:
+            return {"error": "company_id required"}
+
+        from app.core.supabase_client import get_supabase_client
+        sb = get_supabase_client()
+        if not sb:
+            return {"error": "Database unavailable"}
+
+        result = sb.table("fpa_actuals").select("*").eq("company_id", company_id).eq(
+            "category", "revenue"
+        ).order("period").execute()
+
+        rows = result.data or []
+        if not rows:
+            return {"result": "No revenue data found."}
+
+        # Split by source
+        accounting_sources = {"quickbooks", "netsuite", "xero", "sap_s4", "sap_b1", "csv_upload"}
+        crm_sources = {"salesforce"}
+
+        by_period = {}
+        for r in rows:
+            period = r.get("period", "")[:7]
+            source = r.get("source", "")
+            amount = float(r.get("amount", 0))
+
+            if period not in by_period:
+                by_period[period] = {"accounting": 0, "crm_bookings": 0}
+
+            if source in accounting_sources:
+                by_period[period]["accounting"] += amount
+            elif source in crm_sources:
+                by_period[period]["crm_bookings"] += amount
+
+        # Compute variances
+        reconciliation = []
+        for period in sorted(by_period.keys()):
+            data = by_period[period]
+            variance = data["crm_bookings"] - data["accounting"]
+            reconciliation.append({
+                "period": period,
+                "accounting_revenue": data["accounting"],
+                "crm_bookings": data["crm_bookings"],
+                "variance": variance,
+                "variance_pct": (variance / data["accounting"] * 100) if data["accounting"] else None,
+            })
+
+        return {"reconciliation": reconciliation}
 
     async def _execute_stage_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze companies across different funding stages"""

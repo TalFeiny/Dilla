@@ -15,6 +15,7 @@ interface ExecutionOptions {
   onComplete?: (results: Record<string, any>) => void;
   onError?: (error: string) => void;
   onOutputReady?: (nodeId: string, format: string, data: any) => void;
+  onScenarioBranchCreated?: (result: any) => void;
 }
 
 export function useWorkflowExecution(options: ExecutionOptions = {}) {
@@ -103,6 +104,12 @@ export function useWorkflowExecution(options: ExecutionOptions = {}) {
               stepResult.error || undefined
             );
             options.onStepComplete?.(nodeId, stepResult);
+
+            // Detect scenario branch creation and dispatch for persistence
+            const stepData = stepResult.data || stepResult.result;
+            if (stepData?.branch && options.onScenarioBranchCreated) {
+              options.onScenarioBranchCreated(stepData);
+            }
           }
         }
       } else {

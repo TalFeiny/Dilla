@@ -74,10 +74,34 @@ XERO_ACCOUNT_TYPE_MAP = {
     "TERMLIAB": "bs_other_ncl",
 }
 
+SAP_S4_ACCOUNT_TYPE_MAP = {
+    # S/4HANA — GLAccountType from Chart of Accounts
+    "P": "revenue",             # Revenue (P&L credit)
+    "X": "opex_total",          # Expense (P&L debit)
+    "S": "bs_other_equity",     # Equity
+    "A": "bs_other_ca",         # Asset
+    "L": "bs_other_cl",         # Liability
+}
+
+SAP_B1_ACCOUNT_TYPE_MAP = {
+    # Business One — AcctType from ChartOfAccounts entity
+    "it_Revenue": "revenue",
+    "it_Expenditure": "opex_total",
+    "it_FixedAssets": "bs_ppe",
+    "it_CashAndBank": "bs_cash",
+    "it_AccountsReceivable": "bs_ar",
+    "it_AccountsPayable": "bs_ap",
+    "it_OtherCurrentAssets": "bs_other_ca",
+    "it_OtherCurrentLiabilities": "bs_other_cl",
+    "it_Equity": "bs_other_equity",
+}
+
 PROVIDER_TYPE_MAPS = {
     "quickbooks": QBO_ACCOUNT_TYPE_MAP,
     "netsuite": NETSUITE_ACCOUNT_TYPE_MAP,
     "xero": XERO_ACCOUNT_TYPE_MAP,
+    "sap_s4": SAP_S4_ACCOUNT_TYPE_MAP,
+    "sap_b1": SAP_B1_ACCOUNT_TYPE_MAP,
 }
 
 

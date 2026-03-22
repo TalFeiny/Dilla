@@ -16,6 +16,7 @@ import {
 } from '@xyflow/react';
 import { nanoid } from 'nanoid';
 import type { WorkflowNodeData } from './types';
+import { canConnect, PORTS, type PortDef } from './port-types';
 
 export type WorkflowNode = Node<WorkflowNodeData>;
 export type WorkflowEdge = Edge;
@@ -28,6 +29,11 @@ interface WorkflowStore {
   isPaletteOpen: boolean;
   isPanelOpen: boolean;
   isExecuting: boolean;
+
+  // ── Company context (synced from Matrix Control Panel) ────
+  companyId: string | null;
+  fundId: string | null;
+  companyName: string | null;
 
   // ── React Flow callbacks ───────────────────────────────────
   onNodesChange: OnNodesChange;
@@ -48,6 +54,9 @@ interface WorkflowStore {
   togglePanel: () => void;
   setPanelOpen: (open: boolean) => void;
 
+  // ── Company context ─────────────────────────────────────────
+  setCompanyContext: (companyId: string | null, fundId: string | null, companyName: string | null) => void;
+
   // ── Execution ──────────────────────────────────────────────
   setNodeStatus: (id: string, status: WorkflowNodeData['status'], result?: any, error?: string) => void;
   setExecuting: (executing: boolean) => void;
@@ -66,6 +75,11 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   isPanelOpen: false,
   isExecuting: false,
 
+  // Company context — null until synced from Matrix Control Panel
+  companyId: null,
+  fundId: null,
+  companyName: null,
+
   onNodesChange: (changes) => {
     set({ nodes: applyNodeChanges(changes, get().nodes as any) as unknown as WorkflowNode[] });
   },
@@ -75,6 +89,82 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   },
 
   onConnect: (connection: Connection) => {
+    const nodes = get().nodes;
+    const sourceNode = nodes.find((n) => n.id === connection.source);
+    const targetNode = nodes.find((n) => n.id === connection.target);
+
+    if (!sourceNode || !targetNode) {
+      set({ edges: addEdge({ ...connection, type: 'workflow' }, get().edges) });
+      return;
+    }
+
+    const srcData = sourceNode.data as unknown as WorkflowNodeData;
+    const tgtData = targetNode.data as unknown as WorkflowNodeData;
+
+    // Resolve the specific ports being connected (via handle IDs)
+    const srcPort: PortDef | undefined =
+      (srcData.outputPorts as PortDef[] | undefined)?.find((p) => p.id === connection.sourceHandle) ??
+      (srcData.outputPorts as PortDef[] | undefined)?.[0];
+    const tgtPort: PortDef | undefined =
+      (tgtData.inputPorts as PortDef[] | undefined)?.find((p) => p.id === connection.targetHandle) ??
+      (tgtData.inputPorts as PortDef[] | undefined)?.[0];
+
+    // If both ports exist and they're incompatible → auto-insert a Transform node
+    if (srcPort && tgtPort && !canConnect(srcPort, tgtPort)) {
+      const transformId = `node_${nanoid(8)}`;
+
+      // Position the transform midway between source and target
+      const sx = sourceNode.position.x;
+      const sy = sourceNode.position.y;
+      const tx = targetNode.position.x;
+      const ty = targetNode.position.y;
+
+      const transformNode: WorkflowNode = {
+        id: transformId,
+        type: 'operator',
+        position: { x: (sx + tx) / 2, y: (sy + ty) / 2 },
+        data: {
+          kind: 'operator',
+          label: 'Transform',
+          icon: 'ArrowLeftRight',
+          domain: 'transform' as any,
+          color: 'sky',
+          operatorType: 'transform',
+          params: { mapping: '', outputType: tgtPort.dataType },
+          inputPorts: [PORTS.dataIn(true)],
+          outputPorts: [PORTS.dataOut()],
+          status: 'idle',
+        } as any,
+      };
+
+      // Edge: source → transform (using source's handle → transform's data_in)
+      const edgeA = {
+        id: `edge_${nanoid(6)}`,
+        source: connection.source!,
+        target: transformId,
+        sourceHandle: connection.sourceHandle ?? undefined,
+        targetHandle: 'data_in',
+        type: 'workflow',
+      };
+
+      // Edge: transform → target (transform's data_out → target's handle)
+      const edgeB = {
+        id: `edge_${nanoid(6)}`,
+        source: transformId,
+        target: connection.target!,
+        sourceHandle: 'data_out',
+        targetHandle: connection.targetHandle ?? undefined,
+        type: 'workflow',
+      };
+
+      set({
+        nodes: [...get().nodes, transformNode],
+        edges: [...get().edges, edgeA, edgeB],
+      });
+      return;
+    }
+
+    // Compatible or untyped — connect directly
     set({ edges: addEdge({ ...connection, type: 'workflow' }, get().edges) });
   },
 
@@ -102,7 +192,9 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   },
 
   selectNode: (id) => {
-    set({ selectedNodeId: id, isPanelOpen: id !== null });
+    set({ selectedNodeId: id });
+    // Panel is now opened explicitly via double-click (setPanelOpen),
+    // not automatically on single-click selection.
   },
 
   removeEdge: (id) => {
@@ -112,6 +204,10 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   togglePalette: () => set({ isPaletteOpen: !get().isPaletteOpen }),
   togglePanel: () => set({ isPanelOpen: !get().isPanelOpen }),
   setPanelOpen: (open) => set({ isPanelOpen: open }),
+
+  setCompanyContext: (companyId, fundId, companyName) => {
+    set({ companyId, fundId, companyName });
+  },
 
   setNodeStatus: (id, status, result, error) => {
     set({

@@ -7,7 +7,7 @@
 import type { WorkflowNode, WorkflowEdge } from './store';
 import type { WorkflowNodeData } from './types';
 import type { ComposedWorkflow, WorkflowStep, ActiveChip, InputSegment } from '../chips/types';
-import { nanoid } from 'nanoid';
+
 
 /**
  * Topological sort of nodes based on edges.
@@ -62,6 +62,23 @@ function getUpstream(nodeId: string, edges: WorkflowEdge[]): string[] {
   return edges.filter((e) => e.target === nodeId).map((e) => e.source);
 }
 
+/** Detailed upstream edge info for port-aware wiring */
+interface UpstreamLink {
+  sourceId: string;
+  sourceHandle: string | null;
+  targetHandle: string | null;
+}
+
+function getUpstreamLinks(nodeId: string, edges: WorkflowEdge[]): UpstreamLink[] {
+  return edges
+    .filter((e) => e.target === nodeId)
+    .map((e) => ({
+      sourceId: e.source,
+      sourceHandle: (e.sourceHandle as string) ?? null,
+      targetHandle: (e.targetHandle as string) ?? null,
+    }));
+}
+
 /**
  * Map frontend node kind + operatorType → backend step "kind".
  * Backend recognises: tool, formula, loop, conditional, bridge,
@@ -81,6 +98,7 @@ function resolveBackendKind(data: WorkflowNodeData): string {
       aggregate: 'tool',
       map: 'tool',
       merge: 'tool',
+      transform: 'tool',
       event_business: 'event',
       event_macro: 'event',
       event_funding: 'event',
@@ -116,6 +134,9 @@ export function graphToWorkflow(
     // Skip output nodes — they're for result routing, not execution
     if (data.kind === 'output') continue;
 
+    // Skip trigger nodes — they define the entry point, not an executable step
+    if (data.kind === 'trigger') continue;
+
     // Driver nodes: collect their values for downstream merging
     if (data.kind === 'driver') {
       driverValues.set(nodeId, {
@@ -146,6 +167,7 @@ export function graphToWorkflow(
 
     // Collect driver overrides from upstream driver nodes
     const upstream = getUpstream(nodeId, edges);
+    const upstreamLinks = getUpstreamLinks(nodeId, edges);
     const driverOverrides: Record<string, any> = {};
     for (const upId of upstream) {
       const dv = driverValues.get(upId);
@@ -153,8 +175,45 @@ export function graphToWorkflow(
     }
 
     const inputs: Record<string, any> = { ...data.params };
+
+    // ── Port-aware input mapping ──────────────────────────────────────────
+    // For each incoming edge, record which upstream node feeds which input port.
+    // The backend uses `port_map` to route upstream step results into the
+    // correct input parameter slots (e.g. forecast_in ← step_abc).
+    const portMap: Record<string, string> = {};
+    for (const link of upstreamLinks) {
+      const upNode = nodeMap.get(link.sourceId);
+      if (!upNode) continue;
+      const upData = upNode.data as unknown as WorkflowNodeData;
+      // Skip drivers — they're merged as driver_overrides, not port-mapped
+      if (upData.kind === 'driver') continue;
+
+      if (link.targetHandle) {
+        // Map target handle id → upstream node id (so backend knows which
+        // step result to pipe into which input param)
+        portMap[link.targetHandle] = link.sourceId;
+      }
+    }
+    if (Object.keys(portMap).length > 0) {
+      inputs._port_map = portMap;
+    }
+
+    // Merge inline lever overrides from the node itself
+    if (data.driverOverrides && Object.keys(data.driverOverrides).length > 0) {
+      Object.assign(driverOverrides, data.driverOverrides);
+    }
     if (Object.keys(driverOverrides).length > 0) {
       inputs.driver_overrides = driverOverrides;
+    }
+
+    // Row/subcategory targeting
+    if (data.targetRows && data.targetRows.length > 0) {
+      inputs.target_rows = data.targetRows;
+    }
+
+    // Period targeting
+    if (data.targetPeriods && data.targetPeriods.length > 0) {
+      inputs.target_periods = data.targetPeriods;
     }
 
     // Find the first upstream non-driver node as dependency
@@ -199,21 +258,59 @@ export function stepsToBackendShape(
     const data = node?.data as unknown as WorkflowNodeData | undefined;
     const kind = data ? resolveBackendKind(data) : 'tool';
 
+    // Separate _port_map from params — it's routing metadata, not a tool param
+    const { _port_map, ...cleanParams } = step.inputs;
+
     const backendStep: Record<string, any> = {
       kind,
       tool: step.chip.def.tool,
-      params: step.inputs,
+      params: cleanParams,
       chip_id: step.id,  // node ID for result mapping
       depends_on: step.dependsOn || null,
     };
 
+    // Port map tells the backend which upstream step result feeds each input slot
+    if (_port_map && Object.keys(_port_map).length > 0) {
+      backendStep.port_map = _port_map;
+    }
+
+    // Preserve operator_type so backend can distinguish data operators
+    if (data?.kind === 'operator' && data.operatorType) {
+      backendStep.operator_type = data.operatorType;
+    }
+
     // Operator-specific fields the backend expects
     if (data?.operatorType === 'loop') {
       backendStep.loop_over = data.params.loopOver || 'companies';
+      backendStep.loop_variable = data.params.variable || 'item';
     }
     if (data?.operatorType === 'conditional' || data?.operatorType === 'switch') {
-      backendStep.condition_metric = data.params.metric || '';
+      backendStep.condition_metric = data.params.metric || data.params.field || '';
       backendStep.condition_op = data.params.op || '>';
+      if (data?.operatorType === 'conditional') {
+        backendStep.condition_threshold = data.params.threshold ?? 0;
+      }
+      if (data?.operatorType === 'switch') {
+        backendStep.switch_cases = data.params.cases || [];
+      }
+    }
+    if (data?.operatorType === 'filter') {
+      backendStep.filter_field = data.params.field || '';
+      backendStep.filter_op = data.params.op || '>';
+      backendStep.filter_value = data.params.value ?? 0;
+    }
+    if (data?.operatorType === 'aggregate') {
+      backendStep.aggregate_fn = data.params.fn || 'sum';
+      backendStep.aggregate_field = data.params.field || '';
+      backendStep.aggregate_group_by = data.params.groupBy || null;
+    }
+    if (data?.operatorType === 'map') {
+      backendStep.map_expression = data.params.expression || '';
+      backendStep.map_output_field = data.params.outputField || null;
+    }
+    if (data?.operatorType === 'merge') {
+      backendStep.merge_strategy = data.params.strategy || 'concat';
+      backendStep.merge_join_key = data.params.joinKey || null;
     }
     if (data?.operatorType === 'event_business') {
       backendStep.event_category = 'business';
@@ -223,6 +320,12 @@ export function stepsToBackendShape(
     }
     if (data?.operatorType === 'event_funding') {
       backendStep.event_category = 'funding';
+    }
+    if (data?.operatorType === 'prior') {
+      backendStep.prior_parameter = data.params.parameter || '';
+      backendStep.prior_distribution = data.params.distribution || 'normal';
+      backendStep.prior_low = data.params.low ?? 0;
+      backendStep.prior_high = data.params.high ?? 0;
     }
 
     return backendStep;

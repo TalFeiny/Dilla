@@ -1,12 +1,14 @@
 'use client';
 
-import { useCallback, useRef, useMemo } from 'react';
+import { useCallback, useRef } from 'react';
 import {
   ReactFlow,
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   ReactFlowProvider,
+  useViewport,
   type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -16,25 +18,21 @@ import type { PaletteItem, WorkflowNodeData } from '@/lib/workflow/types';
 import { DOMAIN_META } from '@/lib/chips/types';
 import { useWorkflowExecution } from '@/hooks/useWorkflowExecution';
 
-import { ToolNode } from './nodes/ToolNode';
-import { OperatorNode } from './nodes/OperatorNode';
-import { OutputNode } from './nodes/OutputNode';
-import { DriverNode } from './nodes/DriverNode';
-import { FormulaNode } from './nodes/FormulaNode';
-import { FundingNode } from './nodes/FundingNode';
+import { CompactNode } from './nodes/CompactNode';
 import { WorkflowEdge } from './edges/WorkflowEdge';
 import { NodePalette } from './NodePalette';
-import { WorkflowPanel } from './WorkflowPanel';
+import { WorkflowConfigDrawer } from './WorkflowConfigDrawer';
 import { WorkflowToolbar } from './WorkflowToolbar';
 
-// ── Node type registry for React Flow ────────────────────────────────────
+// ── Node type registry — all types use the unified CompactNode ──────────────
 const nodeTypes = {
-  tool: ToolNode,
-  operator: OperatorNode,
-  output: OutputNode,
-  driver: DriverNode,
-  formula: FormulaNode,
-  funding: FundingNode,
+  tool: CompactNode,
+  operator: CompactNode,
+  output: CompactNode,
+  driver: CompactNode,
+  formula: CompactNode,
+  funding: CompactNode,
+  trigger: CompactNode,
 };
 
 const edgeTypes = {
@@ -45,6 +43,17 @@ const defaultEdgeOptions = {
   type: 'workflow',
   animated: false,
 };
+
+// ── Zoom indicator ──────────────────────────────────────────────────────────
+
+function ZoomIndicator() {
+  const { zoom } = useViewport();
+  return (
+    <div className="absolute bottom-4 right-20 text-[10px] text-gray-500 font-mono pointer-events-none select-none z-10">
+      {Math.round(zoom * 100)}%
+    </div>
+  );
+}
 
 // ── Canvas component ─────────────────────────────────────────────────────
 
@@ -59,7 +68,7 @@ function WorkflowCanvasInner() {
   const onConnect = useWorkflowStore((s) => s.onConnect);
   const addNode = useWorkflowStore((s) => s.addNode);
   const selectNode = useWorkflowStore((s) => s.selectNode);
-  const isPanelOpen = useWorkflowStore((s) => s.isPanelOpen);
+  const setPanelOpen = useWorkflowStore((s) => s.setPanelOpen);
   const paletteOpen = useWorkflowStore((s) => s.isPaletteOpen);
   const isExecuting = useWorkflowStore((s) => s.isExecuting);
 
@@ -67,10 +76,8 @@ function WorkflowCanvasInner() {
   const handleOutputReady = useCallback((nodeId: string, format: string, data: any) => {
     console.log(`[WorkflowBuilder] Output ready: ${nodeId} (${format})`, data);
 
-    // Dispatch to appropriate UI target based on format
     switch (format) {
       case 'chart':
-        // Emit custom event for ChartViewport to pick up
         window.dispatchEvent(new CustomEvent('workflow:output', {
           detail: { format: 'chart', nodeId, data },
         }));
@@ -96,15 +103,24 @@ function WorkflowCanvasInner() {
         }));
         break;
       default:
-        // narrative, table, scenario-branch — rendered in panel
         break;
     }
   }, []);
 
+  // ── Company context from workflow store ─────────────────────────────────
+  const companyId = useWorkflowStore((s) => s.companyId);
+
+  // ── Scenario branch dispatch — notify parent (UnifiedMatrix) to persist ──
+  const handleScenarioBranchCreated = useCallback((result: any) => {
+    window.dispatchEvent(new CustomEvent('workflow:scenario-branch', { detail: result }));
+  }, []);
+
   // ── Execution hook ──────────────────────────────────────────────────────
   const { execute, stop } = useWorkflowExecution({
+    companyId: companyId || undefined,
     onError: (error) => console.error('[WorkflowBuilder] Execution error:', error),
     onOutputReady: handleOutputReady,
+    onScenarioBranchCreated: handleScenarioBranchCreated,
   });
 
   const handleRun = useCallback(() => {
@@ -141,9 +157,16 @@ function WorkflowCanvasInner() {
     reactFlowInstance.current = instance;
   }, []);
 
+  // Single click — select only (no drawer)
   const onNodeClick = useCallback((_: React.MouseEvent, node: any) => {
     selectNode(node.id);
   }, [selectNode]);
+
+  // Double click — open config drawer
+  const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: any) => {
+    selectNode(node.id);
+    setPanelOpen(true);
+  }, [selectNode, setPanelOpen]);
 
   const onPaneClick = useCallback(() => {
     selectNode(null);
@@ -191,6 +214,8 @@ function WorkflowCanvasInner() {
         params: { ...(item.defaultParams || {}) },
         operatorType: item.operatorType,
         outputFormat: item.kind === 'output' ? (item.defaultParams?.format || 'memo-section') : undefined,
+        inputPorts: item.inputPorts,
+        outputPorts: item.outputPorts,
         status: 'idle',
       };
 
@@ -217,26 +242,31 @@ function WorkflowCanvasInner() {
             onConnect={onConnect}
             onInit={onInit}
             onNodeClick={onNodeClick}
+            onNodeDoubleClick={onNodeDoubleClick}
             onPaneClick={onPaneClick}
             onDragOver={onDragOver}
             onDrop={onDrop}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             defaultEdgeOptions={defaultEdgeOptions}
-            fitView
+            defaultViewport={{ x: 0, y: 0, zoom: 0.8 }}
+            minZoom={0.1}
+            maxZoom={2}
             proOptions={{ hideAttribution: true }}
             className="bg-gray-950"
             deleteKeyCode={['Backspace', 'Delete']}
             snapToGrid
-            snapGrid={[16, 16]}
+            snapGrid={[20, 20]}
           >
-            <Background color="#1f2937" gap={16} size={1} />
+            <Background variant={BackgroundVariant.Dots} color="#374151" gap={20} size={1.5} />
             <Controls
               className="!bg-gray-900 !border-gray-700 !rounded-lg [&>button]:!bg-gray-800 [&>button]:!border-gray-700 [&>button]:!text-gray-400 [&>button:hover]:!bg-gray-700"
               position="bottom-right"
+              showInteractive={false}
             />
             <MiniMap
               className="!bg-gray-900 !border-gray-700 !rounded-lg"
+              style={{ width: 120, height: 80 }}
               nodeColor={(node) => {
                 const d = node.data as unknown as WorkflowNodeData;
                 const colors: Record<string, string> = {
@@ -251,10 +281,11 @@ function WorkflowCanvasInner() {
               pannable
               zoomable
             />
+            <ZoomIndicator />
           </ReactFlow>
         </div>
-        {isPanelOpen && <WorkflowPanel />}
       </div>
+      <WorkflowConfigDrawer />
     </div>
   );
 }

@@ -76,7 +76,22 @@ class Settings(BaseSettings):
     NETSUITE_CLIENT_ID: Optional[str] = Field(None, env="NETSUITE_CLIENT_ID")
     NETSUITE_CLIENT_SECRET: Optional[str] = Field(None, env="NETSUITE_CLIENT_SECRET")
     NETSUITE_REDIRECT_URI: Optional[str] = Field(None, env="NETSUITE_REDIRECT_URI")
-    
+
+    # SAP S/4HANA Cloud (OAuth2 via BTP)
+    SAP_S4_CLIENT_ID: Optional[str] = Field(None, env="SAP_S4_CLIENT_ID")
+    SAP_S4_CLIENT_SECRET: Optional[str] = Field(None, env="SAP_S4_CLIENT_SECRET")
+    SAP_S4_TOKEN_URL: Optional[str] = Field(None, env="SAP_S4_TOKEN_URL")
+
+    # Salesforce (OAuth2 Web Server Flow)
+    SALESFORCE_CLIENT_ID: Optional[str] = Field(None, env="SALESFORCE_CLIENT_ID")
+    SALESFORCE_CLIENT_SECRET: Optional[str] = Field(None, env="SALESFORCE_CLIENT_SECRET")
+    SALESFORCE_REDIRECT_URI: Optional[str] = Field(None, env="SALESFORCE_REDIRECT_URI")
+    SALESFORCE_SANDBOX: bool = Field(False, env="SALESFORCE_SANDBOX")
+
+    # Workday (OAuth2 refresh_token grant)
+    WORKDAY_CLIENT_ID: Optional[str] = Field(None, env="WORKDAY_CLIENT_ID")
+    WORKDAY_CLIENT_SECRET: Optional[str] = Field(None, env="WORKDAY_CLIENT_SECRET")
+
     # Model configuration for extraction with fallbacks
     PRIMARY_EXTRACTION_MODEL: str = Field("claude-sonnet-4-5", env="PRIMARY_EXTRACTION_MODEL")
     FALLBACK_MODEL_1: str = Field("gpt-5", env="FALLBACK_MODEL_1")

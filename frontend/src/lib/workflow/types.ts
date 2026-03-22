@@ -3,9 +3,11 @@
 // ---------------------------------------------------------------------------
 
 import type { ChipDef, ChipDomain } from '../chips/types';
+import type { PortDef } from './port-types';
 
 /** Node categories in the visual builder */
 export type WorkflowNodeKind =
+  | 'trigger'    // Entry point — where workflow starts
   | 'tool'       // Backend tool (forecast, P&L, valuation, etc.)
   | 'funding'    // Equity/debt funding event
   | 'driver'     // Single assumption override
@@ -26,6 +28,7 @@ export type OperatorType =
   | 'aggregate'
   | 'map'
   | 'merge'
+  | 'transform'
   // Events
   | 'event_business'
   | 'event_macro'
@@ -56,10 +59,20 @@ export interface WorkflowNodeData {
   chipDef?: ChipDef;
   /** User-configured parameter values */
   params: Record<string, any>;
+  /** Row/subcategory targeting — e.g. ['revenue', 'revenue/product', 'opex_rd'] */
+  targetRows?: string[];
+  /** Period targeting — e.g. ['2025-01', '2025-02']; empty = all periods */
+  targetPeriods?: string[];
+  /** Per-node driver/lever overrides — e.g. { revenue_growth: 30, churn_rate: 5 } */
+  driverOverrides?: Record<string, number>;
   /** For operator nodes */
   operatorType?: OperatorType;
   /** For output nodes */
   outputFormat?: OutputFormat;
+  /** Typed input ports */
+  inputPorts?: PortDef[];
+  /** Typed output ports */
+  outputPorts?: PortDef[];
   /** Execution state */
   status: 'idle' | 'running' | 'done' | 'error';
   /** Execution result (once done) */
@@ -83,6 +96,9 @@ export interface PaletteItem {
   operatorType?: OperatorType;
   /** Default params */
   defaultParams?: Record<string, any>;
+  /** Typed ports from chip definition */
+  inputPorts?: PortDef[];
+  outputPorts?: PortDef[];
   description: string;
 }
 

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { Button } from '@/components/ui/button';
 import {
@@ -201,6 +201,21 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
   // ---- Backend-connected actions via MemoContext ----
   const ctx = useMemoContextSafe();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+
+  // Auto-inject ScenarioSection when branches exist and no scenario section present
+  const scenarioAutoInjected = useRef(false);
+  useEffect(() => {
+    if (!ctx || ctx.activeBranches.length === 0) {
+      scenarioAutoInjected.current = false;
+      return;
+    }
+    if (scenarioAutoInjected.current) return;
+    const hasScenario = sections.some(s => s.type === 'scenario');
+    if (!hasScenario) {
+      scenarioAutoInjected.current = true;
+      onChange([...sections, { type: 'scenario' }]);
+    }
+  }, [ctx?.activeBranches.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Build Forecast — calls backend with chosen method, fills grid, auto-populates memo sections */
   const handleBuildForecast = useCallback(async (method: string = 'auto') => {

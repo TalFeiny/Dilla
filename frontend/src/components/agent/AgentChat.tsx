@@ -514,7 +514,7 @@ export default function AgentChat({
       memoUpdates: result.memo_updates ?? data.memo_updates,
       format: result.format ?? data.format ?? 'analysis',
       companies: result.companies || data.companies || [],
-      charts: result.charts || data.charts || [],
+      charts: result.charts || result.chart_data || data.charts || data.chart_data || [],
       citations: result.citations || data.citations || [],
       slides: result.slides ?? result.deck?.slides,
       suggestions: result.suggestions ?? data.suggestions,

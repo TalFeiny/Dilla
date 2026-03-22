@@ -31,7 +31,7 @@ const DOMAIN_COLORS: Record<string, string> = {
 
 export function NodePalette() {
   const [search, setSearch] = useState('');
-  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set(['cat_fpa', 'cat_operators']));
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set(['cat_triggers', 'cat_fpa', 'cat_operators']));
   const togglePalette = useWorkflowStore((s) => s.togglePalette);
 
   const categories = useMemo(() => buildPalette(CHIP_REGISTRY), []);

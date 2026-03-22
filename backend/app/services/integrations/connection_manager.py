@@ -1,8 +1,9 @@
-"""Unified connection manager for all accounting integrations.
+"""Unified connection manager for all P&L data sources.
 
 Manages OAuth2 token storage, refresh, and sync state in the
 `accounting_connections` table.  Provider-agnostic — works for
-QuickBooks, NetSuite, and Xero.
+QuickBooks, NetSuite, Xero, SAP, Salesforce, Workday, and BambooHR.
+All are components of the P&L feeding fpa_actuals subcategories.
 """
 
 import logging
@@ -13,6 +14,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_TABLE = "accounting_connections"
+
+# Providers that use API keys instead of OAuth (no token refresh needed)
+API_KEY_PROVIDERS = {"bamboohr"}
 
 # ---------------------------------------------------------------------------
 # CSRF state store (in-memory, replace with Redis in production)
@@ -47,7 +53,7 @@ def pop_state(token: str) -> Optional[Dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# DB helpers (accounting_connections table)
+# DB helpers (integration_connections table)
 # ---------------------------------------------------------------------------
 
 def _get_sb():
@@ -68,7 +74,7 @@ def save_connection(
     company_id: Optional[str] = None,
     extra_fields: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Upsert a connection in accounting_connections."""
+    """Upsert a connection in integration_connections."""
     sb = _get_sb()
     if not sb:
         logger.error("Supabase unavailable — cannot save %s connection", provider)
@@ -96,7 +102,7 @@ def save_connection(
         row.update(extra_fields)
 
     result = (
-        sb.table("accounting_connections")
+        sb.table(_TABLE)
         .upsert(row, on_conflict="user_id,provider,tenant_id")
         .execute()
     )
@@ -110,7 +116,7 @@ def get_connections(user_id: str, provider: Optional[str] = None) -> List[Dict[s
         return []
 
     query = (
-        sb.table("accounting_connections")
+        sb.table(_TABLE)
         .select("id, provider, tenant_id, tenant_name, last_sync_at, sync_status, sync_error, created_at")
         .eq("user_id", user_id)
     )
@@ -128,7 +134,7 @@ def get_connection(connection_id: str, user_id: str) -> Optional[Dict[str, Any]]
         return None
 
     result = (
-        sb.table("accounting_connections")
+        sb.table(_TABLE)
         .select("*")
         .eq("id", connection_id)
         .eq("user_id", user_id)
@@ -142,7 +148,7 @@ def delete_connection(connection_id: str, user_id: str) -> bool:
     sb = _get_sb()
     if not sb:
         return False
-    sb.table("accounting_connections").delete().eq("id", connection_id).eq("user_id", user_id).execute()
+    sb.table(_TABLE).delete().eq("id", connection_id).eq("user_id", user_id).execute()
     return True
 
 
@@ -163,7 +169,7 @@ def update_tokens(
     }
     if refresh_token:
         update["refresh_token"] = refresh_token
-    sb.table("accounting_connections").update(update).eq("id", connection_id).execute()
+    sb.table(_TABLE).update(update).eq("id", connection_id).execute()
 
 
 def update_sync_status(connection_id: str, status: str, error: Optional[str] = None) -> None:
@@ -177,14 +183,25 @@ def update_sync_status(connection_id: str, status: str, error: Optional[str] = N
     }
     if status == "idle" and error is None:
         update["last_sync_at"] = datetime.now(timezone.utc).isoformat()
-    sb.table("accounting_connections").update(update).eq("id", connection_id).execute()
+    sb.table(_TABLE).update(update).eq("id", connection_id).execute()
 
 
 async def ensure_valid_token(
     connection: Dict[str, Any],
-    connector,  # AccountingConnector instance
+    connector=None,
 ) -> Optional[str]:
-    """Return a valid access token, refreshing if expired."""
+    """Return a valid access token, refreshing if expired.
+
+    For API-key providers (BambooHR), the access_token never expires — return as-is.
+    For session providers (SAP B1), the connector handles re-login.
+    For OAuth providers, refresh via connector.refresh_token().
+    """
+    provider = connection.get("provider", "")
+
+    # API-key providers: token never expires
+    if provider in API_KEY_PROVIDERS:
+        return connection.get("access_token")
+
     expires_at_str = connection.get("token_expires_at", "")
     try:
         expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
@@ -195,6 +212,10 @@ async def ensure_valid_token(
     now = datetime.now(timezone.utc)
 
     if expires_at - now < timedelta(minutes=5):
+        if connector is None:
+            update_sync_status(connection["id"], "error", "No connector for token refresh")
+            return None
+
         refresh = connection.get("refresh_token")
         if not refresh:
             update_sync_status(connection["id"], "error", "No refresh token available")

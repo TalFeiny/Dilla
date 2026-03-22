@@ -28,7 +28,7 @@ function WorkflowEdgeComponent({
     targetPosition,
   });
 
-  const isFalseBranch = sourceHandleId === 'false';
+  const isFalseBranch = sourceHandleId === 'false_out';
 
   return (
     <>

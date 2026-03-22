@@ -2,6 +2,8 @@
 // Chip System — Types
 // ---------------------------------------------------------------------------
 
+import type { PortDef } from '../workflow/port-types';
+
 /** Chip kind — what this chip DOES (not just which tool it wraps) */
 export type ChipKind =
   | 'tool'          // Backend tool execution (default)
@@ -117,6 +119,12 @@ export interface ChipDef {
   eventCategory?: 'business' | 'market' | 'macro' | 'funding' | 'operational';
   /** For priors: which parameters to set confidence on */
   priorKeys?: string[];
+
+  // ── V3: Typed ports ─────────────────────────────────────────
+  /** Input ports — what data this chip accepts */
+  inputPorts?: PortDef[];
+  /** Output ports — what data this chip produces */
+  outputPorts?: PortDef[];
 }
 
 /** A chip instance in the input — has configured values + position */
