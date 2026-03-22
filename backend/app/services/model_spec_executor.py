@@ -307,13 +307,29 @@ class ModelSpecExecutor:
             revenue_trajectory=trajectory,
         )
 
-        # 5. Override non-revenue metrics if spec defines them
+        # 5. Override non-revenue metrics if spec defines them.
+        # Map common LLM metric names to cascade keys.
+        _METRIC_ALIASES = {
+            "opex": "total_opex",
+            "operating_expenses": "total_opex",
+            "rd": "rd_spend",
+            "r_and_d": "rd_spend",
+            "sales_marketing": "sm_spend",
+            "s_and_m": "sm_spend",
+            "general_admin": "ga_spend",
+            "g_and_a": "ga_spend",
+            "fcf": "free_cash_flow",
+            "cash": "cash_balance",
+            "gp": "gross_profit",
+        }
         for i, month in enumerate(forecast):
             for metric, values_arr in context.items():
                 if metric == "revenue" or metric.startswith("_"):
                     continue
-                if i < len(values_arr) and metric in month:
-                    month[metric] = float(values_arr[i])
+                # Resolve alias to cascade key
+                cascade_key = _METRIC_ALIASES.get(metric, metric)
+                if i < len(values_arr) and cascade_key in month:
+                    month[cascade_key] = float(values_arr[i])
             # Recompute derived fields
             _recompute_derived(month)
 
@@ -442,8 +458,9 @@ class ModelSpecExecutor:
         Uses the same MonteCarloEngine pattern: perturb → execute → percentiles.
         But perturbs curve PARAMETERS (not drivers) based on PriorSpec confidence.
         """
-        samples = []
         x = np.arange(months, dtype=float)
+        # Track samples for all metrics the spec defines
+        metric_samples: Dict[str, list] = {}
 
         for _ in range(n_samples):
             perturbed = self._perturb_spec(spec)
@@ -451,21 +468,33 @@ class ModelSpecExecutor:
             context: Dict[str, np.ndarray] = {}
             for metric in _topo_sort(perturbed.curves):
                 context[metric] = evaluate_curve(perturbed.curves[metric], x, context)
-            rev = context.get("revenue")
-            if rev is not None:
-                samples.append(rev.tolist())
+            for metric, vals in context.items():
+                if metric.startswith("_"):
+                    continue
+                metric_samples.setdefault(metric, []).append(vals.tolist())
 
-        if not samples:
+        if not metric_samples:
             return {}
 
-        arr = np.array(samples)
-        return {
-            "p10": np.percentile(arr, 10, axis=0).tolist(),
-            "p25": np.percentile(arr, 25, axis=0).tolist(),
-            "p50": np.percentile(arr, 50, axis=0).tolist(),
-            "p75": np.percentile(arr, 75, axis=0).tolist(),
-            "p90": np.percentile(arr, 90, axis=0).tolist(),
-        }
+        bands: Dict[str, List[float]] = {}
+        for metric, samples_list in metric_samples.items():
+            arr = np.array(samples_list)
+            bands[f"{metric}_p10"] = np.percentile(arr, 10, axis=0).tolist()
+            bands[f"{metric}_p25"] = np.percentile(arr, 25, axis=0).tolist()
+            bands[f"{metric}_p50"] = np.percentile(arr, 50, axis=0).tolist()
+            bands[f"{metric}_p75"] = np.percentile(arr, 75, axis=0).tolist()
+            bands[f"{metric}_p90"] = np.percentile(arr, 90, axis=0).tolist()
+
+        # Backward compat: keep top-level p10-p90 as revenue bands
+        if "revenue" in metric_samples:
+            arr = np.array(metric_samples["revenue"])
+            bands["p10"] = np.percentile(arr, 10, axis=0).tolist()
+            bands["p25"] = np.percentile(arr, 25, axis=0).tolist()
+            bands["p50"] = np.percentile(arr, 50, axis=0).tolist()
+            bands["p75"] = np.percentile(arr, 75, axis=0).tolist()
+            bands["p90"] = np.percentile(arr, 90, axis=0).tolist()
+
+        return bands
 
     def _perturb_spec(self, spec: ModelSpec) -> ModelSpec:
         """Sample from prior distributions to create a perturbed spec."""

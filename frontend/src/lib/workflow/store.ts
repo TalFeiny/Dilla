@@ -16,6 +16,7 @@ import {
 } from '@xyflow/react';
 import { nanoid } from 'nanoid';
 import type { WorkflowNodeData } from './types';
+import type { CompanyDataSnapshot } from './assumptions';
 import { canConnect, PORTS, type PortDef } from './port-types';
 
 export type WorkflowNode = Node<WorkflowNodeData>;
@@ -34,6 +35,11 @@ interface WorkflowStore {
   companyId: string | null;
   fundId: string | null;
   companyName: string | null;
+
+  // ── Company data (fetched via pull_company_data, available to ALL nodes) ──
+  companyData: CompanyDataSnapshot | null;
+  companyDataLoading: boolean;
+  companyDataError: string | null;
 
   // ── React Flow callbacks ───────────────────────────────────
   onNodesChange: OnNodesChange;
@@ -57,6 +63,9 @@ interface WorkflowStore {
   // ── Company context ─────────────────────────────────────────
   setCompanyContext: (companyId: string | null, fundId: string | null, companyName: string | null) => void;
 
+  // ── Company data (pull_company_data) ──────────────────────
+  fetchCompanyData: (companyId: string) => Promise<void>;
+
   // ── Execution ──────────────────────────────────────────────
   setNodeStatus: (id: string, status: WorkflowNodeData['status'], result?: any, error?: string) => void;
   setExecuting: (executing: boolean) => void;
@@ -79,6 +88,11 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   companyId: null,
   fundId: null,
   companyName: null,
+
+  // Company data — null until fetched via pull_company_data
+  companyData: null,
+  companyDataLoading: false,
+  companyDataError: null,
 
   onNodesChange: (changes) => {
     set({ nodes: applyNodeChanges(changes, get().nodes as any) as unknown as WorkflowNode[] });
@@ -207,6 +221,41 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
 
   setCompanyContext: (companyId, fundId, companyName) => {
     set({ companyId, fundId, companyName });
+  },
+
+  // ── Fetch company data via pull_company_data ────────────────
+  fetchCompanyData: async (companyId: string) => {
+    // Skip if already fetched for this company and less than 5 min old
+    const existing = get().companyData;
+    if (existing && existing.companyId === companyId && Date.now() - existing.fetchedAt < 5 * 60 * 1000) {
+      return;
+    }
+
+    set({ companyDataLoading: true, companyDataError: null });
+
+    try {
+      const res = await fetch(`/api/fpa/company-data?company_id=${encodeURIComponent(companyId)}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Failed to fetch company data' }));
+        throw new Error(err.error || err.detail || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const snapshot: CompanyDataSnapshot = {
+        companyId: data.company_id,
+        timeSeries: data.time_series || {},
+        latest: data.latest || {},
+        periods: data.periods || [],
+        analytics: data.analytics || {},
+        metadata: data.metadata || { row_count: 0, categories: [] },
+        fetchedAt: Date.now(),
+      };
+
+      set({ companyData: snapshot, companyDataLoading: false });
+    } catch (e: any) {
+      console.error('[WorkflowStore] Failed to fetch company data:', e);
+      set({ companyDataError: e.message, companyDataLoading: false });
+    }
   },
 
   setNodeStatus: (id, status, result, error) => {

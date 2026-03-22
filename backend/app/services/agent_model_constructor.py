@@ -69,6 +69,20 @@ CURVE TYPES:
 - ratio: fraction of another metric (COGS = 35% of revenue)
 - constant: flat value
 
+METRIC KEYS (use these exact names as curve dict keys):
+- revenue: top-line monthly revenue
+- cogs: cost of goods sold
+- gross_profit: revenue - cogs
+- rd_spend: R&D expense
+- sm_spend: Sales & Marketing expense
+- ga_spend: General & Administrative expense
+- total_opex: rd_spend + sm_spend + ga_spend
+- ebitda: gross_profit - total_opex
+- capex: capital expenditure
+- free_cash_flow: ebitda - capex - debt_service - tax
+- cash_balance: cumulative cash position
+DO NOT use aliases like "opex", "fcf", "gp" — use the exact keys above.
+
 RULES:
 - EVERY parameter must trace to an event. No arbitrary numbers.
 - Use the macro/business chains and sensitivity data — don't ignore what the services found.

@@ -105,6 +105,14 @@ export const WORKFLOW_TO_ACTION_ID: Record<string, string> = {
   fundMetricsCalculator: 'skill.fund_metrics_calculator',
   stageAnalysis: 'skill.stage_analysis',
   exitModeling: 'skill.exit_modeling',
+
+  // Liquidity Management
+  buildLiquidityModel: 'liquidity.model',
+  buildLiquidityScenarios: 'liquidity.scenarios',
+  runLiquiditySensitivity: 'liquidity.sensitivity',
+
+  // Auto-Budget
+  autoGenerateBudget: 'budget.auto_generate',
 };
 
 export function getActionIdForWorkflow(workflowId: string): string | undefined {

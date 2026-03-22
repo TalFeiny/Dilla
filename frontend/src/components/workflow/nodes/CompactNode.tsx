@@ -5,6 +5,9 @@ import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { WorkflowNodeData } from '@/lib/workflow/types';
 import type { PortDef } from '@/lib/workflow/port-types';
 import { PORT_COLORS } from '@/lib/workflow/port-types';
+import { useWorkflowStore } from '@/lib/workflow/store';
+import { computeExposure, formatExposure } from '@/lib/workflow/assumptions';
+import type { NodeAssumption } from '@/lib/workflow/assumptions';
 import { resolveIcon } from './icon-resolver';
 
 // ── Static color map (Tailwind-safe, no dynamic class construction) ─────────
@@ -33,6 +36,15 @@ const COLOR_MAP: Record<string, { accent: string; text: string; iconBg: string; 
 
 const DEFAULT_COLORS = COLOR_MAP.gray;
 
+// ── Driver → actuals key (must match DriverNodeConfig) ──────────────────────
+
+const DRIVER_TO_ACTUALS: Record<string, string> = {
+  revenue_growth: 'revenue', revenue_override: 'revenue', gross_margin: 'gross_profit',
+  churn_rate: 'revenue', nrr: 'revenue', rd_pct: 'opex_rd', sm_pct: 'opex_sm',
+  ga_pct: 'opex_ga', burn_rate: 'net_burn', cash_override: 'cash_balance',
+  funding_injection: 'cash_balance', headcount_change: 'headcount',
+};
+
 // ── Status dot ──────────────────────────────────────────────────────────────
 
 function StatusDot({ status }: { status: string }) {
@@ -41,21 +53,39 @@ function StatusDot({ status }: { status: string }) {
     status === 'running' ? 'bg-blue-400 animate-pulse' :
     status === 'done'    ? 'bg-emerald-400' :
     status === 'error'   ? 'bg-red-400' :
-    'bg-gray-500';
+    'bg-muted-foreground';
 
-  return <div className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full ${dotClass} ring-2 ring-gray-900`} />;
+  return <div className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full ${dotClass} ring-2 ring-card`} />;
 }
 
 // ── Compute evenly-spaced handle positions ──────────────────────────────────
 
-/** Returns top-offsets (%) for N ports, centred vertically on the node */
 function portOffsets(count: number): number[] {
   if (count <= 1) return [50];
-  // Space handles from 25%→75% so they stay within the node body
   const start = 25;
   const end = 75;
   return Array.from({ length: count }, (_, i) =>
     count === 1 ? 50 : start + (i * (end - start)) / (count - 1)
+  );
+}
+
+// ── Tiny sparkline for driver nodes ─────────────────────────────────────────
+
+function NodeSparkline({ values }: { values: number[] }) {
+  if (values.length < 2) return null;
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const range = max - min || 1;
+  const w = 48;
+  const h = 14;
+  const points = values
+    .map((v, i) => `${(i / (values.length - 1)) * w},${h - ((v - min) / range) * (h - 2) - 1}`)
+    .join(' ');
+  const isUp = values[values.length - 1] > values[0];
+  return (
+    <svg width={w} height={h} className="flex-shrink-0">
+      <polyline points={points} fill="none" stroke={isUp ? '#10b981' : '#ef4444'} strokeWidth={1.2} strokeLinecap="round" />
+    </svg>
   );
 }
 
@@ -72,6 +102,27 @@ function CompactNodeComponent({ data, selected }: NodeProps) {
   const colors = COLOR_MAP[colorKey] || DEFAULT_COLORS;
   const Icon = resolveIcon(d.icon);
 
+  // ── Driver enrichment: sparkline + assumption count from store ─────────
+  const companyData = useWorkflowStore((s) => s.companyData);
+  const assumptions = (d.assumptions as NodeAssumption[]) || [];
+  const assumptionCount = assumptions.length;
+
+  const driverInfo = useMemo(() => {
+    if (!isDriver || !companyData) return null;
+    const chipId = (d.chipId || d.label?.toLowerCase().replace(/\s+/g, '_') || '') as string;
+    const key = DRIVER_TO_ACTUALS[chipId] || 'revenue';
+    const ts = companyData.timeSeries?.[key];
+    if (!ts) return null;
+
+    const sorted = Object.entries(ts).sort(([a], [b]) => a.localeCompare(b));
+    const values = sorted.slice(-8).map(([, v]) => v as number);
+    const latest = values[values.length - 1] || 0;
+
+    const exposure = assumptionCount > 0 ? computeExposure(assumptions, latest) : null;
+
+    return { values, latest, exposure };
+  }, [isDriver, companyData, d.chipId, d.label, assumptions, assumptionCount]);
+
   // ── Resolve ports (fall back to legacy single handle) ─────────────────
   const inputPorts: PortDef[] = useMemo(() => {
     if (isDriver || isTrigger) return [];
@@ -80,25 +131,21 @@ function CompactNodeComponent({ data, selected }: NodeProps) {
 
   const isConditional = d.operatorType === 'conditional' || d.operatorType === 'switch';
 
-  // For conditionals, split output ports: false_out goes to the bottom handle
   const allOutputPorts: PortDef[] = useMemo(() => {
     if (isOutput) return [];
     return (d.outputPorts && d.outputPorts.length > 0) ? d.outputPorts as PortDef[] : [];
   }, [d.outputPorts, isOutput]);
 
-  // Right-side output ports (everything except false_out on conditionals)
   const outputPorts = useMemo(() => {
     if (!isConditional) return allOutputPorts;
     return allOutputPorts.filter((p) => p.id !== 'false_out');
   }, [allOutputPorts, isConditional]);
 
-  // The false branch port (rendered at bottom for conditionals)
   const falsePort = useMemo(() => {
     if (!isConditional) return null;
     return allOutputPorts.find((p) => p.id === 'false_out') ?? null;
   }, [allOutputPorts, isConditional]);
 
-  // Use typed ports if available, else legacy single handle
   const hasTypedInputs = inputPorts.length > 0;
   const hasTypedOutputs = outputPorts.length > 0;
   const hasLegacyTarget = !hasTypedInputs && !isDriver && !isTrigger;
@@ -107,33 +154,58 @@ function CompactNodeComponent({ data, selected }: NodeProps) {
   const inOffsets = useMemo(() => portOffsets(inputPorts.length), [inputPorts.length]);
   const outOffsets = useMemo(() => portOffsets(outputPorts.length), [outputPorts.length]);
 
-  // Minimum height for multi-port nodes
   const minH = Math.max(inputPorts.length, outputPorts.length) > 2 ? 'min-h-[56px]' : '';
+
+  // Driver nodes are slightly wider to accommodate sparkline
+  const nodeWidth = isDriver && driverInfo ? 'w-[160px]' : 'w-[140px]';
 
   return (
     <div
       className={`
-        relative w-[140px] bg-gray-900 rounded-lg border border-gray-700/50
-        flex items-center gap-2 pl-4 pr-2.5 py-2.5
-        cursor-pointer transition-all duration-150
-        hover:border-gray-600
+        relative ${nodeWidth} bg-card rounded-xl border border-border/50
+        cursor-pointer transition-all duration-150 shadow-sm
+        hover:border-border
         ${minH}
-        ${selected ? 'ring-2 ring-blue-500/50 border-gray-600' : ''}
+        ${selected ? 'ring-1 ring-foreground/20 border-border' : ''}
         ${isTrigger ? 'shadow-[0_0_12px_rgba(16,185,129,0.12)]' : ''}
       `}
     >
       {/* Colored left accent bar */}
       <div className={`absolute left-0 top-2 bottom-2 w-1 rounded-r ${colors.accent}`} />
 
-      {/* Icon */}
-      <div className={`w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 ${colors.iconBg}`}>
-        <Icon className={`w-4 h-4 ${colors.text}`} />
+      {/* Main row: icon + label */}
+      <div className="flex items-center gap-2 pl-4 pr-2.5 py-2.5">
+        <div className={`w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 ${colors.iconBg}`}>
+          <Icon className={`w-4 h-4 ${colors.text}`} />
+        </div>
+        <span className="text-[13px] font-medium text-card-foreground truncate flex-1 leading-tight">
+          {d.label}
+        </span>
       </div>
 
-      {/* Label */}
-      <span className="text-[13px] font-medium text-gray-200 truncate flex-1 leading-tight">
-        {d.label}
-      </span>
+      {/* Driver enrichment: sparkline + assumptions */}
+      {isDriver && driverInfo && (
+        <div className="px-3 pb-2 -mt-0.5 space-y-1">
+          <div className="flex items-center gap-2">
+            <NodeSparkline values={driverInfo.values} />
+            <span className="text-[11px] font-mono text-card-foreground/80">
+              {formatNodeValue(driverInfo.latest)}
+            </span>
+          </div>
+          {assumptionCount > 0 && driverInfo.exposure && (
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-muted-foreground">
+                {assumptionCount} assumption{assumptionCount !== 1 ? 's' : ''}
+              </span>
+              <span className={`text-[10px] font-mono font-medium ${
+                driverInfo.exposure.netMonthly >= 0 ? 'text-emerald-400' : 'text-red-400'
+              }`}>
+                {formatExposure(driverInfo.exposure.netMonthly)}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Status dot */}
       <StatusDot status={d.status} />
@@ -145,8 +217,8 @@ function CompactNodeComponent({ data, selected }: NodeProps) {
           id={port.id}
           type="target"
           position={Position.Left}
-          style={{ top: `${inOffsets[i]}%`, background: PORT_COLORS[port.dataType] || '#6b7280' }}
-          className="!w-2.5 !h-2.5 !border-2 !border-gray-900 hover:!scale-125 transition-transform"
+          style={{ top: `${inOffsets[i]}%`, background: PORT_COLORS[port.dataType] || '#6b7280', borderColor: 'var(--wf-handle-border)' }}
+          className="!w-2.5 !h-2.5 !border-2 hover:!scale-125 transition-transform"
           title={`${port.label} (${port.dataType})`}
         />
       ))}
@@ -158,8 +230,8 @@ function CompactNodeComponent({ data, selected }: NodeProps) {
           id={port.id}
           type="source"
           position={Position.Right}
-          style={{ top: `${outOffsets[i]}%`, background: PORT_COLORS[port.dataType] || '#6b7280' }}
-          className="!w-2.5 !h-2.5 !border-2 !border-gray-900 hover:!scale-125 transition-transform"
+          style={{ top: `${outOffsets[i]}%`, background: PORT_COLORS[port.dataType] || '#6b7280', borderColor: 'var(--wf-handle-border)' }}
+          className="!w-2.5 !h-2.5 !border-2 hover:!scale-125 transition-transform"
           title={`${port.label} (${port.dataType})`}
         />
       ))}
@@ -169,14 +241,16 @@ function CompactNodeComponent({ data, selected }: NodeProps) {
         <Handle
           type="target"
           position={Position.Left}
-          className={`!w-2 !h-2 !border-2 !border-gray-900 ${colors.handle} hover:!scale-125 transition-transform`}
+          style={{ borderColor: 'var(--wf-handle-border)' }}
+          className={`!w-2 !h-2 !border-2 ${colors.handle} hover:!scale-125 transition-transform`}
         />
       )}
       {hasLegacySource && (
         <Handle
           type="source"
           position={Position.Right}
-          className={`!w-2 !h-2 !border-2 !border-gray-900 ${colors.handle} hover:!scale-125 transition-transform`}
+          style={{ borderColor: 'var(--wf-handle-border)' }}
+          className={`!w-2 !h-2 !border-2 ${colors.handle} hover:!scale-125 transition-transform`}
         />
       )}
 
@@ -186,13 +260,21 @@ function CompactNodeComponent({ data, selected }: NodeProps) {
           type="source"
           position={Position.Bottom}
           id={falsePort.id}
-          style={{ background: '#ef4444' }}
-          className="!w-2.5 !h-2.5 !border-2 !border-gray-900 hover:!scale-125 transition-transform"
+          style={{ background: '#ef4444', borderColor: 'var(--wf-handle-border)' }}
+          className="!w-2.5 !h-2.5 !border-2 hover:!scale-125 transition-transform"
           title={`${falsePort.label} (${falsePort.dataType})`}
         />
       )}
     </div>
   );
+}
+
+function formatNodeValue(v: number): string {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `$${(v / 1_000).toFixed(0)}k`;
+  if (abs >= 1) return `$${v.toFixed(0)}`;
+  return `${(v * 100).toFixed(1)}%`;
 }
 
 export const CompactNode = memo(CompactNodeComponent);

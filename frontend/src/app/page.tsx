@@ -93,14 +93,14 @@ const segments = [
 ];
 
 const integrations = [
-  { name: 'QuickBooks', slug: 'quickbooks' },
-  { name: 'Xero', slug: 'xero' },
-  { name: 'NetSuite', slug: 'oracle' },
-  { name: 'SAP', slug: 'sap' },
-  { name: 'Salesforce', slug: 'salesforce' },
-  { name: 'Attio', slug: 'attio' },
-  { name: 'Workday', slug: 'workday' },
-  { name: 'BambooHR', slug: 'bamboohr' },
+  { name: 'QuickBooks', logo: '/logos/quickbooks.png' },
+  { name: 'Xero', logo: '/logos/xero.png' },
+  { name: 'NetSuite', logo: '/logos/netsuite.png' },
+  { name: 'SAP', logo: '/logos/sap.jpg' },
+  { name: 'Salesforce', logo: '/logos/salesforce.png' },
+  { name: 'Attio', logo: '/logos/attio.png' },
+  { name: 'Workday', logo: '/logos/workday.png' },
+  { name: 'BambooHR', logo: '/logos/bamboohr.png' },
 ];
 
 const packages = [
@@ -479,7 +479,7 @@ function Integrations() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          {integrations.map(({ name, slug }, i) => (
+          {integrations.map(({ name, logo }, i) => (
             <motion.span
               key={name}
               initial={{ opacity: 0, y: 12 }}
@@ -489,9 +489,9 @@ function Integrations() {
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={`https://cdn.simpleicons.org/${slug}/1f2937`}
-                alt=""
-                className="h-4 w-4"
+                src={logo}
+                alt={name}
+                className="h-5 w-auto max-w-[20px] object-contain"
                 loading="lazy"
               />
               {name}

@@ -36,7 +36,7 @@ function WorkflowEdgeComponent({
         id={id}
         path={edgePath}
         style={{
-          stroke: isFalseBranch ? '#ef4444' : selected ? '#fff' : '#4b5563',
+          stroke: isFalseBranch ? '#ef4444' : selected ? 'var(--wf-edge-selected)' : 'var(--wf-edge)',
           strokeWidth: selected ? 2.5 : 1.5,
           strokeDasharray: isFalseBranch ? '5 3' : undefined,
         }}
@@ -49,7 +49,7 @@ function WorkflowEdgeComponent({
               transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
               pointerEvents: 'none',
             }}
-            className="text-[9px] font-medium text-red-400 bg-gray-900 px-1 rounded"
+            className="text-[9px] font-medium text-red-400 bg-card px-1 rounded"
           >
             false
           </div>

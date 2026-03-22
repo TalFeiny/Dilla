@@ -31,6 +31,11 @@
   --brand-on-dark: #f1f5f9;
   /* Neo‑noir shared tokens */
   --accent-cyan: #22d3ee;
+  /* Workflow canvas tokens (dark default) */
+  --wf-dot: #374151;
+  --wf-edge: #4b5563;
+  --wf-edge-selected: #fff;
+  --wf-handle-border: hsl(220 13% 8%);
   --surface-3d-bg: rgba(10,12,16,0.92);
   --surface-3d-border: rgba(255,255,255,0.08);
   --elev-1: 0 8px 18px -10px rgba(0,0,0,.55);
@@ -151,6 +156,11 @@ body {
   --border: 210 12% 86%;
   --input: 210 12% 86%;
   --ring: 210 10% 15%;
+  /* Workflow canvas tokens (light) */
+  --wf-dot: #d1d5db;
+  --wf-edge: #9ca3af;
+  --wf-edge-selected: #111827;
+  --wf-handle-border: hsl(0 0% 100%);
 }
 
 [data-theme="night"] {
@@ -171,6 +181,11 @@ body {
   --marble-grey: #2a2a2a;
   --obsidian-accent: #1a5f47;
   --marble-accent: #3a3a3a;
+  /* Workflow canvas tokens (night) */
+  --wf-dot: #333;
+  --wf-edge: #555;
+  --wf-edge-selected: #fff;
+  --wf-handle-border: hsl(0 0% 5%);
 }
 
 /* 3D surface utility */

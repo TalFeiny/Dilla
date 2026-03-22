@@ -15,18 +15,29 @@ const MARKETING_ROUTES = new Set([
   '/talk-to-sales',
   '/contact-sales'
 ]);
+const FULL_BLEED_PREFIXES = ['/workflow', '/deck-agent'];
 
 function shouldShowSidebar(pathname: string | null): boolean {
   if (!pathname) return false;
   if (AUTH_ROUTES.has(pathname) || MARKETING_ROUTES.has(pathname)) return false;
   if (pathname.startsWith('/talk-to-sales') || pathname.startsWith('/contact-sales')) return false;
-  if (pathname.startsWith('/deck-agent')) return false;
+  if (FULL_BLEED_PREFIXES.some((p) => pathname.startsWith(p))) return false;
   return true;
+}
+
+function isFullBleed(pathname: string | null): boolean {
+  if (!pathname) return false;
+  return FULL_BLEED_PREFIXES.some((p) => pathname.startsWith(p));
 }
 
 export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
   const sidebarVisible = useMemo(() => shouldShowSidebar(pathname), [pathname]);
+  const fullBleed = useMemo(() => isFullBleed(pathname), [pathname]);
+
+  if (fullBleed) {
+    return <>{children}</>;
+  }
 
   return (
     <div className="relative flex h-screen w-full bg-white text-gray-900 overflow-hidden">

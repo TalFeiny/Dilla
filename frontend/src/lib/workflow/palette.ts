@@ -11,10 +11,11 @@ import { PORTS } from './port-types';
 // ── Trigger definitions ──────────────────────────────────────────────────
 
 const triggerItems: PaletteItem[] = [
-  { id: 'trigger_manual', label: 'Manual Trigger', icon: 'Play', kind: 'trigger', domain: 'transform' as any, color: 'emerald', description: 'Start workflow manually with the Run button', defaultParams: {}, outputPorts: [PORTS.dataOut()] },
-  { id: 'trigger_schedule', label: 'Scheduled', icon: 'Clock', kind: 'trigger', domain: 'transform' as any, color: 'emerald', description: 'Run workflow on a schedule (cron)', defaultParams: { cron: '0 9 * * 1' }, outputPorts: [PORTS.dataOut()] },
-  { id: 'trigger_data_change', label: 'Data Changed', icon: 'RefreshCw', kind: 'trigger', domain: 'data' as any, color: 'emerald', description: 'Trigger when financial data updates', defaultParams: { watchMetric: 'revenue' }, outputPorts: [PORTS.dataOut()] },
-  { id: 'trigger_event', label: 'Event Trigger', icon: 'Zap', kind: 'trigger', domain: 'transform' as any, color: 'emerald', description: 'Trigger on external event (webhook, alert)', defaultParams: {}, outputPorts: [PORTS.dataOut()] },
+  { id: 'trigger_manual', label: 'Manual Trigger', icon: 'Play', kind: 'trigger', triggerType: 'manual', domain: 'transform' as any, color: 'emerald', description: 'Start workflow manually with the Run button', defaultParams: {}, outputPorts: [PORTS.dataOut()] },
+  { id: 'trigger_schedule', label: 'Scheduled', icon: 'Clock', kind: 'trigger', triggerType: 'schedule', domain: 'transform' as any, color: 'emerald', description: 'Run workflow on a schedule (cron)', defaultParams: { cron: '0 9 * * 1' }, outputPorts: [PORTS.dataOut()] },
+  { id: 'trigger_csv_upload', label: 'CSV / File Upload', icon: 'Upload', kind: 'trigger', triggerType: 'csv_upload', domain: 'data' as any, color: 'emerald', description: 'Upload a CSV or file — workflow runs on that data', defaultParams: {}, outputPorts: [PORTS.tableOut()] },
+  { id: 'trigger_cell_input', label: 'Cell / Row Input', icon: 'Table2', kind: 'trigger', triggerType: 'cell_input', domain: 'data' as any, color: 'emerald', description: 'Start from a specific cell or row in the grid', defaultParams: { sourcePage: 'pnl', sourceRow: '', sourcePeriod: '' }, outputPorts: [PORTS.dataOut()] },
+  { id: 'trigger_document', label: 'Document Upload', icon: 'FileText', kind: 'trigger', triggerType: 'document_upload', domain: 'data' as any, color: 'emerald', description: 'Upload a document (PDF, term sheet) to process', defaultParams: { documentType: 'financial_statement' }, outputPorts: [PORTS.dataOut()] },
 ];
 
 // ── Operator definitions ─────────────────────────────────────────────────

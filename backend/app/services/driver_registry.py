@@ -34,6 +34,8 @@ class DriverDef:
     scope: str = "company"
     range: Optional[Tuple[float, float]] = None
     computed: bool = False
+    group: str = "other"  # e.g. 'revenue', 'costs', 'headcount'
+    parent_group: Optional[str] = None  # e.g. 'opex_rd' — for subcategory drivers
 
 
 # ---------------------------------------------------------------------------
@@ -574,11 +576,39 @@ def get_drivers_by_level(level: DriverLevel) -> Dict[str, DriverDef]:
 
 
 def get_registry_schema() -> List[Dict[str, Any]]:
-    """Full registry as JSON-serializable list for API responses."""
+    """Full registry as JSON-serializable list for API responses.
+
+    Enriches each driver with `group` and `parentGroup` fields for
+    frontend rendering.  Subcategory drivers get parentGroup set to
+    their parent category (opex_rd, opex_sm, opex_ga, cogs).
+    """
+    # Infer group from level
+    _LEVEL_TO_GROUP = {
+        "revenue": "revenue",
+        "opex": "costs",
+        "capital": "capital",
+        "headcount": "headcount",
+        "unit_economics": "unit_economics",
+    }
+    # Infer parentGroup from subcategory driver IDs
+    _SUBCAT_PARENT = {
+        "opex_rd_engineering": "opex_rd", "opex_rd_infra": "opex_rd",
+        "opex_rd_tools": "opex_rd", "opex_rd_contractor": "opex_rd",
+        "opex_sm_paid": "opex_sm", "opex_sm_content": "opex_sm",
+        "opex_sm_sales_salaries": "opex_sm", "opex_sm_events": "opex_sm",
+        "opex_ga_finance_legal": "opex_ga", "opex_ga_office": "opex_ga",
+        "opex_ga_admin_salaries": "opex_ga",
+        "cogs_hosting": "cogs", "cogs_support": "cogs",
+        "cogs_payment_processing": "cogs", "cogs_third_party_apis": "cogs",
+    }
+
     out = []
     for d in _DRIVERS.values():
         entry = asdict(d)
         entry["range"] = list(d.range) if d.range else None
+        # Enrich with frontend grouping fields
+        entry["group"] = d.group if d.group != "other" else _LEVEL_TO_GROUP.get(d.level, "other")
+        entry["parentGroup"] = d.parent_group or _SUBCAT_PARENT.get(d.id)
         out.append(entry)
     return out
 

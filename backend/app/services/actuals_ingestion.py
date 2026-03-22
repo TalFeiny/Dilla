@@ -47,6 +47,54 @@ for parent_cat, subcats in SUBCATEGORY_TAXONOMY.items():
         SUBCATEGORY_TO_PARENT[sub] = parent_cat
 
 # ---------------------------------------------------------------------------
+# Subcomponent taxonomy — what goes BENEATH each subcategory
+# ---------------------------------------------------------------------------
+# Informed by real Workday comp reports (Base_Pay, Bonus_Target,
+# Benefits_Cost) and Salesforce opportunity types.  Downstream services
+# can forecast / budget at this depth when the data is available.
+
+SUBCOMPONENT_TAXONOMY: Dict[str, List[str]] = {
+    # -- Salary subcategories (from Workday comp breakdown) --
+    "engineering_salaries":  ["base_pay", "bonus", "benefits", "equity_comp", "payroll_tax"],
+    "ml_engineering":        ["base_pay", "bonus", "benefits", "equity_comp", "payroll_tax"],
+    "data_engineering":      ["base_pay", "bonus", "benefits", "equity_comp", "payroll_tax"],
+    "sales_salaries":        ["base_pay", "bonus", "commissions", "benefits", "equity_comp", "payroll_tax"],
+    "admin_salaries":        ["base_pay", "bonus", "benefits", "payroll_tax"],
+    "support_salaries":      ["base_pay", "bonus", "benefits", "payroll_tax"],
+    "research":              ["base_pay", "bonus", "benefits", "equity_comp", "payroll_tax"],
+    "delivery_salaries":     ["base_pay", "bonus", "benefits", "payroll_tax"],
+    "direct_labor":          ["base_pay", "overtime", "benefits", "payroll_tax"],
+
+    # -- Non-salary subcategories (from ERP chart of accounts) --
+    "paid_acquisition":      ["sem_ppc", "social_ads", "display_programmatic", "retargeting", "affiliate"],
+    "content_marketing":     ["seo", "blog_content", "social_media_organic", "design_creative", "video_production"],
+    "events":                ["conferences", "trade_shows", "hosted_events", "sponsorships", "travel_events"],
+    "partnerships":          ["partner_commissions", "co_marketing", "channel_incentives"],
+
+    "infra_cloud":           ["compute", "storage", "bandwidth_cdn", "monitoring_observability", "ci_cd"],
+    "tools_licenses":        ["ide_dev_tools", "project_management", "security_tools", "analytics_bi", "design_tools"],
+    "hosting":               ["compute", "storage", "bandwidth_cdn", "database", "caching_queues"],
+
+    "finance_legal":         ["accounting_fees", "legal_counsel", "audit_fees", "tax_advisory", "compliance_filings"],
+    "office":                ["rent_lease", "utilities", "office_supplies", "maintenance", "coworking"],
+    "insurance":             ["d_and_o", "e_and_o", "general_liability", "cyber", "workers_comp"],
+
+    "payment_processing":    ["interchange_fees", "gateway_fees", "chargeback_costs", "fx_conversion"],
+    "third_party_apis":      ["data_providers", "communication_apis", "identity_verification", "mapping_geo"],
+
+    # -- Revenue subcategories (from Salesforce opp types) --
+    "new_business_bookings": ["inbound", "outbound", "partner_sourced", "self_serve"],
+    "renewal_bookings":      ["auto_renew", "negotiated_renew"],
+    "expansion_bookings":    ["upsell", "cross_sell", "seat_expansion", "usage_upgrade"],
+
+    # -- Manufacturing / hardware --
+    "raw_materials":         ["metals", "plastics", "electronics", "chemicals", "packaging"],
+    "manufacturing":         ["assembly", "machining", "testing", "quality_control", "tooling"],
+    "logistics":             ["inbound_freight", "outbound_shipping", "warehousing", "customs_duties"],
+    "inventory":             ["finished_goods", "wip", "raw_stock", "safety_stock"],
+}
+
+# ---------------------------------------------------------------------------
 # Business-model-aware taxonomy overrides
 # Extends the base SaaS taxonomy with model-specific subcategories.
 # Uses the same 14 categories already in intelligent_gap_filler.py.

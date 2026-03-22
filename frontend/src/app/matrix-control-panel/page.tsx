@@ -220,6 +220,18 @@ export default function MatrixControlPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pnlCompanyId intentionally excluded to avoid re-fetch loop on auto-select
   }, [mode, fundId]);
 
+  // Keep workflow store in sync with company context
+  useEffect(() => {
+    if (mode !== 'workflow') return;
+    const { useWorkflowStore } = require('@/lib/workflow/store');
+    const companyName = pnlCompanies.find(c => c.id === pnlCompanyId)?.name || null;
+    useWorkflowStore.getState().setCompanyContext(
+      pnlCompanyId || null,
+      fundId || null,
+      companyName,
+    );
+  }, [mode, pnlCompanyId, fundId, pnlCompanies]);
+
   // Fetch P&L view data when view, granularity, or company changes.
   // Handles ALL views including waterfall — the parent owns P&L data fetching
   // so that view switches are seamless.

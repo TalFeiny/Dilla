@@ -199,6 +199,21 @@ class CompanyData:
             val = a.get(key)
             if val is not None:
                 result[key] = val
+
+        # Subcategory proportions — enables decomposition of parent
+        # OpEx/COGS into individually adjustable line items.
+        try:
+            from app.services.actuals_ingestion import get_subcategory_proportions
+            subcat_props: Dict[str, Dict[str, float]] = {}
+            for parent in ("opex_rd", "opex_sm", "opex_ga", "cogs"):
+                props = get_subcategory_proportions(self.company_id, parent)
+                if props:
+                    subcat_props[parent] = props
+            if subcat_props:
+                result["_subcategory_proportions"] = subcat_props
+        except Exception:
+            pass  # Subcategory data is optional
+
         return result
 
 

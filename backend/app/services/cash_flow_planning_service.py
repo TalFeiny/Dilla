@@ -14,7 +14,9 @@ Data sources:
 - CATEGORY_MARGINS from revenue_projection_service
 """
 
+import hashlib
 import logging
+import math
 from datetime import date
 from typing import Any, Dict, List, Literal, Optional
 
@@ -364,7 +366,11 @@ class CashFlowPlanningService:
         - capex_override: Absolute $ capex instead of % of revenue.
         - debt_service_monthly / interest_rate / outstanding_debt: Debt line below EBITDA.
         - tax_rate: net_income = ebitda * (1 - tax_rate).
-        - working_capital_days: Cash timing adjustment.
+        - dso / dpo / dio: Cash conversion cycle (replaces working_capital_days).
+          DSO = days sales outstanding, DPO = days payable, DIO = days inventory.
+        - events: List[Dict] — discrete liquidity events injected at specific periods:
+          [{"period": "YYYY-MM", "type": "funding|debt_drawdown|one_time_cost|one_time_revenue",
+            "amount": float, "label": str}]
 
         Args:
             company_data: same shape as build_cash_flow_model, plus new driver keys
@@ -443,7 +449,29 @@ class CashFlowPlanningService:
             )
         cash_balance = company_data.get("cash_balance") or max(0, total_raised - burn_monthly * 6)
 
-        opex_bench = OPEX_BENCHMARKS.get(stage, OPEX_BENCHMARKS["Series A"])
+        opex_bench = dict(OPEX_BENCHMARKS.get(stage, OPEX_BENCHMARKS["Series A"]))
+
+        # ── Actuals-anchored OpEx engine ─────────────────────────────
+        # When trailing actuals exist, use absolute monthly amounts as
+        # the forecast base and grow them at a dampened rate (operating
+        # leverage: OpEx grows slower than revenue). Only fall back to
+        # stage-benchmark percentages when zero actuals are available.
+        actual_rd = company_data.get("_rd_spend")
+        actual_sm = company_data.get("_sm_spend")
+        actual_ga = company_data.get("_ga_spend")
+        _opex_from_actuals = any(
+            v is not None and v > 0 for v in [actual_rd, actual_sm, actual_ga]
+        )
+        if _opex_from_actuals:
+            _actual_rd_base = actual_rd or 0
+            _actual_sm_base = actual_sm or 0
+            _actual_ga_base = actual_ga or 0
+            # OpEx grows at 70% of revenue growth rate (operating leverage)
+            _opex_growth_monthly = (growth_rate * 0.7) / 12
+        else:
+            _actual_rd_base = _actual_sm_base = _actual_ga_base = 0
+            _opex_growth_monthly = 0
+
         override_margin = company_data.get("gross_margin")
 
         # ── New driver inputs (with bounds validation) ─────────────────
@@ -471,7 +499,14 @@ class CashFlowPlanningService:
         interest_rate_annual = company_data.get("interest_rate") or 0
         outstanding_debt = company_data.get("outstanding_debt") or 0
         tax_rate = company_data.get("tax_rate") or 0
-        wc_days = company_data.get("working_capital_days") or 0
+        # ── Working capital timing (DSO/DPO/DIO) ────────────────────
+        # Replace the single wc_days param with proper cash conversion
+        # cycle drivers. DSO/DPO/DIO already exist in driver_registry.py
+        # but weren't wired through to cash flow. Falls back to wc_days
+        # for backward compatibility.
+        dso = company_data.get("dso") or company_data.get("working_capital_days") or 0
+        dpo = company_data.get("dpo") or 0
+        dio = company_data.get("dio") or 0
 
         # Customer-level revenue model state (only active when drivers set)
         use_customer_model = any(v is not None for v in [churn_rate, nrr, new_cust_growth, acv])
@@ -481,7 +516,19 @@ class CashFlowPlanningService:
             existing_customers = 0
         new_customers_pipeline: List[float] = []  # queue for sales_cycle delay
         cumulative_headcount_delta = 0
-        prev_wc_cash = 0.0
+        # Working capital state (AR/AP/Inventory)
+        prev_ar = 0.0
+        prev_ap = 0.0
+        prev_inv = 0.0
+
+        # ── Liquidity events index ───────────────────────────────────
+        # Events inject funding, debt drawdowns, or one-time costs at
+        # specific periods instead of everything being a smooth formula.
+        _events: List[Dict[str, Any]] = company_data.get("events") or []
+        _events_by_period: Dict[str, List[Dict[str, Any]]] = {}
+        for evt in _events:
+            p = evt.get("period", "")
+            _events_by_period.setdefault(p, []).append(evt)
 
         results: List[Dict[str, Any]] = []
 
@@ -531,6 +578,15 @@ class CashFlowPlanningService:
             # geometrically, allowing EBITDA to turn positive at scale
             eff = (1 - OPEX_EFFICIENCY_RATE) ** (i / 12.0)
 
+            # Deterministic per-month variance so OpEx doesn't look like a
+            # smooth straight line.  Uses a hash of (company_id, month_index,
+            # category) to produce a stable jitter of +/- ~5 %.
+            def _opex_jitter(cat: str, month_idx: int) -> float:
+                seed = hashlib.md5(f"{company_data.get('company_id','')}-{month_idx}-{cat}".encode()).hexdigest()
+                # Map first 8 hex chars to [-0.05, +0.05]
+                norm = int(seed[:8], 16) / 0xFFFFFFFF  # 0..1
+                return 1.0 + (norm - 0.5) * 0.10  # 0.95..1.05
+
             # CAC-driven S&M: if CAC is set, derive from new_customers * CAC
             if cac is not None and new_customers_pipeline:
                 raw_new = new_customers_pipeline[-1] if new_customers_pipeline else 0
@@ -538,14 +594,22 @@ class CashFlowPlanningService:
             else:
                 sm_spend_computed = None
 
-            if revenue > 0:
-                rd_spend = revenue * opex_bench["rd_pct"] * eff
-                sm_spend = sm_spend_computed if sm_spend_computed is not None else revenue * opex_bench["sm_pct"] * eff
-                ga_spend = revenue * opex_bench["ga_pct"] * eff
+            if _opex_from_actuals:
+                # Actuals-anchored: grow absolute base at dampened rate
+                opex_growth = (1 + _opex_growth_monthly) ** i
+                rd_spend = _actual_rd_base * opex_growth * _opex_jitter("rd", i)
+                sm_spend = (sm_spend_computed if sm_spend_computed is not None
+                            else _actual_sm_base * opex_growth * _opex_jitter("sm", i))
+                ga_spend = _actual_ga_base * opex_growth * _opex_jitter("ga", i)
+            elif revenue > 0:
+                # No actuals: fall back to stage-benchmark percentages
+                rd_spend = revenue * opex_bench["rd_pct"] * eff * _opex_jitter("rd", i)
+                sm_spend = sm_spend_computed if sm_spend_computed is not None else revenue * opex_bench["sm_pct"] * eff * _opex_jitter("sm", i)
+                ga_spend = revenue * opex_bench["ga_pct"] * eff * _opex_jitter("ga", i)
             else:
-                rd_spend = burn_monthly * opex_bench["rd_pct"]
-                sm_spend = sm_spend_computed if sm_spend_computed is not None else burn_monthly * opex_bench["sm_pct"]
-                ga_spend = burn_monthly * opex_bench["ga_pct"]
+                rd_spend = burn_monthly * opex_bench["rd_pct"] * _opex_jitter("rd", i)
+                sm_spend = sm_spend_computed if sm_spend_computed is not None else burn_monthly * opex_bench["sm_pct"] * _opex_jitter("sm", i)
+                ga_spend = burn_monthly * opex_bench["ga_pct"] * _opex_jitter("ga", i)
 
             # Hiring plan: time-distributed headcount additions
             if hiring_monthly:
@@ -576,13 +640,45 @@ class CashFlowPlanningService:
 
             free_cash_flow = net_income
 
-            # ── Working capital cash timing adjustment ─────────────────
-            wc_cash = (revenue / 365) * wc_days if wc_days else 0
-            wc_delta = wc_cash - prev_wc_cash
-            prev_wc_cash = wc_cash
+            # ── Working capital via DSO/DPO/DIO cash conversion cycle ────
+            # DSO: revenue tied up in receivables (delays cash collection)
+            # DPO: expenses deferred via payables (delays cash outflow)
+            # DIO: COGS tied up in inventory (ties up cash)
+            # Net WC delta = change in (AR + Inventory - AP)
+            ar = (revenue / 30) * dso if dso else 0
+            ap = ((cogs + total_opex) / 30) * dpo if dpo else 0
+            inv = (cogs / 30) * dio if dio else 0
+            wc_delta = (ar - prev_ar) + (inv - prev_inv) - (ap - prev_ap)
+            prev_ar, prev_ap, prev_inv = ar, ap, inv
             free_cash_flow -= wc_delta
 
             cash_balance += free_cash_flow
+
+            # ── Liquidity events layer ───────────────────────────────────
+            # Inject discrete events (funding rounds, debt drawdowns,
+            # one-time costs/revenue) at specific periods instead of
+            # everything being a smooth formula.
+            current_period = proj.get("period", "")
+            period_events = _events_by_period.get(current_period, [])
+            event_impact = 0.0
+            for evt in period_events:
+                evt_type = evt.get("type", "")
+                evt_amount = float(evt.get("amount", 0))
+                evt_label = evt.get("label", evt_type)
+                if evt_type == "funding":
+                    cash_balance += evt_amount
+                    event_impact += evt_amount
+                    logger.info("Liquidity event [%s]: %s +$%s", current_period, evt_label, f"{evt_amount:,.0f}")
+                elif evt_type == "debt_drawdown":
+                    cash_balance += evt_amount
+                    outstanding_debt += evt_amount
+                    event_impact += evt_amount
+                    logger.info("Liquidity event [%s]: %s +$%s (debt)", current_period, evt_label, f"{evt_amount:,.0f}")
+                elif evt_type in ("one_time_cost", "one_time_revenue"):
+                    cash_balance += evt_amount  # negative for costs
+                    event_impact += evt_amount
+                    logger.info("Liquidity event [%s]: %s $%s", current_period, evt_label, f"{evt_amount:,.0f}")
+
             runway_months = (cash_balance / (-free_cash_flow)) if free_cash_flow < 0 else 999
 
             results.append({
@@ -603,42 +699,105 @@ class CashFlowPlanningService:
                 "tax_expense": round(tax_expense, 2),
                 "net_income": round(net_income, 2),
                 "free_cash_flow": round(free_cash_flow, 2),
+                # Working capital breakdown (DSO/DPO/DIO)
+                "accounts_receivable": round(ar, 2),
+                "accounts_payable": round(ap, 2),
+                "inventory": round(inv, 2),
                 "working_capital_delta": round(wc_delta, 2),
+                # Liquidity events
+                "event_impact": round(event_impact, 2),
                 "cash_balance": round(cash_balance, 2),
                 "runway_months": round(max(0, runway_months), 1),
             })
 
-        # ── Subcategory decomposition ────────────────────────────────
-        # If we have actuals-based subcategory proportions, decompose parent
-        # opex/cogs totals into line-item detail for each forecast month.
+        # ── Subcategory decomposition with driver overrides ──────────
+        # Decompose parent OpEx/COGS into subcategory line items. When
+        # subcategory driver overrides exist (e.g., "cut engineering by 20%"),
+        # apply them to the individual subcategory and recalculate the parent.
+        _proportions_cache: Dict[str, Dict[str, float]] = {}
+
+        # Prefer pre-computed proportions from seed data
+        _seed_props = company_data.get("_subcategory_proportions")
+        if _seed_props:
+            _proportions_cache = _seed_props
+
+        # Fall back to live query
         _company_id = company_data.get("company_id")
-        if _company_id:
+        if not _proportions_cache and _company_id:
             try:
                 from app.services.actuals_ingestion import get_subcategory_proportions
-
-                _proportions_cache: Dict[str, Dict[str, float]] = {}
                 for cat in ("opex_rd", "opex_sm", "opex_ga", "cogs"):
                     props = get_subcategory_proportions(_company_id, cat)
                     if props:
                         _proportions_cache[cat] = props
+            except Exception as e:
+                logger.debug("Subcategory proportions query failed: %s", e)
 
-                if _proportions_cache:
-                    cat_to_field = {
-                        "opex_rd": "rd_spend", "opex_sm": "sm_spend",
-                        "opex_ga": "ga_spend", "cogs": "cogs",
-                    }
-                    for row in results:
-                        subcategories = {}
-                        for cat, props in _proportions_cache.items():
-                            field = cat_to_field.get(cat, cat)
-                            cat_total = row.get(field, 0)
-                            if cat_total:
-                                subcategories[cat] = {
-                                    sub: round(cat_total * pct, 2)
-                                    for sub, pct in props.items()
-                                }
-                        if subcategories:
-                            row["subcategories"] = subcategories
+        if _proportions_cache:
+            # Read subcategory driver overrides from opex_adjustments
+            _opex_adj = company_data.get("opex_adjustments") or {}
+            # Map driver keys → subcategory names
+            _DRIVER_TO_SUBCAT = {
+                "rd_engineering_salaries_delta": ("opex_rd", "engineering_salaries"),
+                "rd_infra_cloud_delta": ("opex_rd", "infra_cloud"),
+                "rd_tools_licenses_delta": ("opex_rd", "tools_licenses"),
+                "rd_contractor_delta": ("opex_rd", "contractor"),
+                "sm_paid_acquisition_delta": ("opex_sm", "paid_acquisition"),
+                "sm_content_marketing_delta": ("opex_sm", "content_marketing"),
+                "sm_sales_salaries_delta": ("opex_sm", "sales_salaries"),
+                "sm_events_delta": ("opex_sm", "events"),
+                "ga_finance_legal_delta": ("opex_ga", "finance_legal"),
+                "ga_office_delta": ("opex_ga", "office"),
+                "ga_admin_salaries_delta": ("opex_ga", "admin_salaries"),
+                "cogs_hosting_delta": ("cogs", "hosting"),
+                "cogs_support_salaries_delta": ("cogs", "support_salaries"),
+                "cogs_payment_processing_delta": ("cogs", "payment_processing"),
+                "cogs_third_party_apis_delta": ("cogs", "third_party_apis"),
+            }
+
+            cat_to_field = {
+                "opex_rd": "rd_spend", "opex_sm": "sm_spend",
+                "opex_ga": "ga_spend", "cogs": "cogs",
+            }
+
+            for row in results:
+                subcategories: Dict[str, Dict[str, float]] = {}
+                parent_adjustments: Dict[str, float] = {}
+
+                for cat, props in _proportions_cache.items():
+                    field = cat_to_field.get(cat, cat)
+                    cat_total = row.get(field, 0)
+                    if not cat_total:
+                        continue
+
+                    sub_items: Dict[str, float] = {}
+                    adjusted_total = 0.0
+                    for sub, pct in props.items():
+                        base_amount = cat_total * pct
+                        # Apply subcategory driver override if present
+                        for drv_key, (drv_cat, drv_sub) in _DRIVER_TO_SUBCAT.items():
+                            if drv_cat == cat and drv_sub == sub and drv_key in _opex_adj:
+                                delta = float(_opex_adj[drv_key])
+                                base_amount *= (1 + delta)
+                                break
+                        sub_items[sub] = round(base_amount, 2)
+                        adjusted_total += base_amount
+
+                    subcategories[cat] = sub_items
+                    # If overrides changed the total, propagate back to parent
+                    if abs(adjusted_total - cat_total) > 0.01:
+                        parent_adjustments[field] = round(adjusted_total, 2)
+
+                if subcategories:
+                    row["subcategories"] = subcategories
+                # Propagate subcategory adjustments to parent totals
+                for field, new_total in parent_adjustments.items():
+                    row[field] = new_total
+                if parent_adjustments:
+                    row["total_opex"] = round(
+                        row.get("rd_spend", 0) + row.get("sm_spend", 0) + row.get("ga_spend", 0), 2
+                    )
+                    row["ebitda"] = round(row.get("gross_profit", 0) - row["total_opex"], 2)
             except Exception as e:
                 logger.debug("Subcategory decomposition skipped: %s", e)
 

@@ -6,6 +6,8 @@
 
 import type { WorkflowNode, WorkflowEdge } from './store';
 import type { WorkflowNodeData } from './types';
+import type { NodeAssumption } from './assumptions';
+import { composeAssumptionCurve, computeExposure } from './assumptions';
 import type { ComposedWorkflow, WorkflowStep, ActiveChip, InputSegment } from '../chips/types';
 
 
@@ -137,11 +139,40 @@ export function graphToWorkflow(
     // Skip trigger nodes — they define the entry point, not an executable step
     if (data.kind === 'trigger') continue;
 
-    // Driver nodes: collect their values for downstream merging
+    // Driver nodes: collect their values + assumptions for downstream merging
     if (data.kind === 'driver') {
-      driverValues.set(nodeId, {
-        [data.chipId?.replace(/^driver_/, '') || data.label.toLowerCase().replace(/\s+/g, '_')]: data.params.value,
-      });
+      const driverId = data.chipId?.replace(/^driver_/, '') || data.label.toLowerCase().replace(/\s+/g, '_');
+      const assumptions = (data.assumptions as NodeAssumption[]) || [];
+      const baseValue = data.params.value ?? 0;
+
+      if (assumptions.length > 0) {
+        // Assumption-driven: pass weighted curve + probability data
+        const growth = (data.baseAdjustment ?? 0) / 100 / 12;
+        const curve = composeAssumptionCurve(baseValue, growth, assumptions, 12);
+        const exposure = computeExposure(assumptions, baseValue);
+
+        driverValues.set(nodeId, {
+          [driverId]: {
+            value: baseValue,
+            base_adjustment: data.baseAdjustment ?? 0,
+            assumptions: assumptions.map((a) => ({
+              description: a.description,
+              probability: a.probability,
+              magnitude: a.magnitude,
+              magnitude_unit: a.magnitudeUnit,
+              shape: a.shape,
+              timing: a.timing,
+              duration: a.duration,
+              category: a.category,
+            })),
+            curve: curve.map((p) => ({ month: p.month, baseline: p.baseline, scenario: p.scenario })),
+            exposure: exposure.netMonthly,
+          },
+        });
+      } else {
+        // Legacy: flat numeric override
+        driverValues.set(nodeId, { [driverId]: baseValue });
+      }
       continue;
     }
 

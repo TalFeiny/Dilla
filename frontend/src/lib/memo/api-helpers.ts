@@ -661,9 +661,13 @@ export async function executeForecastModel(
   months: number = 24,
 ) {
   if (!modelId) throw new Error('model_id is required for execution');
+  const params = new URLSearchParams({
+    company_id: companyId,
+    months: String(months),
+  });
   const res = await fetch(
-    `/api/fpa/models/${encodeURIComponent(modelId)}`,
-    json({ company_id: companyId, months }),
+    `/api/fpa/models/${encodeURIComponent(modelId)}/execute?${params}`,
+    { method: 'POST' },
   );
   if (!res.ok) throw new Error(`Model execution failed: ${res.status}`);
   return res.json();

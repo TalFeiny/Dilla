@@ -2010,6 +2010,62 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="cheap",
         timeout_ms=30_000,
     ),
+    # ── Liquidity Management ──────────────────────────────────────────
+    AgentTool(
+        name="liquidity_model",
+        description="Build granular liquidity model: subcategory-level P&L, three-statement cash flow (operating/investing/financing), working capital with per-line-item payment timing, runway analysis, cash conversion cycle, and risk alerts.",
+        handler="_tool_liquidity_model",
+        input_schema={
+            "company_id": "str",
+            "months": "int?",
+            "start_period": "str?",
+            "scenario_overrides": "dict?",
+            "events": "list?",
+        },
+        cost_tier="cheap",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="liquidity_scenarios",
+        description="Bull/base/bear liquidity scenario comparison. Returns three scenario forecasts with runway and ending cash deltas.",
+        handler="_tool_liquidity_scenarios",
+        input_schema={
+            "company_id": "str",
+            "months": "int?",
+            "start_period": "str?",
+            "events": "list?",
+        },
+        cost_tier="cheap",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="liquidity_sensitivity",
+        description="Runway sensitivity analysis: shows how runway changes when individual OpEx/COGS subcategories shift ±20%. Returns ranked impact list.",
+        handler="_tool_liquidity_sensitivity",
+        input_schema={"company_id": "str", "months": "int?"},
+        cost_tier="cheap",
+        timeout_ms=90_000,
+    ),
+    # ── Auto-Budget ───────────────────────────────────────────────────
+    AgentTool(
+        name="auto_budget",
+        description="Auto-generate a full-year budget at subcategory depth. Modes: actuals_forward (trend from actuals), zero_based (justify each line), target_margin (reverse-engineer OpEx from EBITDA target). Supports headcount plans, new customer plans, spend caps, and per-subcategory overrides.",
+        handler="_tool_auto_budget",
+        input_schema={
+            "company_id": "str",
+            "fiscal_year": "int",
+            "mode": "str?",
+            "growth_assumptions": "dict?",
+            "headcount_plan": "dict?",
+            "new_customer_plan": "dict?",
+            "target_ebitda_margin": "float?",
+            "spend_caps": "dict?",
+            "subcategory_overrides": "dict?",
+            "name": "str?",
+        },
+        cost_tier="cheap",
+        timeout_ms=45_000,
+    ),
 ]
 
 # Quick lookup by name (includes ALL tools — agent-visible + internal)
@@ -11762,6 +11818,29 @@ Return JSON with ONLY these fields (use null if unknown):
                 stored.extend(specs)
                 self.shared_data["forecast_models"] = stored
 
+            # Persist to fpa_models table so execute endpoint can load them.
+            # Return the DB-generated IDs so the frontend can call /execute.
+            db_model_ids = []
+            try:
+                from app.services.fpa_model_editor import FPAModelEditor
+                editor = FPAModelEditor()
+                for spec in specs:
+                    saved = await editor.create_model(
+                        name=f"custom_model_{spec.model_id}",
+                        model_type="model_spec",
+                        model_definition=spec.model_dump(),
+                        formulas={},
+                        assumptions=spec.driver_overrides or {},
+                        created_by="agent",
+                        fund_id=None,
+                    )
+                    db_id = saved.get("id", spec.model_id)
+                    db_model_ids.append(db_id)
+                    logger.info("Persisted ModelSpec %s → DB id %s", spec.model_id, db_id)
+            except Exception as e:
+                logger.warning("Failed to persist model specs to DB: %s", e)
+                db_model_ids = [s.model_id for s in specs]
+
             # Create scenario branches with model_spec embedded
             try:
                 from app.services.scenario_branch_service import ScenarioBranchService
@@ -11783,7 +11862,7 @@ Return JSON with ONLY these fields (use null if unknown):
             return {
                 "status": "ok",
                 "models_constructed": len(specs),
-                "model_ids": [s.model_id for s in specs],
+                "model_ids": db_model_ids,
                 "narratives": {s.model_id: s.narrative for s in specs},
                 "curves": {
                     s.model_id: list(s.curves.keys()) for s in specs
@@ -11809,12 +11888,26 @@ Return JSON with ONLY these fields (use null if unknown):
             seed = cd.to_forecast_seed()
 
             stored = self.shared_data.get("forecast_models", [])
-            if not stored:
-                return {"error": "No forecast models constructed yet. Call construct_forecast_model first."}
-
-            # Find specific model or execute all
             target_id = inputs.get("model_id")
             months = inputs.get("months", 24)
+
+            # Fall back to database if no models in shared_data
+            if not stored and target_id:
+                try:
+                    from app.services.fpa_model_editor import FPAModelEditor
+                    editor = FPAModelEditor()
+                    model = await editor.get_model(target_id)
+                    if model and model.get("model_definition"):
+                        spec = ModelSpec.model_validate(model["model_definition"])
+                        stored = [spec]
+                        logger.info("Loaded ModelSpec %s from database", target_id)
+                except Exception as e:
+                    logger.warning("Failed to load model from DB: %s", e)
+
+            if not stored:
+                return {"error": "No forecast models found. Construct a model first or provide a valid model_id."}
+
+            # Find specific model or execute all
             executor = ModelSpecExecutor()
 
             results = []
@@ -12572,6 +12665,227 @@ Return JSON with ONLY these fields (use null if unknown):
             return result
         except Exception as e:
             logger.warning(f"[TOOL] fpa_cash_flow failed: {e}")
+            return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Liquidity Management handlers
+    # ------------------------------------------------------------------
+
+    async def _tool_liquidity_model(self, inputs: dict) -> dict:
+        """Build granular liquidity model with subcategory-level cash flow."""
+        try:
+            from app.services.liquidity_management_service import LiquidityManagementService
+
+            company_id = self._resolve_company_id(inputs)
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            svc = LiquidityManagementService()
+            result = svc.build_liquidity_model(
+                company_id=company_id,
+                months=inputs.get("months", 24),
+                start_period=inputs.get("start_period"),
+                scenario_overrides=inputs.get("scenario_overrides"),
+                events=inputs.get("events"),
+            )
+
+            async with self.shared_data_lock:
+                self.shared_data["liquidity_model_result"] = result
+
+            # Grid suggestions from monthly P&L rows
+            grid_suggestions = []
+            for month in result.get("monthly", []):
+                period = month.get("period")
+                if not period:
+                    continue
+                for key in ("revenue", "cogs", "gross_profit", "opex_rd", "opex_sm", "opex_ga", "ebitda", "net_cash_flow", "cash_balance"):
+                    val = month.get(key)
+                    if val is not None:
+                        grid_suggestions.append({
+                            "rowId": key, "columnId": period,
+                            "value": val, "reasoning": f"Liquidity model — {key}",
+                        })
+            result["grid_suggestions"] = grid_suggestions
+
+            # Memo
+            summary = result.get("summary", {})
+            result["memo_updates"] = {
+                "action": "append",
+                "sections": [
+                    {"type": "heading2", "content": "Liquidity Model"},
+                    {"type": "paragraph", "content": (
+                        f"Runway: {summary.get('ending_runway_months', 0):.1f} months. "
+                        f"Ending cash: ${summary.get('ending_cash', 0):,.0f}. "
+                        f"Cash conversion cycle: {summary.get('cash_conversion_cycle_days', 0):.0f} days."
+                    )},
+                ],
+            }
+            if result.get("risk_alerts"):
+                result["memo_updates"]["sections"].append(
+                    {"type": "paragraph", "content": f"Risk alerts: {', '.join(a.get('message', str(a)) for a in result['risk_alerts'][:5])}"}
+                )
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] liquidity_model failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_liquidity_scenarios(self, inputs: dict) -> dict:
+        """Bull/base/bear liquidity scenario comparison."""
+        try:
+            from app.services.liquidity_management_service import LiquidityManagementService
+
+            company_id = self._resolve_company_id(inputs)
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            svc = LiquidityManagementService()
+            result = svc.build_scenario_comparison(
+                company_id=company_id,
+                months=inputs.get("months", 24),
+                start_period=inputs.get("start_period"),
+                events=inputs.get("events"),
+            )
+
+            async with self.shared_data_lock:
+                self.shared_data["liquidity_scenarios_result"] = result
+
+            # Grid suggestions from base scenario
+            grid_suggestions = []
+            base_monthly = result.get("scenarios", {}).get("base", {}).get("monthly", [])
+            for month in base_monthly:
+                period = month.get("period")
+                if not period:
+                    continue
+                for key in ("revenue", "ebitda", "cash_balance", "net_cash_flow"):
+                    val = month.get(key)
+                    if val is not None:
+                        grid_suggestions.append({
+                            "rowId": key, "columnId": period,
+                            "value": val, "reasoning": "Liquidity scenario (base case)",
+                        })
+            result["grid_suggestions"] = grid_suggestions
+
+            # Memo
+            comp = result.get("comparison", {})
+            result["memo_updates"] = {
+                "action": "append",
+                "sections": [
+                    {"type": "heading2", "content": "Liquidity Scenarios"},
+                    {"type": "paragraph", "content": (
+                        f"Bull runway: {comp.get('bull_runway', 0):.1f}mo (${comp.get('bull_ending_cash', 0):,.0f}). "
+                        f"Base runway: {comp.get('base_runway', 0):.1f}mo (${comp.get('base_ending_cash', 0):,.0f}). "
+                        f"Bear runway: {comp.get('bear_runway', 0):.1f}mo (${comp.get('bear_ending_cash', 0):,.0f})."
+                    )},
+                ],
+            }
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] liquidity_scenarios failed: {e}")
+            return {"error": str(e)}
+
+    async def _tool_liquidity_sensitivity(self, inputs: dict) -> dict:
+        """Runway sensitivity — which cost lines have most impact."""
+        try:
+            from app.services.liquidity_management_service import LiquidityManagementService
+
+            company_id = self._resolve_company_id(inputs)
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            svc = LiquidityManagementService()
+            result = svc.runway_sensitivity(
+                company_id=company_id,
+                months=inputs.get("months", 24),
+            )
+
+            async with self.shared_data_lock:
+                self.shared_data["liquidity_sensitivity_result"] = result
+
+            # Memo
+            top = result.get("sensitivities", [])[:5]
+            result["memo_updates"] = {
+                "action": "append",
+                "sections": [
+                    {"type": "heading2", "content": "Liquidity Sensitivity"},
+                    {"type": "paragraph", "content": (
+                        f"Base runway: {result.get('base_runway_months', 0):.1f} months. "
+                        f"Top levers: {', '.join(s.get('subcategory', '?') for s in top)}."
+                    )},
+                ],
+            }
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] liquidity_sensitivity failed: {e}")
+            return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Auto-Budget handler
+    # ------------------------------------------------------------------
+
+    async def _tool_auto_budget(self, inputs: dict) -> dict:
+        """Auto-generate a full-year budget at subcategory depth."""
+        try:
+            from app.services.budget_generation_service import BudgetGenerationService
+
+            company_id = self._resolve_company_id(inputs)
+            if not company_id:
+                return {"error": "company_id is required"}
+
+            fiscal_year = inputs.get("fiscal_year")
+            if not fiscal_year:
+                from datetime import date
+                fiscal_year = date.today().year + 1
+
+            svc = BudgetGenerationService()
+            kwargs = {
+                "company_id": company_id,
+                "fiscal_year": int(fiscal_year),
+            }
+            for key in ("mode", "growth_assumptions", "headcount_plan", "new_customer_plan",
+                        "target_ebitda_margin", "spend_caps", "subcategory_overrides", "name"):
+                val = inputs.get(key)
+                if val is not None:
+                    kwargs[key] = val
+
+            result = svc.generate_from_actuals(**kwargs)
+
+            async with self.shared_data_lock:
+                self.shared_data["auto_budget_result"] = result
+
+            # Grid suggestions from budget lines
+            grid_suggestions = []
+            for line in result.get("budget_lines", []):
+                cat = line.get("category", "")
+                subcat = line.get("subcategory", "")
+                row_id = f"{cat}/{subcat}" if subcat else cat
+                for period, amount in line.get("monthly", {}).items():
+                    grid_suggestions.append({
+                        "rowId": row_id, "columnId": period,
+                        "value": amount, "reasoning": f"Auto-budget ({kwargs.get('mode', 'actuals_forward')})",
+                    })
+            result["grid_suggestions"] = grid_suggestions
+
+            # Memo
+            summary = result.get("summary", {})
+            result["memo_updates"] = {
+                "action": "append",
+                "sections": [
+                    {"type": "heading2", "content": f"FY{fiscal_year} Auto-Budget"},
+                    {"type": "paragraph", "content": (
+                        f"Mode: {kwargs.get('mode', 'actuals_forward')}. "
+                        f"Total revenue: ${summary.get('total_revenue', 0):,.0f}. "
+                        f"Total OpEx: ${summary.get('total_opex', 0):,.0f}. "
+                        f"EBITDA margin: {summary.get('ebitda_margin', 0):.1%}."
+                    )},
+                ],
+            }
+
+            return result
+        except Exception as e:
+            logger.warning(f"[TOOL] auto_budget failed: {e}")
             return {"error": str(e)}
 
     async def _tool_fpa_scenario_create(self, inputs: dict) -> dict:

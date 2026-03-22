@@ -2000,6 +2000,56 @@ class CellActionRegistry:
             column_compatibility=['object', 'array']
         )
 
+        # -- Liquidity Management (advanced cash flow planning) ----------------
+        self.register_workflow(
+            action_id="liquidity.model",
+            name="Liquidity Model",
+            service_name="liquidity_management_service",
+            api_endpoint="/api/fpa/liquidity/model",
+            required_inputs={"company_id": "string"},
+            output_type=OutputType.OBJECT,
+            description="Advanced cash flow planning at subcategory + subcomponent depth",
+            mode_availability=['pnl', 'custom', 'portfolio'],
+            column_compatibility=['object', 'time_series']
+        )
+
+        self.register_workflow(
+            action_id="liquidity.scenarios",
+            name="Liquidity Scenarios",
+            service_name="liquidity_management_service",
+            api_endpoint="/api/fpa/liquidity/scenarios",
+            required_inputs={"company_id": "string"},
+            output_type=OutputType.OBJECT,
+            description="Bull/base/bear liquidity scenario comparison",
+            mode_availability=['pnl', 'custom', 'portfolio'],
+            column_compatibility=['object', 'chart']
+        )
+
+        self.register_workflow(
+            action_id="liquidity.sensitivity",
+            name="Liquidity Sensitivity",
+            service_name="liquidity_management_service",
+            api_endpoint="/api/fpa/liquidity/sensitivity",
+            required_inputs={"company_id": "string"},
+            output_type=OutputType.ARRAY,
+            description="Runway impact: which cost lines matter most (±20% sensitivity)",
+            mode_availability=['pnl', 'custom', 'portfolio'],
+            column_compatibility=['array', 'object']
+        )
+
+        # -- Auto-Budget (deep subcategory/subcomponent budgeting) -------------
+        self.register_workflow(
+            action_id="budget.auto_generate",
+            name="Auto Budget",
+            service_name="budget_generation_service",
+            api_endpoint="/api/fpa/budgets/generate",
+            required_inputs={"company_id": "string", "fiscal_year": "number"},
+            output_type=OutputType.OBJECT,
+            description="Auto-generate budget at subcategory + subcomponent depth from actuals",
+            mode_availability=['pnl', 'custom'],
+            column_compatibility=['object', 'time_series']
+        )
+
         self._initialized = True
         logger.info(f"Initialized {len(self._actions)} core cell actions")
 

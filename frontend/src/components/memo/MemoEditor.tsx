@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { Button } from '@/components/ui/button';
 import {
@@ -202,22 +202,7 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
   const ctx = useMemoContextSafe();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  // Auto-inject ScenarioSection when branches exist and no scenario section present
-  const scenarioAutoInjected = useRef(false);
-  useEffect(() => {
-    if (!ctx || ctx.activeBranches.length === 0) {
-      scenarioAutoInjected.current = false;
-      return;
-    }
-    if (scenarioAutoInjected.current) return;
-    const hasScenario = sections.some(s => s.type === 'scenario');
-    if (!hasScenario) {
-      scenarioAutoInjected.current = true;
-      onChange([...sections, { type: 'scenario' }]);
-    }
-  }, [ctx?.activeBranches.length]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /** Build Forecast — calls backend with chosen method, fills grid, auto-populates memo sections */
+  /** Build Forecast — calls backend with chosen method, fills grid */
   const handleBuildForecast = useCallback(async (method: string = 'auto') => {
     if (!ctx) return;
     setActionLoading('forecast');
@@ -228,22 +213,10 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
         forecast_periods: 12,
         granularity: 'monthly',
       });
-      // Auto-populate: add key sections so user sees results immediately
-      const autoSections: DocumentSection[] = [
-        { type: 'forecast_method' },
-        { type: 'pnl' },
-        { type: 'drivers' },
-        { type: 'metrics' },
-      ];
-      const existingTypes = new Set(sections.map(s => s.type));
-      const newSections = autoSections.filter(s => !existingTypes.has(s.type));
-      if (newSections.length > 0) {
-        onChange([...sections, ...newSections]);
-      }
     } finally {
       setActionLoading(null);
     }
-  }, [ctx, sections, onChange]);
+  }, [ctx]);
 
   /** Fork Scenario — adds scenario section with NL input for "what if..." */
   const handleForkScenario = useCallback(() => {

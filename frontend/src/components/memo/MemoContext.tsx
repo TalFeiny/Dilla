@@ -28,6 +28,7 @@ export interface DriverDef {
   step?: number;
   default?: number;
   group?: string; // e.g. 'revenue', 'costs', 'headcount'
+  parentGroup?: string; // e.g. 'opex_rd' — groups subcategory drivers under a collapsible parent
   ripple?: string[]; // IDs of other drivers this affects
 }
 

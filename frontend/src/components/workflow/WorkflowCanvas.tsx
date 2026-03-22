@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import {
   ReactFlow,
   Background,
@@ -49,7 +49,7 @@ const defaultEdgeOptions = {
 function ZoomIndicator() {
   const { zoom } = useViewport();
   return (
-    <div className="absolute bottom-4 right-20 text-[10px] text-gray-500 font-mono pointer-events-none select-none z-10">
+    <div className="absolute bottom-4 right-20 text-[10px] text-muted-foreground font-mono pointer-events-none select-none z-10">
       {Math.round(zoom * 100)}%
     </div>
   );
@@ -109,6 +109,14 @@ function WorkflowCanvasInner() {
 
   // ── Company context from workflow store ─────────────────────────────────
   const companyId = useWorkflowStore((s) => s.companyId);
+  const fetchCompanyData = useWorkflowStore((s) => s.fetchCompanyData);
+
+  // ── Auto-fetch company data when companyId changes (pull_company_data) ──
+  useEffect(() => {
+    if (companyId) {
+      fetchCompanyData(companyId);
+    }
+  }, [companyId, fetchCompanyData]);
 
   // ── Scenario branch dispatch — notify parent (UnifiedMatrix) to persist ──
   const handleScenarioBranchCreated = useCallback((result: any) => {
@@ -157,13 +165,8 @@ function WorkflowCanvasInner() {
     reactFlowInstance.current = instance;
   }, []);
 
-  // Single click — select only (no drawer)
+  // Single click — select + open config drawer
   const onNodeClick = useCallback((_: React.MouseEvent, node: any) => {
-    selectNode(node.id);
-  }, [selectNode]);
-
-  // Double click — open config drawer
-  const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: any) => {
     selectNode(node.id);
     setPanelOpen(true);
   }, [selectNode, setPanelOpen]);
@@ -189,10 +192,10 @@ function WorkflowCanvasInner() {
       const rfInstance = reactFlowInstance.current;
       if (!rfInstance || !reactFlowWrapper.current) return;
 
-      const bounds = reactFlowWrapper.current.getBoundingClientRect();
+      // screenToFlowPosition expects screen (client) coordinates — not element-relative
       const position = rfInstance.screenToFlowPosition({
-        x: e.clientX - bounds.left,
-        y: e.clientY - bounds.top,
+        x: e.clientX,
+        y: e.clientY,
       });
 
       // Determine node type for React Flow
@@ -213,6 +216,7 @@ function WorkflowCanvasInner() {
         chipDef: item.chipDef,
         params: { ...(item.defaultParams || {}) },
         operatorType: item.operatorType,
+        triggerType: item.triggerType,
         outputFormat: item.kind === 'output' ? (item.defaultParams?.format || 'memo-section') : undefined,
         inputPorts: item.inputPorts,
         outputPorts: item.outputPorts,
@@ -229,7 +233,7 @@ function WorkflowCanvasInner() {
   );
 
   return (
-    <div className="flex flex-col h-screen bg-gray-950">
+    <div className="flex flex-col h-screen bg-background">
       <WorkflowToolbar onRun={handleRun} onSave={handleSave} />
       <div className="flex flex-1 overflow-hidden">
         {paletteOpen && <NodePalette />}
@@ -242,7 +246,6 @@ function WorkflowCanvasInner() {
             onConnect={onConnect}
             onInit={onInit}
             onNodeClick={onNodeClick}
-            onNodeDoubleClick={onNodeDoubleClick}
             onPaneClick={onPaneClick}
             onDragOver={onDragOver}
             onDrop={onDrop}
@@ -253,19 +256,19 @@ function WorkflowCanvasInner() {
             minZoom={0.1}
             maxZoom={2}
             proOptions={{ hideAttribution: true }}
-            className="bg-gray-950"
+            className="bg-background"
             deleteKeyCode={['Backspace', 'Delete']}
             snapToGrid
             snapGrid={[20, 20]}
           >
-            <Background variant={BackgroundVariant.Dots} color="#374151" gap={20} size={1.5} />
+            <Background variant={BackgroundVariant.Dots} color="var(--wf-dot)" gap={20} size={1} />
             <Controls
-              className="!bg-gray-900 !border-gray-700 !rounded-lg [&>button]:!bg-gray-800 [&>button]:!border-gray-700 [&>button]:!text-gray-400 [&>button:hover]:!bg-gray-700"
+              className="!bg-card !border-border !rounded-xl [&>button]:!bg-secondary [&>button]:!border-border [&>button]:!text-muted-foreground [&>button:hover]:!bg-accent [&>button:hover]:!text-foreground"
               position="bottom-right"
               showInteractive={false}
             />
             <MiniMap
-              className="!bg-gray-900 !border-gray-700 !rounded-lg"
+              className="!bg-card !border-border !rounded-xl"
               style={{ width: 120, height: 80 }}
               nodeColor={(node) => {
                 const d = node.data as unknown as WorkflowNodeData;
@@ -275,7 +278,7 @@ function WorkflowCanvasInner() {
                   red: '#ef4444', lime: '#84cc16', slate: '#64748b',
                   sky: '#0ea5e9', pink: '#ec4899', fuchsia: '#d946ef',
                 };
-                return colors[d?.color] || '#4b5563';
+                return colors[d?.color] || '#9ca3af';
               }}
               position="bottom-left"
               pannable

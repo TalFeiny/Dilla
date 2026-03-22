@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { Loader2, Play, ArrowRight } from 'lucide-react';
+import { Loader2, Play, ArrowRight, ChevronDown, ChevronRight } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -25,6 +25,31 @@ function formatDriverValue(v: number, unit: DriverDef['unit']): string {
     case 'months': return `${v.toFixed(0)} mo`;
     default: return v.toLocaleString();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Subcategory collapsible group
+// ---------------------------------------------------------------------------
+
+function SubcategoryGroup({ label, count, children }: {
+  label: string;
+  count: number;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border border-border/50 rounded-md overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 w-full px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:bg-muted/50 transition-colors"
+      >
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        {label}
+        <span className="text-[9px] ml-auto opacity-60">{count} drivers</span>
+      </button>
+      {open && <div className="space-y-3 px-3 py-2 border-t border-border/30 bg-muted/20">{children}</div>}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -137,62 +162,94 @@ export function DriversSection({ onDelete, readOnly = false }: DriversSectionPro
     >
       {visibleDrivers.length > 0 ? (
         <div className="space-y-3">
-          {visibleDrivers.map(driver => {
-            const min = driver.min ?? 0;
-            const max = driver.max ?? (driver.unit === 'percentage' ? 1 : 10000000);
-            const step = driver.step ?? (driver.unit === 'percentage' ? 0.01 : 1000);
-            const hasPending = pendingOverrides[driver.id] !== undefined;
+          {(() => {
+            // Split drivers into top-level and subcategory groups
+            const topLevel = visibleDrivers.filter(d => !d.parentGroup);
+            const subGroups = new Map<string, typeof visibleDrivers>();
+            for (const d of visibleDrivers) {
+              if (d.parentGroup) {
+                const existing = subGroups.get(d.parentGroup) || [];
+                existing.push(d);
+                subGroups.set(d.parentGroup, existing);
+              }
+            }
 
-            // Ripple targets — other drivers/metrics affected by this one
-            const rippleTargets = driver.ripple || [];
-            const rippleLabels = rippleTargets.map(targetId => {
-              const target = ctx.driverRegistry.find(d => d.id === targetId);
-              return target?.label || targetId;
-            });
+            const renderDriver = (driver: typeof visibleDrivers[0]) => {
+              const min = driver.min ?? 0;
+              const max = driver.max ?? (driver.unit === 'percentage' ? 1 : 10000000);
+              const step = driver.step ?? (driver.unit === 'percentage' ? 0.01 : 1000);
+              const hasPending = pendingOverrides[driver.id] !== undefined;
+              const rippleTargets = driver.ripple || [];
+              const rippleLabels = rippleTargets.map(targetId => {
+                const target = ctx.driverRegistry.find(d => d.id === targetId);
+                return target?.label || targetId;
+              });
+
+              return (
+                <div key={driver.id} className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium">{driver.label}</span>
+                      {driver.source !== 'override' && (
+                        <span className="text-[9px] px-1 py-0.5 rounded bg-muted text-muted-foreground">{driver.source}</span>
+                      )}
+                      {hasPending && (
+                        <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">pending</span>
+                      )}
+                    </div>
+                    <span className="tabular-nums font-mono text-[11px]">
+                      {formatDriverValue(driver.currentValue, driver.unit)}
+                    </span>
+                  </div>
+                  {!readOnly ? (
+                    <Slider
+                      min={min}
+                      max={max}
+                      step={step}
+                      value={[driver.currentValue]}
+                      onValueChange={([v]) => handleSliderChange(driver.id, v)}
+                      className="w-full"
+                    />
+                  ) : (
+                    <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full bg-primary rounded-full"
+                        style={{ width: `${Math.min(100, ((driver.currentValue - min) / (max - min)) * 100)}%` }}
+                      />
+                    </div>
+                  )}
+                  {hasPending && rippleLabels.length > 0 && (
+                    <div className="flex items-center gap-1 text-[9px] text-blue-600 dark:text-blue-400 mt-0.5">
+                      <ArrowRight className="h-2.5 w-2.5 shrink-0" />
+                      <span>Ripples to: {rippleLabels.join(', ')}</span>
+                    </div>
+                  )}
+                </div>
+              );
+            };
+
+            const PARENT_LABELS: Record<string, string> = {
+              opex_rd: 'R&D Breakdown',
+              opex_sm: 'Sales & Marketing Breakdown',
+              opex_ga: 'G&A Breakdown',
+              cogs: 'COGS Breakdown',
+            };
 
             return (
-              <div key={driver.id} className="space-y-1">
-                <div className="flex items-center justify-between text-[11px]">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-medium">{driver.label}</span>
-                    {driver.source !== 'override' && (
-                      <span className="text-[9px] px-1 py-0.5 rounded bg-muted text-muted-foreground">{driver.source}</span>
-                    )}
-                    {hasPending && (
-                      <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">pending</span>
-                    )}
-                  </div>
-                  <span className="tabular-nums font-mono text-[11px]">
-                    {formatDriverValue(driver.currentValue, driver.unit)}
-                  </span>
-                </div>
-                {!readOnly ? (
-                  <Slider
-                    min={min}
-                    max={max}
-                    step={step}
-                    value={[driver.currentValue]}
-                    onValueChange={([v]) => handleSliderChange(driver.id, v)}
-                    className="w-full"
-                  />
-                ) : (
-                  <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                    <div
-                      className="h-full bg-primary rounded-full"
-                      style={{ width: `${Math.min(100, ((driver.currentValue - min) / (max - min)) * 100)}%` }}
-                    />
-                  </div>
-                )}
-                {/* Ripple indicator — shows which other drivers/metrics this one affects */}
-                {hasPending && rippleLabels.length > 0 && (
-                  <div className="flex items-center gap-1 text-[9px] text-blue-600 dark:text-blue-400 mt-0.5">
-                    <ArrowRight className="h-2.5 w-2.5 shrink-0" />
-                    <span>Ripples to: {rippleLabels.join(', ')}</span>
-                  </div>
-                )}
-              </div>
+              <>
+                {topLevel.map(renderDriver)}
+                {Array.from(subGroups.entries()).map(([parentKey, subs]) => (
+                  <SubcategoryGroup
+                    key={parentKey}
+                    label={PARENT_LABELS[parentKey] || parentKey}
+                    count={subs.length}
+                  >
+                    {subs.map(renderDriver)}
+                  </SubcategoryGroup>
+                ))}
+              </>
             );
-          })}
+          })()}
         </div>
       ) : (
         <div className="flex items-center justify-center h-[120px] text-xs text-muted-foreground">

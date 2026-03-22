@@ -4,6 +4,7 @@
 
 import type { ChipDef, ChipDomain } from '../chips/types';
 import type { PortDef } from './port-types';
+import type { NodeAssumption, CompanyDataSnapshot } from './assumptions';
 
 /** Node categories in the visual builder */
 export type WorkflowNodeKind =
@@ -36,6 +37,14 @@ export type OperatorType =
   // Probabilistic
   | 'prior';
 
+/** Trigger types — how a workflow starts and receives input */
+export type TriggerType =
+  | 'manual'           // Click run
+  | 'schedule'         // Cron-based
+  | 'csv_upload'       // Upload a CSV/file — flow runs on that data
+  | 'cell_input'       // Select a cell/row from the grid — flow starts from that data
+  | 'document_upload'; // Upload a document (PDF, term sheet) — flow processes it
+
 /** Output format for terminal nodes */
 export type OutputFormat =
   | 'memo-section'
@@ -67,12 +76,20 @@ export interface WorkflowNodeData {
   driverOverrides?: Record<string, number>;
   /** For operator nodes */
   operatorType?: OperatorType;
+  /** For trigger nodes */
+  triggerType?: TriggerType;
   /** For output nodes */
   outputFormat?: OutputFormat;
   /** Typed input ports */
   inputPorts?: PortDef[];
   /** Typed output ports */
   outputPorts?: PortDef[];
+  /** Assumption-driven model: NL assumptions with probability + magnitude */
+  assumptions?: NodeAssumption[];
+  /** Base adjustment slider value (deterministic, grounded in actuals) */
+  baseAdjustment?: number;
+  /** Cached actuals key for this driver (e.g. 'revenue', 'opex_rd') */
+  actualsKey?: string;
   /** Execution state */
   status: 'idle' | 'running' | 'done' | 'error';
   /** Execution result (once done) */
@@ -94,6 +111,8 @@ export interface PaletteItem {
   chipDef?: ChipDef;
   /** For operator nodes */
   operatorType?: OperatorType;
+  /** For trigger nodes */
+  triggerType?: TriggerType;
   /** Default params */
   defaultParams?: Record<string, any>;
   /** Typed ports from chip definition */

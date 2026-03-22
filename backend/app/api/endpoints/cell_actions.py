@@ -2784,6 +2784,86 @@ async def _route_to_service(
             
             return result
         
+        # -- Liquidity Management -------------------------------------------------
+        if action_id.startswith('liquidity.'):
+            from app.services.liquidity_management_service import LiquidityManagementService
+
+            svc = LiquidityManagementService()
+            company_id = request.inputs.get('company_id') or request.company_id
+            if not company_id:
+                raise ValueError("company_id is required for liquidity actions")
+
+            months = int(request.inputs.get('months', 24))
+            start_period = request.inputs.get('start_period')
+            events = request.inputs.get('events', [])
+            overrides = request.inputs.get('scenario_overrides', {})
+
+            # Merge driver overrides from workflow context
+            if request.inputs.get('driver_overrides'):
+                overrides.update(request.inputs['driver_overrides'])
+
+            if action_id == 'liquidity.model':
+                return svc.build_liquidity_model(
+                    company_id=company_id,
+                    months=months,
+                    start_period=start_period,
+                    scenario_overrides=overrides or None,
+                    events=events or None,
+                )
+            elif action_id == 'liquidity.scenarios':
+                return svc.build_scenario_comparison(
+                    company_id=company_id,
+                    months=months,
+                    start_period=start_period,
+                    events=events or None,
+                )
+            elif action_id == 'liquidity.sensitivity':
+                return svc.runway_sensitivity(
+                    company_id=company_id,
+                    months=months,
+                )
+
+        # -- Auto-Budget -------------------------------------------------------
+        if action_id == 'budget.auto_generate':
+            from app.services.budget_generation_service import BudgetGenerationService
+
+            svc = BudgetGenerationService()
+            company_id = request.inputs.get('company_id') or request.company_id
+            if not company_id:
+                raise ValueError("company_id is required for budget generation")
+
+            from datetime import date as _date
+            fiscal_year = int(request.inputs.get('fiscal_year', _date.today().year + 1))
+            mode = request.inputs.get('mode', 'actuals_forward')
+            persist = str(request.inputs.get('persist', 'true')).lower() == 'true'
+
+            kwargs: Dict[str, Any] = {
+                "company_id": company_id,
+                "fiscal_year": fiscal_year,
+                "mode": mode,
+                "persist": persist,
+            }
+            if request.inputs.get('growth_assumptions'):
+                kwargs["growth_assumptions"] = request.inputs['growth_assumptions']
+            if request.inputs.get('headcount_plan'):
+                kwargs["headcount_plan"] = request.inputs['headcount_plan']
+            if request.inputs.get('new_customer_plan'):
+                kwargs["new_customer_plan"] = request.inputs['new_customer_plan']
+            if request.inputs.get('target_ebitda_margin') is not None:
+                kwargs["target_ebitda_margin"] = float(request.inputs['target_ebitda_margin']) / 100
+            if request.inputs.get('spend_caps'):
+                kwargs["spend_caps"] = request.inputs['spend_caps']
+            if request.inputs.get('name'):
+                kwargs["name"] = request.inputs['name']
+
+            # Merge driver overrides as growth assumptions
+            if request.inputs.get('driver_overrides'):
+                ga = kwargs.get("growth_assumptions", {})
+                ga.update(request.inputs['driver_overrides'])
+                kwargs["growth_assumptions"] = ga
+
+            return svc.generate_from_actuals(**kwargs)
+
         # Default: no handler for this action (unknown action_id); return minimal valid structure
         logger.warning("No service handler for action: %s", action_id)
         return {"value": None, "metadata": {"reason": "unknown_action"}}

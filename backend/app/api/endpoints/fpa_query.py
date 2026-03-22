@@ -84,6 +84,7 @@ class FPAForecastRequest(BaseModel):
     forecast_periods: int = 24
     granularity: str = "monthly"  # "monthly" | "quarterly" | "annual"
     growth_rate: Optional[float] = None
+    method: Optional[str] = None  # "auto" | "seasonal" | "regression" | "driver_based" | "linear" | etc.
     assumptions: Optional[Dict[str, Any]] = None
     branch_ids: Optional[List[str]] = None  # scenario branch IDs to compare
 
@@ -663,6 +664,134 @@ async def get_budget_lines(budget_id: str):
 
     result = sb.table("budget_lines").select("*").eq("budget_id", budget_id).execute()
     return result.data or []
+
+
+class BudgetGenerateRequest(BaseModel):
+    company_id: str
+    fiscal_year: int
+    growth_assumptions: Optional[Dict[str, float]] = None
+    name: Optional[str] = None
+    persist: bool = True
+    # New deep-budget params
+    mode: Optional[str] = None  # "actuals_forward" | "zero_based" | "target_margin"
+    headcount_plan: Optional[Dict[str, int]] = None  # {"engineering": 3, "sales": 2}
+    new_customer_plan: Optional[Dict[str, int]] = None  # {"m1": 5, "m2": 8, ...}
+    target_ebitda_margin: Optional[float] = None  # e.g. 0.15 for 15% margin
+    spend_caps: Optional[Dict[str, float]] = None  # {"opex_rd": 500000, ...}
+    subcategory_overrides: Optional[Dict[str, float]] = None  # {"engineering_salaries": 0.05}
+
+
+@router.post("/budgets/generate")
+async def generate_budget(request: BudgetGenerateRequest):
+    """Auto-generate a budget from trailing actuals + growth assumptions.
+
+    Supports three modes:
+    - actuals_forward (default): project trailing actuals with per-subcategory drivers
+    - zero_based: build from first principles (headcount × cost, customers × CAC)
+    - target_margin: work backward from EBITDA margin target
+
+    Returns full budget at subcategory + subcomponent depth for review.
+    """
+    from app.services.budget_generation_service import BudgetGenerationService
+
+    svc = BudgetGenerationService()
+    kwargs: Dict[str, Any] = {
+        "company_id": request.company_id,
+        "fiscal_year": request.fiscal_year,
+        "growth_assumptions": request.growth_assumptions,
+        "name": request.name,
+        "persist": request.persist,
+    }
+    if request.mode:
+        kwargs["mode"] = request.mode
+    if request.headcount_plan:
+        kwargs["headcount_plan"] = request.headcount_plan
+    if request.new_customer_plan:
+        kwargs["new_customer_plan"] = request.new_customer_plan
+    if request.target_ebitda_margin is not None:
+        kwargs["target_ebitda_margin"] = request.target_ebitda_margin
+    if request.spend_caps:
+        kwargs["spend_caps"] = request.spend_caps
+    if request.subcategory_overrides:
+        kwargs["subcategory_overrides"] = request.subcategory_overrides
+
+    result = svc.generate_from_actuals(**kwargs)
+
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Liquidity Management — advanced granular cash flow planning
+# ---------------------------------------------------------------------------
+
+class LiquidityModelRequest(BaseModel):
+    company_id: str
+    months: int = 24
+    start_period: Optional[str] = None  # "YYYY-MM"
+    scenario_overrides: Optional[Dict[str, Any]] = None
+    events: Optional[List[Dict[str, Any]]] = None
+
+
+class LiquiditySensitivityRequest(BaseModel):
+    company_id: str
+    months: int = 24
+
+
+@router.post("/liquidity/model")
+async def build_liquidity_model(request: LiquidityModelRequest):
+    """Build a fully granular liquidity model with subcategory-level drivers.
+
+    Returns monthly P&L at subcategory + subcomponent depth, three-statement
+    cash flow, working capital schedule, runway analysis, and risk alerts.
+    """
+    from app.services.liquidity_management_service import LiquidityManagementService
+
+    svc = LiquidityManagementService()
+    result = svc.build_liquidity_model(
+        company_id=request.company_id,
+        months=request.months,
+        start_period=request.start_period,
+        scenario_overrides=request.scenario_overrides,
+        events=request.events,
+    )
+    return result
+
+
+@router.post("/liquidity/scenarios")
+async def build_liquidity_scenarios(request: LiquidityModelRequest):
+    """Build bull/base/bear liquidity scenario comparison.
+
+    Returns three scenario models with summary comparison metrics.
+    """
+    from app.services.liquidity_management_service import LiquidityManagementService
+
+    svc = LiquidityManagementService()
+    result = svc.build_scenario_comparison(
+        company_id=request.company_id,
+        months=request.months,
+        start_period=request.start_period,
+        events=request.events,
+    )
+    return result
+
+
+@router.post("/liquidity/sensitivity")
+async def liquidity_sensitivity(request: LiquiditySensitivityRequest):
+    """Show how runway changes when individual cost lines change by +/-20%.
+
+    Returns ranked list of which subcategories have the most impact on runway.
+    """
+    from app.services.liquidity_management_service import LiquidityManagementService
+
+    svc = LiquidityManagementService()
+    result = svc.runway_sensitivity(
+        company_id=request.company_id,
+        months=request.months,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -3189,6 +3318,7 @@ async def generate_forecast(request: FPAForecastRequest):
     """
     from app.services.cash_flow_planning_service import CashFlowPlanningService
     from app.services.company_data_pull import pull_company_data
+    from app.services.forecast_method_router import ForecastMethodRouter
 
     try:
         # Pull full CompanyData — time_series, periods, historical_values()
@@ -3225,13 +3355,68 @@ async def generate_forecast(request: FPAForecastRequest):
         if request.granularity not in ("monthly", "quarterly", "annual"):
             raise HTTPException(status_code=400, detail="granularity must be monthly, quarterly, or annual")
 
-        svc = CashFlowPlanningService()
-        forecast = svc.build_projection(
-            company_data=company_data,
-            granularity=request.granularity,
-            horizon=request.forecast_periods,
-            start_period=None,
+        # Determine forecast start period
+        from datetime import date as _date
+        _today = _date.today()
+        _forecast_start = f"{_today.year}-{_today.month:02d}"
+        if cd_obj:
+            _actuals_periods = sorted(cd_obj.by_period().keys()) if cd_obj.by_period() else []
+            if _actuals_periods:
+                _last = _actuals_periods[-1]
+                _y, _m = int(_last[:4]), int(_last[5:7])
+                _m += 1
+                if _m > 12:
+                    _m, _y = 1, _y + 1
+                _forecast_start = f"{_y:04d}-{_m:02d}"
+
+        # Default horizon in months
+        _months = {"monthly": request.forecast_periods, "quarterly": request.forecast_periods * 3, "annual": request.forecast_periods * 12}.get(request.granularity, request.forecast_periods)
+
+        # Route through ForecastMethodRouter — uses the correct method
+        # (seasonal, regression, driver-based, etc.) instead of always
+        # falling back to growth-rate math.
+        router = ForecastMethodRouter()
+        method = request.method or "auto"
+        reasoning = ""
+
+        # Normalize frontend method names to router method names
+        _method_aliases = {
+            "linear": "regression",
+            "polynomial": "advanced_regression",
+            "exponential_growth": "growth_rate",
+            "logistic": "growth_rate",
+            "power_law": "growth_rate",
+            "gompertz": "growth_rate",
+            "piecewise_linear": "regression",
+            "weighted_linear": "regression",
+            "driver-based": "driver_based",
+        }
+        method = _method_aliases.get(method, method)
+
+        if method == "auto":
+            method, reasoning = router.auto_select_method(
+                request.company_id or "", company_data, company_data=cd_obj,
+            )
+
+        monthly, provenance = router.build_forecast(
+            company_id=request.company_id or "",
+            method=method,
+            seed_data=company_data,
+            months=_months,
+            start_period=_forecast_start,
+            company_data=cd_obj,
         )
+
+        # Store method info for downstream consumers
+        company_data["_forecast_method"] = method
+        company_data["_forecast_reasoning"] = reasoning
+
+        # Aggregate if needed
+        forecast = monthly
+        if request.granularity == "quarterly":
+            forecast = CashFlowPlanningService._aggregate_to_quarterly(monthly)
+        elif request.granularity == "annual":
+            forecast = CashFlowPlanningService._aggregate_to_annual(monthly)
 
         # ── Write forecast into budget_lines ──────────────────────────
         # Transpose monthly P&L rows into budget_lines (one row per category
@@ -3279,7 +3464,7 @@ async def generate_forecast(request: FPAForecastRequest):
                 fps.save_forecast(
                     company_id=request.company_id,
                     forecast=forecast,
-                    method="connected_pnl",
+                    method=method,
                     seed_snapshot=company_data,
                     assumptions=branch_assumptions,
                     activate=True,
@@ -3438,4 +3623,144 @@ async def generate_forecast(request: FPAForecastRequest):
         raise
     except Exception as e:
         logger.error(f"Error generating forecast: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Company Data Snapshot — pull_company_data exposed for workflow canvas
+# ---------------------------------------------------------------------------
+
+@router.get("/company-data")
+async def get_company_data(
+    company_id: str = Query(..., description="Company ID"),
+):
+    """
+    Full company data snapshot for the workflow canvas.
+    Returns time_series, latest, periods, analytics, metadata — everything
+    nodes need to display actuals and ground assumptions.
+    """
+    from app.services.company_data_pull import pull_company_data
+
+    try:
+        cd = pull_company_data(company_id)
+        if not cd.time_series:
+            return {
+                "company_id": company_id,
+                "time_series": {},
+                "latest": {},
+                "periods": [],
+                "analytics": {},
+                "metadata": {"row_count": 0, "categories": []},
+            }
+
+        return {
+            "company_id": company_id,
+            "time_series": cd.time_series,
+            "latest": cd.latest,
+            "periods": cd.periods,
+            "analytics": cd.analytics,
+            "metadata": cd.metadata,
+        }
+    except Exception as e:
+        logger.error(f"Error pulling company data: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Analyze Assumption — NL assumption → probability + magnitude via LLM
+# ---------------------------------------------------------------------------
+
+class AnalyzeAssumptionRequest(BaseModel):
+    company_id: str
+    assumption_text: str
+    metric: str  # e.g. "revenue", "churn_rate", "opex_rd"
+    mode: str = "business"  # "business" or "macro"
+
+
+@router.post("/analyze-assumption")
+async def analyze_assumption(request: AnalyzeAssumptionRequest):
+    """
+    Send a natural-language assumption to the backend for analysis.
+    Returns suggested probability, magnitude, reasoning, and driver adjustments.
+
+    Uses BusinessEventAnalysisService for company-specific events,
+    or MacroEventAnalysisService for macro/geopolitical events.
+    """
+    from app.services.company_data_pull import pull_company_data
+
+    try:
+        cd = pull_company_data(request.company_id)
+        seed = cd.to_forecast_seed()
+
+        if request.mode == "macro":
+            from app.services.macro_event_analysis_service import MacroEventAnalysisService
+            from app.services.model_router import ModelRouter
+
+            svc = MacroEventAnalysisService(ModelRouter())
+            analysis = await svc.analyse_event(
+                event=request.assumption_text,
+                companies=[{
+                    "id": request.company_id,
+                    "name": seed.get("company_name", request.company_id),
+                    "sector": seed.get("sector", "technology"),
+                }],
+            )
+
+            # Extract the most relevant driver adjustment for this metric
+            adjustments = analysis.driver_adjustments if analysis.driver_adjustments else []
+            relevant = [a for a in adjustments if a.driver_id == request.metric]
+            best = relevant[0] if relevant else (adjustments[0] if adjustments else None)
+
+            return {
+                "suggested_probability": 0.5,  # macro events are inherently uncertain
+                "suggested_magnitude": best.adjustment_pct if best else 0,
+                "factors": [
+                    {"name": f.name, "magnitude": f.magnitude_pct, "confidence": f.confidence, "order": f.order}
+                    for f in (analysis.macro_factors or [])[:5]
+                ],
+                "driver_adjustments": [
+                    {"driverId": a.driver_id, "adjustmentPct": a.adjustment_pct, "reasoning": a.reasoning}
+                    for a in adjustments[:5]
+                ],
+                "reasoning": analysis.reasoning_chain or "",
+                "mode": "macro",
+            }
+        else:
+            from app.services.business_event_analysis_service import BusinessEventAnalysisService
+            from app.services.model_router import ModelRouter
+
+            svc = BusinessEventAnalysisService(ModelRouter())
+            analysis = await svc.analyse_event(
+                event=request.assumption_text,
+                company_id=request.company_id,
+                company_data=seed,
+            )
+
+            # Get sensitivity for this metric
+            suggested_prob = 0.5
+            suggested_mag = 0
+            if analysis.driver_adjustments:
+                relevant = [a for a in analysis.driver_adjustments if a.driver_id == request.metric]
+                best = relevant[0] if relevant else analysis.driver_adjustments[0]
+                suggested_mag = best.adjustment_pct
+            if analysis.factors:
+                conf = analysis.factors[0].confidence
+                suggested_prob = {"high": 0.8, "medium": 0.5, "low": 0.25}.get(conf, 0.5)
+
+            return {
+                "suggested_probability": suggested_prob,
+                "suggested_magnitude": suggested_mag,
+                "factors": [
+                    {"name": f.name, "magnitude": f.magnitude_pct, "confidence": f.confidence, "order": f.order}
+                    for f in (analysis.factors or [])[:5]
+                ],
+                "driver_adjustments": [
+                    {"driverId": a.driver_id, "adjustmentPct": a.adjustment_pct, "reasoning": a.reasoning}
+                    for a in (analysis.driver_adjustments or [])[:5]
+                ],
+                "reasoning": analysis.reasoning_chain or "",
+                "mode": "business",
+            }
+    except Exception as e:
+        logger.error(f"Error analyzing assumption: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
