@@ -203,9 +203,9 @@ export default function MatrixControlPanel() {
     }
   }, [fundId, mode]);
 
-  // Load portfolio companies for PnL company picker
+  // Load portfolio companies for PnL / Workflow company picker
   useEffect(() => {
-    if (mode !== 'pnl' || !fundId) { setPnlCompanies([]); return; }
+    if ((mode !== 'pnl' && mode !== 'workflow') || !fundId) { setPnlCompanies([]); return; }
     (async () => {
       try {
         const res = await fetch(`/api/portfolio/${fundId}/companies`);
@@ -887,8 +887,8 @@ export default function MatrixControlPanel() {
                 ) : null
               )}
 
-              {/* Company selector for PnL mode */}
-              {mode === 'pnl' && pnlCompanies.length > 0 && (
+              {/* Company selector for PnL / Workflow mode */}
+              {(mode === 'pnl' || mode === 'workflow') && pnlCompanies.length > 0 && (
                 <Select value={pnlCompanyId || ''} onValueChange={setPnlCompanyId}>
                   <SelectTrigger className="w-[180px]">
                     <SelectValue placeholder="Select company" />

@@ -734,7 +734,6 @@ class CashFlowPlanningService:
                 logger.debug("Subcategory proportions query failed: %s", e)
 
         if _proportions_cache:
-            # Read subcategory driver overrides from opex_adjustments
             _opex_adj = company_data.get("opex_adjustments") or {}
             # Map driver keys → subcategory names
             _DRIVER_TO_SUBCAT = {
@@ -760,44 +759,45 @@ class CashFlowPlanningService:
                 "opex_ga": "ga_spend", "cogs": "cogs",
             }
 
-            for row in results:
-                subcategories: Dict[str, Dict[str, float]] = {}
-                parent_adjustments: Dict[str, float] = {}
+            try:
+                for row in results:
+                    subcategories: Dict[str, Dict[str, float]] = {}
+                    parent_adjustments: Dict[str, float] = {}
 
-                for cat, props in _proportions_cache.items():
-                    field = cat_to_field.get(cat, cat)
-                    cat_total = row.get(field, 0)
-                    if not cat_total:
-                        continue
+                    for cat, props in _proportions_cache.items():
+                        field = cat_to_field.get(cat, cat)
+                        cat_total = row.get(field, 0)
+                        if not cat_total:
+                            continue
 
-                    sub_items: Dict[str, float] = {}
-                    adjusted_total = 0.0
-                    for sub, pct in props.items():
-                        base_amount = cat_total * pct
-                        # Apply subcategory driver override if present
-                        for drv_key, (drv_cat, drv_sub) in _DRIVER_TO_SUBCAT.items():
-                            if drv_cat == cat and drv_sub == sub and drv_key in _opex_adj:
-                                delta = float(_opex_adj[drv_key])
-                                base_amount *= (1 + delta)
-                                break
-                        sub_items[sub] = round(base_amount, 2)
-                        adjusted_total += base_amount
+                        sub_items: Dict[str, float] = {}
+                        adjusted_total = 0.0
+                        for sub, pct in props.items():
+                            base_amount = cat_total * pct
+                            # Apply subcategory driver override if present
+                            for drv_key, (drv_cat, drv_sub) in _DRIVER_TO_SUBCAT.items():
+                                if drv_cat == cat and drv_sub == sub and drv_key in _opex_adj:
+                                    delta = float(_opex_adj[drv_key])
+                                    base_amount *= (1 + delta)
+                                    break
+                            sub_items[sub] = round(base_amount, 2)
+                            adjusted_total += base_amount
 
-                    subcategories[cat] = sub_items
-                    # If overrides changed the total, propagate back to parent
-                    if abs(adjusted_total - cat_total) > 0.01:
-                        parent_adjustments[field] = round(adjusted_total, 2)
+                        subcategories[cat] = sub_items
+                        # If overrides changed the total, propagate back to parent
+                        if abs(adjusted_total - cat_total) > 0.01:
+                            parent_adjustments[field] = round(adjusted_total, 2)
 
-                if subcategories:
-                    row["subcategories"] = subcategories
-                # Propagate subcategory adjustments to parent totals
-                for field, new_total in parent_adjustments.items():
-                    row[field] = new_total
-                if parent_adjustments:
-                    row["total_opex"] = round(
-                        row.get("rd_spend", 0) + row.get("sm_spend", 0) + row.get("ga_spend", 0), 2
-                    )
-                    row["ebitda"] = round(row.get("gross_profit", 0) - row["total_opex"], 2)
+                    if subcategories:
+                        row["subcategories"] = subcategories
+                    # Propagate subcategory adjustments to parent totals
+                    for field, new_total in parent_adjustments.items():
+                        row[field] = new_total
+                    if parent_adjustments:
+                        row["total_opex"] = round(
+                            row.get("rd_spend", 0) + row.get("sm_spend", 0) + row.get("ga_spend", 0), 2
+                        )
+                        row["ebitda"] = round(row.get("gross_profit", 0) - row["total_opex"], 2)
             except Exception as e:
                 logger.debug("Subcategory decomposition skipped: %s", e)
 
