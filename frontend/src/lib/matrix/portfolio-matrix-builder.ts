@@ -22,6 +22,29 @@ const DEFAULT_PORTFOLIO_COLUMNS: MatrixColumn[] = [
   { id: 'productUpdates', name: 'Product Updates', type: 'text', width: 160, editable: true },
 ];
 
+const PE_PORTFOLIO_COLUMNS: MatrixColumn[] = [
+  { id: 'company',         name: 'Company',       type: 'text',       width: 200, editable: true },
+  { id: 'documents',       name: 'Documents',     type: 'text',       width: 140, editable: false },
+  { id: 'sector',          name: 'Sector',        type: 'text',       width: 120, editable: true },
+  { id: 'revenue',         name: 'Revenue',       type: 'currency',   width: 120, editable: true },
+  { id: 'ebitda',          name: 'EBITDA',        type: 'currency',   width: 120, editable: true },
+  { id: 'ebitdaMargin',    name: 'EBITDA Margin', type: 'percentage', width: 120, editable: true },
+  { id: 'grossMargin',     name: 'Gross Margin',  type: 'percentage', width: 120, editable: true },
+  { id: 'fcf',             name: 'FCF',           type: 'currency',   width: 120, editable: true },
+  { id: 'leverageRatio',   name: 'Leverage',      type: 'number',     width: 100, editable: true },
+  { id: 'dscr',            name: 'DSCR',          type: 'number',     width: 90,  editable: true },
+  { id: 'enterpriseValue', name: 'EV',            type: 'currency',   width: 140, editable: true },
+  { id: 'evEbitda',        name: 'EV/EBITDA',     type: 'number',     width: 100, editable: true },
+  { id: 'ownership',       name: 'Ownership %',   type: 'percentage', width: 120, editable: true },
+  { id: 'moic',            name: 'MOIC',          type: 'number',     width: 90,  editable: true },
+  { id: 'latestUpdate',    name: 'Latest Update', type: 'text',       width: 160, editable: true },
+];
+
+export function getPortfolioColumns(fundType?: string): MatrixColumn[] {
+  if (fundType === 'private_equity' || fundType === 'growth') return PE_PORTFOLIO_COLUMNS;
+  return DEFAULT_PORTFOLIO_COLUMNS;
+}
+
 export interface PortfolioCompanyForMatrix {
   id: string;
   name: string;
@@ -43,9 +66,10 @@ export interface PortfolioCompanyForMatrix {
 
 export function buildMatrixDataFromPortfolioCompanies(
   companies: PortfolioCompanyForMatrix[],
-  fundId: string
+  fundId: string,
+  fundType?: string
 ): MatrixData {
-  const columns = DEFAULT_PORTFOLIO_COLUMNS;
+  const columns = getPortfolioColumns(fundType);
   const rows: MatrixRow[] = companies.map((company) => {
     const currentArr = company.currentArr ?? 0;
     const investmentAmount = company.investmentAmount ?? 0;
@@ -113,6 +137,23 @@ export function buildMatrixDataFromPortfolioCompanies(
         value = docList.length > 0 ? docList : null;
         displayValue = docList.length === 0 ? undefined : docList.length === 1 ? '1 document' : `${docList.length} documents`;
         source = docList.length > 0 ? 'document' : 'manual';
+      } else {
+        // Generic fallthrough — PE columns and any future columns read
+        // from company[col.id] via the index signature.
+        const raw = company[col.id];
+        if (raw != null) {
+          value = raw;
+          source = 'document';
+          if (col.type === 'currency' && typeof raw === 'number') {
+            displayValue = formatCurrency(raw);
+          } else if (col.type === 'percentage' && typeof raw === 'number') {
+            const pct = raw > 1 ? raw / 100 : raw;
+            value = pct;
+            displayValue = `${(pct * 100).toFixed(1)}%`;
+          } else if (col.type === 'number' && typeof raw === 'number') {
+            displayValue = raw % 1 === 0 ? String(raw) : raw.toFixed(2);
+          }
+        }
       }
 
       cells[col.id] = {

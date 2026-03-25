@@ -82,6 +82,37 @@ FIELD_TO_COLUMN = {
     "customers": "customers",
     "ceo": "ceo",
     "cto": "cto",
+    # PE / operating company metrics
+    "ebitda": "ebitda",
+    "ebitda_margin": "ebitdaMargin",
+    "operating_income": "operatingIncome",
+    "operating_margin": "operatingMargin",
+    "net_income": "netIncome",
+    "net_margin": "netMargin",
+    "fcf": "fcf",
+    "fcf_margin": "fcfMargin",
+    "capex": "capex",
+    "leverage_ratio": "leverageRatio",
+    "interest_coverage": "interestCoverage",
+    "debt_service_coverage": "dscr",
+    "net_debt": "netDebt",
+    "total_debt": "totalDebt",
+    "working_capital": "workingCapital",
+    "revenue_per_employee": "revenuePerEmployee",
+    "ebitda_per_employee": "ebitdaPerEmployee",
+    "enterprise_value": "enterpriseValue",
+    "ev_ebitda_multiple": "evEbitda",
+    "moic": "moic",
+    "irr": "irr",
+    "interest_expense": "interestExpense",
+    "tax_expense": "taxExpense",
+    "depreciation": "depreciation",
+    "roic": "roic",
+    "dso": "dso",
+    "dpo": "dpo",
+    "dio": "dio",
+    "customer_concentration": "customerConcentration",
+    "recurring_revenue_pct": "recurringRevenuePct",
 }
 
 # Fields to skip (internal, not grid columns)
@@ -450,6 +481,15 @@ def _flatten_extracted_data(extracted_data: Dict[str, Any]) -> Dict[str, Any]:
             "estimated_cash_impact": "cash_balance",
             "estimated_valuation_impact": "valuation",
             "estimated_growth_rate_change": "growth_rate",
+            # PE / operating company impact estimates
+            "estimated_revenue_impact": "revenue",
+            "estimated_ebitda_impact": "ebitda",
+            "estimated_margin_impact": "ebitda_margin",
+            "estimated_fcf_impact": "fcf",
+            "estimated_leverage_impact": "leverage_ratio",
+            "estimated_coverage_ratio_impact": "interest_coverage",
+            "estimated_working_capital_impact": "working_capital",
+            "estimated_multiple_impact": "ev_ebitda_multiple",
         }
         for impact_key, field_key in _IMPACT_TO_FIELD.items():
             if field_key in fields:
@@ -457,6 +497,25 @@ def _flatten_extracted_data(extracted_data: Dict[str, Any]) -> Dict[str, Any]:
             v = ie.get(impact_key)
             if v is not None and v != 0:
                 fields[field_key] = {"delta": v}
+
+    # pe_operating_metrics — PE / operating company metrics from extraction.
+    # The extraction schema returns these for PE portfolio companies but
+    # they were previously not flattened into `fields`.
+    pe = extracted_data.get("pe_operating_metrics")
+    if isinstance(pe, dict):
+        _PE_FIELD_MAP = {
+            "ebitda_reported": "ebitda", "ebitda_adjusted": "ebitda",
+            "ebitda_margin": "ebitda_margin", "operating_margin": "operating_margin",
+            "leverage_ratio": "leverage_ratio", "interest_coverage": "interest_coverage",
+            "dscr": "debt_service_coverage", "roic": "roic",
+            "dso": "dso", "dpo": "dpo", "dio": "dio",
+            "customer_concentration_pct": "customer_concentration",
+            "recurring_revenue_pct": "recurring_revenue_pct",
+        }
+        for pe_key, field_key in _PE_FIELD_MAP.items():
+            v = pe.get(pe_key)
+            if v is not None and field_key not in fields:
+                fields[field_key] = v
 
     # ── Signal-shape qualitative fields ──
     # For board updates / monthly updates the model often fills qualitative

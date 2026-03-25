@@ -102,6 +102,7 @@ interface Portfolio {
   fundSize: number;
   totalInvested: number;
   totalValuation: number;
+  fundType?: string;
   companies: PortfolioCompany[];
 }
 
@@ -929,7 +930,7 @@ export default function PortfolioPage() {
                   <UnifiedMatrix
                     mode="portfolio"
                     fundId={portfolio.id}
-                    initialData={buildMatrixDataFromPortfolioCompanies(portfolio.companies as unknown as PortfolioCompanyForMatrix[], portfolio.id)}
+                    initialData={buildMatrixDataFromPortfolioCompanies(portfolio.companies as unknown as PortfolioCompanyForMatrix[], portfolio.id, portfolio.fundType)}
                     availableActions={availableActions}
                     onCellEdit={async (rowId, columnId, value, options) => {
                       if (columnId === 'documents' && options?.metadata?.documents != null) {

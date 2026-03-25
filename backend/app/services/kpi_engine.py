@@ -485,6 +485,179 @@ MANUFACTURING_KPIS: List[KPIDef] = [
 
 
 # ---------------------------------------------------------------------------
+# PE operating KPIs — leverage, coverage, FCF conversion
+# ---------------------------------------------------------------------------
+
+PE_OPERATING_KPIS: List[KPIDef] = [
+    KPIDef(
+        key="leverage_ratio",
+        label="Net Leverage",
+        description="Net Debt / LTM EBITDA",
+        category="leverage",
+        format_type="ratio",
+        requires=["ebitda"],
+        higher_is_better=False,
+        compute=lambda a, p, pp: _safe_div(
+            (_get(a, "total_debt", p) or 0) - (_get(a, "cash_balance", p) or 0),
+            _get(a, "ebitda", p) * 12 if _get(a, "ebitda", p) else None,
+        ),
+    ),
+    KPIDef(
+        key="interest_coverage",
+        label="Interest Coverage",
+        description="LTM EBITDA / LTM Interest Expense",
+        category="leverage",
+        format_type="ratio",
+        requires=["ebitda", "interest_expense"],
+        higher_is_better=True,
+        compute=lambda a, p, pp: _safe_div(
+            _get(a, "ebitda", p),
+            _get(a, "interest_expense", p),
+        ),
+    ),
+    KPIDef(
+        key="dscr",
+        label="Debt Service Coverage",
+        description="(EBITDA - CapEx) / Debt Service",
+        category="leverage",
+        format_type="ratio",
+        requires=["ebitda"],
+        higher_is_better=True,
+        compute=lambda a, p, pp: _safe_div(
+            (_get(a, "ebitda", p) or 0) - (_get(a, "capex", p) or 0),
+            _get(a, "debt_service", p),
+        ),
+    ),
+    KPIDef(
+        key="fcf_conversion",
+        label="FCF Conversion",
+        description="FCF / EBITDA",
+        category="profitability",
+        format_type="percent",
+        requires=["ebitda", "fcf"],
+        higher_is_better=True,
+        compute=lambda a, p, pp: _safe_div(
+            _get(a, "fcf", p),
+            _get(a, "ebitda", p),
+        ),
+    ),
+    KPIDef(
+        key="capex_ratio",
+        label="CapEx Ratio",
+        description="CapEx / Revenue",
+        category="efficiency",
+        format_type="percent",
+        requires=["revenue", "capex"],
+        higher_is_better=False,
+        compute=lambda a, p, pp: _safe_div(
+            _get(a, "capex", p),
+            _get(a, "revenue", p),
+        ),
+    ),
+    KPIDef(
+        key="nwc_days",
+        label="Net Working Capital Days",
+        description="Working Capital / Revenue × 30",
+        category="efficiency",
+        format_type="number",
+        requires=["revenue"],
+        higher_is_better=False,
+        compute=lambda a, p, pp: (
+            _safe_div(_get(a, "working_capital", p), _get(a, "revenue", p)) * 30
+            if _get(a, "revenue", p) and _get(a, "working_capital", p) is not None
+            else None
+        ),
+    ),
+    KPIDef(
+        key="operating_margin",
+        label="Operating Margin",
+        description="Operating Income / Revenue",
+        category="profitability",
+        format_type="percent",
+        requires=["revenue", "operating_income"],
+        higher_is_better=True,
+        compute=lambda a, p, pp: _safe_div(
+            _get(a, "operating_income", p),
+            _get(a, "revenue", p),
+        ),
+    ),
+    KPIDef(
+        key="net_margin",
+        label="Net Margin",
+        description="Net Income / Revenue",
+        category="profitability",
+        format_type="percent",
+        requires=["revenue", "net_income"],
+        higher_is_better=True,
+        compute=lambda a, p, pp: _safe_div(
+            _get(a, "net_income", p),
+            _get(a, "revenue", p),
+        ),
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Insurance vertical KPIs
+# ---------------------------------------------------------------------------
+
+INSURANCE_KPIS: List[KPIDef] = [
+    KPIDef(
+        key="loss_ratio",
+        label="Loss Ratio",
+        description="Claims / Earned Premiums",
+        category="insurance",
+        format_type="percent",
+        requires=["revenue", "cogs"],
+        higher_is_better=False,
+        compute=lambda a, p, pp: _safe_div(
+            _get(a, "cogs", p),
+            _get(a, "revenue", p),
+        ),
+    ),
+    KPIDef(
+        key="combined_ratio",
+        label="Combined Ratio",
+        description="(Claims + OpEx) / Earned Premiums — below 100% = underwriting profit",
+        category="insurance",
+        format_type="percent",
+        requires=["revenue", "cogs", "opex_total"],
+        higher_is_better=False,
+        compute=lambda a, p, pp: _safe_div(
+            (_get(a, "cogs", p) or 0) + (_get(a, "opex_total", p) or 0),
+            _get(a, "revenue", p),
+        ),
+    ),
+    KPIDef(
+        key="revenue_per_policy",
+        label="Revenue per Policy",
+        description="Premium income / number of policies (uses customer_count as proxy)",
+        category="insurance",
+        format_type="currency",
+        requires=["revenue", "customers"],
+        higher_is_better=True,
+        compute=lambda a, p, pp: _safe_div(
+            _get(a, "revenue", p),
+            _get(a, "customers", p),
+        ),
+    ),
+    KPIDef(
+        key="expense_ratio",
+        label="Expense Ratio",
+        description="Operating expenses / Earned Premiums",
+        category="insurance",
+        format_type="percent",
+        requires=["revenue", "opex_total"],
+        higher_is_better=False,
+        compute=lambda a, p, pp: _safe_div(
+            _get(a, "opex_total", p),
+            _get(a, "revenue", p),
+        ),
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
 # Profile registry — maps business_model / sector to KPI list
 # ---------------------------------------------------------------------------
 
@@ -501,16 +674,44 @@ KPI_PROFILES: Dict[str, List[KPIDef]] = {
     "manufacturing": MANUFACTURING_KPIS,
     "hardware": MANUFACTURING_KPIS,
     "industrial": MANUFACTURING_KPIS,
+    # Insurance verticals (company business types, not fund types)
+    "insurance": INSURANCE_KPIS,
+    "insurance_brokerage": INSURANCE_KPIS,
+    "brokerage": INSURANCE_KPIS,
+    "underwriting": INSURANCE_KPIS,
 }
 
 
-def _resolve_profile(business_model: Optional[str], sector: Optional[str]) -> Tuple[str, List[KPIDef]]:
-    """Resolve which KPI profile to use. Returns (profile_name, extra_kpis)."""
+def _resolve_profile(
+    business_model: Optional[str],
+    sector: Optional[str],
+    fund_type: Optional[str] = None,
+) -> Tuple[str, List[KPIDef]]:
+    """Resolve which KPI profile to use. Returns (profile_name, extra_kpis).
+
+    When the company sits in a PE/growth fund, PE_OPERATING_KPIS (leverage,
+    coverage, FCF conversion) are merged as a baseline on top of whatever
+    vertical profile matches the company's actual business type.
+    """
+    is_pe_fund = fund_type in ("private_equity", "growth")
+
+    # Match on company's actual business model / sector
     for candidate in [business_model, sector]:
         if candidate:
             key = candidate.lower().strip().replace(" ", "_").replace("-", "_")
             if key in KPI_PROFILES:
-                return key, KPI_PROFILES[key]
+                profile_kpis = KPI_PROFILES[key]
+                if is_pe_fund:
+                    # Merge PE operating baseline with vertical-specific KPIs
+                    pe_keys = {k.key for k in PE_OPERATING_KPIS}
+                    merged = list(PE_OPERATING_KPIS) + [k for k in profile_kpis if k.key not in pe_keys]
+                    return key, merged
+                return key, profile_kpis
+
+    # No vertical match — PE fund companies still get PE operating KPIs
+    if is_pe_fund:
+        return "pe_operating", PE_OPERATING_KPIS
+
     return "universal", []
 
 
@@ -606,8 +807,8 @@ class KPIEngine:
             periods: Number of trailing periods to include in series.
         """
         # 1. Fetch company metadata for profile resolution
-        business_model, sector = self._get_company_type(company_id)
-        profile_name, extra_kpis = _resolve_profile(business_model, sector)
+        business_model, sector, fund_type = self._get_company_type(company_id)
+        profile_name, extra_kpis = _resolve_profile(business_model, sector, fund_type)
 
         # 2. Fetch all actuals
         actuals_by_cat = self._fetch_actuals(company_id)
@@ -707,27 +908,39 @@ class KPIEngine:
     # Data access
     # ------------------------------------------------------------------
 
-    def _get_company_type(self, company_id: str) -> Tuple[Optional[str], Optional[str]]:
-        """Fetch business_model and sector from companies table."""
+    def _get_company_type(self, company_id: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """Fetch business_model, sector, and fund_type for a company."""
         try:
             from app.core.supabase_client import get_supabase_client
 
             sb = get_supabase_client()
             if not sb:
-                return None, None
+                return None, None, None
             result = (
                 sb.table("companies")
-                .select("business_model, sector")
+                .select("business_model, sector, fund_id")
                 .eq("id", company_id)
                 .limit(1)
                 .execute()
             )
             if result.data:
                 row = result.data[0]
-                return row.get("business_model"), row.get("sector")
+                fund_type = None
+                fund_id = row.get("fund_id")
+                if fund_id:
+                    fund_result = (
+                        sb.table("funds")
+                        .select("fund_type")
+                        .eq("id", fund_id)
+                        .limit(1)
+                        .execute()
+                    )
+                    if fund_result.data:
+                        fund_type = fund_result.data[0].get("fund_type")
+                return row.get("business_model"), row.get("sector"), fund_type
         except Exception as e:
             logger.warning(f"[KPI] Failed to fetch company type: {e}")
-        return None, None
+        return None, None, None
 
     def _fetch_actuals(self, company_id: str) -> Dict[str, Dict[str, float]]:
         """Fetch all actuals as {category: {period: amount}}."""

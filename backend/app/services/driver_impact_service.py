@@ -542,6 +542,13 @@ class DriverImpactService:
         }
 
 
+def _safe_div_edge(a, b):
+    """Safe division for cross-domain edge impact estimation."""
+    if a is None or b is None or b == 0:
+        return None
+    return a / b
+
+
 # ---------------------------------------------------------------------------
 # Cross-domain edges — bridges between FPA, Investment, and Strategy
 # ---------------------------------------------------------------------------
@@ -763,6 +770,68 @@ def get_cross_domain_edges() -> List[CrossDomainEdge]:
             target="net_debt",
             description="Cash reduces net debt position",
             estimate_impact=lambda state, delta: -delta,
+        ),
+
+        # --- Leverage feedback loop (PE operating companies) ---
+        CrossDomainEdge(
+            source="bs_lt_debt",
+            target="interest_expense",
+            description="Debt level drives interest cost via cost of debt",
+            estimate_impact=lambda state, delta: (
+                delta * (getattr(state, 'interest_rate', None) or 0.07)
+            ),
+        ),
+        CrossDomainEdge(
+            source="ebitda",
+            target="interest_coverage",
+            description="EBITDA change affects interest coverage ratio",
+            estimate_impact=lambda state, delta: (
+                _safe_div_edge(delta * 12, getattr(state, 'interest_expense', None))
+                if getattr(state, 'interest_expense', None) else None
+            ),
+        ),
+        CrossDomainEdge(
+            source="ebitda",
+            target="leverage_ratio",
+            description="EBITDA change affects net debt / EBITDA leverage",
+            estimate_impact=lambda state, delta: (
+                -(getattr(state, 'net_debt', 0) or 0) / ((getattr(state, 'ebitda', 1) or 1) ** 2) * delta * 12
+                if getattr(state, 'ebitda', None) else None
+            ),
+        ),
+
+        # --- P&L completion ---
+        CrossDomainEdge(
+            source="net_income",
+            target="bs_retained_earnings",
+            description="Net income flows to retained earnings",
+            estimate_impact=lambda state, delta: delta,
+        ),
+        CrossDomainEdge(
+            source="ebitda",
+            target="net_income",
+            description="EBITDA proxy to net income (after interest + tax)",
+            estimate_impact=lambda state, delta: (
+                delta * (1 - (getattr(state, 'tax_rate', None) or 0.25))
+            ),
+        ),
+
+        # --- Working capital → FCF ---
+        CrossDomainEdge(
+            source="revenue",
+            target="bs_inventory",
+            description="Revenue growth drives inventory needs (for product businesses)",
+            estimate_impact=lambda state, delta: (
+                delta * (getattr(state, 'dio_days', 0) or 0) / 30
+            ),
+        ),
+        CrossDomainEdge(
+            source="ebitda",
+            target="free_cash_flow",
+            description="EBITDA less WC changes and capex approximates FCF",
+            estimate_impact=lambda state, delta: (
+                delta * 0.75  # typical FCF conversion for PE operating companies
+            ),
         ),
     ]
 

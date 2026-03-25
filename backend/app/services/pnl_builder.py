@@ -89,22 +89,31 @@ def _normalize_period(raw: str) -> Optional[str]:
 # Formula parents (gross_profit, total_opex, ebitda) derive values from
 # other parents — no separate "computed" type needed.
 SKELETON = [
-    ("revenue",       "Revenue",            "revenue",       0),
-    ("cogs",          "COGS",               "cogs",          0),
-    ("gross_profit",  "Gross Profit",       "gross_profit",  0),
-    ("opex_rd",       "R&D",                "opex",          1),
-    ("opex_sm",       "Sales & Marketing",  "opex",          1),
-    ("opex_ga",       "G&A",                "opex",          1),
-    ("total_opex",    "Total OpEx",         "opex",          0),
-    ("ebitda",        "EBITDA",             "ebitda",        0),
+    ("revenue",          "Revenue",              "revenue",       0),
+    ("cogs",             "COGS",                 "cogs",          0),
+    ("gross_profit",     "Gross Profit",         "gross_profit",  0),
+    ("opex_rd",          "R&D",                  "opex",          1),
+    ("opex_sm",          "Sales & Marketing",    "opex",          1),
+    ("opex_ga",          "G&A",                  "opex",          1),
+    ("total_opex",       "Total OpEx",           "opex",          0),
+    ("ebitda",           "EBITDA",               "ebitda",        0),
+    ("depreciation",     "Depreciation & Amort", "below_line",    1),
+    ("ebit",             "EBIT",                 "below_line",    0),
+    ("interest_expense", "Interest Expense",     "below_line",    1),
+    ("pre_tax_income",   "Pre-Tax Income",       "below_line",    0),
+    ("tax_expense",      "Tax Expense",          "below_line",    1),
+    ("net_income",       "Net Income",           "below_line",    0),
 ]
 
 # Parent rows whose values are derived from other parents via formula.
 # These never get dynamic children — their value IS the formula result.
 FORMULA_ROWS = {
-    "gross_profit": ("revenue", "-", "cogs"),
-    "total_opex":   ("opex_rd", "+", "opex_sm", "+", "opex_ga"),
-    "ebitda":       ("gross_profit", "-", "total_opex"),
+    "gross_profit":   ("revenue", "-", "cogs"),
+    "total_opex":     ("opex_rd", "+", "opex_sm", "+", "opex_ga"),
+    "ebitda":         ("gross_profit", "-", "total_opex"),
+    "ebit":           ("ebitda", "-", "depreciation"),
+    "pre_tax_income": ("ebit", "-", "interest_expense"),
+    "net_income":     ("pre_tax_income", "-", "tax_expense"),
 }
 
 # Which fpa_actuals categories map to which skeleton parent
@@ -119,11 +128,16 @@ CATEGORY_TO_PARENT = {
     "opex_total": None,      # derived — skip
     "gross_profit": None,    # derived — skip
     "ebitda": None,          # derived — skip
-    "net_income": None,      # derived — skip
-    "debt_service": None,    # not in skeleton
-    "interest": None,
-    "tax": None,
-    "tax_expense": None,
+    "depreciation": "depreciation",
+    "amortization": "depreciation",
+    "interest_expense": "interest_expense",
+    "interest": "interest_expense",
+    "debt_service": "interest_expense",
+    "tax_expense": "tax_expense",
+    "tax": "tax_expense",
+    "net_income": None,      # derived
+    "ebit": None,            # derived
+    "pre_tax_income": None,  # derived
     "headcount": None,
     "customers": None,
     "cash_balance": None,
@@ -131,13 +145,13 @@ CATEGORY_TO_PARENT = {
 }
 
 # Parent IDs that can have dynamic subcategory children
-PARENT_IDS = {"revenue", "cogs", "opex_rd", "opex_sm", "opex_ga"}
+PARENT_IDS = {"revenue", "cogs", "opex_rd", "opex_sm", "opex_ga", "depreciation", "interest_expense", "tax_expense"}
 
 # Sign convention for computed rows: negative categories subtract
-COST_CATEGORIES = {"cogs", "opex_total", "opex_rd", "opex_sm", "opex_ga"}
+COST_CATEGORIES = {"cogs", "opex_total", "opex_rd", "opex_sm", "opex_ga", "depreciation", "interest_expense", "tax_expense"}
 
 # Categories that are computed — never discovered from actuals
-DERIVED_CATEGORIES = {"gross_profit", "ebitda", "opex_total", "net_income"}
+DERIVED_CATEGORIES = {"gross_profit", "ebitda", "opex_total", "net_income", "ebit", "pre_tax_income"}
 
 # Labels for parent categories
 CATEGORY_LABELS = {
@@ -146,6 +160,9 @@ CATEGORY_LABELS = {
     "opex_rd": "R&D",
     "opex_sm": "Sales & Marketing",
     "opex_ga": "G&A",
+    "depreciation": "Depreciation & Amort",
+    "interest_expense": "Interest Expense",
+    "tax_expense": "Tax Expense",
 }
 
 
@@ -889,6 +906,30 @@ class PnlBuilder:
                     values[p] = gp
                 else:
                     values[p] = actuals.get("ebitda", {}).get(p) or forecast.get(p, {}).get("ebitda")
+
+            elif row_id == "ebit":
+                ebitda = self._parent_totals.get("ebitda", {}).get(p)
+                dep = self._parent_totals.get("depreciation", {}).get(p) or 0
+                if ebitda is not None:
+                    values[p] = ebitda - dep
+                else:
+                    values[p] = actuals.get("ebit", {}).get(p)
+
+            elif row_id == "pre_tax_income":
+                ebit = self._parent_totals.get("ebit", {}).get(p)
+                interest = self._parent_totals.get("interest_expense", {}).get(p) or 0
+                if ebit is not None:
+                    values[p] = ebit - interest
+                else:
+                    values[p] = actuals.get("pre_tax_income", {}).get(p)
+
+            elif row_id == "net_income":
+                pti = self._parent_totals.get("pre_tax_income", {}).get(p)
+                tax = self._parent_totals.get("tax_expense", {}).get(p) or 0
+                if pti is not None:
+                    values[p] = pti - tax
+                else:
+                    values[p] = actuals.get("net_income", {}).get(p)
 
         return values
 
