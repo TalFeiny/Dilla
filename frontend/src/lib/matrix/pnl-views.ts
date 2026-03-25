@@ -17,7 +17,7 @@ import type { MatrixColumn, MatrixRow, MatrixData, MatrixCell } from '@/componen
 // Types
 // ---------------------------------------------------------------------------
 
-export type PnlView = 'waterfall' | 'forecast' | 'budget' | 'cashflow' | 'scenarios' | 'balancesheet';
+export type PnlView = 'waterfall' | 'forecast' | 'budget' | 'cashflow' | 'scenarios' | 'balancesheet' | 'captable';
 export type Granularity = 'monthly' | 'quarterly' | 'annual';
 
 export interface PnlViewConfig {
@@ -77,6 +77,14 @@ export const PNL_VIEW_CONFIGS: Record<PnlView, PnlViewConfig> = {
     description: 'Assets, liabilities & equity with balance check',
     supportsGranularity: false,
     endpoint: '/api/fpa/balance-sheet',
+    method: 'GET',
+  },
+  captable: {
+    id: 'captable',
+    label: 'Cap Table',
+    description: 'Equity, debt & convertibles — editable ledger from documents',
+    supportsGranularity: false,
+    endpoint: '/api/agent/cap-table-entries',
     method: 'GET',
   },
 };
@@ -538,6 +546,64 @@ export function transformBalanceSheetRows(data: any): { columns: MatrixColumn[];
 }
 
 // ---------------------------------------------------------------------------
+// Cap Table columns + transform
+// ---------------------------------------------------------------------------
+
+const CAP_TABLE_COLUMNS: MatrixColumn[] = [
+  { id: 'shareholder_name', name: 'Stakeholder', type: 'text', width: 180, editable: true },
+  { id: 'stakeholder_type', name: 'Type', type: 'text', width: 100, editable: true },
+  { id: 'instrument_type', name: 'Instrument', type: 'text', width: 110, editable: true },
+  { id: 'share_class', name: 'Class', type: 'text', width: 110, editable: true },
+  { id: 'num_shares', name: 'Shares', type: 'number', width: 110, editable: true },
+  { id: 'price_per_share', name: 'Price/Share', type: 'currency', width: 110, editable: true },
+  { id: 'ownership_pct', name: 'Ownership %', type: 'percentage', width: 100, editable: false },
+  { id: 'round_name', name: 'Round', type: 'text', width: 100, editable: true },
+  { id: 'investment_date', name: 'Date', type: 'text', width: 100, editable: true },
+  { id: 'liquidation_pref', name: 'Liq Pref', type: 'number', width: 80, editable: true },
+  { id: 'outstanding_principal', name: 'Principal', type: 'currency', width: 120, editable: true },
+  { id: 'interest_rate', name: 'Rate %', type: 'percentage', width: 80, editable: true },
+  { id: 'maturity_date', name: 'Maturity', type: 'text', width: 100, editable: true },
+  { id: 'conversion_discount', name: 'Disc %', type: 'percentage', width: 80, editable: true },
+  { id: 'valuation_cap', name: 'Val Cap', type: 'currency', width: 110, editable: true },
+  { id: 'source', name: 'Source', type: 'text', width: 80, editable: false },
+  { id: 'notes', name: 'Notes', type: 'text', width: 160, editable: true },
+];
+
+export function transformCapTableRows(data: any): { columns: MatrixColumn[]; rows: MatrixRow[]; meta: any } {
+  const entries: any[] = data?.share_entries || data?.entries || [];
+  const ownership: Record<string, number> = data?.ownership || {};
+
+  const rows: MatrixRow[] = entries.map((e: any, i: number) => {
+    const ownershipPct = e.ownership_pct ?? ownership[e.shareholder_name] ?? null;
+    const cells: Record<string, MatrixCell> = {};
+    for (const col of CAP_TABLE_COLUMNS) {
+      const val = col.id === 'ownership_pct' ? ownershipPct : (e[col.id] ?? null);
+      cells[col.id] = cell(val, {
+        source: e.source === 'legal' ? 'api' : e.source === 'csv' ? 'api' : 'manual',
+      });
+    }
+    return {
+      id: e.id || `cap-${i}`,
+      cells,
+      companyId: e.company_id,
+    } as MatrixRow;
+  });
+
+  return {
+    columns: CAP_TABLE_COLUMNS,
+    rows,
+    meta: {
+      totalRaised: data?.total_raised,
+      totalEquity: data?.total_equity,
+      totalDebt: data?.total_debt,
+      equityWeight: data?.equity_weight,
+      debtWeight: data?.debt_weight,
+      entryCount: data?.entry_count,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Unified fetch + transform
 // ---------------------------------------------------------------------------
 
@@ -617,6 +683,12 @@ export async function fetchPnlView(params: PnlViewFetchParams): Promise<PnlViewR
       url = `${config.endpoint}?${qs}`;
       break;
     }
+    case 'captable': {
+      const qs = new URLSearchParams({ company_id: companyId, view: 'company' });
+      if (fundId) qs.set('fund_id', fundId);
+      url = `${config.endpoint}?${qs}`;
+      break;
+    }
     default:
       throw new Error(`Unknown P&L view: ${view}`);
   }
@@ -659,6 +731,9 @@ export async function fetchPnlView(params: PnlViewFetchParams): Promise<PnlViewR
     }
     case 'balancesheet':
       result = transformBalanceSheetRows(data);
+      break;
+    case 'captable':
+      result = transformCapTableRows(data);
       break;
     default:
       throw new Error(`Unknown view: ${view}`);

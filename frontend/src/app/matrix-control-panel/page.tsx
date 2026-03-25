@@ -77,7 +77,7 @@ import { toast } from 'sonner';
 import CitationDisplay, { type Citation, deduplicateCitations } from '@/components/CitationDisplay';
 import { ScenarioInput } from '@/components/matrix/ScenarioInput';
 import type { ToolCallEntry } from '@/components/matrix/AgentPanel';
-import { type PnlView, type Granularity, PNL_VIEW_CONFIGS, fetchPnlView } from '@/lib/matrix/pnl-views';
+import { type PnlView, type Granularity, PNL_VIEW_CONFIGS, fetchPnlView, transformCapTableRows } from '@/lib/matrix/pnl-views';
 import { buildPnlColumns, buildPnlSkeletonRows, buildBalanceSheetSkeletonRows, buildCashFlowSkeletonRows } from '@/lib/matrix/pnl-columns';
 import dynamic from 'next/dynamic';
 
@@ -273,6 +273,15 @@ export default function MatrixControlPanel() {
         // build skeleton with proper period columns so the grid is always usable.
         const hasRealData = data.rows.length > 0 && data.columns.length > 1;
         if (!hasRealData) {
+          // Cap table: show empty grid with cap table columns (no skeleton rows)
+          if (pnlView === 'captable') {
+            const empty = transformCapTableRows({});
+            setMatrixData({
+              columns: empty.columns,
+              rows: [],
+              metadata: { dataSource: 'fpa-captable', lastUpdated: new Date().toISOString() },
+            });
+          } else {
           const skeletonCols = buildPnlColumns({ granularity, trailing, forward });
           const skeletonRows = pnlView === 'balancesheet' ? buildBalanceSheetSkeletonRows()
             : pnlView === 'cashflow' ? buildCashFlowSkeletonRows()
@@ -282,6 +291,7 @@ export default function MatrixControlPanel() {
             rows: skeletonRows,
             metadata: { dataSource: `fpa-${pnlView}`, lastUpdated: new Date().toISOString() },
           });
+          }
         } else {
           // Merge charts from API into metadata so UnifiedMatrix can push them to memo
           if (data.charts?.length) {
@@ -299,6 +309,14 @@ export default function MatrixControlPanel() {
         if (fetchId === pnlViewFetchCount.current) {
           console.error(`P&L ${pnlView} view error:`, err);
           toast.error(`Failed to load ${PNL_VIEW_CONFIGS[pnlView].label} view: ${err.message}`);
+          if (pnlView === 'captable') {
+            const empty = transformCapTableRows({});
+            setMatrixData({
+              columns: empty.columns,
+              rows: [],
+              metadata: { dataSource: 'fpa-captable', lastUpdated: new Date().toISOString() },
+            });
+          } else {
           const skeletonCols = buildPnlColumns({ granularity, trailing, forward });
           const skeletonRows = pnlView === 'balancesheet' ? buildBalanceSheetSkeletonRows()
             : pnlView === 'cashflow' ? buildCashFlowSkeletonRows()
@@ -308,6 +326,7 @@ export default function MatrixControlPanel() {
             rows: skeletonRows,
             metadata: { dataSource: `fpa-${pnlView}`, lastUpdated: new Date().toISOString() },
           });
+          }
           setPnlViewLoading(false);
         }
       });

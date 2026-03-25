@@ -146,7 +146,7 @@ interface AgentChatProps {
   onMessageSent?: (message: string) => void;
   matrixData?: MatrixData | null;
   fundId?: string;
-  mode?: 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal';
+  mode?: 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal' | 'workflow';
   onCellEdit?: (rowId: string, columnId: string, value: unknown, options?: { data_source?: string; metadata?: Record<string, unknown> }) => Promise<void>;
   onRunService?: (actionId: string, rowId: string, columnId: string) => Promise<void>;
   onToolCallLog?: (entry: Omit<{ action_id: string; row_id: string; column_id: string; status: 'running' | 'success' | 'error'; error?: string; companyName?: string; explanation?: string }, 'id' | 'at'>) => void;

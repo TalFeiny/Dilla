@@ -519,8 +519,12 @@ export function UnifiedMatrix({
     setMemoPanelContext({ companies: analysis.companies, capTables: analysis.capTables });
   }, []);
 
-  // Persist memo to localStorage on change (debounced)
+  // Persist memo to localStorage on change (debounced, flush on unmount)
   const memoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const memoSectionsRef = useRef(memoSections);
+  memoSectionsRef.current = memoSections;
+  const fundIdForMemoRef = useRef(fundId);
+  fundIdForMemoRef.current = fundId;
   useEffect(() => {
     if (memoSaveTimer.current) clearTimeout(memoSaveTimer.current);
     memoSaveTimer.current = setTimeout(() => {
@@ -528,7 +532,15 @@ export function UnifiedMatrix({
         localStorage.setItem(`dilla_memo_${fundId || 'default'}`, JSON.stringify(memoSections));
       } catch {}
     }, 800);
-    return () => { if (memoSaveTimer.current) clearTimeout(memoSaveTimer.current); };
+    return () => {
+      // Flush immediately on unmount so pending deletes aren't lost
+      if (memoSaveTimer.current) {
+        clearTimeout(memoSaveTimer.current);
+        try {
+          localStorage.setItem(`dilla_memo_${fundIdForMemoRef.current || 'default'}`, JSON.stringify(memoSectionsRef.current));
+        } catch {}
+      }
+    };
   }, [memoSections, fundId]);
 
   // Push forecast/scenario charts into memo when matrixData.metadata.charts changes
@@ -581,6 +593,7 @@ export function UnifiedMatrix({
   /** Plan steps from agent (Plan tab) - updated by AgentChat when backend returns plan_steps */
   const [planStepsState, setPlanStepsState] = useState<PlanStep[]>(planSteps || []);
   const loadPortfolioDataRef = useRef<() => Promise<void>>();
+  const loadLPDataRef = useRef<() => Promise<void>>();
   const loadPnlDataRef = useRef<() => Promise<void>>();
   const loadLegalDataRef = useRef<() => Promise<void>>();
   const portfolioAbortRef = useRef<AbortController | null>(null);
@@ -1105,7 +1118,20 @@ export function UnifiedMatrix({
   // Exception 2: when columns change (e.g. granularity/trailing/forward), always apply.
   const prevDataSourceRef = useRef<string | undefined>(undefined);
   const prevColumnIdsRef = useRef<string>('');
+  // Track when internal loads set data to avoid re-applying our own data echoed back via parent
+  const internalLoadRef = useRef(false);
   useEffect(() => {
+    // If this initialData arrived because we called onDataChange ourselves, skip it
+    if (internalLoadRef.current) {
+      internalLoadRef.current = false;
+      // Still track the source/columns so future external changes are detected
+      const src = initialData?.metadata?.dataSource;
+      if (src) prevDataSourceRef.current = src;
+      const colIds = initialData?.columns?.map((c) => c.id).join(',') ?? '';
+      if (colIds) prevColumnIdsRef.current = colIds;
+      return;
+    }
+
     const newSource = initialData?.metadata?.dataSource;
     const sourceChanged = newSource && newSource !== prevDataSourceRef.current;
     if (sourceChanged) prevDataSourceRef.current = newSource;
@@ -1212,6 +1238,7 @@ export function UnifiedMatrix({
         metadata: { dataSource: 'custom', lastUpdated: new Date().toISOString() }
       };
       setMatrixData(emptyMatrix);
+      internalLoadRef.current = true;
       onDataChange?.(emptyMatrix);
     }
   }, [mode, matrixData, onDataChange]);
@@ -1227,6 +1254,7 @@ export function UnifiedMatrix({
     if (modeChanged) {
       const defaultData = getDefaultMatrixData(mode, fundId);
       setMatrixData(defaultData);
+      internalLoadRef.current = true;
       onDataChange?.(defaultData);
       return;
     }
@@ -1238,14 +1266,17 @@ export function UnifiedMatrix({
       if (!currentData.columns || currentData.columns.length === 0) {
         const defaultData = getDefaultMatrixData(mode, fundId);
         setMatrixData(defaultData);
+        internalLoadRef.current = true;
         onDataChange?.(defaultData);
       } else if (!matrixData) {
         setMatrixData(currentData);
+        internalLoadRef.current = true;
         onDataChange?.(currentData);
       }
     } else if (!matrixData) {
       const defaultData = getDefaultMatrixData(mode, fundId);
       setMatrixData(defaultData);
+      internalLoadRef.current = true;
       onDataChange?.(defaultData);
     }
   }, [mode, fundId]); // Remove matrixData from deps to avoid re-running
@@ -1576,6 +1607,7 @@ export function UnifiedMatrix({
       };
 
       setMatrixData(data);
+      internalLoadRef.current = true;
       onDataChange?.(data);
 
       // Load NAV sparklines in background so grid stays responsive
@@ -1640,6 +1672,7 @@ export function UnifiedMatrix({
       const lpData = await fetchLPsForMatrix(fundId);
       if (lpData.rows.length > 0 || lpData.columns.length > 0) {
         setMatrixData(lpData);
+        internalLoadRef.current = true;
         onDataChange?.(lpData);
       }
     } catch (err) {
@@ -1649,6 +1682,11 @@ export function UnifiedMatrix({
       setIsLoading(false);
     }
   }, [fundId, onDataChange]);
+
+  // Store latest loadLPData in ref
+  useEffect(() => {
+    loadLPDataRef.current = loadLPData;
+  }, [loadLPData]);
 
   // Load P&L data for pnl mode
   // Uses the same abort/retry/guard pattern as loadPortfolioData.
@@ -1691,6 +1729,7 @@ export function UnifiedMatrix({
       const hasRealData = pnlData.rows.length > 0 && pnlData.columns.length > 1;
       if (hasRealData) {
         setMatrixData(pnlData);
+        internalLoadRef.current = true;
         onDataChange?.(pnlData);
       } else {
         // Ensure we at least have the default P&L skeleton with 12-month columns
@@ -1765,6 +1804,7 @@ export function UnifiedMatrix({
           rows: [...apiRows, ...localRows],
           metadata: data.metadata ?? { dataSource: 'legal', lastUpdated: new Date().toISOString() },
         };
+        internalLoadRef.current = true;
         onDataChange?.(legalData);
         return legalData;
       });
@@ -1782,20 +1822,23 @@ export function UnifiedMatrix({
     loadLegalDataRef.current = loadLegalData;
   }, [loadLegalData]);
 
-  // Load portfolio, LP, or P&L data on mount or when mode/fundId/companyId changes
+  // Load portfolio, LP, or P&L data on mount or when mode/fundId/companyId changes.
+  // Use refs for load functions to avoid circular dependency chains —
+  // load callbacks depend on onDataChange which may not be memoized by parent,
+  // causing infinite re-fires if included in deps.
   useEffect(() => {
     if (skipInternalFetch && mode === 'pnl') return; // Parent owns P&L data fetching
     if (mode === 'portfolio' && fundId) {
-      loadPortfolioData();
+      loadPortfolioDataRef.current?.();
     } else if (mode === 'lp') {
-      loadLPData();
+      loadLPDataRef.current?.();
     } else if (mode === 'pnl') {
-      loadPnlData();
+      loadPnlDataRef.current?.();
     } else if (mode === 'legal') {
-      loadLegalData();
+      loadLegalDataRef.current?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, fundId, companyId, loadPortfolioData, loadLPData, loadPnlData, loadLegalData, skipInternalFetch]);
+  }, [mode, fundId, companyId, skipInternalFetch]);
 
   // Parse @CompanyName mentions from query
   const parseCompanyMentions = (queryText: string): string[] => {
