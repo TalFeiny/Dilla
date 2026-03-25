@@ -31,7 +31,9 @@ interface BackendResponse {
   rows: BackendRow[];
 }
 
-/** Derive waterfall steps from PnL backend data for a given period */
+/** Derive waterfall steps from PnL backend data for a given period.
+ *  Dynamically discovers OpEx subcategories from the response rows
+ *  instead of hardcoding R&D / S&M / G&A. */
 function buildPnlWaterfall(data: BackendResponse, period: string): Record<string, any>[] {
   const rowMap: Record<string, Record<string, number | null>> = {};
   for (const row of data.rows) {
@@ -39,18 +41,47 @@ function buildPnlWaterfall(data: BackendResponse, period: string): Record<string
   }
   const val = (id: string) => rowMap[id]?.[period] ?? 0;
 
-  return [
+  const steps: Record<string, any>[] = [
     { name: 'Revenue', value: val('revenue'), type: 'increase' },
     { name: 'COGS', value: -Math.abs(val('cogs')), type: 'decrease' },
     { name: 'Gross Profit', value: val('gross_profit'), type: 'subtotal' },
-    { name: 'R&D', value: -Math.abs(val('opex_rd')), type: 'decrease' },
-    { name: 'S&M', value: -Math.abs(val('opex_sm')), type: 'decrease' },
-    { name: 'G&A', value: -Math.abs(val('opex_ga')), type: 'decrease' },
+  ];
+
+  // Dynamically discover OpEx rows from the response — handles both
+  // standard categories (opex_rd, opex_sm, opex_ga) and arbitrary
+  // subcategories (opex_rd:engineering_salaries, opex_sm:paid_acquisition, etc.)
+  const opexRows = data.rows.filter(
+    r => r.id.startsWith('opex_') &&
+         r.id !== 'total_opex' &&
+         !r.id.startsWith('opex_total') &&
+         r.values?.[period] != null &&
+         r.values[period] !== 0
+  );
+
+  if (opexRows.length > 0) {
+    for (const row of opexRows) {
+      // Skip parent rows if their children are present (avoid double-counting)
+      const isParent = ['opex_rd', 'opex_sm', 'opex_ga'].includes(row.id);
+      const hasChildren = isParent && opexRows.some(r => r.id.startsWith(row.id + ':'));
+      if (hasChildren) continue;
+
+      const amount = row.values[period] ?? 0;
+      steps.push({
+        name: row.label,
+        value: -Math.abs(amount),
+        type: 'decrease',
+      });
+    }
+  }
+
+  steps.push(
     { name: 'EBITDA', value: val('ebitda'), type: 'subtotal' },
     { name: 'Debt Service', value: -Math.abs(val('debt_service')), type: 'decrease' },
     { name: 'Tax', value: -Math.abs(val('tax_expense')), type: 'decrease' },
     { name: 'Net Income', value: val('net_income'), type: 'total' },
-  ].filter(d => d.value !== 0);
+  );
+
+  return steps.filter(d => d.value !== 0);
 }
 
 /** Derive waterfall steps from Cash Flow backend data for a given period */

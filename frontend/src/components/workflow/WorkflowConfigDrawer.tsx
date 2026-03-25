@@ -3,10 +3,13 @@
 import { useMemo, useCallback, useRef } from 'react';
 import { useWorkflowStore } from '@/lib/workflow/store';
 import type { WorkflowNodeData, OutputFormat } from '@/lib/workflow/types';
+import type { CompanyDataSnapshot } from '@/lib/workflow/assumptions';
 import { portTypeLabel, PORT_COLORS } from '@/lib/workflow/port-types';
 import { getUpstreamFieldsFlat, type FieldOption } from '@/lib/workflow/upstream-fields';
 import { resolveIcon } from './nodes/icon-resolver';
 import { DriverNodeConfig } from './config/DriverNodeConfig';
+import { RowPicker, PeriodPicker, CompanyBadge } from './config/CompanyDataPickers';
+import { ExpressionInput } from './config/ExpressionInput';
 import {
   Sheet,
   SheetContent,
@@ -37,6 +40,7 @@ export function WorkflowConfigDrawer() {
   const setPanelOpen = useWorkflowStore((s) => s.setPanelOpen);
   const updateNodeData = useWorkflowStore((s) => s.updateNodeData);
   const removeNode = useWorkflowStore((s) => s.removeNode);
+  const companyData = useWorkflowStore((s) => s.companyData);
 
   const selectedNode = useMemo(
     () => nodes.find((n) => n.id === selectedNodeId),
@@ -252,6 +256,7 @@ export function WorkflowConfigDrawer() {
                         value={data.params.metric || ''}
                         onChange={(v) => handleParamChange('metric', v)}
                         fields={upstreamFields}
+                        companyData={companyData}
                         placeholder="e.g. revenue, runway_months"
                       />
                       <Field label="Condition">
@@ -285,6 +290,7 @@ export function WorkflowConfigDrawer() {
                         value={data.params.field || ''}
                         onChange={(v) => handleParamChange('field', v)}
                         fields={upstreamFields}
+                        companyData={companyData}
                         placeholder="e.g. category, status"
                       />
                       <Field label="Cases (comma-separated values)">
@@ -305,6 +311,7 @@ export function WorkflowConfigDrawer() {
                         value={data.params.field || ''}
                         onChange={(v) => handleParamChange('field', v)}
                         fields={upstreamFields}
+                        companyData={companyData}
                         placeholder="e.g. revenue, category"
                       />
                       <Field label="Operator">
@@ -356,6 +363,7 @@ export function WorkflowConfigDrawer() {
                         value={data.params.field || ''}
                         onChange={(v) => handleParamChange('field', v)}
                         fields={upstreamFields}
+                        companyData={companyData}
                         placeholder="e.g. revenue, ebitda"
                       />
                       <FieldPicker
@@ -363,30 +371,27 @@ export function WorkflowConfigDrawer() {
                         value={data.params.groupBy || ''}
                         onChange={(v) => handleParamChange('groupBy', v)}
                         fields={upstreamFields}
+                        companyData={companyData}
                         placeholder="e.g. category, month"
                       />
                     </>
                   )}
                   {data.operatorType === 'map' && (
                     <>
-                      <Field label="Expression">
-                        <textarea
-                          value={data.params.expression || ''}
-                          onChange={(e) => handleParamChange('expression', e.target.value)}
-                          rows={3}
-                          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-lime-300 font-mono focus:outline-none focus:border-gray-500 resize-none"
-                          placeholder="e.g. item.revenue * 1.1"
-                        />
-                      </Field>
-                      <Field label="Output field name (optional)">
-                        <input
-                          type="text"
-                          value={data.params.outputField || ''}
-                          onChange={(e) => handleParamChange('outputField', e.target.value)}
-                          className={`${inputClass} font-mono`}
-                          placeholder="e.g. adjusted_revenue"
-                        />
-                      </Field>
+                      <ExpressionInput
+                        label="Expression"
+                        value={data.params.expression || ''}
+                        onChange={(v) => handleParamChange('expression', v)}
+                        nodeId={selectedNode.id}
+                        rows={3}
+                        placeholder="e.g. {{ item.revenue }} * 1.1"
+                      />
+                      <RowPicker
+                        label="Output field name (optional)"
+                        value={data.params.outputField || ''}
+                        onChange={(v) => handleParamChange('outputField', v)}
+                        placeholder="e.g. adjusted_revenue"
+                      />
                     </>
                   )}
                   {data.operatorType === 'merge' && (
@@ -403,29 +408,27 @@ export function WorkflowConfigDrawer() {
                         </select>
                       </Field>
                       {data.params.strategy === 'join' && (
-                        <Field label="Join key">
-                          <input
-                            type="text"
-                            value={data.params.joinKey || ''}
-                            onChange={(e) => handleParamChange('joinKey', e.target.value)}
-                            className={`${inputClass} font-mono`}
-                            placeholder="e.g. month, company_id"
-                          />
-                        </Field>
+                        <FieldPicker
+                          label="Join key"
+                          value={data.params.joinKey || ''}
+                          onChange={(v) => handleParamChange('joinKey', v)}
+                          fields={upstreamFields}
+                          companyData={companyData}
+                          placeholder="e.g. month, company_id"
+                        />
                       )}
                     </>
                   )}
                   {data.operatorType === 'transform' && (
                     <>
-                      <Field label="Mapping expression">
-                        <textarea
-                          value={data.params.mapping || ''}
-                          onChange={(e) => handleParamChange('mapping', e.target.value)}
-                          rows={3}
-                          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-lime-300 font-mono focus:outline-none focus:border-gray-500 resize-none"
-                          placeholder="Describe how to reshape the data..."
-                        />
-                      </Field>
+                      <ExpressionInput
+                        label="Mapping expression"
+                        value={data.params.mapping || ''}
+                        onChange={(v) => handleParamChange('mapping', v)}
+                        nodeId={selectedNode.id}
+                        rows={3}
+                        placeholder="e.g. {{ nodes.Forecast.revenue }} mapped to table"
+                      />
                       <Field label="Output type">
                         <select
                           value={data.params.outputType || 'any'}
@@ -448,6 +451,7 @@ export function WorkflowConfigDrawer() {
                         value={data.params.parameter || ''}
                         onChange={(v) => handleParamChange('parameter', v)}
                         fields={upstreamFields}
+                        companyData={companyData}
                         placeholder="e.g. revenue_growth, churn_rate"
                       />
                       <Field label="Distribution">
@@ -510,12 +514,12 @@ export function WorkflowConfigDrawer() {
               {data.kind === 'formula' && (
                 <>
                   <SectionLabel>Expression</SectionLabel>
-                  <textarea
+                  <ExpressionInput
                     value={data.params.expression || ''}
-                    onChange={(e) => handleParamChange('expression', e.target.value)}
+                    onChange={(v) => handleParamChange('expression', v)}
+                    nodeId={selectedNode.id}
                     rows={4}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-lime-300 font-mono focus:outline-none focus:border-gray-500 resize-none"
-                    placeholder="revenue * 0.3 - opex"
+                    placeholder="e.g. {{ row.revenue }} * 0.3 - {{ row.opex }}"
                   />
                 </>
               )}
@@ -562,6 +566,26 @@ export function WorkflowConfigDrawer() {
                       placeholder="What should this output contain?"
                     />
                   </Field>
+                  {/* Grid Write — pick target rows and periods */}
+                  {data.outputFormat === 'grid' && (
+                    <>
+                      <SectionLabel>Grid Target</SectionLabel>
+                      <RowPicker
+                        label="Target rows"
+                        value=""
+                        onChange={() => {}}
+                        multi
+                        multiValue={data.targetRows || []}
+                        onMultiChange={(rows) => updateNodeData(selectedNode.id, { targetRows: rows })}
+                      />
+                      <PeriodPicker
+                        label="Target period"
+                        value={data.targetPeriods?.[0] || ''}
+                        onChange={(v) => updateNodeData(selectedNode.id, { targetPeriods: v ? [v] : [] })}
+                        allowAll
+                      />
+                    </>
+                  )}
                 </>
               )}
 
@@ -666,23 +690,44 @@ function getInstructionPlaceholder(data: WorkflowNodeData): string {
   return 'Optional instructions for the AI when running this tool...';
 }
 
-// ── Field Picker — dropdown from upstream data, fallback to text input ───────
+// ── Field Picker — dropdown from upstream data + company data ─────────────────
 
 function FieldPicker({
   label,
   value,
   onChange,
   fields,
+  companyData,
   placeholder,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   fields: FieldOption[];
+  companyData?: CompanyDataSnapshot | null;
   placeholder: string;
 }) {
-  // If upstream fields are available, show a dropdown with them
-  if (fields.length > 0) {
+  // Build company data fields as a fallback source
+  const companyFields: FieldOption[] = useMemo(() => {
+    if (!companyData?.metadata?.categories) return [];
+    return companyData.metadata.categories.map((cat) => ({
+      path: cat,
+      label: cat.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+      preview: companyData.latest?.[cat] != null
+        ? (Math.abs(companyData.latest[cat]) >= 1e6
+          ? `$${(companyData.latest[cat] / 1e6).toFixed(1)}M`
+          : Math.abs(companyData.latest[cat]) >= 1e3
+            ? `$${(companyData.latest[cat] / 1e3).toFixed(0)}k`
+            : `$${companyData.latest[cat].toFixed(0)}`)
+        : 'no data',
+      type: 'number' as const,
+    }));
+  }, [companyData]);
+
+  const hasUpstream = fields.length > 0;
+  const hasCompany = companyFields.length > 0;
+
+  if (hasUpstream || hasCompany) {
     return (
       <Field label={label}>
         <select
@@ -691,21 +736,33 @@ function FieldPicker({
           className={selectClass}
         >
           <option value="">Select a field...</option>
-          {fields.map((f) => (
-            <option key={f.path} value={f.path}>
-              {f.label} — {f.preview}
-            </option>
-          ))}
+          {hasUpstream && (
+            <optgroup label="From upstream nodes">
+              {fields.map((f) => (
+                <option key={`up_${f.path}`} value={f.path}>
+                  {f.label} — {f.preview}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {hasCompany && (
+            <optgroup label="Company data">
+              {companyFields.map((f) => (
+                <option key={`cd_${f.path}`} value={f.path}>
+                  {f.label} — {f.preview}
+                </option>
+              ))}
+            </optgroup>
+          )}
         </select>
-        {/* Also allow typing a custom value */}
-        {value && !fields.some((f) => f.path === value) && (
+        {value && !fields.some((f) => f.path === value) && !companyFields.some((f) => f.path === value) && (
           <div className="mt-1 text-[10px] text-amber-500">Custom: {value}</div>
         )}
       </Field>
     );
   }
 
-  // Fallback: text input when no upstream data available yet
+  // Fallback: text input when no data available
   return (
     <Field label={label}>
       <input
@@ -715,7 +772,7 @@ function FieldPicker({
         className={inputClass}
         placeholder={placeholder}
       />
-      <div className="mt-1 text-[10px] text-gray-600">Run upstream nodes to see available fields</div>
+      <div className="mt-1 text-[10px] text-gray-600">Select a company to see available fields</div>
     </Field>
   );
 }
@@ -845,24 +902,19 @@ function TriggerConfig({
               <option value="legal">Legal</option>
             </select>
           </Field>
-          <Field label="Row / metric">
-            <input
-              type="text"
-              value={data.params.sourceRow || ''}
-              onChange={(e) => onParamChange('sourceRow', e.target.value)}
-              className={inputClass}
-              placeholder="e.g. revenue, opex, ebitda"
-            />
-          </Field>
-          <Field label="Period (optional)">
-            <input
-              type="text"
-              value={data.params.sourcePeriod || ''}
-              onChange={(e) => onParamChange('sourcePeriod', e.target.value)}
-              className={inputClass}
-              placeholder="e.g. 2025-03 or leave blank for all"
-            />
-          </Field>
+          <RowPicker
+            label="Row / metric"
+            value={data.params.sourceRow || ''}
+            onChange={(v) => onParamChange('sourceRow', v)}
+            placeholder="e.g. revenue, opex, ebitda"
+          />
+          <PeriodPicker
+            label="Period (optional)"
+            value={data.params.sourcePeriod || ''}
+            onChange={(v) => onParamChange('sourcePeriod', v)}
+            allowAll
+            rowKey={data.params.sourceRow || undefined}
+          />
         </>
       )}
 
@@ -908,6 +960,188 @@ function TriggerConfig({
               {data.params.fileType ? ` · ${data.params.fileType}` : ''}
             </div>
           )}
+        </>
+      )}
+
+      {/* ── Integration triggers ─────────────────────────────── */}
+
+      {triggerType === 'xero_sync' && (
+        <>
+          <CompanyBadge />
+          <Field label="Sync type">
+            <select value={data.params.sync_type || 'incremental'} onChange={(e) => onParamChange('sync_type', e.target.value)} className={selectClass}>
+              <option value="incremental">Incremental</option>
+              <option value="full">Full Sync</option>
+            </select>
+          </Field>
+          <Field label="History (months)">
+            <input type="number" value={data.params.months_back ?? 24} onChange={(e) => onParamChange('months_back', Number(e.target.value))} min={1} max={60} className={`${inputClass} font-mono`} />
+          </Field>
+        </>
+      )}
+
+      {triggerType === 'quickbooks_sync' && (
+        <>
+          <CompanyBadge />
+          <Field label="Sync type">
+            <select value={data.params.sync_type || 'incremental'} onChange={(e) => onParamChange('sync_type', e.target.value)} className={selectClass}>
+              <option value="incremental">Incremental</option>
+              <option value="full">Full Sync</option>
+            </select>
+          </Field>
+          <Field label="History (months)">
+            <input type="number" value={data.params.months_back ?? 24} onChange={(e) => onParamChange('months_back', Number(e.target.value))} min={1} max={60} className={`${inputClass} font-mono`} />
+          </Field>
+          <Field label="Report type">
+            <select value={data.params.report_type || 'profit_and_loss'} onChange={(e) => onParamChange('report_type', e.target.value)} className={selectClass}>
+              <option value="profit_and_loss">Profit & Loss</option>
+              <option value="balance_sheet">Balance Sheet</option>
+              <option value="cash_flow">Cash Flow</option>
+              <option value="all">All Reports</option>
+            </select>
+          </Field>
+        </>
+      )}
+
+      {triggerType === 'netsuite_sync' && (
+        <>
+          <CompanyBadge />
+          <Field label="Sync type">
+            <select value={data.params.sync_type || 'incremental'} onChange={(e) => onParamChange('sync_type', e.target.value)} className={selectClass}>
+              <option value="incremental">Incremental</option>
+              <option value="full">Full Sync</option>
+            </select>
+          </Field>
+          <Field label="Data type">
+            <select value={data.params.data_type || 'financials'} onChange={(e) => onParamChange('data_type', e.target.value)} className={selectClass}>
+              <option value="financials">Financials (GL)</option>
+              <option value="ar_ap">AR / AP</option>
+              <option value="inventory">Inventory</option>
+              <option value="all">All Modules</option>
+            </select>
+          </Field>
+          <Field label="Subsidiary">
+            <input type="text" value={data.params.subsidiary || ''} onChange={(e) => onParamChange('subsidiary', e.target.value)} className={inputClass} placeholder="All subsidiaries" />
+          </Field>
+        </>
+      )}
+
+      {triggerType === 'sap_sync' && (
+        <>
+          <CompanyBadge />
+          <Field label="Sync type">
+            <select value={data.params.sync_type || 'incremental'} onChange={(e) => onParamChange('sync_type', e.target.value)} className={selectClass}>
+              <option value="incremental">Incremental</option>
+              <option value="full">Full Sync</option>
+            </select>
+          </Field>
+          <Field label="Module">
+            <select value={data.params.module || 'fico'} onChange={(e) => onParamChange('module', e.target.value)} className={selectClass}>
+              <option value="fico">FI/CO (Finance & Controlling)</option>
+              <option value="mm">MM (Materials Management)</option>
+              <option value="sd">SD (Sales & Distribution)</option>
+              <option value="hr">HR (Human Resources)</option>
+            </select>
+          </Field>
+          <Field label="Company code">
+            <input type="text" value={data.params.company_code || ''} onChange={(e) => onParamChange('company_code', e.target.value)} className={inputClass} placeholder="e.g. 1000" />
+          </Field>
+        </>
+      )}
+
+      {triggerType === 'salesforce_sync' && (
+        <>
+          <CompanyBadge />
+          <Field label="Object type">
+            <select value={data.params.object_type || 'opportunity'} onChange={(e) => onParamChange('object_type', e.target.value)} className={selectClass}>
+              <option value="opportunity">Opportunities</option>
+              <option value="account">Accounts</option>
+              <option value="contact">Contacts</option>
+              <option value="lead">Leads</option>
+              <option value="pipeline">Full Pipeline</option>
+            </select>
+          </Field>
+          <Field label="Sync type">
+            <select value={data.params.sync_type || 'incremental'} onChange={(e) => onParamChange('sync_type', e.target.value)} className={selectClass}>
+              <option value="incremental">Incremental</option>
+              <option value="full">Full Sync</option>
+            </select>
+          </Field>
+          <Field label="Stage filter">
+            <select value={data.params.stage_filter || 'all'} onChange={(e) => onParamChange('stage_filter', e.target.value)} className={selectClass}>
+              <option value="all">All Stages</option>
+              <option value="open">Open Only</option>
+              <option value="closed_won">Closed Won</option>
+              <option value="pipeline">In Pipeline</option>
+            </select>
+          </Field>
+        </>
+      )}
+
+      {triggerType === 'attio_sync' && (
+        <>
+          <CompanyBadge />
+          <Field label="Object type">
+            <select value={data.params.object_type || 'deals'} onChange={(e) => onParamChange('object_type', e.target.value)} className={selectClass}>
+              <option value="deals">Deals</option>
+              <option value="companies">Companies</option>
+              <option value="people">People</option>
+              <option value="lists">Lists</option>
+            </select>
+          </Field>
+          <Field label="Sync type">
+            <select value={data.params.sync_type || 'incremental'} onChange={(e) => onParamChange('sync_type', e.target.value)} className={selectClass}>
+              <option value="incremental">Incremental</option>
+              <option value="full">Full Sync</option>
+            </select>
+          </Field>
+        </>
+      )}
+
+      {triggerType === 'workday_sync' && (
+        <>
+          <CompanyBadge />
+          <Field label="Data type">
+            <select value={data.params.data_type || 'headcount'} onChange={(e) => onParamChange('data_type', e.target.value)} className={selectClass}>
+              <option value="headcount">Headcount</option>
+              <option value="payroll">Payroll & Compensation</option>
+              <option value="hiring_plan">Hiring Plan</option>
+              <option value="org_chart">Org Chart</option>
+              <option value="all">All HR Data</option>
+            </select>
+          </Field>
+          <Field label="Sync type">
+            <select value={data.params.sync_type || 'incremental'} onChange={(e) => onParamChange('sync_type', e.target.value)} className={selectClass}>
+              <option value="incremental">Incremental</option>
+              <option value="full">Full Sync</option>
+            </select>
+          </Field>
+          <Field label="Cost center">
+            <input type="text" value={data.params.cost_center || ''} onChange={(e) => onParamChange('cost_center', e.target.value)} className={inputClass} placeholder="All cost centers" />
+          </Field>
+        </>
+      )}
+
+      {triggerType === 'bamboohr_sync' && (
+        <>
+          <CompanyBadge />
+          <Field label="Data type">
+            <select value={data.params.data_type || 'headcount'} onChange={(e) => onParamChange('data_type', e.target.value)} className={selectClass}>
+              <option value="headcount">Headcount</option>
+              <option value="compensation">Compensation</option>
+              <option value="time_off">Time Off</option>
+              <option value="directory">Employee Directory</option>
+            </select>
+          </Field>
+          <Field label="Sync type">
+            <select value={data.params.sync_type || 'incremental'} onChange={(e) => onParamChange('sync_type', e.target.value)} className={selectClass}>
+              <option value="incremental">Incremental</option>
+              <option value="full">Full Sync</option>
+            </select>
+          </Field>
+          <Field label="Department filter">
+            <input type="text" value={data.params.department || ''} onChange={(e) => onParamChange('department', e.target.value)} className={inputClass} placeholder="All departments" />
+          </Field>
         </>
       )}
     </>

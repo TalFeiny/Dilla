@@ -20,12 +20,11 @@ const TableauLevelCharts = dynamic(
 );
 
 type ChartMode = 'branched_line' | 'stacked_bar' | 'treemap' | 'regression_line' | 'line' | 'bar_comparison' | 'monte_carlo_fan';
+/** Maps to backend ForecastMethodRouter.METHODS */
 type ForecastMethod =
-  | 'auto' | 'driver-based' | 'seasonal'
-  | 'linear' | 'polynomial' | 'exponential_growth'
-  | 'logistic' | 'power_law' | 'gompertz'
-  | 'piecewise_linear' | 'weighted_linear'
-  | 'model_construction';
+  | 'auto' | 'liquidity' | 'advanced_regression' | 'model_construction'
+  | 'driver_based' | 'seasonal' | 'monte_carlo'
+  | 'regression' | 'budget_pct' | 'growth_rate';
 type ForecastMetric = 'revenue' | 'ebitda' | 'gross_profit' | 'total_opex' | 'free_cash_flow' | 'cogs';
 type ForecastGranularity = 'monthly' | 'quarterly' | 'annual';
 
@@ -248,18 +247,16 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
         <Select value={selectedMethod} onValueChange={(v) => setSelectedMethod(v as ForecastMethod)}>
           <SelectTrigger className="h-6 w-[160px] text-[11px]"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="model_construction">Model Construction</SelectItem>
+            <SelectItem value="model_construction">Custom Model</SelectItem>
             <SelectItem value="auto">Auto (best fit)</SelectItem>
-            <SelectItem value="linear">Linear</SelectItem>
-            <SelectItem value="polynomial">Polynomial</SelectItem>
-            <SelectItem value="exponential_growth">Exponential</SelectItem>
-            <SelectItem value="logistic">Logistic (S-curve)</SelectItem>
-            <SelectItem value="power_law">Power Law</SelectItem>
-            <SelectItem value="gompertz">Gompertz</SelectItem>
-            <SelectItem value="piecewise_linear">Piecewise Linear</SelectItem>
-            <SelectItem value="weighted_linear">Weighted Linear</SelectItem>
+            <SelectItem value="liquidity">Liquidity Model</SelectItem>
+            <SelectItem value="advanced_regression">Advanced Regression</SelectItem>
+            <SelectItem value="driver_based">Driver-based</SelectItem>
             <SelectItem value="seasonal">Seasonal</SelectItem>
-            <SelectItem value="driver-based">Connected P&L</SelectItem>
+            <SelectItem value="monte_carlo">Monte Carlo</SelectItem>
+            <SelectItem value="regression">Regression</SelectItem>
+            <SelectItem value="budget_pct">Budget-based</SelectItem>
+            <SelectItem value="growth_rate">Growth Rate</SelectItem>
           </SelectContent>
         </Select>
       </div>

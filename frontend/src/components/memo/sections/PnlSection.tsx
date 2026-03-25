@@ -27,11 +27,11 @@ const TableauLevelCharts = dynamic(
 
 type ChartMode = 'stacked_bar' | 'line' | 'bar';
 type TimeRange = 'all' | '6m' | '12m' | 'ytd';
+/** Maps to backend ForecastMethodRouter.METHODS */
 type ForecastMethod =
-  | 'auto' | 'driver-based' | 'seasonal'
-  | 'linear' | 'polynomial' | 'exponential_growth'
-  | 'logistic' | 'power_law' | 'gompertz'
-  | 'piecewise_linear' | 'weighted_linear';
+  | 'auto' | 'liquidity' | 'advanced_regression' | 'model_construction'
+  | 'driver_based' | 'seasonal' | 'monte_carlo'
+  | 'regression' | 'budget_pct' | 'growth_rate';
 
 /** Row shape returned by /fpa/pnl backend */
 interface PnlRow {
@@ -49,13 +49,18 @@ interface PnlResponse {
   periods: string[];
   rows: PnlRow[];
   forecastStartIndex?: number;
+  method?: string;
   ratios?: Record<string, any>;
 }
 
 /** Transform backend rows into chart-ready {labels, datasets} format
  *  that TableauLevelCharts renderLineOrBarChart expects.
- *  Only charts leaf data rows (no headers, no computed subtotals). */
-function buildChartFromResponse(data: PnlResponse): { labels: string[]; datasets: { label: string; data: (number | null)[] }[] } | null {
+ *  Charts leaf data rows (no headers, no computed subtotals).
+ *  Accepts optional periods to respect time range filter. */
+function buildChartFromResponse(
+  data: PnlResponse,
+  periods?: string[],
+): { labels: string[]; datasets: { label: string; data: (number | null)[] }[] } | null {
   if (!data.periods?.length || !data.rows?.length) return null;
 
   const chartableRows = data.rows.filter(
@@ -63,10 +68,10 @@ function buildChartFromResponse(data: PnlResponse): { labels: string[]; datasets
   );
   if (!chartableRows.length) return null;
 
-  const labels = data.periods;
+  const labels = periods?.length ? periods : data.periods;
   const datasets = chartableRows.map(row => ({
     label: row.label || row.id,
-    data: data.periods.map(p => row.values[p] ?? null),
+    data: labels.map(p => row.values[p] ?? null),
   }));
 
   return { labels, datasets };
@@ -95,13 +100,13 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch P&L data from backend on mount and when company changes
+  // Fetch P&L data from backend — passes selected method so backend uses the right service
   const handleFetch = useCallback(async () => {
     if (!ctx.companyId) return;
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchPnl(ctx.companyId);
+      const data = await fetchPnl(ctx.companyId, undefined, undefined, 24, forecastMethod);
       setPnlData(data);
     } catch (err: any) {
       console.warn('PnlSection fetch error:', err);
@@ -109,7 +114,7 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
     } finally {
       setLoading(false);
     }
-  }, [ctx.companyId]);
+  }, [ctx.companyId, forecastMethod]);
 
   useEffect(() => {
     handleFetch();
@@ -143,10 +148,10 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
     return periods;
   }, [pnlData, timeRange]);
 
-  // Build chart data from backend response
+  // Build chart data from backend response — respects time range filter
   const chartData = useMemo(
-    () => pnlData ? buildChartFromResponse(pnlData) : null,
-    [pnlData]
+    () => pnlData ? buildChartFromResponse(pnlData, filteredPeriods) : null,
+    [pnlData, filteredPeriods]
   );
 
   // Latest period summary from raw pnlData rows
@@ -224,21 +229,20 @@ export function PnlSection({ onDelete, readOnly = false }: PnlSectionProps) {
       <div className="flex items-center gap-1.5">
         <span className="text-muted-foreground">Method:</span>
         <Select value={forecastMethod} onValueChange={(v) => setForecastMethod(v as ForecastMethod)}>
-          <SelectTrigger className="h-6 w-[150px] text-[11px]">
+          <SelectTrigger className="h-6 w-[170px] text-[11px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="auto">Auto (best fit)</SelectItem>
-            <SelectItem value="linear">Linear</SelectItem>
-            <SelectItem value="polynomial">Polynomial</SelectItem>
-            <SelectItem value="exponential_growth">Exponential</SelectItem>
-            <SelectItem value="logistic">Logistic (S-curve)</SelectItem>
-            <SelectItem value="power_law">Power Law</SelectItem>
-            <SelectItem value="gompertz">Gompertz</SelectItem>
-            <SelectItem value="piecewise_linear">Piecewise Linear</SelectItem>
-            <SelectItem value="weighted_linear">Weighted Linear</SelectItem>
+            <SelectItem value="liquidity">Liquidity Model</SelectItem>
+            <SelectItem value="advanced_regression">Advanced Regression</SelectItem>
+            <SelectItem value="model_construction">Custom Model</SelectItem>
+            <SelectItem value="driver_based">Driver-based</SelectItem>
             <SelectItem value="seasonal">Seasonal</SelectItem>
-            <SelectItem value="driver-based">Driver-based</SelectItem>
+            <SelectItem value="monte_carlo">Monte Carlo</SelectItem>
+            <SelectItem value="regression">Regression</SelectItem>
+            <SelectItem value="budget_pct">Budget-based</SelectItem>
+            <SelectItem value="growth_rate">Growth Rate</SelectItem>
           </SelectContent>
         </Select>
       </div>

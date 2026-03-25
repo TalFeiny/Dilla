@@ -140,6 +140,7 @@ async def get_pnl(
     start: Optional[str] = Query(None, description="Start period YYYY-MM"),
     end: Optional[str] = Query(None, description="End period YYYY-MM"),
     months: int = Query(24, description="Forecast months"),
+    method: Optional[str] = Query(None, description="Forecast method override (auto, growth_rate, regression, advanced_regression, driver_based, seasonal, budget_pct, model_construction)"),
 ):
     """
     Fetch P&L data: actuals + forecast via PnlBuilder (single source of truth).
@@ -149,7 +150,7 @@ async def get_pnl(
 
     try:
         builder = PnlBuilder(company_id=company_id, fund_id=fund_id)
-        return builder.build(start=start, end=end, forecast_months=months)
+        return builder.build(start=start, end=end, forecast_months=months, method=method)
 
     except Exception as e:
         logger.error("Error fetching P&L: %s", e, exc_info=True)

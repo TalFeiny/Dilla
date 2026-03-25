@@ -4985,10 +4985,10 @@ export function UnifiedMatrix({
     // Check if mode or fundId changed (these affect defaults)
     const modeChanged = prevModeRef.current !== mode;
     const fundIdChanged = prevFundIdRef.current !== fundId;
-    
+
     // Check if matrixData reference changed
     const dataChanged = prevMatrixDataRef.current !== matrixData;
-    
+
     // If nothing changed, return previous result to prevent unnecessary re-renders
     if (!modeChanged && !fundIdChanged && !dataChanged && prevMatrixDataRef.current) {
       return prevMatrixDataRef.current;
@@ -4996,7 +4996,7 @@ export function UnifiedMatrix({
 
     const defaults = getDefaultMatrixData(mode, fundId);
     let result: MatrixData;
-    
+
     // If matrixData is null or has no columns, use defaults
     if (!matrixData || !matrixData.columns || matrixData.columns.length === 0) {
       result = defaults;
@@ -5007,18 +5007,20 @@ export function UnifiedMatrix({
       // Use actual matrixData
       result = matrixData;
     }
-    
+
     // Ensure metadata.fundId is set when in portfolio mode with a selected fund,
     // so AGGridMatrix and CellDropdownRenderer always have fundId for action execution.
-    if (mode === 'portfolio' && fundId) {
+    // Only create a new object if fundId is actually missing/different to avoid
+    // needless reference changes that cause AG Grid to re-render and lose scroll position.
+    if (mode === 'portfolio' && fundId && result.metadata?.fundId !== fundId) {
       result = { ...result, metadata: { ...result.metadata, fundId } };
     }
-    
+
     // Update refs
     prevMatrixDataRef.current = result;
     prevModeRef.current = mode;
     prevFundIdRef.current = fundId;
-    
+
     return result;
   }, [matrixData, mode, fundId, getDefaultMatrixData]);
 

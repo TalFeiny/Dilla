@@ -22,17 +22,19 @@ export async function fetchPnl(
   start?: string,
   end?: string,
   months: number = 24,
+  method?: string,
 ) {
   const params = new URLSearchParams({ company_id: companyId, months: String(months) });
   if (start) params.set('start', start);
   if (end) params.set('end', end);
+  if (method && method !== 'auto') params.set('method', method);
   const res = await fetch(`/api/fpa/pnl?${params}`, {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
   });
   if (!res.ok) throw new Error(`P&L fetch failed: ${res.status}`);
   return res.json();
-  // -> { periods, rows, forecastStartIndex, ratios?, ... }
+  // -> { periods, rows, forecastStartIndex, method, ... }
 }
 
 // ---------------------------------------------------------------------------

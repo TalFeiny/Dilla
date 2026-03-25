@@ -43,7 +43,16 @@ export type TriggerType =
   | 'schedule'         // Cron-based
   | 'csv_upload'       // Upload a CSV/file — flow runs on that data
   | 'cell_input'       // Select a cell/row from the grid — flow starts from that data
-  | 'document_upload'; // Upload a document (PDF, term sheet) — flow processes it
+  | 'document_upload'  // Upload a document (PDF, term sheet) — flow processes it
+  // Integration triggers — sync data from connected platforms
+  | 'xero_sync'
+  | 'quickbooks_sync'
+  | 'netsuite_sync'
+  | 'sap_sync'
+  | 'salesforce_sync'
+  | 'attio_sync'
+  | 'workday_sync'
+  | 'bamboohr_sync';
 
 /** Output format for terminal nodes */
 export type OutputFormat =

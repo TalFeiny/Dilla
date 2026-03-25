@@ -11,11 +11,22 @@ import { PORTS } from './port-types';
 // ── Trigger definitions ──────────────────────────────────────────────────
 
 const triggerItems: PaletteItem[] = [
+  // Manual & schedule triggers
   { id: 'trigger_manual', label: 'Manual Trigger', icon: 'Play', kind: 'trigger', triggerType: 'manual', domain: 'transform' as any, color: 'emerald', description: 'Start workflow manually with the Run button', defaultParams: {}, outputPorts: [PORTS.dataOut()] },
   { id: 'trigger_schedule', label: 'Scheduled', icon: 'Clock', kind: 'trigger', triggerType: 'schedule', domain: 'transform' as any, color: 'emerald', description: 'Run workflow on a schedule (cron)', defaultParams: { cron: '0 9 * * 1' }, outputPorts: [PORTS.dataOut()] },
+  // File & data triggers
   { id: 'trigger_csv_upload', label: 'CSV / File Upload', icon: 'Upload', kind: 'trigger', triggerType: 'csv_upload', domain: 'data' as any, color: 'emerald', description: 'Upload a CSV or file — workflow runs on that data', defaultParams: {}, outputPorts: [PORTS.tableOut()] },
   { id: 'trigger_cell_input', label: 'Cell / Row Input', icon: 'Table2', kind: 'trigger', triggerType: 'cell_input', domain: 'data' as any, color: 'emerald', description: 'Start from a specific cell or row in the grid', defaultParams: { sourcePage: 'pnl', sourceRow: '', sourcePeriod: '' }, outputPorts: [PORTS.dataOut()] },
   { id: 'trigger_document', label: 'Document Upload', icon: 'FileText', kind: 'trigger', triggerType: 'document_upload', domain: 'data' as any, color: 'emerald', description: 'Upload a document (PDF, term sheet) to process', defaultParams: { documentType: 'financial_statement' }, outputPorts: [PORTS.dataOut()] },
+  // Integration triggers — sync data from connected platforms
+  { id: 'trigger_xero', label: 'Xero Sync', icon: 'RefreshCcw', kind: 'trigger', triggerType: 'xero_sync', domain: 'data' as any, color: 'cyan', description: 'Sync financial data from Xero', defaultParams: { sync_type: 'incremental', months_back: 24 }, outputPorts: [PORTS.tableOut()] },
+  { id: 'trigger_quickbooks', label: 'QuickBooks Sync', icon: 'RefreshCcw', kind: 'trigger', triggerType: 'quickbooks_sync', domain: 'data' as any, color: 'green', description: 'Sync financial data from QuickBooks', defaultParams: { sync_type: 'incremental', months_back: 24 }, outputPorts: [PORTS.tableOut()] },
+  { id: 'trigger_netsuite', label: 'NetSuite Sync', icon: 'RefreshCcw', kind: 'trigger', triggerType: 'netsuite_sync', domain: 'data' as any, color: 'blue', description: 'Sync ERP data from NetSuite', defaultParams: { sync_type: 'incremental', data_type: 'financials' }, outputPorts: [PORTS.tableOut()] },
+  { id: 'trigger_sap', label: 'SAP Sync', icon: 'RefreshCcw', kind: 'trigger', triggerType: 'sap_sync', domain: 'data' as any, color: 'blue', description: 'Sync ERP data from SAP', defaultParams: { sync_type: 'incremental', module: 'fico' }, outputPorts: [PORTS.tableOut()] },
+  { id: 'trigger_salesforce', label: 'Salesforce Sync', icon: 'RefreshCcw', kind: 'trigger', triggerType: 'salesforce_sync', domain: 'data' as any, color: 'sky', description: 'Sync CRM data from Salesforce', defaultParams: { object_type: 'opportunity', sync_type: 'incremental' }, outputPorts: [PORTS.tableOut()] },
+  { id: 'trigger_attio', label: 'Attio Sync', icon: 'RefreshCcw', kind: 'trigger', triggerType: 'attio_sync', domain: 'data' as any, color: 'purple', description: 'Sync CRM data from Attio', defaultParams: { object_type: 'deals', sync_type: 'incremental' }, outputPorts: [PORTS.tableOut()] },
+  { id: 'trigger_workday', label: 'Workday Sync', icon: 'RefreshCcw', kind: 'trigger', triggerType: 'workday_sync', domain: 'data' as any, color: 'orange', description: 'Sync HR & payroll data from Workday', defaultParams: { data_type: 'headcount', sync_type: 'incremental' }, outputPorts: [PORTS.tableOut()] },
+  { id: 'trigger_bamboohr', label: 'BambooHR Sync', icon: 'RefreshCcw', kind: 'trigger', triggerType: 'bamboohr_sync', domain: 'data' as any, color: 'green', description: 'Sync HR data from BambooHR', defaultParams: { data_type: 'headcount', sync_type: 'incremental' }, outputPorts: [PORTS.tableOut()] },
 ];
 
 // ── Operator definitions ─────────────────────────────────────────────────

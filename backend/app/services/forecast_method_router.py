@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 
 METHODS = {
     "growth_rate", "regression", "advanced_regression", "driver_based",
-    "seasonal", "budget_pct", "manual", "model_construction",
+    "seasonal", "budget_pct", "manual", "model_construction", "liquidity",
+    "monte_carlo",
 }
 
 
@@ -157,7 +158,9 @@ class ForecastMethodRouter:
         elif method == "regression":
             forecast = self._build_regression(company_id, seed_data, months, start_period, provenance, company_data)
         elif method == "driver_based":
-            forecast = self._build_driver_based(seed_data, months, assumptions)
+            forecast = self._build_driver_based(
+                {**seed_data, "company_id": company_id}, months, assumptions
+            )
         elif method == "seasonal":
             forecast = self._build_seasonal(company_id, seed_data, months, assumptions, provenance, company_data)
         elif method == "budget_pct":
@@ -167,6 +170,14 @@ class ForecastMethodRouter:
         elif method == "model_construction":
             forecast = self._build_model_construction(
                 company_id, seed_data, months, start_period, provenance, company_data
+            )
+        elif method == "liquidity":
+            forecast = self._build_liquidity(
+                company_id, seed_data, months, start_period, provenance
+            )
+        elif method == "monte_carlo":
+            forecast = self._build_monte_carlo(
+                company_id, seed_data, months, start_period, provenance
             )
         else:
             forecast = self._build_growth_rate(seed_data, months, assumptions)
@@ -202,18 +213,18 @@ class ForecastMethodRouter:
         start_period: str, provenance: Dict, company_data=None,
     ) -> List[Dict]:
         """Regression-based forecast: fit actuals, project forward, then
-        feed projected revenue growth into CashFlowPlanningService."""
+        feed projected revenue growth into LiquidityManagementService."""
         from app.services.fpa_regression_service import FPARegressionService
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
+        from app.services.liquidity_management_service import LiquidityManagementService
         import asyncio
 
         svc = FPARegressionService()
         y = company_data.sorted_amounts("revenue") if company_data else []
+        overrides = {}
 
         if len(y) >= 6:
             x = list(range(len(y)))
 
-            # Run regression (sync wrapper for async method)
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
@@ -225,46 +236,65 @@ class ForecastMethodRouter:
                 else:
                     reg_result = asyncio.run(svc.linear_regression(x, y))
             except Exception:
-                # Fallback: manual regression
                 reg_result = self._simple_linear_regression(x, y)
 
             provenance["regression"] = reg_result
 
-            # Project revenue forward using regression
             slope = reg_result.get("slope", 0)
             intercept = reg_result.get("intercept", 0)
             last_x = len(y)
 
-            # Convert regression projection to equivalent growth rate
             last_revenue = seed_data.get("revenue", 0)
             projected_12m = slope * (last_x + 12) + intercept
             if last_revenue > 0 and projected_12m > 0:
                 implied_annual_growth = (projected_12m / last_revenue) - 1
-                seed_data = {**seed_data, "growth_rate": implied_annual_growth}
+                overrides["growth_rate"] = implied_annual_growth
                 provenance["implied_annual_growth"] = implied_annual_growth
 
-        # Build using CashFlowPlanningService with regression-adjusted growth
-        cfp = CashFlowPlanningService()
-        return cfp.build_monthly_cash_flow_model(seed_data, months=months)
+        # Build using LiquidityManagementService with regression-adjusted growth
+        lms = LiquidityManagementService()
+        lms_result = lms.build_liquidity_model(
+            company_id=company_id,
+            months=months,
+            start_period=start_period,
+            scenario_overrides=overrides,
+        )
+        forecast = lms_result.get("monthly", [])
+        return forecast if forecast else self._build_growth_rate(seed_data, months)
 
     def _build_driver_based(
         self, seed_data: Dict, months: int, assumptions: Dict = None
     ) -> List[Dict]:
-        """Driver-based model — pass driver keys directly to CashFlowPlanningService
-        which activates its customer model path when ACV/churn/NRR are present."""
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
+        """Driver-based model — uses LiquidityManagementService with customer/ACV drivers."""
+        from app.services.liquidity_management_service import LiquidityManagementService
 
-        # Promote detected drivers to top-level keys that CFPS recognizes
-        enriched = {**seed_data}
-        if seed_data.get("_detected_acv") and not enriched.get("acv_override"):
-            enriched["acv_override"] = seed_data["_detected_acv"]
-        if seed_data.get("_detected_customer_count") and not enriched.get("customers"):
-            enriched["customers"] = seed_data["_detected_customer_count"]
+        # Promote detected drivers to top-level keys
+        overrides = dict(assumptions or {})
+        if seed_data.get("_detected_acv") and "acv_override" not in overrides:
+            overrides["acv_override"] = seed_data["_detected_acv"]
+        if seed_data.get("_detected_customer_count") and "customers" not in overrides:
+            overrides["customers"] = seed_data["_detected_customer_count"]
+        if seed_data.get("churn_rate"):
+            overrides.setdefault("churn_rate", seed_data["churn_rate"])
+        if seed_data.get("nrr"):
+            overrides.setdefault("nrr", seed_data["nrr"])
 
-        svc = CashFlowPlanningService()
-        return svc.build_monthly_cash_flow_model(
-            enriched, months=months, monthly_overrides=assumptions,
+        company_id = seed_data.get("company_id", "")
+        if not company_id:
+            # Fallback: use CashFlowPlanningService if no company_id for LMS
+            from app.services.cash_flow_planning_service import CashFlowPlanningService
+            enriched = {**seed_data, **overrides}
+            svc = CashFlowPlanningService()
+            return svc.build_monthly_cash_flow_model(enriched, months=months)
+
+        lms = LiquidityManagementService()
+        lms_result = lms.build_liquidity_model(
+            company_id=company_id,
+            months=months,
+            scenario_overrides=overrides,
         )
+        forecast = lms_result.get("monthly", [])
+        return forecast if forecast else self._build_growth_rate(seed_data, months)
 
     def _build_model_construction(
         self, company_id: str, seed_data: Dict, months: int,
@@ -352,15 +382,21 @@ class ForecastMethodRouter:
         self, company_id: str, seed_data: Dict, months: int,
         assumptions: Dict, provenance: Dict, company_data=None,
     ) -> List[Dict]:
-        """Growth-rate model + seasonal overlay."""
+        """LiquidityManagementService base + empirical seasonal overlay."""
         from app.services.seasonality_engine import SeasonalityEngine
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
+        from app.services.liquidity_management_service import LiquidityManagementService
 
-        # Build base forecast
-        svc = CashFlowPlanningService()
-        forecast = svc.build_monthly_cash_flow_model(
-            seed_data, months=months, monthly_overrides=assumptions,
+        # Build base forecast with proper subcategory modeling
+        lms = LiquidityManagementService()
+        lms_result = lms.build_liquidity_model(
+            company_id=company_id,
+            months=months,
+            scenario_overrides=assumptions,
         )
+        forecast = lms_result.get("monthly", [])
+
+        if not forecast:
+            forecast = self._build_growth_rate(seed_data, months, assumptions)
 
         # Detect and apply seasonality
         engine = SeasonalityEngine()
@@ -379,13 +415,13 @@ class ForecastMethodRouter:
         self, company_id: str, seed_data: Dict, months: int, provenance: Dict,
         company_data=None,
     ) -> List[Dict]:
-        """Forecast = budget × trailing achievement rate."""
+        """Forecast = budget × trailing achievement rate via LiquidityManagementService."""
         from app.core.supabase_client import get_supabase_client
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
+        from app.services.liquidity_management_service import LiquidityManagementService
 
         sb = get_supabase_client()
         if not sb:
-            return self._build_growth_rate(seed_data, months)
+            return self._build_liquidity(company_id, seed_data, months, None, provenance)
 
         # Find approved budget
         budget_result = (
@@ -399,9 +435,8 @@ class ForecastMethodRouter:
         )
 
         if not budget_result.data:
-            # No budget — fall back to growth rate
             provenance["fallback"] = "no_approved_budget"
-            return self._build_growth_rate(seed_data, months)
+            return self._build_liquidity(company_id, seed_data, months, None, provenance)
 
         budget_id = budget_result.data[0]["id"]
         lines = (
@@ -413,7 +448,7 @@ class ForecastMethodRouter:
 
         if not lines.data:
             provenance["fallback"] = "no_budget_lines"
-            return self._build_growth_rate(seed_data, months)
+            return self._build_liquidity(company_id, seed_data, months, None, provenance)
 
         # Compute trailing achievement rate from actuals vs budget
         rev_amounts = company_data.sorted_amounts("revenue") if company_data else []
@@ -423,10 +458,8 @@ class ForecastMethodRouter:
 
         achievement_rate = 1.0
         if budget_revenue_line and rev_amounts:
-            # Average the most recent actuals against budget months
             recent = rev_amounts[-3:]
             actual_avg = sum(recent) / len(recent)
-            # Budget monthly average from m1-m12
             budget_months = [budget_revenue_line.get(f"m{i}", 0) or 0 for i in range(1, 13)]
             budget_avg = sum(budget_months) / 12 if budget_months else 0
             if budget_avg > 0:
@@ -435,11 +468,14 @@ class ForecastMethodRouter:
         provenance["budget_id"] = budget_id
         provenance["achievement_rate"] = achievement_rate
 
-        # Adjust seed revenue by achievement rate and build
-        adjusted_seed = {**seed_data}
-        # Use budget-implied growth rate
-        svc = CashFlowPlanningService()
-        return svc.build_monthly_cash_flow_model(adjusted_seed, months=months)
+        # Build using LiquidityManagementService with budget-adjusted growth
+        lms = LiquidityManagementService()
+        lms_result = lms.build_liquidity_model(
+            company_id=company_id,
+            months=months,
+        )
+        forecast = lms_result.get("monthly", [])
+        return forecast if forecast else self._build_growth_rate(seed_data, months)
 
     def _build_manual(self, assumptions: Dict, months: int) -> List[Dict]:
         """Manual forecast — just pass through whatever values were given."""
@@ -454,17 +490,17 @@ class ForecastMethodRouter:
         start_period: str, provenance: Dict, company_data=None,
     ) -> List[Dict]:
         """Advanced regression: fit all models, pick best, project revenue,
-        then feed into CashFlowPlanningService for full P&L build."""
+        then use LiquidityManagementService for full P&L with proper subcategory modeling."""
         from app.services.advanced_regression_service import AdvancedRegressionService
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
+        from app.services.liquidity_management_service import LiquidityManagementService
 
         adv = AdvancedRegressionService()
         hist = company_data.historical_values("revenue") if company_data else []
         actuals = [{"period": p, "amount": v} for p, v in hist]
 
         if len(actuals) < 3:
-            logger.warning("Not enough actuals for advanced regression, falling back to growth_rate")
-            return self._build_growth_rate(seed_data, months)
+            logger.warning("Not enough actuals for advanced regression, falling back to liquidity")
+            return self._build_liquidity(company_id, seed_data, months, start_period, provenance)
 
         try:
             result = adv.project_metric(
@@ -486,7 +522,6 @@ class ForecastMethodRouter:
                 rev_12m = projected_revenue[min(11, len(projected_revenue) - 1)]
                 implied_annual_growth = (rev_12m / last_actual) - 1
             elif last_actual > 0 and projected_revenue:
-                # Shorter horizon — annualize
                 n = len(projected_revenue)
                 implied_annual_growth = ((projected_revenue[-1] / last_actual) ** (12 / n)) - 1
             else:
@@ -495,33 +530,34 @@ class ForecastMethodRouter:
             provenance["implied_annual_growth"] = implied_annual_growth
             provenance["regression_model_name"] = result["model"]["model_name"]
 
-            # Build full P&L using CashFlowPlanningService with regression-derived growth,
-            # then overlay the actual regression curve for revenue
-            adjusted_seed = {**seed_data, "growth_rate": implied_annual_growth}
-            cfp = CashFlowPlanningService()
-            forecast = cfp.build_monthly_cash_flow_model(
-                adjusted_seed, months=months, start_period=start_period,
+            # Build full P&L using LiquidityManagementService (proper subcategory growth drivers)
+            # with regression-derived growth, then overlay the regression revenue curve
+            lms = LiquidityManagementService()
+            lms_result = lms.build_liquidity_model(
+                company_id=company_id,
+                months=months,
+                start_period=start_period,
+                scenario_overrides={"growth_rate": implied_annual_growth},
             )
+            forecast = lms_result.get("monthly", [])
 
-            # Override revenue with actual regression projections (more accurate than
-            # simple growth rate)
+            if not forecast:
+                forecast = self._build_growth_rate(seed_data, months)
+
+            # Override revenue with actual regression projections (more accurate)
             for i, month_data in enumerate(forecast):
                 if i < len(projected_revenue):
-                    old_rev = month_data.get("revenue", 0) or 0
                     new_rev = projected_revenue[i]
                     if new_rev > 0:
                         month_data["revenue"] = round(new_rev, 2)
-                        # Cascade: adjust COGS, gross_profit proportionally
                         gm = month_data.get("gross_margin") or seed_data.get("gross_margin", 0.65)
                         month_data["cogs"] = round(new_rev * (1 - gm), 2)
                         month_data["gross_profit"] = round(new_rev * gm, 2)
-                        # EBITDA = gross_profit - opex (opex stays from model)
                         total_opex = month_data.get("total_opex", 0) or 0
                         month_data["ebitda"] = round(month_data["gross_profit"] - total_opex, 2)
                         capex = month_data.get("capex", 0) or 0
                         month_data["free_cash_flow"] = round(month_data["ebitda"] - capex, 2)
 
-                    # Attach CI
                     if i < len(confidence_intervals):
                         month_data["_revenue_ci_lower"] = confidence_intervals[i]["lower"]
                         month_data["_revenue_ci_upper"] = confidence_intervals[i]["upper"]
@@ -535,8 +571,77 @@ class ForecastMethodRouter:
             return forecast
 
         except Exception as e:
-            logger.warning(f"Advanced regression failed ({e}), falling back to basic regression")
-            return self._build_regression(company_id, seed_data, months, start_period, provenance)
+            logger.warning(f"Advanced regression failed ({e}), falling back to liquidity")
+            return self._build_liquidity(company_id, seed_data, months, start_period, provenance)
+
+    def _build_liquidity(
+        self, company_id: str, seed_data: Dict, months: int,
+        start_period: str, provenance: Dict,
+    ) -> List[Dict]:
+        """LiquidityManagementService — granular subcategory-level cash flow
+        modeling with proper growth drivers (headcount, usage, stepped, cac,
+        revenue_pct).  Replaces CashFlowPlanningService for production use."""
+        from app.services.liquidity_management_service import LiquidityManagementService
+
+        svc = LiquidityManagementService()
+        try:
+            result = svc.build_liquidity_model(
+                company_id=company_id,
+                months=months,
+                start_period=start_period,
+            )
+            provenance["liquidity_events"] = result.get("events_applied", 0)
+            provenance["risk_alerts"] = len(result.get("risk_alerts", []))
+            monthly = result.get("monthly", [])
+            if monthly:
+                return monthly
+            logger.warning("Liquidity model returned empty monthly, falling back")
+            return self._build_growth_rate(seed_data, months)
+        except Exception as e:
+            logger.warning(f"Liquidity model failed ({e}), falling back to growth_rate")
+            provenance["liquidity_error"] = str(e)
+            return self._build_growth_rate(seed_data, months)
+
+    def _build_monte_carlo(
+        self, company_id: str, seed_data: Dict, months: int,
+        start_period: str, provenance: Dict,
+    ) -> List[Dict]:
+        """Monte Carlo simulation — returns the median (p50) trajectory."""
+        from app.services.monte_carlo_engine import MonteCarloEngine
+
+        engine = MonteCarloEngine()
+        try:
+            mc_result = engine.simulate(company_id, iterations=500, months=months)
+            provenance["mc_iterations"] = mc_result.iterations
+            provenance["mc_break_even_prob"] = mc_result.break_even_probability
+            provenance["mc_var_cash_12m"] = mc_result.var_cash_12m
+
+            # Build forecast rows from p50 trajectories
+            periods = mc_result.periods or []
+            if not periods:
+                return self._build_growth_rate(seed_data, months)
+
+            forecast: List[Dict] = []
+            for i, period in enumerate(periods):
+                row: Dict[str, Any] = {"period": period}
+                for metric, percentiles in mc_result.trajectory_percentiles.items():
+                    p50 = percentiles.get("p50", [])
+                    if i < len(p50):
+                        row[metric] = round(p50[i], 2)
+                    # Also attach confidence bands
+                    p5 = percentiles.get("p5", [])
+                    p95 = percentiles.get("p95", [])
+                    if i < len(p5):
+                        row[f"_{metric}_ci_lower"] = round(p5[i], 2)
+                    if i < len(p95):
+                        row[f"_{metric}_ci_upper"] = round(p95[i], 2)
+                forecast.append(row)
+
+            return forecast if forecast else self._build_growth_rate(seed_data, months)
+        except Exception as e:
+            logger.warning(f"Monte Carlo failed ({e}), falling back")
+            provenance["mc_error"] = str(e)
+            return self._build_growth_rate(seed_data, months)
 
     # ------------------------------------------------------------------
     # Balance Sheet evolution — runs after P&L forecast to evolve BS

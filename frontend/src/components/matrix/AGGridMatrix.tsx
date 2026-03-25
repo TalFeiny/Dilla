@@ -280,7 +280,9 @@ export function AGGridMatrix({
 
   // Track when matrixData prop changes - will refresh grid after rowData is computed
 
-  // Ensure matrixData has required structure - NEVER return empty columns
+  // Ensure matrixData has required structure - NEVER return empty columns.
+  // Avoid creating a new object when matrixData already has valid columns/rows
+  // to prevent unnecessary AG Grid re-renders and scroll position loss.
   const safeMatrixData = useMemo(() => {
     if (!matrixData || !matrixData.columns || matrixData.columns.length === 0) {
       return {
@@ -289,11 +291,9 @@ export function AGGridMatrix({
         metadata: matrixData?.metadata || { dataSource: 'manual', lastUpdated: new Date().toISOString() },
       };
     }
-    return {
-      ...matrixData,
-      columns: matrixData.columns || [],
-      rows: matrixData.rows || [],
-    };
+    // Return matrixData directly — no spread — to preserve reference identity
+    // when only cell values changed (not structure). AG Grid uses getRowId for diffing.
+    return matrixData;
   }, [matrixData, mode]);
   
   // Cached formula engine - created once per matrixData change, not per cell
@@ -865,7 +865,9 @@ export function AGGridMatrix({
           gridApi!.setGridOption('rowData', rowData || []);
           prevRowDataRef.current = rowData;
         }
-        gridApi!.refreshCells({ force: true });
+        // Only force-refresh when columns changed (structure change); for row data updates
+        // let AG Grid's getRowId handle identity-based diffing to avoid flicker.
+        gridApi!.refreshCells({ force: columnDefsChanged });
 
         // Restore scroll position after row data replacement (AG Grid resets it)
         if (rowDataChanged && savedFirstRow > 0) {

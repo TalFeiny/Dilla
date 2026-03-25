@@ -39,6 +39,7 @@ export async function GET() {
       'total_invested_usd',
       'ownership_percentage',
       'current_arr_usd',
+      'current_valuation_usd',
       'first_investment_date',
       'exit_date',
       'exit_value_usd',
@@ -137,8 +138,13 @@ export async function GET() {
       // Calculate fund-level metrics
       const totalInvested = companies.reduce((sum, company) => sum + (company.total_invested_usd || 0), 0);
       const totalValuation = companies.reduce((sum, company) => {
-        // Use current_arr as proxy for valuation
-        const currentValue = (company.current_arr_usd || 0) * 10; // Simple multiple
+        // Use persisted valuation when available; derive from ownership if not; never invent multiples
+        const currentValue =
+          company.current_valuation_usd > 0
+            ? company.current_valuation_usd
+            : company.total_invested_usd && company.ownership_percentage > 0
+              ? company.total_invested_usd / (company.ownership_percentage / 100)
+              : 0;
         return sum + currentValue;
       }, 0);
 
@@ -156,16 +162,23 @@ export async function GET() {
             ? (currentDate.getTime() - investmentDate.getTime()) / (1000 * 60 * 60 * 24 * 365.25)
             : 0;
           
+          // Derive current value from real data — same logic as /[id]/companies
+          const currentValue =
+            company.current_valuation_usd > 0
+              ? company.current_valuation_usd
+              : company.total_invested_usd && company.ownership_percentage > 0
+                ? company.total_invested_usd / (company.ownership_percentage / 100)
+                : 0;
+
           // Calculate individual IRR
           let individualIrr = 0;
-          if (yearsSinceInvestment > 0 && company.total_invested_usd > 0) {
-            const currentValue = (company.current_arr_usd || 0) * 10;
+          if (yearsSinceInvestment > 0 && company.total_invested_usd > 0 && currentValue > 0) {
             individualIrr = Math.pow(currentValue / company.total_invested_usd, 1 / yearsSinceInvestment) - 1;
           }
-          
+
           // Calculate individual multiple
-          const individualMultiple = company.total_invested_usd > 0 
-            ? ((company.current_arr_usd || 0) * 10) / company.total_invested_usd
+          const individualMultiple = company.total_invested_usd > 0 && currentValue > 0
+            ? currentValue / company.total_invested_usd
             : 0;
           
           const extra = company.extra_data && typeof company.extra_data === 'object' ? company.extra_data : {};
@@ -177,7 +190,7 @@ export async function GET() {
             investmentAmount: company.total_invested_usd || 0,
             ownershipPercentage: company.ownership_percentage || 0,
             currentArr: company.current_arr_usd || 0,
-            valuation: (company.current_arr_usd || 0) * 10,
+            valuation: currentValue,
             investmentDate: company.first_investment_date,
             exitDate: company.exit_date,
             exitValue: company.exit_value_usd,

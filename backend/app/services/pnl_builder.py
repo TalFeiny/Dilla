@@ -169,6 +169,7 @@ class PnlBuilder:
         view: str = "waterfall",
         budget_id: Optional[str] = None,
         forecast_id: Optional[str] = None,
+        method: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Full P&L build: actuals → derive ratios → forecast → assemble rows.
@@ -202,11 +203,11 @@ class PnlBuilder:
             forecast, forecast_periods = self._pull_active_forecast(actual_periods)
             if not forecast:
                 forecast, forecast_periods = self._build_forecast(
-                    actuals, actual_periods, ratios, forecast_months
+                    actuals, actual_periods, ratios, forecast_months, method=method
                 )
         else:
             forecast, forecast_periods = self._build_forecast(
-                actuals, actual_periods, ratios, forecast_months
+                actuals, actual_periods, ratios, forecast_months, method=method
             )
 
         # 4. Pull budget if requested
@@ -233,6 +234,7 @@ class PnlBuilder:
             "forecastStartIndex": len(actual_periods),
             "rows": rows,
             "view": view,
+            "method": method,
         }
         if computed_metrics:
             result["computed_metrics"] = computed_metrics
@@ -429,12 +431,12 @@ class PnlBuilder:
         actual_periods: List[str],
         ratios: Dict[str, float],
         months: int,
+        method: Optional[str] = None,
     ) -> Tuple[Dict[str, Dict[str, float]], List[str]]:
         """
-        Build forecast months using CashFlowPlanningService, then redistribute
-        its output back into the actual category structure using derived ratios.
+        Build forecast months using the selected method (or auto-select),
+        then redistribute output into the actual category structure.
         """
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
         from app.services.company_data_pull import pull_company_data
 
         cd = self._company_data
@@ -468,12 +470,16 @@ class PnlBuilder:
             today = date.today()
             forecast_start = f"{today.year:04d}-{today.month:02d}"
 
-        # Route through ForecastMethodRouter to auto-select the best of 7 methods
-        # (driver_based, advanced_regression, seasonal, regression, budget_pct,
-        #  growth_rate, manual) instead of always using raw growth_rate decay.
+        # Route through ForecastMethodRouter — use explicit method if provided,
+        # otherwise auto-select the best method from available data.
         from app.services.forecast_method_router import ForecastMethodRouter
         router = ForecastMethodRouter()
-        method, reasoning = router.auto_select_method(self.company_id, company_data, company_data=cd)
+
+        if method and method != "auto":
+            reasoning = f"User-selected method: {method}"
+        else:
+            method, reasoning = router.auto_select_method(self.company_id, company_data, company_data=cd)
+
         monthly, provenance = router.build_forecast(
             company_id=self.company_id,
             method=method,
@@ -498,6 +504,12 @@ class PnlBuilder:
 
             # Redistribute forecast output using actual ratios
             forecast[period] = self._redistribute_forecast(entry, ratios, actuals)
+
+        # Enhance: replace ratio-based subcategory forecasts with proper
+        # per-subcategory regression when enough historical data exists.
+        forecast = self._enhance_subcategory_forecasts(
+            forecast, forecast_periods, actuals,
+        )
 
         return forecast, forecast_periods
 
@@ -579,6 +591,117 @@ class PnlBuilder:
         result["runway"] = month.get("runway_months", 0)
 
         return result
+
+    # ------------------------------------------------------------------
+    # Per-subcategory forecasting via regression services
+    # ------------------------------------------------------------------
+
+    def _enhance_subcategory_forecasts(
+        self,
+        forecast: Dict[str, Dict[str, float]],
+        forecast_periods: List[str],
+        actuals: Dict[str, Dict[str, float]],
+    ) -> Dict[str, Dict[str, float]]:
+        """Replace ratio-based subcategory forecasts with proper per-line-item
+        time-series projections when enough historical data exists.
+
+        Uses AdvancedRegressionService (7 curve models, auto-selected by fit)
+        to forecast each subcategory independently.  Falls back to ratio-based
+        distribution when a subcategory has < 6 months of history.
+
+        After forecasting children, recomputes parent totals as sum of children
+        so the P&L stays balanced.
+        """
+        if not forecast_periods:
+            return forecast
+
+        # Find subcategory keys (those with ":" separator)
+        sub_keys = [k for k in actuals.keys() if ":" in k]
+        if not sub_keys:
+            return forecast
+
+        MIN_PERIODS = 6
+
+        try:
+            from app.services.advanced_regression_service import AdvancedRegressionService
+            reg = AdvancedRegressionService()
+        except Exception as e:
+            logger.debug("Cannot load AdvancedRegressionService: %s", e)
+            return forecast
+
+        # Group subcategories by parent
+        parent_groups: Dict[str, List[str]] = {}
+        for key in sub_keys:
+            parent = key.split(":")[0]
+            parent_groups.setdefault(parent, []).append(key)
+
+        for parent, children in parent_groups.items():
+            child_forecasts: Dict[str, List[float]] = {}
+
+            for child_key in children:
+                series = actuals.get(child_key, {})
+                sorted_periods = sorted(series.keys())
+                sorted_vals = [series[p] for p in sorted_periods]
+
+                if len(sorted_vals) < MIN_PERIODS:
+                    continue  # keep ratio-based fallback for this child
+
+                # Build actuals in the format AdvancedRegressionService expects
+                actuals_list = [
+                    {"period": p, "amount": series[p]}
+                    for p in sorted_periods
+                ]
+                try:
+                    result = reg.project_metric(
+                        actuals=actuals_list,
+                        periods=len(forecast_periods),
+                        metric_key="amount",
+                        metric_name=child_key,
+                    )
+                    projected = result.get("projected_values", [])
+                    if projected and len(projected) >= len(forecast_periods):
+                        child_forecasts[child_key] = projected[:len(forecast_periods)]
+                except Exception as e:
+                    logger.debug("Regression failed for %s: %s", child_key, e)
+
+            if not child_forecasts:
+                continue
+
+            # Write regression-based values into forecast periods
+            for child_key, projected in child_forecasts.items():
+                for i, period in enumerate(forecast_periods):
+                    if period in forecast:
+                        forecast[period][child_key] = projected[i]
+
+            # Recompute parent total as sum of ALL children (regression + ratio-based)
+            for i, period in enumerate(forecast_periods):
+                if period not in forecast:
+                    continue
+                total = 0.0
+                has_any = False
+                for child_key in children:
+                    val = forecast[period].get(child_key)
+                    if val is not None:
+                        total += val
+                        has_any = True
+                if has_any:
+                    forecast[period][parent] = total
+
+        # Recompute total_opex and ebitda after subcategory adjustments
+        for period in forecast_periods:
+            if period not in forecast:
+                continue
+            fp = forecast[period]
+            rd = fp.get("opex_rd", 0) or 0
+            sm = fp.get("opex_sm", 0) or 0
+            ga = fp.get("opex_ga", 0) or 0
+            new_total_opex = rd + sm + ga
+            if new_total_opex > 0:
+                fp["total_opex"] = new_total_opex
+                gp = fp.get("gross_profit", 0) or 0
+                fp["ebitda"] = gp - new_total_opex
+
+        return forecast
 
     # ------------------------------------------------------------------
     # Step 4: Discover line items from actual data

@@ -408,12 +408,16 @@ def pull_company_data(company_id: str) -> CompanyData:
         amount = row.get("amount")
         if not cat or raw_period is None or amount is None:
             continue
-        # Parent rows (subcategory="") already contain the aggregated total.
-        # Including subcategory rows would double-count.
-        if sub:
-            continue
         period = _normalize_period(str(raw_period))
-        time_series[cat][period] += float(amount)
+        if not period:
+            continue
+        if sub:
+            # Include subcategory as separate key (e.g. "opex_rd:engineering_salaries")
+            # so downstream services can forecast each line item independently.
+            time_series[f"{cat}:{sub}"][period] += float(amount)
+        else:
+            # Parent rows (subcategory="") contain the aggregated total.
+            time_series[cat][period] += float(amount)
         all_periods.add(period)
 
     # Freeze defaultdicts to regular dicts
@@ -442,11 +446,15 @@ def pull_company_data(company_id: str) -> CompanyData:
     analytics = _compute_analytics(time_series, latest, periods)
 
     # -- Metadata --
+    all_keys = sorted(time_series.keys())
+    subcategory_keys = [k for k in all_keys if ":" in k]
     metadata = {
         "row_count": len(rows),
         "period_range": [periods[0], periods[-1]] if periods else [],
         "period_count": len(periods),
-        "categories": sorted(time_series.keys()),
+        "categories": all_keys,
+        "has_subcategories": bool(subcategory_keys),
+        "subcategory_keys": subcategory_keys,
     }
 
     logger.info(

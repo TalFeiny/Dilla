@@ -1325,7 +1325,9 @@ export default function MatrixControlPanel() {
               onRefresh={async () => {
                 if (fundId && mode === 'portfolio') {
                   await loadPortfolioMetrics();
-                  setMatrixData(null);
+                  // Dispatch refreshMatrix event so UnifiedMatrix reloads in-place
+                  // instead of blanking the grid with setMatrixData(null)
+                  window.dispatchEvent(new CustomEvent('refreshMatrix'));
                 } else if (mode === 'pnl') {
                   // Re-trigger parent PnL fetch so grid reloads with current view settings
                   setPnlRefreshTrigger((n) => n + 1);
