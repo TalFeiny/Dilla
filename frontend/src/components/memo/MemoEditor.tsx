@@ -193,7 +193,12 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
   }, [sections, onChange]);
 
   const removeSection = useCallback((idx: number) => {
-    if (sections.length <= 1) return;
+    if (sections.length <= 1) {
+      // Last section — replace with empty paragraph instead of blocking delete
+      onChange([{ type: 'paragraph', content: '' }]);
+      setSelectedIdx(0);
+      return;
+    }
     onChange(sections.filter((_, i) => i !== idx));
     setSelectedIdx(Math.max(0, idx - 1));
   }, [sections, onChange]);

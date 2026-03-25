@@ -20,16 +20,37 @@ logger = logging.getLogger(__name__)
 # Growth-rate helpers (ported from actuals_ingestion)
 # ---------------------------------------------------------------------------
 
-def _trailing_growth_from_series(values: List[float]) -> float:
-    """Trailing MoM growth from last 2 values, annualized."""
+def _trailing_growth_from_series(values: List[float]) -> Optional[float]:
+    """Compute annualized growth rate from the full revenue series.
+
+    Uses the best window available:
+    - 12+ months: YoY CAGR (most stable, smooths seasonality)
+    - 6-11 months: 6-month CAGR annualized
+    - 3-5 months: 3-month CAGR annualized
+    - 2 months: single MoM annualized (least reliable)
+    Returns None if insufficient data or zero/negative start values.
+    """
     if len(values) < 2:
-        return 0.0
-    prev, curr = values[-2], values[-1]
-    if prev and prev != 0:
-        mom = (curr - prev) / abs(prev)
-        mom = max(-0.5, min(0.5, mom))
-        return (1 + mom) ** 12 - 1
-    return 0.0
+        return None
+
+    # Pick the longest reliable window
+    if len(values) >= 13:
+        window = 12
+    elif len(values) >= 7:
+        window = 6
+    elif len(values) >= 4:
+        window = 3
+    else:
+        window = 1  # fallback to last 2 values
+
+    start_val = values[-(window + 1)]
+    end_val = values[-1]
+    if not start_val or start_val <= 0 or not end_val or end_val <= 0:
+        return None
+
+    monthly = (end_val / start_val) ** (1 / window) - 1
+    monthly = max(-0.5, min(0.5, monthly))
+    return (1 + monthly) ** 12 - 1
 
 
 def _trailing_growth_window_from_series(values: List[float], window: int = 3) -> float:
@@ -286,12 +307,12 @@ def _compute_analytics(
     last_cogs = cogs_vals[-1] if cogs_vals else 0
     last_opex = opex_vals[-1] if opex_vals else 0
 
-    # -- Growth rates from full series --
-    growth_rate = _trailing_growth_from_series(rev_vals) if len(rev_vals) >= 2 else 0.5
+    # -- Growth rates from full series (None when insufficient data) --
+    growth_rate = _trailing_growth_from_series(rev_vals) if len(rev_vals) >= 2 else None
 
-    analytics: Dict[str, Any] = {
-        "growth_rate": growth_rate,
-    }
+    analytics: Dict[str, Any] = {}
+    if growth_rate is not None:
+        analytics["growth_rate"] = growth_rate
 
     # -- Burn / margin / runway --
     burn_rate = (last_cogs + last_opex) if (cogs_vals or opex_vals) else None
@@ -309,12 +330,66 @@ def _compute_analytics(
     if cash_balance is not None and net_burn is not None and net_burn > 0:
         analytics["runway_months"] = cash_balance / net_burn
 
+    # -- PE / operating metrics --
+    gross_profit = last_rev - last_cogs if (rev_vals and cogs_vals) else None
+    ebitda = (gross_profit - last_opex) if gross_profit is not None and opex_vals else None
+
+    if ebitda is not None and last_rev > 0:
+        analytics["ebitda_margin"] = ebitda / last_rev
+    if last_rev > 0 and (cogs_vals or opex_vals):
+        analytics["operating_margin"] = (last_rev - last_cogs - last_opex) / last_rev
+    if ebitda is not None:
+        analytics["ebitda"] = ebitda
+
+    # -- Capex, FCF, interest, debt metrics --
+    capex_vals = _sorted_vals("capex")
+    interest_vals = _sorted_vals("interest_expense")
+    debt_service_vals = _sorted_vals("debt_service")
+    total_debt_vals = _sorted_vals("total_debt")
+    tax_vals = _sorted_vals("tax_expense")
+    wc_vals = _sorted_vals("working_capital")
+
+    last_capex = capex_vals[-1] if capex_vals else 0
+    last_interest = interest_vals[-1] if interest_vals else 0
+    last_debt_service = debt_service_vals[-1] if debt_service_vals else 0
+    last_total_debt = total_debt_vals[-1] if total_debt_vals else None
+    last_tax = tax_vals[-1] if tax_vals else 0
+    last_wc = wc_vals[-1] if wc_vals else None
+
+    if capex_vals:
+        analytics["capex"] = last_capex
+    if ebitda is not None and capex_vals:
+        analytics["fcf"] = ebitda - last_capex
+        if last_rev > 0:
+            analytics["fcf_margin"] = (ebitda - last_capex) / last_rev
+    if ebitda is not None and last_rev > 0 and capex_vals:
+        analytics["capex_ratio"] = last_capex / last_rev
+
+    # Leverage and coverage ratios
+    if last_total_debt is not None and ebitda and ebitda > 0:
+        analytics["leverage_ratio"] = last_total_debt / ebitda
+    if ebitda and last_interest and last_interest > 0:
+        analytics["interest_coverage"] = ebitda / last_interest
+    if ebitda and last_debt_service and last_debt_service > 0:
+        analytics["debt_service_coverage"] = ebitda / last_debt_service
+
+    # Net income (approximate)
+    if ebitda is not None:
+        net_income = ebitda - last_interest - last_tax
+        analytics["net_income"] = net_income
+        if last_rev > 0:
+            analytics["net_margin"] = net_income / last_rev
+
     # -- Headcount / cost per head --
     last_hc = hc_vals[-1] if hc_vals else None
     if last_hc is not None:
         analytics["headcount"] = last_hc
     if burn_rate is not None and last_hc and last_hc > 0:
         analytics["cost_per_head"] = burn_rate / last_hc
+    if last_rev > 0 and last_hc and last_hc > 0:
+        analytics["revenue_per_employee"] = last_rev / last_hc
+    if ebitda is not None and last_hc and last_hc > 0:
+        analytics["ebitda_per_employee"] = ebitda / last_hc
 
     # -- Trailing growth windows --
     if len(rev_vals) >= 4:
@@ -518,6 +593,246 @@ def apply_branch_overrides(data: CompanyData, branch_id: Optional[str]) -> Compa
     except Exception as e:
         logger.warning("Failed to load branch overrides: %s", e)
     return data
+
+
+# ---------------------------------------------------------------------------
+# Batch pull: all companies in a fund
+# ---------------------------------------------------------------------------
+
+class FundCompanies:
+    """Result of pulling all companies for a fund.
+
+    Attributes:
+        company_data:  {company_id: CompanyData} — full financials per company.
+        investments:   {company_id: {amount, ownership_pct, date, status}} — fund investment info.
+        names:         {company_id: company_name} — display names.
+        company_ids:   Ordered list of company UUIDs.
+    """
+
+    __slots__ = ("fund_id", "company_data", "investments", "names", "company_ids")
+
+    def __init__(
+        self,
+        fund_id: str,
+        company_data: Dict[str, "CompanyData"],
+        investments: Dict[str, Dict[str, Any]],
+        names: Dict[str, str],
+        company_ids: List[str],
+    ):
+        self.fund_id = fund_id
+        self.company_data = company_data
+        self.investments = investments
+        self.names = names
+        self.company_ids = company_ids
+
+    def iter_companies(self):
+        """Yield (company_id, name, CompanyData, investment_dict) for each company."""
+        for cid in self.company_ids:
+            yield (
+                cid,
+                self.names.get(cid, "Unknown"),
+                self.company_data.get(cid),
+                self.investments.get(cid, {}),
+            )
+
+    def to_dicts(self) -> List[Dict[str, Any]]:
+        """Return list of flat dicts (forecast_seed + analytics + investment + name).
+
+        This is the replacement for looping over gridSnapshot rows and scraping cells.
+        """
+        result = []
+        for cid, name, cd, inv in self.iter_companies():
+            if cd and cd.metadata.get("row_count", 0) > 0:
+                d = cd.to_forecast_seed()
+                d.update(cd.analytics)
+                d["name"] = name
+            else:
+                d = {"company_id": cid, "name": name}
+            d["id"] = cid
+            d["company_id"] = cid
+            if inv:
+                d["invested_amount"] = inv.get("amount")
+                d["ownership_pct"] = inv.get("ownership_pct")
+                d["investment_date"] = inv.get("date")
+                d["investment_status"] = inv.get("status")
+            result.append(d)
+        return result
+
+    @property
+    def count(self) -> int:
+        return len(self.company_ids)
+
+    @property
+    def empty(self) -> bool:
+        return len(self.company_ids) == 0
+
+
+def pull_fund_companies(fund_id: str) -> FundCompanies:
+    """Pull ALL companies in a fund with their full financials in a single batch.
+
+    1. Query portfolio_companies for all company_ids + investment data + names.
+    2. Batch query fpa_actuals for ALL those company_ids.
+    3. Group by company_id, build a CompanyData per company.
+    4. Return FundCompanies with everything.
+
+    This avoids N+1 queries — one batch for all companies.
+    """
+    from app.core.supabase_client import get_supabase_client
+
+    sb = get_supabase_client()
+    empty = FundCompanies(
+        fund_id=fund_id,
+        company_data={},
+        investments={},
+        names={},
+        company_ids=[],
+    )
+    if not sb or not fund_id:
+        return empty
+
+    # --- Step 1: Get company list + investment data from portfolio_companies ---
+    try:
+        pc_rows = (
+            sb.table("portfolio_companies")
+            .select("company_id, investment_amount, initial_investment, ownership_pct, ownership_percentage, investment_status, investment_date, companies(name)")
+            .eq("fund_id", fund_id)
+            .execute()
+            .data
+        ) or []
+    except Exception as e:
+        logger.warning("[FUND_PULL] portfolio_companies query failed: %s", e)
+        return empty
+
+    if not pc_rows:
+        logger.info("[FUND_PULL] No companies found for fund=%s", fund_id)
+        return empty
+
+    company_ids: List[str] = []
+    investments: Dict[str, Dict[str, Any]] = {}
+    names: Dict[str, str] = {}
+
+    for pc in pc_rows:
+        cid = pc.get("company_id")
+        if not cid:
+            continue
+        company_ids.append(cid)
+        # Name from joined companies table
+        co = pc.get("companies") or {}
+        names[cid] = co.get("name", "") if isinstance(co, dict) else ""
+        # Investment data
+        inv_amount = pc.get("investment_amount") or pc.get("initial_investment")
+        own_pct = pc.get("ownership_pct") or pc.get("ownership_percentage")
+        investments[cid] = {
+            "amount": inv_amount,
+            "ownership_pct": own_pct,
+            "date": pc.get("investment_date"),
+            "status": pc.get("investment_status"),
+        }
+
+    if not company_ids:
+        return empty
+
+    # --- Step 2: Batch query fpa_actuals for ALL company_ids ---
+    try:
+        actuals_rows = (
+            sb.table("fpa_actuals")
+            .select("company_id, category, subcategory, amount, period")
+            .in_("company_id", company_ids)
+            .order("period", desc=False)
+            .execute()
+            .data
+        ) or []
+    except Exception as e:
+        logger.warning("[FUND_PULL] fpa_actuals batch query failed: %s", e)
+        actuals_rows = []
+
+    # --- Step 3: Group by company_id and build CompanyData per company ---
+    from collections import defaultdict as _dd
+
+    # {company_id: [(category, subcategory, amount, period), ...]}
+    grouped: Dict[str, list] = {cid: [] for cid in company_ids}
+    for row in actuals_rows:
+        cid = row.get("company_id")
+        if cid and cid in grouped:
+            grouped[cid].append(row)
+
+    company_data: Dict[str, CompanyData] = {}
+    for cid in company_ids:
+        rows = grouped.get(cid, [])
+        if not rows:
+            company_data[cid] = CompanyData(
+                company_id=cid,
+                time_series={},
+                latest={},
+                periods=[],
+                metadata={"row_count": 0},
+            )
+            continue
+
+        # Build time_series: {category: {period: summed_amount}}
+        ts: Dict[str, Dict[str, float]] = _dd(lambda: _dd(float))
+        all_periods: set = set()
+
+        for r in rows:
+            cat = r.get("category")
+            sub = r.get("subcategory") or ""
+            raw_period = r.get("period")
+            amount = r.get("amount")
+            if not cat or raw_period is None or amount is None:
+                continue
+            period = _normalize_period(str(raw_period))
+            if not period:
+                continue
+            if sub:
+                ts[f"{cat}:{sub}"][period] += float(amount)
+            else:
+                ts[cat][period] += float(amount)
+            all_periods.add(period)
+
+        ts_frozen = {cat: dict(periods) for cat, periods in ts.items()}
+        periods = sorted(all_periods)
+
+        # Latest values
+        latest_raw: Dict[str, float] = {}
+        if periods:
+            last_period = periods[-1]
+            for cat, series in ts_frozen.items():
+                if last_period in series:
+                    latest_raw[cat] = series[last_period]
+                else:
+                    cat_periods = sorted(series.keys())
+                    if cat_periods:
+                        latest_raw[cat] = series[cat_periods[-1]]
+
+        latest = _compute_derived(latest_raw)
+        analytics = _compute_analytics(ts_frozen, latest, periods)
+
+        company_data[cid] = CompanyData(
+            company_id=cid,
+            time_series=ts_frozen,
+            latest=latest,
+            periods=periods,
+            metadata={
+                "row_count": len(rows),
+                "period_range": [periods[0], periods[-1]] if periods else [],
+                "period_count": len(periods),
+                "categories": sorted(ts_frozen.keys()),
+            },
+            analytics=analytics,
+        )
+
+    logger.info(
+        "[FUND_PULL] fund=%s companies=%d actuals_rows=%d",
+        fund_id, len(company_ids), len(actuals_rows),
+    )
+
+    return FundCompanies(
+        fund_id=fund_id,
+        company_data=company_data,
+        investments=investments,
+        names=names,
+        company_ids=company_ids,
+    )
 
 
 # ---------------------------------------------------------------------------

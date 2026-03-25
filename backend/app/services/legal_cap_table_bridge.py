@@ -1728,3 +1728,65 @@ class LegalCapTableBridge:
 
         except Exception as e:
             logger.error("[CAP_BRIDGE] Persist failed for company %s: %s", company_id, e, exc_info=True)
+
+        # --- Also write to cap_table_entries ledger ---
+        try:
+            from app.services.cap_table_ledger import CapTableLedger
+            ledger = CapTableLedger()
+            ledger_entries = []
+            for se in share_entries:
+                entry = {
+                    "shareholder_name": se.get("shareholder_name", "Unknown"),
+                    "share_class": se.get("share_class", "common"),
+                    "num_shares": float(se.get("num_shares", 0)),
+                    "price_per_share": float(se.get("price_per_share", 0)),
+                    "investment_date": se.get("investment_date"),
+                }
+                # Map rights
+                rights = se.get("rights", {})
+                if rights:
+                    entry["voting_rights"] = rights.get("voting_rights", True)
+                    entry["board_seat"] = rights.get("board_seats", 0) > 0 if isinstance(rights.get("board_seats"), int) else bool(rights.get("board_seats"))
+                    entry["liquidation_pref"] = rights.get("liquidation_preference")
+                    entry["participating"] = rights.get("participation_rights", False)
+                    entry["participation_cap"] = rights.get("participation_cap")
+                    entry["anti_dilution"] = rights.get("anti_dilution")
+                    entry["pro_rata_rights"] = rights.get("pro_rata_rights", False)
+                # Map vesting
+                vesting = se.get("vesting", {})
+                if vesting:
+                    entry["vesting_cliff_months"] = vesting.get("cliff_months")
+                    entry["vesting_total_months"] = vesting.get("total_months")
+                # Infer instrument type from share_class
+                sc = entry["share_class"]
+                if sc in ("safe",):
+                    entry["instrument_type"] = "safe"
+                    entry["is_debt_instrument"] = False
+                elif sc in ("convertible_note",):
+                    entry["instrument_type"] = "convertible"
+                    entry["is_debt_instrument"] = True
+                elif sc in ("warrants",):
+                    entry["instrument_type"] = "warrant"
+                    entry["is_debt_instrument"] = False
+                elif sc in ("options",):
+                    entry["instrument_type"] = "option"
+                    entry["is_debt_instrument"] = False
+                else:
+                    entry["instrument_type"] = "equity"
+                    entry["is_debt_instrument"] = False
+                # Stakeholder type from metadata or name
+                entry["stakeholder_type"] = se.get("metadata", {}).get("stakeholder_type", "other")
+                if trigger_document_id:
+                    entry["document_id"] = trigger_document_id
+                ledger_entries.append(entry)
+
+            if ledger_entries:
+                ledger.bulk_upsert(
+                    company_id=company_id,
+                    entries=ledger_entries,
+                    fund_id=fund_id,
+                    source="legal_docs",
+                )
+                logger.info("[CAP_BRIDGE] Wrote %d entries to cap_table_entries ledger", len(ledger_entries))
+        except Exception as e:
+            logger.warning("[CAP_BRIDGE] Failed to write to cap_table_entries ledger: %s", e)

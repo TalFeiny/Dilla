@@ -1813,17 +1813,25 @@ class ModelRouter:
         self.last_request_time[model_name] = time.time()
     
     async def _wait_for_slot(self, model_name: str):
-        """Wait for available slot in concurrency limit"""
+        """Wait for available slot in concurrency limit.
+        Times out after 30s to prevent deadlocks when all slots are held."""
         max_concurrent = self.max_concurrent_per_model.get(model_name, self.default_max_concurrent)
         active = self.active_requests.get(model_name, 0)
-        
+
         if active >= max_concurrent:
-            # Wait for a slot to become available
+            # Wait for a slot to become available (with deadline)
             wait_time = 0.1
+            deadline = time.time() + 30  # 30s max wait
             while self.active_requests.get(model_name, 0) >= max_concurrent:
+                if time.time() > deadline:
+                    logger.warning(
+                        f"[MODEL_ROUTER] Slot wait timeout for {model_name} "
+                        f"(active={self.active_requests.get(model_name, 0)}/{max_concurrent}), proceeding anyway"
+                    )
+                    break  # Proceed rather than hang — let the API rate-limit naturally
                 await asyncio.sleep(wait_time)
                 wait_time = min(wait_time * 1.5, 1.0)  # Exponential backoff up to 1 second
-        
+
         # Increment active requests
         self.active_requests[model_name] = self.active_requests.get(model_name, 0) + 1
     

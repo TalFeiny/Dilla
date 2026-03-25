@@ -194,6 +194,20 @@ export async function fetchCapTable(
   fundId?: string,
   documentId?: string,
 ) {
+  // Try cap_table_entries ledger first — if entries exist, use them
+  try {
+    const params = new URLSearchParams({ company_id: companyId });
+    if (fundId) params.set('fund_id', fundId);
+    const ledgerRes = await fetch(`/api/agent/cap-table-entries?${params}`);
+    if (ledgerRes.ok) {
+      const data = await ledgerRes.json();
+      if (data.entry_count > 0) return data;
+    }
+  } catch {
+    // Fall through to doc extraction
+  }
+
+  // Fall back to doc extraction bridge
   const res = await fetch(
     `/api/agent/cap-table-bridge`,
     json({ company_id: companyId, fund_id: fundId || '', document_id: documentId }),

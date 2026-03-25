@@ -156,11 +156,13 @@ except Exception as exc:  # pragma: no cover - defensive import guard
     ConfigLoader = None  # type: ignore[assignment]
 
 try:
-    from app.services.company_data_pull import pull_company_data, CompanyData
+    from app.services.company_data_pull import pull_company_data, pull_fund_companies, CompanyData, FundCompanies
 except Exception as exc:  # pragma: no cover - defensive import guard
     NON_CRITICAL_IMPORT_ERRORS["company_data_pull"] = exc
     pull_company_data = None  # type: ignore[assignment]
+    pull_fund_companies = None  # type: ignore[assignment]
     CompanyData = None  # type: ignore[assignment]
+    FundCompanies = None  # type: ignore[assignment]
 
 try:
     from app.services.fund_modeling_service import FundModelingService
@@ -628,7 +630,13 @@ class ExplainedEdit:
 
 
 AGENT_TOOLS: list[AgentTool] = [
-    # REMOVED: query_portfolio — legacy investor tool (moved to legacy_investor_tools.py)
+    AgentTool(
+        name="query_portfolio",
+        description="Read portfolio companies with metrics. Use for cross-company reasoning, portfolio-level analysis, and comparisons.",
+        handler="_tool_query_portfolio",
+        input_schema={"query": "str?", "fund_id": "str?", "filters": "dict?"},
+        cost_tier="free",
+    ),
     AgentTool(
         name="query_grid",
         description=(
@@ -647,7 +655,14 @@ AGENT_TOOLS: list[AgentTool] = [
         input_schema={"query": "str", "company_id": "str?", "doc_type": "str?"},
         cost_tier="free",
     ),
-    # REMOVED: calculate_fund_metrics — legacy investor tool
+    AgentTool(
+        name="calculate_fund_metrics",
+        description="Calculate fund-level metrics: MOIC, IRR, DPI, TVPI across portfolio positions.",
+        handler="_tool_fund_metrics",
+        input_schema={"fund_id": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
     AgentTool(
         name="run_valuation",
         description="Run PWERM/DCF/OPM/comparables valuation for a company.",
@@ -701,7 +716,14 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     # REMOVED: duplicate write_to_memo — canonical definition is at line ~1396
     # with richer schema (section_title, text, chart_type, chart_data, table).
-    # REMOVED: fetch_company_data — legacy investor tool
+    AgentTool(
+        name="fetch_company_data",
+        description="Deep company data pull: financials, operating metrics, capital structure, key personnel. Auto-suggests grid edits for empty cells.",
+        handler="_tool_fetch_company",
+        input_schema={"company_name": "str"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
     AgentTool(
         name="run_fpa",
         description="Run FP&A: forecast, stress test, sensitivity, regression.",
@@ -734,7 +756,14 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="expensive",
         timeout_ms=120_000,
     ),
-    # REMOVED: generate_memo — legacy investor memo formats
+    AgentTool(
+        name="generate_memo",
+        description="Generate an analysis memo: investment thesis, company deep-dive, comparison, or strategic recommendation. Auto-resolves company data from DB.",
+        handler="_tool_generate_memo",
+        input_schema={"company": "str?", "memo_type": "str?", "focus": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
     AgentTool(
         name="draft_contract",
         description="Draft a legal contract from template. Types: nda, employment, sha, vendor, service_agreement, contract_review. Auto-fills with company data from DB. For contract_review, include document_clauses in shared_data first.",
@@ -751,7 +780,38 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="expensive",
         timeout_ms=90_000,
     ),
-    # REMOVED: run_portfolio_health, run_followon_strategy, run_round_modeling, run_exit_modeling — legacy investor tools
+    AgentTool(
+        name="run_portfolio_health",
+        description="Run portfolio-wide health analysis: operating metrics, margin trends, leverage, cash generation across all companies.",
+        handler="_tool_run_portfolio_health",
+        input_schema={"fund_id": "str?", "focus": "str?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="run_followon_strategy",
+        description="Model follow-on investment strategy: capital allocation, reserve ratios, pro-rata rights, concentration limits.",
+        handler="_execute_followon_strategy",
+        input_schema={"company": "str?", "fund_id": "str?", "amount": "float?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="run_round_modeling",
+        description="Model a financing round: pre/post-money, dilution, option pool, waterfall, ownership changes.",
+        handler="_execute_round_modeling",
+        input_schema={"company": "str", "round_size": "float?", "pre_money": "float?", "round_name": "str?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
+    AgentTool(
+        name="run_exit_modeling",
+        description="Model exit scenarios: M&A, IPO, secondary, or recapitalization. Waterfall returns by stakeholder class.",
+        handler="_execute_exit_modeling",
+        input_schema={"company": "str", "exit_value": "float?", "exit_type": "str?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
     AgentTool(
         name="run_regression",
         description="Run regression, Monte Carlo, sensitivity, or time-series forecast. Set type param.",
@@ -760,7 +820,22 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="cheap",
         timeout_ms=45_000,
     ),
-    # REMOVED: generate_plan_memo, run_report — legacy investor tools
+    AgentTool(
+        name="generate_plan_memo",
+        description="Generate a strategic plan memo: operating plan, capital allocation, growth strategy, or turnaround plan.",
+        handler="_tool_generate_plan_memo",
+        input_schema={"company": "str?", "plan_type": "str?", "context": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="run_report",
+        description="Generate a structured report: portfolio review, company analysis, fund performance, or custom format.",
+        handler="_execute_report_generation",
+        input_schema={"report_type": "str", "company": "str?", "fund_id": "str?", "focus": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
 
     # ------------------------------------------------------------------
     # Phase 8: Proactive enrichment, search/extract combos, projections
@@ -947,7 +1022,14 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="cheap",
         timeout_ms=30_000,
     ),
-    # REMOVED: portfolio_snapshot — legacy investor tool (NAV, DPI, TVPI)
+    AgentTool(
+        name="portfolio_snapshot",
+        description="Point-in-time portfolio snapshot: NAV, DPI, TVPI, company-level MOIC, and aggregate performance metrics.",
+        handler="_tool_portfolio_snapshot",
+        input_schema={"fund_id": "str?", "as_of_date": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
     AgentTool(
         name="three_scenario_cash_flow",
         description="Build bull/base/bear P&L models side by side for a company.",
@@ -958,7 +1040,14 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
 
     # --- Portfolio Operations ---
-    # REMOVED: add_company_to_portfolio — legacy investor tool
+    AgentTool(
+        name="add_company_to_portfolio",
+        description="Add a company to the portfolio with initial investment data: amount, date, round, ownership.",
+        handler="_tool_add_company",
+        input_schema={"company_name": "str", "investment_amount": "float?", "round": "str?", "ownership_pct": "float?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
     AgentTool(
         name="bulk_operation",
         description="Batch valuations, health checks, or data refreshes across portfolio.",
@@ -967,7 +1056,46 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="expensive",
         timeout_ms=120_000,
     ),
-    # REMOVED: portfolio_comparison, graduation_rates, market_landscape, market_timing, company_history — legacy investor tools
+    AgentTool(
+        name="portfolio_comparison",
+        description="Side-by-side comparison of portfolio companies: operating metrics, margins, growth, leverage, returns.",
+        handler="_tool_portfolio_comparison",
+        input_schema={"companies": "list[str]?", "metrics": "list[str]?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="company_history",
+        description="Historical timeline for a portfolio company: investment events, metric changes, milestones, documents.",
+        handler="_tool_company_history",
+        input_schema={"company": "str"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="graduation_rates",
+        description="Analyze portfolio graduation/progression rates: stage advancement, follow-on rates, write-off rates.",
+        handler="_tool_graduation_rates",
+        input_schema={"fund_id": "str?"},
+        cost_tier="cheap",
+        timeout_ms=15_000,
+    ),
+    AgentTool(
+        name="market_landscape",
+        description="Map the competitive landscape for a sector or company: competitors, market positioning, segment analysis.",
+        handler="_tool_market_landscape",
+        input_schema={"sector": "str?", "company": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="market_timing",
+        description="Analyze market timing signals: macro indicators, sector trends, entry/exit windows.",
+        handler="_tool_market_timing",
+        input_schema={"sector": "str?", "signal_type": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
 
     # --- Financial Modeling ---
     AgentTool(
@@ -978,7 +1106,14 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="cheap",
         timeout_ms=30_000,
     ),
-    # REMOVED: fund_deployment_model — legacy investor tool
+    AgentTool(
+        name="fund_deployment_model",
+        description="Model fund deployment: pacing, reserve strategy, capital calls, distribution waterfall, J-curve projection.",
+        handler="_tool_fund_deployment",
+        input_schema={"fund_id": "str?", "total_commitment": "float?", "deployment_period_years": "int?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
     AgentTool(
         name="financial_calculator",
         description="On-demand NPV, IRR, PMT, PV, FV calculations. Specify function and inputs.",
@@ -1014,7 +1149,46 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=60_000,
     ),
 
-    # REMOVED: generate_ic_memo, generate_followon_memo, generate_lp_report, generate_gp_update, generate_comparison_report — legacy investor memos
+    AgentTool(
+        name="generate_ic_memo",
+        description="Generate an investment committee memo: thesis, risks, terms, financial analysis, recommendation.",
+        handler="_tool_generate_ic_memo",
+        input_schema={"company": "str", "context": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="generate_followon_memo",
+        description="Generate a follow-on investment memo: performance since initial, pro-rata analysis, updated thesis.",
+        handler="_tool_generate_followon_memo",
+        input_schema={"company": "str", "proposed_amount": "float?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="generate_lp_report",
+        description="Generate an LP report: fund performance, portfolio updates, capital account, distributions.",
+        handler="_tool_generate_lp_report",
+        input_schema={"fund_id": "str?", "period": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="generate_gp_update",
+        description="Generate a GP update: portfolio review, pipeline, deployment status, key decisions needed.",
+        handler="_tool_generate_gp_update",
+        input_schema={"fund_id": "str?", "focus": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="generate_comparison_report",
+        description="Generate a comparison report: side-by-side analysis of companies on financials, strategy, risk.",
+        handler="_tool_generate_comparison_report",
+        input_schema={"companies": "list[str]", "focus": "str?"},
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
 
     # ------------------------------------------------------------------
     # Lightweight diligence & portfolio enrichment
@@ -1089,10 +1263,41 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
 
     # ------------------------------------------------------------------
-    # REMOVED: search_company_funding, search_company_product, search_company_team, search_company_market — legacy investor tools
+    AgentTool(
+        name="search_company_funding",
+        description="Search for a company's funding history, rounds, investors, and capital structure.",
+        handler="_tool_search_company_funding",
+        input_schema={"company": "str"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="search_company_product",
+        description="Search for a company's product details, features, pricing, and competitive positioning.",
+        handler="_tool_search_company_product",
+        input_schema={"company": "str"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="search_company_team",
+        description="Search for a company's team: founders, executives, key hires, board members.",
+        handler="_tool_search_company_team",
+        input_schema={"company": "str"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="search_company_market",
+        description="Search for a company's market: TAM/SAM/SOM, market dynamics, competitive landscape.",
+        handler="_tool_search_company_market",
+        input_schema={"company": "str"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
     AgentTool(
         name="analyze_financials",
-        description="Infer/compute financial metrics: gross margin, burn rate, runway, growth projection, Rule of 40, capital efficiency. Uses stage benchmarks + available data. Auto-suggests grid edits.",
+        description="Infer/compute financial metrics: margins, EBITDA, FCF, leverage, growth, Rule of 40, capital efficiency. Uses actuals from DB + stage benchmarks. Auto-suggests grid edits.",
         handler="_tool_analyze_financials",
         input_schema={"company_name": "str"},
         cost_tier="free",
@@ -1102,7 +1307,14 @@ AGENT_TOOLS: list[AgentTool] = [
     # ------------------------------------------------------------------
     # Batch operations — parallel execution across multiple companies
     # ------------------------------------------------------------------
-    # REMOVED: batch_valuate — legacy investor tool
+    AgentTool(
+        name="batch_valuate",
+        description="Run valuations across multiple portfolio companies in parallel. Returns per-company valuation with method, range, and confidence.",
+        handler="_tool_batch_valuate",
+        input_schema={"companies": "list[str]?", "method": "str?"},
+        cost_tier="expensive",
+        timeout_ms=120_000,
+    ),
     AgentTool(
         name="batch_enrich",
         description="Enrich multiple companies in parallel: benchmarks + web search + gap fill. Wrapper around resolve_data_gaps for explicit batch calls.",
@@ -1169,7 +1381,14 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=5_000,
     ),
 
-    # REMOVED: run_followon_analysis, run_benchmark_scan — legacy investor tools
+    AgentTool(
+        name="run_followon_analysis",
+        description="Analyze follow-on investment opportunity: performance trajectory, reserve allocation, pro-rata rights, dilution impact.",
+        handler="_tool_run_followon_analysis",
+        input_schema={"company": "str", "proposed_amount": "float?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
     AgentTool(
         name="enrich_sparse_companies",
         description=(
@@ -1600,7 +1819,30 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=45_000,
     ),
 
-    # REMOVED: company_health_score, company_return_metrics, portfolio_health_analysis — legacy investor tools
+    AgentTool(
+        name="company_health_score",
+        description="Compute company health profile: operating metrics, margin trends, growth trajectory, risk signals. Uses actuals from DB.",
+        handler="_tool_company_health_score",
+        input_schema={"company": "str?", "company_id": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="company_return_metrics",
+        description="Compute per-company return metrics: MOIC, IRR, holding period, unrealized gains, cost basis.",
+        handler="_tool_company_return_metrics",
+        input_schema={"company": "str?", "company_id": "str?"},
+        cost_tier="cheap",
+        timeout_ms=30_000,
+    ),
+    AgentTool(
+        name="portfolio_health_analysis",
+        description="Run health + returns analysis across all portfolio companies. Uses actuals from DB for each company.",
+        handler="_tool_portfolio_health_analysis",
+        input_schema={"fund_id": "str?"},
+        cost_tier="expensive",
+        timeout_ms=60_000,
+    ),
 
     # --- Seasonality Detection & Application ---
     AgentTool(
@@ -2646,12 +2888,41 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "web_search",               # supplemental research
     ],
 
-    # --- Portfolio (cleaned — legacy fund metrics removed) ---
+    # --- Portfolio (restored — full analysis + memo tools) ---
     "portfolio": [
         "query_grid",               # primary read
+        "query_portfolio",          # read portfolio companies
+        "fetch_company_data",       # deep company pull from DB
+        "portfolio_snapshot",       # NAV, DPI, TVPI, MOIC
+        "portfolio_health_analysis",# health + returns across all companies
+        "portfolio_comparison",     # side-by-side company comparison
+        "company_health_score",     # per-company health profile
+        "company_return_metrics",   # per-company MOIC, IRR
+        "calculate_fund_metrics",   # fund-level metrics
+        "run_portfolio_health",     # benchmark analysis across portfolio
+        "add_company_to_portfolio", # add new company
+        "company_history",          # historical timeline
+        "graduation_rates",         # stage progression analysis
+        "market_landscape",         # competitive landscape
+        "market_timing",            # macro timing signals
+        "fund_deployment_model",    # deployment pacing
+        "run_followon_strategy",    # follow-on modeling
+        "run_round_modeling",       # financing round modeling
+        "run_exit_modeling",        # exit scenario modeling
+        "batch_valuate",            # parallel valuations
+        "run_followon_analysis",    # follow-on opportunity analysis
+        "generate_memo",            # analysis memo
+        "generate_ic_memo",         # IC memo
+        "generate_followon_memo",   # follow-on memo
+        "generate_lp_report",       # LP report
+        "generate_gp_update",       # GP update
+        "generate_comparison_report",# comparison report
+        "generate_plan_memo",       # strategic plan memo
+        "run_report",               # structured report
         "enrich_portfolio",         # fill missing data
         "bulk_write_grid",          # batch write to grid
         "generate_chart",           # portfolio charts
+        "analyze_financials",       # compute derived metrics
         "emit_todo",                # action items
     ],
     "sourcing": [
@@ -2754,6 +3025,12 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "run_valuation",            # common analysis
         "generate_memo",            # common output
         "emit_todo",                # track items
+        # Portfolio tools (visible in general since portfolio maps here)
+        "portfolio_snapshot",       # NAV, DPI, TVPI
+        "company_health_score",     # per-company health
+        "portfolio_health_analysis",# cross-portfolio health
+        "calculate_fund_metrics",   # fund-level metrics
+        "analyze_financials",       # derived metrics from actuals
     ],
 }
 
@@ -3690,6 +3967,44 @@ class UnifiedMCPOrchestrator:
             ("Series E", ["series e", "series f", "series g", "series h", "series i", "series j", "series k", "series l", "pre-ipo"])
         ]
 
+    # ------------------------------------------------------------------
+    # Fund companies cache (avoids re-pulling every handler call)
+    # ------------------------------------------------------------------
+    _fund_companies_cache: Optional[Any] = None  # FundCompanies or None
+
+    def _get_fund_id(self) -> Optional[str]:
+        """Extract fund_id from shared_data fund_context."""
+        fc = self.shared_data.get("fund_context", {})
+        return fc.get("fundId") or fc.get("fund_id") or fc.get("id")
+
+    def _get_fund_companies(self) -> "FundCompanies":
+        """Get all companies for the current fund, cached per session.
+
+        Returns FundCompanies with full DB actuals + investment data.
+        This is the ONLY way tool handlers should get portfolio company data.
+        Never read gridSnapshot for company financials.
+        """
+        if self._fund_companies_cache is not None:
+            return self._fund_companies_cache
+        fund_id = self._get_fund_id()
+        if not fund_id or pull_fund_companies is None:
+            # Return empty FundCompanies
+            from app.services.company_data_pull import FundCompanies as _FC
+            self._fund_companies_cache = _FC(
+                fund_id=fund_id or "",
+                company_data={},
+                investments={},
+                names={},
+                company_ids=[],
+            )
+            return self._fund_companies_cache
+        self._fund_companies_cache = pull_fund_companies(fund_id)
+        return self._fund_companies_cache
+
+    def _invalidate_fund_cache(self):
+        """Call after adding/removing companies to refresh the cache."""
+        self._fund_companies_cache = None
+
     def _load_valuation_engine(self):
         """Ensure the latest valuation engine implementation is loaded."""
         # Use imported classes directly instead of modifying globals
@@ -3755,7 +4070,7 @@ class UnifiedMCPOrchestrator:
             "Match the response to the ask. A quick question that gets a 16-slide deck is a failure.\n\n"
 
             "## TOOLS\n"
-            "You have tools organized by what they do. Use what's needed — cross categories when the analysis warrants it.\n"
+            "MAX 3 tool calls per turn. Sequence, don't shotgun: fetch data → analyze → present. Share results between turns.\n"
             "- Data: company-data-fetcher, market-sourcer, competitive-intelligence, search-extract-combo, sparse-grid-enricher\n"
             "- Valuation: valuation-engine (DCF/comps/cost/milestone), pwerm-calculator, waterfall-calculator, cap-table-generator, exit-modeler, round-modeler, followon-strategy, debt-converter\n"
             "- Analysis: scenario-generator, financial-analyzer, deal-comparer, team-comparison, monte-carlo-simulator, sensitivity-analyzer, time-series-forecaster, revenue-projector\n"
@@ -4285,7 +4600,8 @@ class UnifiedMCPOrchestrator:
             "## WHEN YOU USE TOOLS\n"
             "- Use tools when the conversation calls for real work: fetching data, running models, generating documents.\n"
             "- DON'T use tools for chat, clarifications, follow-up questions, or greetings.\n"
-            "- For complex multi-step work, outline your plan first, then execute.\n"
+            "- MAX 3 tool calls per turn. If you need more, do them across multiple turns — share results as you go.\n"
+            "- Sequence, don't shotgun: fetch data FIRST, then analyze, then present. Not all at once.\n"
             "- When you call a tool, explain what you're doing and why.\n\n"
 
             "## OUTPUT SURFACES\n"
@@ -4356,9 +4672,14 @@ class UnifiedMCPOrchestrator:
             )
         else:
             prompt += (
-                "## DOMAIN: Investment Analysis\n"
-                "Focus on valuations, cap tables, deal analysis, portfolio construction, "
-                "and investment decision-making.\n\n"
+                "## DOMAIN: Portfolio & Investment Analysis\n"
+                "You're acting as a strategic CFO and portfolio analyst. You handle ALL business types:\n"
+                "- Venture-backed: ARR, MRR, burn rate, runway, customer metrics, growth trajectory\n"
+                "- PE-owned: EBITDA, operating margins, FCF, leverage ratios, debt service coverage, capex\n"
+                "- Traditional: revenue growth, net income, working capital, asset efficiency\n\n"
+                "Adapt your analysis to the business type. Don't force venture metrics on a PE company.\n"
+                "Focus on: operating performance, capital structure, returns analysis, portfolio construction, "
+                "and investment decision-making. Use pull_company_data for actuals — not grid snapshots.\n\n"
             )
 
         # ── Dynamic context: SessionState fingerprint ──
@@ -4999,7 +5320,7 @@ class UnifiedMCPOrchestrator:
                 })
             messages.append({"role": "assistant", "content": assistant_content})
 
-            # ── Execute tool calls in parallel (asyncio.gather) ──
+            # ── Execute tool calls with concurrency cap ──
             # Emit all tool_call events first so frontend shows spinners
             for tc in tool_calls:
                 yield {
@@ -5009,14 +5330,17 @@ class UnifiedMCPOrchestrator:
                     "tool_call_id": tc["id"],
                 }
 
+            _tool_semaphore = asyncio.Semaphore(3)  # max 3 concurrent tool calls
+
             async def _run_tool(tc: Dict[str, Any]) -> Dict[str, Any]:
                 """Execute a single tool, returning result dict."""
-                try:
-                    output = await self._execute_tool(tc["name"], tc["input"])
-                    return {"tool": tc["name"], "input": tc["input"], "id": tc["id"], "output": output, "error": None}
-                except Exception as e:
-                    logger.error(f"[CONV_LOOP] Tool {tc['name']} failed: {e}")
-                    return {"tool": tc["name"], "input": tc["input"], "id": tc["id"], "output": None, "error": str(e)}
+                async with _tool_semaphore:
+                    try:
+                        output = await self._execute_tool(tc["name"], tc["input"])
+                        return {"tool": tc["name"], "input": tc["input"], "id": tc["id"], "output": output, "error": None}
+                    except Exception as e:
+                        logger.error(f"[CONV_LOOP] Tool {tc['name']} failed: {e}")
+                        return {"tool": tc["name"], "input": tc["input"], "id": tc["id"], "output": None, "error": str(e)}
 
             gather_results = await asyncio.gather(
                 *[_run_tool(tc) for tc in tool_calls],
@@ -6780,31 +7104,29 @@ JUST THE JSON:"""
             return {"success": False, "error": error}
     
     def _build_grid_context_text(self, max_rows: int = 30, max_cols: int = 15) -> str:
-        """Build a compact text representation of the portfolio grid for LLM context."""
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-        grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else grid_snapshot if isinstance(grid_snapshot, list) else []
-        if not grid_rows:
+        """Build a compact text representation of portfolio companies for LLM context."""
+        fc = self._get_fund_companies()
+        if fc.empty:
             return ""
 
-        columns = matrix_ctx.get("columns") or []
-        col_names = [c.get("name") or c.get("id") for c in columns[:max_cols]] if columns else []
-
-        lines = [f"Portfolio Grid ({len(grid_rows)} companies):"]
-        if col_names:
-            lines.append(f"Columns: {', '.join(col_names)}")
+        lines = [f"Portfolio ({fc.count} companies):"]
         lines.append("")
 
-        for row in grid_rows[:max_rows]:
-            name = row.get("companyName") or row.get("company_name") or "Unknown"
-            cells = row.get("cells") or row.get("cellValues") or {}
-            # Pick the most useful cells (cap at max_cols)
-            cell_parts = []
-            for k, v in list(cells.items())[:max_cols]:
-                if v is not None and v != "" and v != "N/A":
-                    cell_parts.append(f"{k}={v}")
-            if cell_parts:
-                lines.append(f"- {name}: {', '.join(cell_parts)}")
+        for i, (cid, name, cd, inv) in enumerate(fc.iter_companies()):
+            if i >= max_rows:
+                break
+            if cd and cd.metadata.get("row_count", 0) > 0:
+                parts = []
+                for k, v in list(cd.latest.items())[:max_cols]:
+                    if v is not None and v != 0:
+                        parts.append(f"{k}={v}")
+                for k, v in list(cd.analytics.items())[:5]:
+                    if v is not None and not k.startswith("_"):
+                        parts.append(f"{k}={v}")
+                if parts:
+                    lines.append(f"- {name}: {', '.join(parts)}")
+                else:
+                    lines.append(f"- {name}")
             else:
                 lines.append(f"- {name}")
 
@@ -6814,71 +7136,73 @@ JUST THE JSON:"""
         """Build dense portfolio context for LLM injection (~500-800 tokens).
 
         Produces real portfolio analysis (not a spreadsheet dump):
-        - Per-company: description, sector, stage, geography, lead/follow
-        - Portfolio-level: sector concentration, stage distribution, geographic mix, gaps
+        - Per-company: sector, stage, revenue, EBITDA, margins, growth
+        - Portfolio-level: sector concentration, stage distribution, gaps
         """
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-        grid_rows = (
-            grid_snapshot.get("rows", [])
-            if isinstance(grid_snapshot, dict)
-            else grid_snapshot if isinstance(grid_snapshot, list) else []
-        )
-        if not grid_rows:
+        fc = self._get_fund_companies()
+        if fc.empty:
             return ""
 
         # --- Per-company context ---
         companies_ctx = []
         sector_counts: dict[str, list[str]] = {}
         stage_counts: dict[str, int] = {}
-        geo_counts: dict[str, int] = {}
 
-        for row in grid_rows:
-            name = row.get("companyName") or row.get("company_name") or "Unknown"
-            cells = row.get("cells") or row.get("cellValues") or {}
+        # Track sparse fields for auto-enrich detection
+        sparse_fields = {"sector": 0, "revenue": 0, "valuation": 0, "stage": 0, "headcount": 0, "ebitda": 0}
 
-            # Extract key fields from cell values (handle dict or raw)
-            def _cv(key_patterns: list[str]) -> str:
-                for k, v in cells.items():
-                    k_lower = k.lower()
-                    for pat in key_patterns:
-                        if pat in k_lower:
-                            val = v.get("value", v) if isinstance(v, dict) else v
-                            return str(val) if val and val != "N/A" else ""
-                return ""
+        for cid, name, cd, inv in fc.iter_companies():
+            # Get analytics and seed from DB
+            analytics = cd.analytics if cd else {}
+            latest = cd.latest if cd else {}
 
-            sector = _cv(["sector", "vertical", "industry"]) or "Unknown"
-            stage = _cv(["stage", "round", "series"]) or "Unknown"
-            geo = _cv(["geo", "hq", "location", "country"]) or "Unknown"
-            description = _cv(["description", "business", "what_they_do"])
-            lead = _cv(["lead", "investment_lead"])
-            arr = _cv(["arr", "revenue"])
-            valuation = _cv(["valuation", "post_money"])
+            revenue = latest.get("revenue", 0) or latest.get("arr", 0)
+            ebitda = analytics.get("ebitda")
+            growth = analytics.get("growth_rate")
+            runway = analytics.get("runway_months")
+            stage = analytics.get("stage", "Unknown") or "Unknown"
+            sector = analytics.get("sector", "Unknown") or "Unknown"
+            headcount = analytics.get("headcount")
+            valuation = latest.get("valuation", 0)
 
             # Build per-company line
             parts = [f"[{stage}]"]
             if sector and sector != "Unknown":
                 parts.append(f"sector={sector}")
-            if geo and geo != "Unknown":
-                parts.append(f"geo={geo}")
-            if lead:
-                parts.append(f"lead={lead}")
-            if arr:
-                parts.append(f"arr={arr}")
-            if valuation:
-                parts.append(f"val={valuation}")
-            if description:
-                parts.append(f"— {description[:80]}")
+            if revenue and isinstance(revenue, (int, float)) and revenue > 0:
+                parts.append(f"rev=${revenue/1e6:.1f}M")
+            if ebitda and isinstance(ebitda, (int, float)):
+                parts.append(f"ebitda=${ebitda/1e6:.1f}M")
+            if growth and isinstance(growth, (int, float)):
+                parts.append(f"growth={growth*100:.0f}%")
+            if runway and isinstance(runway, (int, float)):
+                parts.append(f"runway={runway:.0f}mo")
+            if valuation and isinstance(valuation, (int, float)) and valuation > 0:
+                parts.append(f"val=${valuation/1e6:.0f}M")
+            if inv and inv.get("amount"):
+                parts.append(f"invested=${inv['amount']/1e6:.1f}M")
             companies_ctx.append(f"  {name}: {' '.join(parts)}")
 
             # Aggregate for portfolio-level analysis
             sector_key = sector if sector != "Unknown" else "Unclassified"
             sector_counts.setdefault(sector_key, []).append(name)
             stage_counts[stage] = stage_counts.get(stage, 0) + 1
-            geo_key = geo if geo != "Unknown" else "Unclassified"
-            geo_counts[geo_key] = geo_counts.get(geo_key, 0) + 1
 
-        total = len(grid_rows)
+            # Track sparse fields
+            if not sector or sector == "Unknown":
+                sparse_fields["sector"] += 1
+            if not revenue:
+                sparse_fields["revenue"] += 1
+            if not valuation:
+                sparse_fields["valuation"] += 1
+            if not stage or stage == "Unknown":
+                sparse_fields["stage"] += 1
+            if not headcount:
+                sparse_fields["headcount"] += 1
+            if ebitda is None:
+                sparse_fields["ebitda"] += 1
+
+        total = fc.count
         lines = [f"PORTFOLIO ({total} companies):"]
         lines.extend(companies_ctx)
 
@@ -6900,31 +7224,11 @@ JUST THE JSON:"""
             stage_parts = [f"{s}: {c}" for s, c in sorted(stage_counts.items(), key=lambda x: -x[1])]
             lines.append(f"  Stages: {', '.join(stage_parts)}")
 
-        # Geographic mix
-        if geo_counts:
-            geo_parts = [f"{g}: {c} ({c/total*100:.0f}%)" for g, c in sorted(geo_counts.items(), key=lambda x: -x[1])[:5]]
-            lines.append(f"  Geography: {', '.join(geo_parts)}")
-
         # Gaps/flags
         if sector_counts:
             top_sector = sorted_sectors[0]
             if len(top_sector[1]) / total > 0.35:
                 lines.append(f"  FLAG: Heavy concentration in {top_sector[0]} ({len(top_sector[1])}/{total} companies)")
-
-        # Auto-detect sparse columns — tells the agent what data is missing
-        sparse_fields = {"sector": 0, "description": 0, "arr": 0, "valuation": 0, "stage": 0, "headcount": 0}
-        for row in grid_rows:
-            cells = row.get("cells") or row.get("cellValues") or {}
-            for field_key in sparse_fields:
-                has_value = False
-                for k, v in cells.items():
-                    if field_key in k.lower():
-                        val = v.get("value", v) if isinstance(v, dict) else v
-                        if val and val != "N/A" and val != "Unknown" and val != "":
-                            has_value = True
-                            break
-                if not has_value:
-                    sparse_fields[field_key] += 1
 
         sparse_alerts = []
         for field, empty_count in sparse_fields.items():
@@ -7104,32 +7408,33 @@ Return JSON with these fields (use null if unknown):
                 "memo_sections": memo_sections}
 
     async def _execute_enrich_portfolio(self, tool_input: dict) -> dict:
-        """Read full grid, use IntelligentGapFiller to estimate missing fields per company.
+        """Enrich portfolio companies using DB data + IntelligentGapFiller.
 
         Uses stage benchmarks + time since funding to infer empty cells.
         Scores each company via score_fund_fit().
         Returns structured summary + per-company gap report + estimates.
         Stores in shared_data['portfolio_enrichment'].
         """
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-        grid_rows = (
-            grid_snapshot.get("rows", [])
-            if isinstance(grid_snapshot, dict)
-            else grid_snapshot if isinstance(grid_snapshot, list) else []
-        )
-        if not grid_rows:
-            return {"error": "No portfolio grid data available"}
+        fc = self._get_fund_companies()
+        if fc.empty:
+            return {"error": "No portfolio companies found. Ensure fund context is available."}
 
         # Fund context for scoring
         fund_ctx = self.shared_data.get("fund_context", {})
         fund_scoring_ctx = {
             "fund_size": fund_ctx.get("fundSize") or fund_ctx.get("fund_size") or DEFAULT_FUND_SIZE,
             "fund_year": fund_ctx.get("fundYear") or fund_ctx.get("fund_year") or 3,
-            "portfolio_count": len(grid_rows),
+            "portfolio_count": fc.count,
             "deployed_capital": fund_ctx.get("deployedCapital") or fund_ctx.get("deployed_capital"),
             "remaining_capital": fund_ctx.get("remainingCapital") or fund_ctx.get("remaining_capital"),
         }
+
+        # Define expected fields to detect gaps
+        expected_fields = [
+            "revenue", "arr", "burn_rate", "runway_months", "growth_rate",
+            "gross_margin", "valuation", "stage", "sector", "headcount",
+            "ebitda", "ebitda_margin", "fcf", "leverage_ratio",
+        ]
 
         enriched_companies = []
         gap_report = []
@@ -7138,22 +7443,23 @@ Return JSON with these fields (use null if unknown):
         total_arr = 0.0
         companies_with_arr = 0
 
-        for row in grid_rows:
-            name = row.get("companyName") or row.get("company_name") or "Unknown"
-            cells = row.get("cells") or row.get("cellValues") or {}
+        for cid, name, cd, inv in fc.iter_companies():
+            # Build company_data from DB actuals
+            company_data: dict[str, any] = {"name": name, "id": cid}
+            if cd and cd.metadata.get("row_count", 0) > 0:
+                seed = cd.to_forecast_seed()
+                if cd.analytics:
+                    seed.update(cd.analytics)
+                company_data.update(seed)
+            if inv:
+                if not company_data.get("total_funding"):
+                    company_data["total_funding"] = inv.get("amount", 0)
 
-            # Build company_data dict from cells
-            company_data: dict[str, any] = {"name": name}
-            missing_fields = []
-            for k, v in cells.items():
-                val = v.get("value", v) if isinstance(v, dict) else v
-                if val is None or val == "" or val == "N/A":
-                    missing_fields.append(k)
-                else:
-                    company_data[k] = val
+            # Detect missing fields
+            missing_fields = [f for f in expected_fields if not company_data.get(f)]
 
-            stage = company_data.get("stage") or company_data.get("round") or "Unknown"
-            sector = company_data.get("sector") or company_data.get("vertical") or "Unknown"
+            stage = company_data.get("stage") or "Unknown"
+            sector = company_data.get("sector") or "Unknown"
             stage_dist[stage] = stage_dist.get(stage, 0) + 1
             sector_dist[sector] = sector_dist.get(sector, 0) + 1
 
@@ -7198,6 +7504,7 @@ Return JSON with these fields (use null if unknown):
 
             enriched_companies.append({
                 "name": name,
+                "row_id": cid,
                 "missing_fields": missing_fields,
                 "inferred": inferred_summary,
                 "fund_fit_score": fund_fit.get("overall_score"),
@@ -7267,7 +7574,7 @@ Return JSON with these fields (use null if unknown):
         # --- Step 4: Business-model-aware action suggestions ---
         biz_model_suggestions = self._generate_business_model_suggestions(enriched_companies, fund_id)
 
-        total = len(grid_rows)
+        total = fc.count
         enrichment = {
             "total_companies": total,
             "stage_distribution": stage_dist,
@@ -7545,9 +7852,15 @@ Answer using specific company names and numbers from the portfolio grid above.""
                 err = result.get("error", "unknown") if isinstance(result, dict) else str(result)
                 logger.warning(f"[WIRING] Producer {producer_tool} failed: {err}")
 
-        # Run independent producers in parallel
+        # Run independent producers with concurrency cap
+        _prereq_sem = asyncio.Semaphore(2)  # max 2 concurrent prerequisite resolutions
+
+        async def _throttled_producer(p: str, ks: list[str]) -> None:
+            async with _prereq_sem:
+                await _run_producer(p, ks)
+
         await asyncio.gather(
-            *[_run_producer(p, ks) for p, ks in producer_tasks.items()],
+            *[_throttled_producer(p, ks) for p, ks in producer_tasks.items()],
             return_exceptions=True,
         )
 
@@ -7668,64 +7981,19 @@ Answer using specific company names and numbers from the portfolio grid above.""
         logger.debug(f"[WIRING] Persisted outputs for {tool_name}: {produces}")
 
     def _populate_companies_from_grid(self) -> None:
-        """Populate shared_data['companies'] from matrix grid context.
+        """Populate shared_data['companies'] from DB via pull_fund_companies.
 
         Called by _resolve_prerequisites when 'companies' is required but
-        empty — extracts company data from the grid snapshot so downstream
-        tools have something to work with even without an explicit fetch.
+        empty — pulls real company data from the database.
         """
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-        grid_rows = (
-            grid_snapshot.get("rows", [])
-            if isinstance(grid_snapshot, dict)
-            else grid_snapshot if isinstance(grid_snapshot, list) else []
-        )
-        if not grid_rows:
+        fc = self._get_fund_companies()
+        if fc.empty:
             return
 
-        companies: list[dict] = []
-        for row in grid_rows[:10]:
-            name = row.get("companyName") or row.get("company_name") or ""
-            cells = row.get("cells") or row.get("cellValues") or {}
-            if not name:
-                continue
-
-            def _cv(key_patterns: list[str]):
-                for k, v in cells.items():
-                    for pat in key_patterns:
-                        if pat in k.lower():
-                            val = v.get("value", v) if isinstance(v, dict) else v
-                            return val if val and val != "N/A" else None
-                return None
-
-            company_obj = {
-                "company": name, "name": name,
-                "stage": _cv(["stage", "round", "series"]),
-                "sector": _cv(["sector", "vertical", "industry"]),
-                "revenue": _cv(["arr", "revenue"]),
-                "valuation": _cv(["valuation", "post_money"]),
-                "investors": _cv(["investors", "lead_investor"]),
-                "description": _cv(["description", "business"]),
-                "growth_rate": _cv(["growth", "arr_growth"]),
-                "team_size": _cv(["headcount", "team_size", "employees"]),
-            }
-            # Clean numeric fields
-            for nf in ("revenue", "valuation", "growth_rate", "team_size"):
-                v = company_obj.get(nf)
-                if isinstance(v, str):
-                    try:
-                        company_obj[nf] = float(
-                            v.replace("$", "").replace(",", "")
-                            .replace("M", "e6").replace("B", "e9").replace("%", "")
-                        )
-                    except (ValueError, TypeError):
-                        company_obj[nf] = None
-            companies.append(company_obj)
-
+        companies = fc.to_dicts()
         if companies:
             self.shared_data["companies"] = companies
-            logger.info(f"[WIRING] Auto-populated {len(companies)} companies from grid")
+            logger.info(f"[WIRING] Auto-populated {len(companies)} companies from DB")
 
     # ── Chip workflow helpers ─────────────────────────────────────
     def _resolve_loop_collection(self, loop_over: str, prior_output) -> list:
@@ -7884,57 +8152,49 @@ Answer using specific company names and numbers from the portfolio grid above.""
         return ""
 
     async def _tool_query_portfolio(self, inputs: dict) -> dict:
-        """Query/filter the portfolio grid. Primary: frontend grid context. Fallback: MatrixQueryOrchestrator."""
+        """Query/filter the portfolio. Pulls from DB via pull_fund_companies."""
         try:
-            query = inputs.get("query", "")
             filters = inputs.get("filters") or {}
-            fund_ctx = self.shared_data.get("fund_context", {})
-            matrix_ctx = self.shared_data.get("matrix_context") or {}
-            grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-            grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else grid_snapshot if isinstance(grid_snapshot, list) else []
 
-            # PRIMARY PATH: Read directly from the frontend grid context
-            if grid_rows:
+            # PRIMARY PATH: pull_fund_companies (DB source of truth)
+            fc = self._get_fund_companies()
+            if not fc.empty:
                 rows_out = []
-                for row in grid_rows[:50]:
-                    name = row.get("companyName") or row.get("company_name") or ""
-                    cells = row.get("cells") or row.get("cellValues") or {}
-                    row_id = row.get("rowId") or row.get("row_id") or ""
-                    rows_out.append({"rowId": row_id, "companyName": name, "cells": dict(list(cells.items())[:20])})
+                for cid, name, cd, inv in fc.iter_companies():
+                    row_data: dict = {"rowId": cid, "companyName": name}
+                    if cd and cd.metadata.get("row_count", 0) > 0:
+                        row_data["metrics"] = {
+                            "revenue": cd.latest.get("revenue", 0),
+                            "arr": cd.latest.get("arr", cd.latest.get("revenue", 0)),
+                            "burn_rate": cd.analytics.get("burn_rate"),
+                            "runway_months": cd.analytics.get("runway_months"),
+                            "growth_rate": cd.analytics.get("growth_rate"),
+                            "gross_margin": cd.analytics.get("gross_margin"),
+                            "ebitda": cd.analytics.get("ebitda"),
+                            "ebitda_margin": cd.analytics.get("ebitda_margin"),
+                            "headcount": cd.analytics.get("headcount"),
+                        }
+                    if inv:
+                        row_data["investment"] = inv
+                    rows_out.append(row_data)
 
                 # Apply simple filters if provided
                 if filters:
-                    stage_filter = filters.get("stage") or filters.get("investment_stage")
+                    stage_filter = (filters.get("stage") or filters.get("investment_stage") or "").lower()
                     if stage_filter:
-                        stage_lower = stage_filter.lower()
-                        rows_out = [r for r in rows_out if stage_lower in str(r.get("cells", {}).get("stage", "")).lower() or stage_lower in str(r.get("cells", {}).get("investment_stage", "")).lower()]
-                    name_filter = filters.get("name") or filters.get("company_name")
+                        rows_out = [r for r in rows_out if stage_filter in str(r.get("metrics", {}).get("stage", "")).lower()]
+                    name_filter = (filters.get("name") or filters.get("company_name") or "").lower()
                     if name_filter:
-                        name_lower = name_filter.lower()
-                        rows_out = [r for r in rows_out if name_lower in r.get("companyName", "").lower()]
+                        rows_out = [r for r in rows_out if name_filter in r.get("companyName", "").lower()]
 
-                columns = matrix_ctx.get("columns") or []
-                col_names = [c.get("name") or c.get("id") for c in columns[:20]] if columns else []
-                summary = f"Portfolio grid: {len(rows_out)} companies"
-                if col_names:
-                    summary += f", columns: {', '.join(col_names[:10])}"
-                logger.info(f"[TOOL] query_portfolio served from grid context: {len(rows_out)} rows")
-                return {"rows": rows_out, "summary": summary, "columns": col_names, "source": "grid_context"}
+                summary = f"Portfolio: {len(rows_out)} companies from DB"
+                logger.info(f"[TOOL] query_portfolio served from DB: {len(rows_out)} rows")
+                return {"rows": rows_out, "summary": summary, "source": "fund_companies_db"}
 
-            # FALLBACK PATH: MatrixQueryOrchestrator (Supabase)
-            if MATRIX_QUERY_ORCHESTRATOR_AVAILABLE and self.matrix_query_orchestrator:
-                mqo = self.matrix_query_orchestrator
-                result = await mqo.process_matrix_query(
-                    query,
-                    fund_id=fund_ctx.get("fundId"),
-                    context={"gridSnapshot": grid_snapshot, "filters": filters},
-                )
-                return {"rows": result.get("rows", []), "summary": result.get("summary", ""), "source": "supabase"}
-
-            # LAST RESORT: Try portfolio_service (with or without fund_id)
+            # FALLBACK: portfolio_service
             try:
                 from app.services.portfolio_service import portfolio_service
-                fund_id = fund_ctx.get("fundId") or fund_ctx.get("fund_id")
+                fund_id = self._get_fund_id()
                 if fund_id:
                     portfolio = await portfolio_service.get_portfolio(fund_id)
                 else:
@@ -7945,23 +8205,18 @@ Answer using specific company names and numbers from the portfolio grid above.""
             except Exception as ps_err:
                 logger.debug(f"[TOOL] portfolio_service fallback failed: {ps_err}")
 
-            return {"summary": "No portfolio data found. Ensure the grid is loaded or database is connected.", "rows": []}
+            return {"summary": "No portfolio data found. Ensure fund context is available.", "rows": []}
         except Exception as e:
             logger.warning(f"[TOOL] query_portfolio failed: {e}")
             return {"summary": f"Query failed: {e}", "rows": []}
 
     async def _tool_query_grid(self, inputs: dict) -> dict:
-        """Universal grid reader. Works for portfolio, PNL, and legal modes."""
+        """Universal grid reader. Pulls from DB via pull_fund_companies."""
         try:
             grid_mode = self.shared_data.get("grid_mode", "portfolio")
-            matrix_ctx = self.shared_data.get("matrix_context") or {}
-            grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-            grid_rows = (
-                grid_snapshot.get("rows", [])
-                if isinstance(grid_snapshot, dict)
-                else grid_snapshot if isinstance(grid_snapshot, list)
-                else []
-            )
+            fc = self._get_fund_companies()
+            # Build rows from DB data
+            grid_rows = fc.to_dicts() if not fc.empty else []
             query = (inputs.get("query") or "").lower()
             row_name_filter = (inputs.get("row_name") or "").lower()
             column_filter = (inputs.get("column") or "").lower()
@@ -8412,21 +8667,34 @@ Answer using specific company names and numbers from the portfolio grid above.""
             ves = self.valuation_engine
             # Accept company_id, company, or company_name
             company_id = inputs.get("company_id") or inputs.get("company") or inputs.get("company_name", "")
-            # Build company_data from grid snapshot
-            grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
+            # Build company_data from DB via pull_company_data
             company_data = {}
-            for row in grid.get("rows", []):
-                if row.get("rowId") == company_id or row.get("companyName", "").lower() == company_id.lower():
-                    cells = row.get("cells", {})
-                    company_data = {
-                        "name": self._extract_str(cells, "name", "companyName") or row.get("companyName", company_id),
-                        "revenue": self._extract_numeric(cells, "arr", "revenue"),
-                        "growth_rate": self._extract_numeric(cells, "growthRate", "growth_rate"),
-                        "funding_stage": self._extract_str(cells, "fundingStage", "stage"),
-                        "total_funding": self._extract_numeric(cells, "totalFunding", "total_funding"),
-                        "valuation": self._extract_numeric(cells, "valuation", "currentValuation"),
-                    }
+            fc = self._get_fund_companies()
+            # Try to find by ID or name in fund companies
+            for cid, cname, cd, inv in fc.iter_companies():
+                if cid == company_id or cname.lower() == company_id.lower():
+                    if cd and cd.metadata.get("row_count", 0) > 0:
+                        company_data = {
+                            "name": cname,
+                            "revenue": cd.latest.get("revenue", 0),
+                            "growth_rate": cd.analytics.get("growth_rate"),
+                            "funding_stage": "",
+                            "total_funding": 0,
+                            "valuation": 0,
+                        }
+                    else:
+                        company_data = {"name": cname}
                     break
+            if not company_data:
+                # Fallback: try single pull
+                if pull_company_data and company_id:
+                    try:
+                        cd = pull_company_data(company_id)
+                        if cd and cd.latest:
+                            company_data = cd.to_forecast_seed()
+                            company_data["name"] = company_id
+                    except Exception:
+                        pass
             if not company_data:
                 company_data = {"name": company_id}
             result = await ves.value_company(
@@ -9492,22 +9760,10 @@ Answer using specific company names and numbers from the portfolio grid above.""
             # Get portfolio companies from shared_data
             companies = self.shared_data.get("companies") or []
             if not companies:
-                # Try to pull from matrix context
-                matrix = self.shared_data.get("matrix_context") or {}
-                rows = matrix.get("rows") or matrix.get("gridSnapshot", {}).get("rows", [])
-                if rows:
-                    companies = [
-                        {
-                            "name": r.get("company") or r.get("company_name", "Unknown"),
-                            "sector": r.get("sector", ""),
-                            "revenue": r.get("revenue") or r.get("annual_revenue", 0),
-                            "burn_rate": r.get("burn_rate", 0),
-                            "headcount": r.get("headcount", 0),
-                            "cash_balance": r.get("cash_balance", 0),
-                            "id": r.get("id") or r.get("company_id", ""),
-                        }
-                        for r in rows if isinstance(r, dict)
-                    ]
+                # Pull from DB via pull_fund_companies
+                fc = self._get_fund_companies()
+                if not fc.empty:
+                    companies = fc.to_dicts()
 
             if not companies:
                 return {
@@ -9735,20 +9991,19 @@ Answer using specific company names and numbers from the portfolio grid above.""
             from app.services.chart_data_service import ChartDataService
             cds = ChartDataService()
             chart_type = inputs.get("chart_type", "bar")
-            grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
 
-            # Extract company list from grid for multi-company charts
+            # Extract company list from DB for multi-company charts
+            fc = self._get_fund_companies()
             companies = []
-            for row in grid.get("rows", []):
-                cells = row.get("cells", {})
-                companies.append({
-                    "name": self._extract_str(cells, "name", "companyName") or row.get("companyName", ""),
-                    "revenue": self._extract_numeric(cells, "arr", "revenue"),
-                    "valuation": self._extract_numeric(cells, "valuation", "currentValuation"),
-                    "growth_rate": self._extract_numeric(cells, "growthRate"),
-                    "funding_stage": self._extract_str(cells, "fundingStage"),
-                    "total_funding": self._extract_numeric(cells, "totalFunding"),
-                })
+            for cid, name, cd, inv in fc.iter_companies():
+                entry = {"name": name}
+                if cd and cd.metadata.get("row_count", 0) > 0:
+                    entry["revenue"] = cd.latest.get("revenue", 0)
+                    entry["valuation"] = cd.latest.get("valuation", 0)
+                    entry["growth_rate"] = cd.analytics.get("growth_rate")
+                    entry["funding_stage"] = ""
+                    entry["total_funding"] = 0
+                companies.append(entry)
 
             # --- Merge enriched shared_data["companies"] into grid-extracted rows ---
             # The grid snapshot may have zeros/blanks for fields the agent already
@@ -10808,81 +11063,65 @@ Answer using specific company names and numbers from the portfolio grid above.""
     # ------------------------------------------------------------------
 
     async def _tool_read_cells(self, inputs: dict) -> dict:
-        """Read specific cells from the grid. Targeted pull — not a dump."""
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-        grid_rows = (
-            grid_snapshot.get("rows", [])
-            if isinstance(grid_snapshot, dict)
-            else grid_snapshot if isinstance(grid_snapshot, list) else []
-        )
-        if not grid_rows:
-            return {"rows": [], "message": "No grid data in context"}
+        """Read specific company data. Pulls from DB via pull_fund_companies."""
+        fc = self._get_fund_companies()
+        if fc.empty:
+            return {"rows": [], "message": "No portfolio data available"}
 
         requested_rows = inputs.get("rows")  # company names or IDs
-        requested_cols = inputs.get("columns")  # column names/IDs
+        requested_cols = inputs.get("columns")  # metric names
         filters = inputs.get("filters") or {}
 
         results = []
-        for row in grid_rows:
-            name = row.get("companyName") or row.get("company_name") or ""
-            row_id = row.get("rowId") or row.get("row_id") or ""
-            cells = row.get("cells") or row.get("cellValues") or {}
-
+        for cid, name, cd, inv in fc.iter_companies():
             # Filter by requested rows
             if requested_rows:
                 match = any(
-                    r.lower() in name.lower() or r.lower() == row_id.lower()
+                    r.lower() in name.lower() or r.lower() == cid.lower()
                     for r in requested_rows
                 )
                 if not match:
                     continue
 
+            # Build flat data dict from DB
+            flat: dict = {"company_id": cid}
+            if cd and cd.metadata.get("row_count", 0) > 0:
+                flat.update(cd.latest)
+                flat.update({k: v for k, v in cd.analytics.items() if not k.startswith("_")})
+            if inv:
+                flat["invested_amount"] = inv.get("amount")
+                flat["ownership_pct"] = inv.get("ownership_pct")
+
             # Apply key=value filters
             skip = False
             for fk, fv in filters.items():
-                cell_val = None
-                for k, v in cells.items():
-                    if fk.lower() in k.lower():
-                        cell_val = v.get("value", v) if isinstance(v, dict) else v
-                        break
+                cell_val = flat.get(fk)
                 if cell_val is None or str(fv).lower() not in str(cell_val).lower():
                     skip = True
                     break
             if skip:
                 continue
 
-            # Extract requested columns only
+            # Filter to requested columns if specified
             if requested_cols:
-                filtered_cells = {}
+                filtered = {}
                 for col in requested_cols:
                     col_lower = col.lower()
-                    for k, v in cells.items():
+                    for k, v in flat.items():
                         if col_lower in k.lower():
-                            val = v.get("value", v) if isinstance(v, dict) else v
-                            filtered_cells[k] = val
+                            filtered[k] = v
                             break
-                results.append({"company": name, "cells": filtered_cells})
+                results.append({"company": name, "cells": filtered})
             else:
-                # Return all cells but extract values
-                flat = {}
-                for k, v in cells.items():
-                    flat[k] = v.get("value", v) if isinstance(v, dict) else v
                 results.append({"company": name, "cells": flat})
 
         return {"rows": results, "count": len(results), "grid_mode": self.shared_data.get("grid_mode", "portfolio")}
 
     async def _tool_search_grid(self, inputs: dict) -> dict:
-        """Search grid rows matching a natural language condition."""
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-        grid_rows = (
-            grid_snapshot.get("rows", [])
-            if isinstance(grid_snapshot, dict)
-            else grid_snapshot if isinstance(grid_snapshot, list) else []
-        )
-        if not grid_rows:
-            return {"rows": [], "message": "No grid data in context"}
+        """Search portfolio companies matching a condition. Pulls from DB."""
+        fc = self._get_fund_companies()
+        if fc.empty:
+            return {"rows": [], "message": "No portfolio data available"}
 
         condition = inputs.get("condition", "").lower()
         requested_cols = inputs.get("columns")
@@ -10893,21 +11132,22 @@ Answer using specific company names and numbers from the portfolio grid above.""
         numeric_match = _re.match(r'(\w+)\s*(>|<|>=|<=|==|!=)\s*([\d.]+)', condition)
 
         results = []
-        for row in grid_rows:
-            name = row.get("companyName") or row.get("company_name") or ""
-            cells = row.get("cells") or row.get("cellValues") or {}
+        for cid, name, cd, inv in fc.iter_companies():
+            # Build flat data from DB
+            flat: dict = {"company_id": cid, "name": name}
+            if cd and cd.metadata.get("row_count", 0) > 0:
+                flat.update(cd.latest)
+                flat.update({k: v for k, v in cd.analytics.items() if not k.startswith("_")})
 
             matched = False
 
             if numeric_match:
                 field, op, threshold = numeric_match.groups()
                 threshold = float(threshold)
-                # Find the cell
-                for k, v in cells.items():
+                for k, v in flat.items():
                     if field.lower() in k.lower():
-                        val = v.get("value", v) if isinstance(v, dict) else v
                         try:
-                            num_val = float(val)
+                            num_val = float(v)
                             if op == ">" and num_val > threshold: matched = True
                             elif op == "<" and num_val < threshold: matched = True
                             elif op == ">=" and num_val >= threshold: matched = True
@@ -10918,13 +11158,10 @@ Answer using specific company names and numbers from the portfolio grid above.""
                             pass
                         break
             else:
-                # Text search across all cell values
-                for k, v in cells.items():
-                    val = v.get("value", v) if isinstance(v, dict) else v
-                    if val and condition in str(val).lower():
+                for k, v in flat.items():
+                    if v and condition in str(v).lower():
                         matched = True
                         break
-                # Also match company name
                 if condition in name.lower():
                     matched = True
 
@@ -10932,13 +11169,12 @@ Answer using specific company names and numbers from the portfolio grid above.""
                 if requested_cols:
                     filtered = {}
                     for col in requested_cols:
-                        for k, v in cells.items():
+                        for k, v in flat.items():
                             if col.lower() in k.lower():
-                                filtered[k] = v.get("value", v) if isinstance(v, dict) else v
+                                filtered[k] = v
                                 break
                     results.append({"company": name, "cells": filtered})
                 else:
-                    flat = {k: (v.get("value", v) if isinstance(v, dict) else v) for k, v in cells.items()}
                     results.append({"company": name, "cells": flat})
 
                 if len(results) >= limit:
@@ -10956,27 +11192,19 @@ Answer using specific company names and numbers from the portfolio grid above.""
         requested_periods = inputs.get("periods") or []
         result: dict = {"company": company, "metrics": {}, "sources": []}
 
-        # 1. Grid cells — fastest source
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-        grid_rows = (
-            grid_snapshot.get("rows", [])
-            if isinstance(grid_snapshot, dict)
-            else grid_snapshot if isinstance(grid_snapshot, list) else []
-        )
-        for row in grid_rows:
-            name = row.get("companyName") or row.get("company_name") or ""
-            if company.lower() not in name.lower():
+        # 1. DB actuals — source of truth
+        fc = self._get_fund_companies()
+        for cid, cname, cd, inv in fc.iter_companies():
+            if company.lower() not in cname.lower():
                 continue
-            cells = row.get("cells") or row.get("cellValues") or {}
-            for k, v in cells.items():
-                val = v.get("value", v) if isinstance(v, dict) else v
-                if val and val not in ("N/A", "", "Unknown"):
-                    k_lower = k.lower()
-                    if not requested_metrics or any(m.lower() in k_lower for m in requested_metrics):
-                        result["metrics"][k] = val
-            if result["metrics"]:
-                result["sources"].append("grid")
+            if cd and cd.metadata.get("row_count", 0) > 0:
+                all_data = {**cd.latest, **{k: v for k, v in cd.analytics.items() if not k.startswith("_")}}
+                for k, v in all_data.items():
+                    if v is not None and v != 0:
+                        if not requested_metrics or any(m.lower() in k.lower() for m in requested_metrics):
+                            result["metrics"][k] = v
+                if result["metrics"]:
+                    result["sources"].append("db_actuals")
             break
 
         # 2. Enriched company data in shared_data
@@ -11190,25 +11418,17 @@ Answer using specific company names and numbers from the portfolio grid above.""
         if not company_name:
             return grid_commands
 
-        # Find matching row in grid snapshot
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-        grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else (
-            grid_snapshot if isinstance(grid_snapshot, list) else []
-        )
-
-        matched_row = None
+        # Find matching company in fund companies (DB source of truth)
+        fc = self._get_fund_companies()
         matched_row_id = company_name  # fallback: use name as rowId
-        for row in grid_rows:
-            row_name = (row.get("companyName") or row.get("company_name") or "").lower()
-            if company_name.lower() in row_name or row_name in company_name.lower():
-                matched_row = row
-                matched_row_id = row.get("rowId") or row.get("row_id") or company_name
+        existing_cells: dict = {}
+        for cid, cname, cd, inv in fc.iter_companies():
+            if company_name.lower() in cname.lower() or cname.lower() in company_name.lower():
+                matched_row_id = cid
+                if cd and cd.latest:
+                    existing_cells = {k: v for k, v in cd.latest.items() if v is not None}
+                    existing_cells.update({k: v for k, v in cd.analytics.items() if v is not None and not k.startswith("_")})
                 break
-
-        existing_cells = {}
-        if matched_row:
-            existing_cells = matched_row.get("cells") or matched_row.get("cellValues") or {}
 
         # Track which grid columns we've already suggested (avoid duplicates)
         suggested_columns: set = set()
@@ -11583,19 +11803,16 @@ Return JSON with ONLY these fields (use null if unknown):
                 company_data.update(c)
                 break
 
-        # Check grid context
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-        grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else (
-            grid_snapshot if isinstance(grid_snapshot, list) else []
-        )
-        for row in grid_rows:
-            row_name = (row.get("companyName") or row.get("company_name") or "").lower()
-            if company_name.lower() in row_name or row_name in company_name.lower():
-                cells = row.get("cells") or row.get("cellValues") or {}
-                for k, v in cells.items():
-                    if v is not None and v != "" and k not in company_data:
-                        company_data[k] = v
+        # Check DB for company data
+        fc = self._get_fund_companies()
+        for cid, cname, cd, inv in fc.iter_companies():
+            if company_name.lower() in cname.lower() or cname.lower() in company_name.lower():
+                if cd and cd.metadata.get("row_count", 0) > 0:
+                    seed = cd.to_forecast_seed()
+                    seed.update(cd.analytics)
+                    for k, v in seed.items():
+                        if v is not None and k not in company_data:
+                            company_data[k] = v
                 break
 
         # Stage benchmarks for inference
@@ -11736,7 +11953,7 @@ Return JSON with ONLY these fields (use null if unknown):
             workflow = builder.build(parsed, handler_key)
             ctx = ExecutorContext(
                 fund_id=self.shared_data.get("fund_context", {}).get("fundId"),
-                portfolio_snapshot=self.shared_data.get("matrix_context", {}).get("gridSnapshot"),
+                portfolio_snapshot=self._get_fund_companies().to_dicts() if not self._get_fund_companies().empty else None,
             )
             result = await executor.execute(workflow, ctx)
             fpa_result = result if isinstance(result, dict) else {"result": str(result)}
@@ -12578,17 +12795,16 @@ Return JSON with ONLY these fields (use null if unknown):
 
             company_data = seed_forecast_from_actuals(company_id)
             if not company_data or company_data.get("revenue", 0) <= 0:
-                # Try from shared_data grid snapshot
-                grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", [])
-                company_row = next((r for r in grid if r.get("id") == company_id or r.get("name", "").lower() == company_id.lower()), None)
-                if company_row:
-                    company_data = {
-                        "revenue": float(company_row.get("arr") or company_row.get("revenue") or 0),
-                        "burn_rate": float(company_row.get("burnRate") or company_row.get("burn_rate") or 0),
-                        "cash_balance": float(company_row.get("cashBalance") or company_row.get("cash_balance") or 0),
-                        "growth_rate": float(company_row.get("revenueGrowth") or company_row.get("growth_rate") or 0.3),
-                        "gross_margin": float(company_row.get("grossMargin") or company_row.get("gross_margin") or 0.7),
-                    }
+                # Try from DB via pull_company_data
+                if pull_company_data:
+                    try:
+                        cd = pull_company_data(company_id)
+                        if cd and cd.latest.get("revenue", 0) > 0:
+                            company_data = cd.to_forecast_seed()
+                        else:
+                            return {"error": f"No data available for company {company_id}"}
+                    except Exception:
+                        return {"error": f"No data available for company {company_id}"}
                 else:
                     return {"error": f"No data available for company {company_id}"}
 
@@ -14512,7 +14728,7 @@ Return JSON with ONLY these fields (use null if unknown):
             if not company_id:
                 return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
-            # Build company dict from grid snapshot + shared data
+            # _resolve_company_data now pulls from DB actuals first, grid as fallback
             company_data = self._resolve_company_data(company_id)
             if not company_data:
                 return {"error": f"No data found for company {company_id}"}
@@ -14573,6 +14789,7 @@ Return JSON with ONLY these fields (use null if unknown):
             if not company_id:
                 return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
+            # _resolve_company_data now pulls from DB actuals first, grid as fallback
             company_data = self._resolve_company_data(company_id)
             if not company_data:
                 return {"error": f"No data found for company {company_id}"}
@@ -14610,21 +14827,24 @@ Return JSON with ONLY these fields (use null if unknown):
                 from app.services.company_health_scorer import CompanyHealthScorer
                 svc = CompanyHealthScorer()
 
-            # Get all companies from grid snapshot
-            grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
-            rows = grid.get("rows", []) if isinstance(grid, dict) else grid
-            if not rows:
-                return {"error": "No portfolio data in grid. Upload or add companies first."}
+            # Pull all companies from DB
+            fc = self._get_fund_companies()
+            if fc.empty:
+                return {"error": "No portfolio companies found. Ensure fund context is available."}
 
             companies = []
             fund_investments = {}
-            for row in rows:
-                cdata = self._row_to_company_dict(row)
-                if cdata.get("name"):
-                    companies.append(cdata)
-                    inv = self._resolve_fund_investment(cdata.get("id", cdata["name"]))
-                    if inv and inv.get("amount"):
-                        fund_investments[cdata.get("id", cdata["name"])] = inv
+            for cid, name, cd, inv in fc.iter_companies():
+                if cd and cd.metadata.get("row_count", 0) > 0:
+                    cdata = cd.to_forecast_seed()
+                    cdata.update(cd.analytics)
+                    cdata["id"] = cid
+                    cdata["name"] = name
+                else:
+                    cdata = {"id": cid, "name": name}
+                companies.append(cdata)
+                if inv and inv.get("amount"):
+                    fund_investments[cid] = inv
 
             result = svc.analyze_portfolio(companies, fund_investments)
 
@@ -14664,19 +14884,39 @@ Return JSON with ONLY these fields (use null if unknown):
             return {"error": f"Portfolio health analysis failed: {e}"}
 
     def _resolve_company_data(self, company_id: str) -> dict:
-        """Resolve company data from grid snapshot + shared data."""
-        grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
-        rows = grid.get("rows", []) if isinstance(grid, dict) else grid
-        for row in rows:
-            rid = row.get("rowId", "")
-            rname = row.get("companyName", "")
-            if rid == company_id or rname.lower() == company_id.lower():
-                return self._row_to_company_dict(row)
-        # Check shared_data companies
-        for c in self.shared_data.get("companies", []):
-            if (c.get("company", "") or c.get("name", "")).lower() == company_id.lower():
-                return c
-        return {}
+        """Resolve company data from DB via pull_company_data and fund companies cache.
+
+        Uses pull_company_data() for real financials from fpa_actuals.
+        Fund companies cache provides name and investment data.
+        """
+        # 1. Pull actuals from DB — source of truth
+        db_data: dict = {}
+        if company_id and pull_company_data:
+            try:
+                cd = pull_company_data(company_id)
+                if cd and cd.latest:
+                    db_data = cd.to_forecast_seed()
+                    if cd.analytics:
+                        db_data.update(cd.analytics)
+                    db_data["id"] = company_id
+            except Exception:
+                pass
+
+        # 2. Get name and other metadata from fund companies cache
+        fc = self._get_fund_companies()
+        fund_name = fc.names.get(company_id, "")
+        if fund_name and db_data:
+            db_data.setdefault("name", fund_name)
+        elif fund_name:
+            db_data = {"id": company_id, "name": fund_name}
+
+        # 3. Fallback: check shared_data companies
+        if not db_data:
+            for c in self.shared_data.get("companies", []):
+                if (c.get("company", "") or c.get("name", "")).lower() == company_id.lower():
+                    return c
+
+        return db_data or {}
 
     def _row_to_company_dict(self, row: dict) -> dict:
         """Convert a grid row to the dict format CompanyHealthScorer expects."""
@@ -14696,18 +14936,16 @@ Return JSON with ONLY these fields (use null if unknown):
         }
 
     def _resolve_fund_investment(self, company_id: str) -> dict:
-        """Resolve fund investment data from grid or shared data."""
-        grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
-        rows = grid.get("rows", []) if isinstance(grid, dict) else grid
-        for row in rows:
-            rid = row.get("rowId", "")
-            rname = row.get("companyName", "")
-            if rid == company_id or rname.lower() == company_id.lower():
-                cells = row.get("cells", {})
-                amount = self._extract_numeric(cells, "investedAmount", "checkSize", "invested")
-                ownership = self._extract_numeric(cells, "ownershipPct", "ownership")
-                inv_date = self._extract_str(cells, "investmentDate", "date")
-                if amount:
+        """Resolve fund investment data from DB via pull_fund_companies cache."""
+        fc = self._get_fund_companies()
+        # Try direct ID lookup first
+        inv = fc.investments.get(company_id)
+        if inv and inv.get("amount"):
+            return inv
+        # Try name-based lookup
+        for cid, cname, _cd, cinv in fc.iter_companies():
+            if cname.lower() == company_id.lower():
+                if cinv and cinv.get("amount"):
                     return {"amount": amount, "ownership_pct": ownership or 0, "date": inv_date or ""}
         return {}
 
@@ -15273,19 +15511,18 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
         try:
             from app.services.fx_intelligence_service import fx_intelligence_service
             base = inputs.get("base_currency", "USD")
-            grid = self.shared_data.get("matrix_context", {}).get("gridSnapshot", {})
+
+            # Pull companies from DB
+            fc = self._get_fund_companies()
             companies = []
-            for row in grid.get("rows", []):
-                cells = row.get("cells", {})
-                name = cells.get("name", {}).get("value") or cells.get("company_name", {}).get("value") or ""
-                rev = cells.get("revenue", {}).get("value") or cells.get("arr", {}).get("value")
-                mix = cells.get("currency_mix", {}).get("value")
-                if name:
-                    companies.append({"name": name, "revenue_usd": rev, "currency_mix": mix})
+            for cid, name, cd, inv in fc.iter_companies():
+                rev = cd.latest.get("revenue", 0) if cd else 0
+                companies.append({"name": name, "revenue_usd": rev, "currency_mix": None})
+
             if not companies:
                 rates = await fx_intelligence_service._fetch_rates()
                 top_rates = {k: rates[k] for k in ["EUR", "GBP", "JPY", "CHF", "CAD"] if k in rates}
-                return {"rates": top_rates, "note": "No portfolio companies with currency mix data. Showing major rates."}
+                return {"rates": top_rates, "note": "No portfolio companies found. Showing major rates."}
             result = await fx_intelligence_service.get_portfolio_fx_summary(companies, base)
             return result
         except Exception as e:
@@ -16780,25 +17017,29 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
     async def _execute_tools_parallel(
         self, steps: List[PlanStep], plan: Optional[SessionPlan] = None,
     ) -> List[Dict[str, Any]]:
-        """Execute multiple independent PlanSteps in parallel via asyncio.gather."""
+        """Execute multiple independent PlanSteps in parallel via asyncio.gather.
+        Capped at 3 concurrent to avoid saturating consumer API rate limits."""
         if not steps:
             return []
 
+        _sem = asyncio.Semaphore(3)  # max 3 concurrent tool executions
+
         async def _run_one(step: PlanStep) -> Dict[str, Any]:
-            if plan:
-                plan.mark_running(step.id)
-            try:
-                result = await self._execute_tool(step.tool, step.inputs)
+            async with _sem:
                 if plan:
-                    if "error" in result:
-                        plan.mark_failed(step.id, result["error"])
-                    else:
-                        plan.mark_done(step.id, result)
-                return {"tool": step.tool, "input": step.inputs, "output": result, "step_id": step.id}
-            except Exception as e:
-                if plan:
-                    plan.mark_failed(step.id, str(e))
-                return {"tool": step.tool, "input": step.inputs, "output": {"error": str(e)}, "step_id": step.id}
+                    plan.mark_running(step.id)
+                try:
+                    result = await self._execute_tool(step.tool, step.inputs)
+                    if plan:
+                        if "error" in result:
+                            plan.mark_failed(step.id, result["error"])
+                        else:
+                            plan.mark_done(step.id, result)
+                    return {"tool": step.tool, "input": step.inputs, "output": result, "step_id": step.id}
+                except Exception as e:
+                    if plan:
+                        plan.mark_failed(step.id, str(e))
+                    return {"tool": step.tool, "input": step.inputs, "output": {"error": str(e)}, "step_id": step.id}
 
         results = await asyncio.gather(*[_run_one(s) for s in steps], return_exceptions=False)
         return list(results)
@@ -20410,21 +20651,11 @@ ABSOLUTE RULES:
                 # Persist valuation to pending_suggestions so it appears in the grid
                 fund_id = self.shared_data.get("fund_context", {}).get("fundId")
                 if fund_id and valuation_result.fair_value:
-                    # Resolve company UUID from grid snapshot
-                    matrix_ctx = self.shared_data.get("matrix_context") or {}
-                    grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-                    grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else (
-                        grid_snapshot if isinstance(grid_snapshot, list) else []
+                    # Resolve company UUID from DB cache or company_data
+                    company_uuid = (
+                        company_data.get("company_id") or company_data.get("id")
+                        or self._find_company_id(company_name)
                     )
-                    company_uuid = None
-                    for row in grid_rows:
-                        row_name = (row.get("companyName") or row.get("company_name") or "").lower()
-                        if company_name.lower() in row_name or row_name in company_name.lower():
-                            company_uuid = row.get("companyId") or row.get("rowId") or row.get("row_id")
-                            break
-                    # Also check company_data for a stored id
-                    if not company_uuid:
-                        company_uuid = company_data.get("company_id") or company_data.get("id")
                     if company_uuid:
                         try:
                             supabase_url = settings.SUPABASE_URL
@@ -20705,19 +20936,11 @@ ABSOLUTE RULES:
                 fund_id = self.shared_data.get("fund_context", {}).get("fundId")
                 weighted_val = pwerm_calc.get("weighted_valuation")
                 if fund_id and weighted_val:
-                    matrix_ctx = self.shared_data.get("matrix_context") or {}
-                    grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-                    grid_rows = grid_snapshot.get("rows", []) if isinstance(grid_snapshot, dict) else (
-                        grid_snapshot if isinstance(grid_snapshot, list) else []
+                    # Resolve company UUID from DB cache or company_data
+                    company_uuid = (
+                        company.get("company_id") or company.get("id")
+                        or self._find_company_id(company_name)
                     )
-                    company_uuid = None
-                    for row in grid_rows:
-                        row_name = (row.get("companyName") or row.get("company_name") or "").lower()
-                        if company_name.lower() in row_name or row_name in company_name.lower():
-                            company_uuid = row.get("companyId") or row.get("rowId") or row.get("row_id")
-                            break
-                    if not company_uuid:
-                        company_uuid = company.get("company_id") or company.get("id")
                     if company_uuid:
                         try:
                             supabase_url = settings.SUPABASE_URL
@@ -41149,37 +41372,34 @@ Return your analysis with inline citations for ALL factual claims.
         }
 
     async def _tool_bulk_score_matrix(self, inputs: dict) -> dict:
-        """Score all companies in the grid by rubric, write to score column.
+        """Score all companies in the portfolio by rubric, write to score column.
 
-        Reads grid snapshot, scores each company, emits edit grid_commands.
+        Pulls from DB, scores each company, emits edit grid_commands.
         """
         rubric = inputs.get("scoring_rubric") or {}
         fund_id = inputs.get("fund_id") or self.shared_data.get("fund_id")
 
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snap = matrix_ctx.get("gridSnapshot", {}) if isinstance(matrix_ctx.get("gridSnapshot"), dict) else {}
-        rows = grid_snap.get("rows", [])
+        fc = self._get_fund_companies()
+        if fc.empty:
+            return {"error": "No portfolio companies found. Ensure fund context is available."}
 
-        if not rows:
-            return {"error": "No grid data available. Grid must be open with companies."}
-
-        # Build company-like dicts from grid rows for scoring
+        # Build company-like dicts from DB data for scoring
         targets = []
-        for row in rows:
-            cells = row.get("cells") or row.get("cellValues") or {}
-            targets.append({
-                "company": row.get("companyName") or row.get("company_name") or "",
-                "id": row.get("id") or row.get("rowId"),
-                "arr": cells.get("arr"),
-                "valuation": cells.get("valuation"),
-                "growth_rate": cells.get("revenueGrowthAnnual") or cells.get("growth_rate"),
-                "stage": cells.get("stage"),
-                "sector": cells.get("sector"),
-                "total_funding": cells.get("totalRaised"),
-                "employee_count": cells.get("headcount"),
-                "burn_rate": cells.get("burnRate"),
-                "fund_fit_score": cells.get("composite_score"),
-            })
+        for cid, name, cd, inv in fc.iter_companies():
+            target: Dict[str, Any] = {"company": name, "id": cid}
+            if cd and cd.metadata.get("row_count", 0) > 0:
+                target["arr"] = cd.latest.get("arr") or cd.latest.get("revenue", 0)
+                target["valuation"] = cd.latest.get("valuation", 0)
+                target["growth_rate"] = cd.analytics.get("growth_rate")
+                target["stage"] = cd.analytics.get("stage", "")
+                target["sector"] = cd.analytics.get("sector", "")
+                target["employee_count"] = cd.analytics.get("headcount")
+                target["burn_rate"] = cd.analytics.get("burn_rate")
+                target["ebitda"] = cd.analytics.get("ebitda")
+                target["ebitda_margin"] = cd.analytics.get("ebitda_margin")
+            if inv:
+                target["total_funding"] = inv.get("amount", 0)
+            targets.append(target)
 
         # Reuse score_and_rank logic
         self.shared_data.setdefault("companies", []).extend(targets)
@@ -41461,25 +41681,38 @@ Return your analysis with inline citations for ALL factual claims.
         return {"suggestion": todo, "todo": todo}
 
     async def _tool_sync_crm(self, inputs: dict) -> dict:
-        """Sync companies from matrix to CRM (Attio/Affinity via MCP)."""
+        """Sync companies from portfolio to CRM (Attio/Affinity via MCP)."""
         try:
             from app.services.crm import get_crm_provider
         except ImportError:
             return {"error": "CRM module not available"}
 
         direction = inputs.get("direction", "push")
-        matrix_context = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_context.get("gridSnapshot") or {}
-        rows = grid_snapshot.get("rows", [])
 
-        # Filter to requested companies if specified
+        # Pull companies from DB
+        fc = self._get_fund_companies()
+
+        # Build rows in the format CRM provider expects (companyName + cells)
+        rows = []
         requested = inputs.get("companies")
-        if requested:
-            clean_names = {n.replace("@", "").strip().lower() for n in requested}
-            rows = [r for r in rows if (r.get("companyName") or "").lower() in clean_names]
+        clean_names = {n.replace("@", "").strip().lower() for n in requested} if requested else None
+
+        for cid, name, cd, inv in fc.iter_companies():
+            if clean_names and name.lower() not in clean_names:
+                continue
+            row: Dict[str, Any] = {"companyName": name, "id": cid, "cells": {}}
+            if cd and cd.metadata.get("row_count", 0) > 0:
+                row["cells"]["arr"] = cd.latest.get("arr") or cd.latest.get("revenue", 0)
+                row["cells"]["valuation"] = cd.latest.get("valuation", 0)
+                row["cells"]["stage"] = cd.analytics.get("stage", "")
+                row["cells"]["sector"] = cd.analytics.get("sector", "")
+                row["cells"]["headcount"] = cd.analytics.get("headcount")
+            if inv:
+                row["cells"]["totalFunding"] = inv.get("amount", 0)
+            rows.append(row)
 
         if not rows:
-            return {"error": "No companies found in matrix to sync", "synced": 0}
+            return {"error": "No companies found in portfolio to sync", "synced": 0}
 
         provider = get_crm_provider()
         if direction == "pull":
@@ -42478,7 +42711,7 @@ Return your analysis with inline citations for ALL factual claims.
     # ------------------------------------------------------------------
 
     def _find_company_id(self, company_name: str) -> str:
-        """Look up company UUID from shared_data or grid snapshot."""
+        """Look up company UUID from shared_data or fund companies DB cache."""
         name_lower = company_name.lower().strip().lstrip("@")
         # Check shared_data companies
         for c in self.shared_data.get("companies", []):
@@ -42486,12 +42719,11 @@ Return your analysis with inline citations for ALL factual claims.
                 cn = (c.get("name") or c.get("company") or "").lower()
                 if cn == name_lower:
                     return c.get("id") or c.get("company_id") or ""
-        # Check grid snapshot
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snap = matrix_ctx.get("gridSnapshot", {}) if isinstance(matrix_ctx.get("gridSnapshot"), dict) else {}
-        for row in grid_snap.get("rows", []):
-            if (row.get("companyName") or row.get("company_name") or "").lower().strip() == name_lower:
-                return row.get("id") or row.get("rowId") or ""
+        # Check fund companies DB cache
+        fc = self._get_fund_companies()
+        for cid, cname in zip(fc.company_ids, [fc.names.get(c, "") for c in fc.company_ids]):
+            if cname.lower().strip() == name_lower:
+                return cid
         return ""
 
     async def _persist_company_to_db(self, company_data: Dict[str, Any], fund_id: Optional[str] = None) -> Dict[str, Any]:
@@ -42535,26 +42767,27 @@ Return your analysis with inline citations for ALL factual claims.
             return {"error": str(e)}
 
     def _detect_empty_fields(self, company_name: str) -> List[str]:
-        """Scan the grid for empty cells for a given company. Returns column IDs."""
+        """Detect missing fields for a company from DB data. Returns field names."""
         name_lower = company_name.lower().strip().lstrip("@")
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snap = matrix_ctx.get("gridSnapshot", {}) if isinstance(matrix_ctx.get("gridSnapshot"), dict) else {}
-        for row in grid_snap.get("rows", []):
-            rn = (row.get("companyName") or row.get("company_name") or "").lower().strip()
-            if rn != name_lower:
+        # Find company in fund companies cache
+        fc = self._get_fund_companies()
+        for cid, cname, cd, inv in fc.iter_companies():
+            if cname.lower().strip() != name_lower:
                 continue
-            cells = row.get("cells") or row.get("cellValues") or {}
-            empty = []
-            # Check enrichable columns
-            for col_id in [
-                "arr", "valuation", "headcount", "totalRaised", "burnRate",
-                "runway", "grossMargin", "cashInBank", "sector", "stage",
-                "description", "revenueGrowthAnnual", "lastRoundAmount",
-            ]:
-                val = cells.get(col_id)
-                if val is None or val == "" or val == 0:
-                    empty.append(col_id)
-            return empty
+            # Check which enrichable fields are missing from DB
+            enrichable = {
+                "arr": cd.latest.get("arr") or cd.latest.get("revenue") if cd else None,
+                "valuation": cd.latest.get("valuation") if cd else None,
+                "headcount": cd.analytics.get("headcount") if cd else None,
+                "burn_rate": cd.analytics.get("burn_rate") if cd else None,
+                "runway_months": cd.analytics.get("runway_months") if cd else None,
+                "gross_margin": cd.analytics.get("gross_margin") if cd else None,
+                "growth_rate": cd.analytics.get("growth_rate") if cd else None,
+                "ebitda": cd.analytics.get("ebitda") if cd else None,
+                "sector": cd.analytics.get("sector") if cd else None,
+                "stage": cd.analytics.get("stage") if cd else None,
+            }
+            return [k for k, v in enrichable.items() if not v]
         return []
 
     async def _tool_enrich_field(self, inputs: dict) -> dict:
@@ -42845,7 +43078,7 @@ Return your analysis with inline citations for ALL factual claims.
     async def _tool_run_followon_analysis(self, inputs: dict) -> dict:
         """Loop all portfolio companies and flag who needs follow-on capital.
 
-        Runs next_round_model + time_adjusted_estimate per company using grid data.
+        Runs next_round_model + time_adjusted_estimate per company using DB data.
         Flags URGENT (<threshold mo runway) and WATCH (threshold–15mo) companies.
         Persists runway/burn suggestions and emits grid_commands.
         """
@@ -42861,16 +43094,10 @@ Return your analysis with inline citations for ALL factual claims.
         fund_id = inputs.get("fund_id") or fund_ctx.get("fundId", "")
         threshold = int(inputs.get("runway_threshold_months") or 9)
 
-        # Pull companies from grid
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-        grid_rows = (
-            grid_snapshot.get("rows", [])
-            if isinstance(grid_snapshot, dict)
-            else grid_snapshot if isinstance(grid_snapshot, list) else []
-        )
-        if not grid_rows:
-            return {"error": "No portfolio grid data available. Send matrix context with gridSnapshot."}
+        # Pull companies from DB (source of truth)
+        fc = self._get_fund_companies()
+        if fc.empty:
+            return {"error": "No portfolio companies found. Ensure fund context is available."}
 
         urgent = []
         watch = []
@@ -42878,39 +43105,22 @@ Return your analysis with inline citations for ALL factual claims.
         all_grid_commands: list = []
         total_persisted = 0
 
-        for row in grid_rows:
-            name = row.get("companyName") or row.get("company_name") or "Unknown"
-            company_id = row.get("id") or row.get("companyId") or ""
-            cells = row.get("cells") or row.get("cellValues") or {}
-
-            # Build company_data from grid cells
+        for company_id, name, cd, inv in fc.iter_companies():
+            # Build company_data from DB actuals + analytics
             company_data: Dict[str, Any] = {"name": name}
-            for k, v in cells.items():
-                val = v.get("value", v) if isinstance(v, dict) else v
-                if val is not None and val != "" and val != "N/A":
-                    company_data[k] = val
-
-            # Normalize field names from grid column IDs to benchmark_skills field names
-            if not company_data.get("stage"):
-                company_data["stage"] = (
-                    company_data.pop("investmentStage", None)
-                    or company_data.pop("funding_stage", None)
-                    or ""
-                )
-            if not company_data.get("arr"):
-                company_data["arr"] = company_data.pop("currentArrUsd", None) or 0
-            if not company_data.get("burn_rate"):
-                company_data["burn_rate"] = company_data.pop("burnRate", None) or 0
-            if not company_data.get("runway_months"):
-                company_data["runway_months"] = company_data.pop("runway", None) or 0
-            if not company_data.get("last_round_date"):
-                company_data["last_round_date"] = company_data.pop("lastRoundDate", None) or ""
-            if not company_data.get("last_round_amount"):
-                company_data["last_round_amount"] = company_data.pop("lastRoundAmount", None) or 0
-            if not company_data.get("valuation"):
-                company_data["valuation"] = company_data.pop("currentValuationUsd", None) or 0
-            if not company_data.get("total_funding"):
-                company_data["total_funding"] = company_data.pop("totalFunding", None) or 0
+            if cd and cd.metadata.get("row_count", 0) > 0:
+                seed = cd.to_forecast_seed()
+                if cd.analytics:
+                    seed.update(cd.analytics)
+                company_data.update(seed)
+            # Merge investment data
+            if inv:
+                if not company_data.get("last_round_amount"):
+                    company_data["last_round_amount"] = inv.get("amount", 0)
+                if not company_data.get("last_round_date"):
+                    company_data["last_round_date"] = inv.get("date", "")
+                if not company_data.get("valuation"):
+                    company_data["valuation"] = inv.get("valuation", 0)
 
             # Run skills
             from app.services.micro_skills import MicroSkillResult
@@ -43013,50 +43223,25 @@ Return your analysis with inline citations for ALL factual claims.
         fund_id = inputs.get("fund_id") or fund_ctx.get("fundId", "")
         fields = inputs.get("fields") or FOLLOWON_FIELDS
 
-        # Pull companies from grid
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-        grid_rows = (
-            grid_snapshot.get("rows", [])
-            if isinstance(grid_snapshot, dict)
-            else grid_snapshot if isinstance(grid_snapshot, list) else []
-        )
-        if not grid_rows:
-            return {"error": "No portfolio grid data available. Send matrix context with gridSnapshot."}
+        # Pull all companies from DB in one batch query (no N+1)
+        fc = self._get_fund_companies()
+        if fc.empty:
+            return {"error": "No portfolio companies found. Ensure fund context is available."}
 
-        # Build company list from grid rows, stamping UUIDs
         companies = []
-        for row in grid_rows:
-            name = row.get("companyName") or row.get("company_name") or "Unknown"
-            company_id = row.get("id") or row.get("companyId") or ""
-            cells = row.get("cells") or row.get("cellValues") or {}
-
-            company: Dict[str, Any] = {"name": name}
-            if company_id:
-                company["id"] = company_id
-
-            # Map grid column IDs → micro-skill field names
-            field_map = {
-                "stage": ["stage", "investmentStage", "funding_stage"],
-                "sector": ["sector", "category"],
-                "arr": ["arr", "currentArrUsd"],
-                "valuation": ["valuation", "currentValuationUsd"],
-                "total_funding": ["total_funding", "totalFunding"],
-                "last_round_amount": ["last_round_amount", "lastRoundAmount"],
-                "last_round_date": ["last_round_date", "lastRoundDate"],
-                "burn_rate": ["burn_rate", "burnRate"],
-                "runway_months": ["runway_months", "runway"],
-                "team_size": ["team_size", "teamSize", "headcount"],
-                "growth_rate": ["growth_rate", "revenueGrowthAnnual"],
-                "gross_margin": ["gross_margin", "grossMargin"],
-            }
-            for skill_field, grid_keys in field_map.items():
-                for gk in grid_keys:
-                    raw = cells.get(gk)
-                    val = raw.get("value", raw) if isinstance(raw, dict) else raw
-                    if val is not None and val != "" and val != "N/A":
-                        company[skill_field] = val
-                        break
+        for cid, name, cd, inv in fc.iter_companies():
+            company: Dict[str, Any] = {"name": name, "id": cid}
+            if cd and cd.metadata.get("row_count", 0) > 0:
+                seed = cd.to_forecast_seed()
+                if cd.analytics:
+                    seed.update(cd.analytics)
+                company.update(seed)
+            # Merge investment data
+            if inv:
+                if not company.get("total_funding"):
+                    company["total_funding"] = inv.get("amount", 0)
+                if not company.get("last_round_date"):
+                    company["last_round_date"] = inv.get("date", "")
 
             companies.append(company)
 
@@ -43098,65 +43283,36 @@ Return your analysis with inline citations for ALL factual claims.
     async def _tool_enrich_sparse_companies(self, inputs: dict) -> dict:
         """Find companies with missing core fields and enrich them via web search.
 
-        Filters grid to companies with >= min_missing gaps, then runs the full
+        Filters portfolio to companies with >= min_missing gaps, then runs the full
         gap resolver (Tier 1 benchmarks + Tier 2 parallel Tavily searches).
         Emits grid suggestions with source citations.
         """
         from app.services.micro_skills import CORE_FIELDS, detect_missing
 
         min_missing = int(inputs.get("min_missing") or 3)
-        company_names_filter = [n.strip().lstrip("@") for n in (inputs.get("companies") or [])]
+        company_names_filter = [n.strip().lstrip("@").lower() for n in (inputs.get("companies") or [])]
         fields = inputs.get("fields") or CORE_FIELDS
 
-        # Pull companies from grid
-        matrix_ctx = self.shared_data.get("matrix_context") or {}
-        grid_snapshot = matrix_ctx.get("gridSnapshot") or {}
-        grid_rows = (
-            grid_snapshot.get("rows", [])
-            if isinstance(grid_snapshot, dict)
-            else grid_snapshot if isinstance(grid_snapshot, list) else []
-        )
-        if not grid_rows:
-            return {"error": "No portfolio grid data available. Send matrix context with gridSnapshot."}
+        # Pull companies from DB (source of truth)
+        fc = self._get_fund_companies()
+        if fc.empty:
+            return {"error": "No portfolio companies found. Ensure fund context is available."}
 
         # Build company list and filter to sparse ones
         candidate_companies = []
-        for row in grid_rows:
-            name = row.get("companyName") or row.get("company_name") or "Unknown"
-            if company_names_filter and name not in company_names_filter:
+        for cid, name, cd, inv in fc.iter_companies():
+            if company_names_filter and name.lower() not in company_names_filter:
                 continue
-            company_id = row.get("id") or row.get("companyId") or ""
-            cells = row.get("cells") or row.get("cellValues") or {}
 
-            company: Dict[str, Any] = {"name": name}
-            if company_id:
-                company["id"] = company_id
-
-            field_map = {
-                "stage": ["stage", "investmentStage", "funding_stage"],
-                "sector": ["sector", "category"],
-                "description": ["description"],
-                "arr": ["arr", "currentArrUsd"],
-                "valuation": ["valuation", "currentValuationUsd"],
-                "total_funding": ["total_funding", "totalFunding"],
-                "last_round_amount": ["last_round_amount", "lastRoundAmount"],
-                "last_round_date": ["last_round_date", "lastRoundDate"],
-                "burn_rate": ["burn_rate", "burnRate"],
-                "runway_months": ["runway_months", "runway"],
-                "team_size": ["team_size", "teamSize", "headcount"],
-                "growth_rate": ["growth_rate", "revenueGrowthAnnual"],
-                "gross_margin": ["gross_margin", "grossMargin"],
-                "founders": ["founders"],
-                "hq_location": ["hq_location", "hqLocation"],
-                "competitors": ["competitors"],
-            }
-            for skill_field, grid_keys in field_map.items():
-                for gk in grid_keys:
-                    raw = cells.get(gk)
-                    val = raw.get("value", raw) if isinstance(raw, dict) else raw
-                    if val is not None and val != "" and val != "N/A":
-                        company[skill_field] = val
-                        break
+            company: Dict[str, Any] = {"name": name, "id": cid}
+            if cd and cd.metadata.get("row_count", 0) > 0:
+                seed = cd.to_forecast_seed()
+                if cd.analytics:
+                    seed.update(cd.analytics)
+                company.update(seed)
+            if inv:
+                if not company.get("total_funding"):
+                    company["total_funding"] = inv.get("amount", 0)
 
             missing = detect_missing(company, fields)
             if len(missing) >= min_missing:
@@ -43166,7 +43322,7 @@ Return your analysis with inline citations for ALL factual claims.
         if not candidate_companies:
             return {
                 "message": f"No companies with {min_missing}+ missing fields found",
-                "companies_checked": len(grid_rows),
+                "companies_checked": fc.count,
                 "grid_commands": [],
             }
 

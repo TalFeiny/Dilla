@@ -229,6 +229,22 @@ def _estimate_cost_of_debt(state: Any, adjustments: List[str]) -> float:
 
 def _estimate_capital_structure(state: Any, adjustments: List[str]) -> tuple:
     """Estimate debt/equity weights from actual company data."""
+
+    # --- Best source: cap_table_entries ledger with real weights ---
+    if (
+        state.cap_table
+        and state.cap_table.equity_weight is not None
+        and state.cap_table.source == "ledger"
+    ):
+        ew = state.cap_table.equity_weight
+        dw = state.cap_table.debt_weight or (1 - ew)
+        adjustments.append(
+            f"Capital structure from cap table ledger: {ew*100:.0f}% equity, "
+            f"{dw*100:.0f}% debt"
+        )
+        return ew, dw
+
+    # --- Fallback: infer from drivers ---
     # Check for actual debt in cap table or balance sheet
     total_raised = None
     if state.cap_table and state.cap_table.total_raised:

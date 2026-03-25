@@ -430,20 +430,88 @@ COMPANY_UPDATE_SIGNAL_SCHEMA = {
         "gross_margin": "number or null (0-1 or 0-100)",
         "growth_rate": "number or null (e.g. 0.5 for 50%)",
         "customer_count": "number or null",
+        "ebitda": "number or null (USD)",
+        "ebitda_margin": "number or null (0-1)",
+        "operating_income": "number or null (USD)",
+        "net_income": "number or null (USD)",
+        "capex": "number or null (USD)",
+        "fcf": "number or null (USD, free cash flow)",
+        "total_debt": "number or null (USD)",
+        "interest_expense": "number or null (USD)",
+        "working_capital": "number or null (USD, current assets minus current liabilities)",
+        "debt_service": "number or null (USD, principal + interest payments per period)",
+        "tax_expense": "number or null (USD)",
     },
     "impact_estimates": {
-        "_description": "For EACH qualitative signal above, estimate its material impact on core financial metrics. This is the transformation layer — qualitative info becomes quantitative suggestions.",
-        "estimated_arr_impact": "number or null (USD delta, e.g. +500000 if 'landed Fortune 500 client', -300000 if 'lost key customer')",
-        "estimated_burn_impact": "number or null (USD/mo delta, e.g. +60000 if '3 new hires', -100000 if 'cut 20% of team')",
-        "estimated_runway_impact": "number or null (months delta, e.g. -3 if 'burn increased significantly', +12 if 'raised $5M')",
+        "_description": "For EACH qualitative signal, estimate material financial impact. FIRST identify business type from the document, THEN use the right framework. Venture startups → ARR/burn/runway fields. PE/operating/traditional companies → revenue/EBITDA/margin/leverage/FCF/working capital fields. Fill WHICHEVER fields match the business.",
+        "estimated_arr_impact": "number or null (USD delta — VENTURE/SAAS: e.g. +500000 if 'landed enterprise client')",
+        "estimated_burn_impact": "number or null (USD/mo delta — VENTURE: e.g. +60000 if '3 new hires')",
+        "estimated_runway_impact": "number or null (months delta — VENTURE: e.g. -3 if 'burn increased')",
+        "estimated_revenue_impact": "number or null (USD delta — ALL COMPANIES: e.g. +2000000 if 'won major contract', -1500000 if 'lost key account representing 8% of revenue')",
+        "estimated_ebitda_impact": "number or null (USD delta — PE/OPERATING: from EBITDA bridge logic. e.g. +800000 if 'procurement savings captured', -400000 if 'raw material inflation net of pass-through')",
+        "estimated_margin_impact": "number or null (ppt delta on EBITDA margin — PE/OPERATING: e.g. +0.02 if 'operating leverage from revenue growth on fixed cost base', -0.03 if 'input cost inflation outpacing pricing')",
+        "estimated_fcf_impact": "number or null (USD delta — PE/OPERATING: e.g. +1500000 if 'DSO improved 5 days releasing working capital', -2000000 if 'growth capex for new facility')",
+        "estimated_leverage_impact": "number or null (turns delta on Net Debt/EBITDA — PE/OPERATING: e.g. -0.3 if 'mandatory amort + excess cash flow sweep', +0.5 if 'add-on acquisition funded with incremental debt')",
+        "estimated_coverage_ratio_impact": "number or null (ratio delta on interest coverage or DSCR — PE/OPERATING: e.g. +0.2 if 'EBITDA growth + lower rate from refi')",
+        "estimated_working_capital_impact": "number or null (USD delta — PE/OPERATING: e.g. +500000 if 'DSO -5 days', -800000 if 'inventory build ahead of seasonal demand')",
+        "estimated_multiple_impact": "number or null (EV/EBITDA turns delta — PE/OPERATING: e.g. +0.5 if 'recurring revenue mix grew to 60%', -1.0 if 'customer concentration worsened past 30%')",
         "estimated_headcount_impact": "number or null (delta, e.g. +5 if 'hired 5 engineers', -10 if 'RIF'd 10 people')",
-        "estimated_cash_impact": "number or null (USD delta, e.g. +5000000 if 'closed Series B')",
-        "estimated_valuation_impact": "number or null (USD delta, e.g. +20000000 if 'raised at 3x last round')",
-        "estimated_growth_rate_change": "number or null (pct point delta, e.g. +0.1 if 'accelerating growth', -0.05 if 'growth slowing')",
-        "impact_reasoning": "object: { [metric_key]: string } — '\"verbatim quote\" → why → metric change'. e.g. '\"landed 3 enterprise logos\" → ~$200K ACV each → ARR +$600K'",
+        "estimated_cash_impact": "number or null (USD delta, e.g. +5000000 if 'closed Series B' or 'dividend recap' or 'asset disposal proceeds')",
+        "estimated_valuation_impact": "number or null (USD delta on enterprise value, e.g. +20000000 if 'raised at 3x last round' or 'EBITDA growth + multiple expansion implies EV +$20M')",
+        "estimated_growth_rate_change": "number or null (pct point delta, e.g. +0.1 if 'accelerating', -0.05 if 'slowing')",
+        "thesis_tracking": "object or null — PE/OPERATING ONLY: {thesis_status: 'on_track'|'ahead'|'behind'|'at_risk', key_signals: [string], variance_to_plan: string}. Track whether the investment thesis is playing out based on signals in the document.",
+        "ebitda_bridge": "object or null — PE/OPERATING ONLY: {prior_period: number|null, volume_price_mix: number|null, cost_savings: number|null, input_cost_changes: number|null, new_initiatives: number|null, one_offs: number|null, fx_impact: number|null, current_period: number|null}. Decompose EBITDA movement into drivers when data allows.",
+        "lbo_model_variance": "object or null — PE/OPERATING ONLY: {revenue_vs_model: string|null, ebitda_vs_model: string|null, fcf_vs_model: string|null, leverage_vs_model: string|null, implied_moic_current: number|null, implied_irr_current: number|null}. Track performance vs underwrite assumptions.",
+        "covenant_headroom": "object or null — PE/OPERATING ONLY: {leverage_covenant: number|null, leverage_actual: number|null, leverage_headroom: number|null, coverage_covenant: number|null, coverage_actual: number|null, coverage_headroom: number|null, at_risk: boolean}. Flag covenant proximity.",
+        "exit_readiness": "object or null — PE/OPERATING ONLY: {readiness_score: string|null, blockers: [string], management_depth: string|null, growth_narrative_strength: string|null, likely_exit_route: string|null}. Assess exit preparedness signals.",
+        "impact_reasoning": "object: { [metric_key]: string } — '\"verbatim quote\" → why → metric change'. For venture: customer/burn logic. For PE: EBITDA bridge logic, thesis tracking, LBO model variance, covenant implications. e.g. '\"procurement savings of £600K captured in H1\" → £600K x 1.27 = $762K annualized → EBITDA +$762K, margin +1.5ppt on $50M revenue base'",
     },
-    "value_explanations": "object: { [metric_key]: string } — '\"source quote\" → why → metric change'. e.g. arr: '\"hit $1.2M ARR\" → explicit figure → ARR is $1.2M'; burn_rate: '\"hired 5 senior engineers\" → ~$25K/mo each → burn +$125K/mo'",
-    "time_series": "array of objects or null — [{period: 'YYYY-MM', revenue: number|null, cogs: number|null, opex: number|null, ebitda: number|null, cash_balance: number|null, headcount: number|null, arr: number|null, mrr: number|null, burn_rate: number|null, customers: number|null}, ...]. Extract ALL periods present in spreadsheet columns.",
+    "value_explanations": "object: { [metric_key]: string } — '\"source quote\" → why → metric change'. e.g. venture: arr: '\"hit $1.2M ARR\" → explicit figure → ARR is $1.2M'. PE: ebitda: '\"EBITDA of £4.2M vs £3.8M prior year\" → £4.2M x 1.27 = $5.33M → EBITDA is $5.33M, +11.6% YoY'",
+    "pe_operating_metrics": {
+        "_description": "PE/OPERATING ONLY. Extract these when the document is from a PE portfolio company or traditional operating business. Leave entire object null for venture startups.",
+        "reported_ebitda": "number or null (USD — management-reported EBITDA before any adjustments)",
+        "adjusted_ebitda": "number or null (USD — EBITDA after add-backs: one-offs, management fees, run-rate synergies, non-recurring items)",
+        "ebitda_addbacks": "object or null — {management_fees: number|null, one_off_costs: number|null, run_rate_synergies: number|null, non_recurring: number|null, other: number|null, total_addbacks: number|null}",
+        "covenant_ebitda": "number or null (USD — EBITDA per credit agreement definition, may differ from management EBITDA)",
+        "gross_margin_pct": "number or null (0-1)",
+        "ebitda_margin_pct": "number or null (0-1)",
+        "operating_margin_pct": "number or null (0-1)",
+        "net_margin_pct": "number or null (0-1)",
+        "revenue_by_segment": "object or null — {segment_name: revenue_usd, ...} — divisional/product line/geographic breakdown",
+        "ebitda_by_segment": "object or null — {segment_name: ebitda_usd, ...}",
+        "like_for_like_growth": "number or null (organic growth excluding acquisitions, 0-1)",
+        "acquisition_revenue_contribution": "number or null (USD — revenue from bolt-ons/add-ons acquired in period)",
+        "order_backlog": "number or null (USD — contracted but undelivered revenue, common in manufacturing/services)",
+        "book_to_bill": "number or null (ratio — orders received / revenue delivered)",
+        "senior_debt": "number or null (USD)",
+        "mezzanine_debt": "number or null (USD)",
+        "net_debt": "number or null (USD — total debt minus cash)",
+        "leverage_ratio": "number or null (Net Debt / EBITDA turns)",
+        "interest_coverage": "number or null (EBITDA / interest expense)",
+        "fixed_charge_coverage": "number or null ((EBITDA - capex) / (interest + scheduled principal))",
+        "dscr": "number or null (debt service coverage ratio)",
+        "dso": "number or null (days sales outstanding)",
+        "dpo": "number or null (days payable outstanding)",
+        "dio": "number or null (days inventory outstanding)",
+        "cash_conversion_cycle": "number or null (days — DSO + DIO - DPO)",
+        "maintenance_capex": "number or null (USD — sustaining capex)",
+        "growth_capex": "number or null (USD — expansion/investment capex)",
+        "capex_as_pct_revenue": "number or null (0-1)",
+        "roic": "number or null (return on invested capital, 0-1)",
+        "roe": "number or null (return on equity, 0-1)",
+        "revenue_per_employee": "number or null (USD)",
+        "ebitda_per_employee": "number or null (USD)",
+        "customer_concentration_top5_pct": "number or null (0-1 — % of revenue from top 5 customers)",
+        "recurring_revenue_pct": "number or null (0-1 — % of revenue that is recurring/contracted)",
+        "budget_vs_actual": "object or null — {revenue_budget: number|null, revenue_actual: number|null, ebitda_budget: number|null, ebitda_actual: number|null, commentary: string|null}",
+        "industry_kpis": "object or null — industry-specific KPIs extracted verbatim. e.g. {utilization_rate: 0.78, bill_rate: 185, same_store_growth: 0.03, bed_occupancy: 0.91, oee: 0.82, yield_rate: 0.95, fill_rate: 0.97}",
+    },
+    "time_series": "array of objects or null. TWO types of entry can be mixed in the same array:\n"
+        "  TYPE 1 — SUMMARY (one per period): {period: 'YYYY-MM', revenue: number|null, cogs: number|null, gross_profit: number|null, opex: number|null, ebitda: number|null, operating_income: number|null, depreciation: number|null, amortization: number|null, interest_expense: number|null, tax_expense: number|null, net_income: number|null, capex: number|null, fcf: number|null, cash_balance: number|null, total_debt: number|null, working_capital: number|null, debt_service: number|null, dividends: number|null, headcount: number|null, arr: number|null, mrr: number|null, burn_rate: number|null, customers: number|null}\n"
+        "  TYPE 2 — LINE ITEM (one per line item per period): {period: 'YYYY-MM', subcategory: 'raw_materials', parent_category: 'cogs', amount: 850000}. "
+        "Extract EVERY specific line item the business reports as a subcategory entry. These are the raw operating data: direct materials, direct labor, factory overhead, freight, food cost, rent, utilities, clinical supplies — whatever the actual business calls them. "
+        "Normalize: lowercase, underscores (e.g. 'Raw Materials' → 'raw_materials'). The more granular the better.\n"
+        "  Include BOTH summary entries AND line-item entries. Extract ALL periods.",
 }
 
 # Investment memo schema – for investment_memo
@@ -677,8 +745,8 @@ def _text_from_spreadsheet(path: str, ext: str) -> str:
         parts.append(f"Columns: {', '.join(str(c) for c in df.columns)}")
         parts.append("")
 
-        # Render rows as tab-separated text (cap at 500 rows to stay within token budget)
-        max_rows = 500
+        # Render rows as tab-separated text (cap at 2000 rows for PE/complex financials)
+        max_rows = 2000
         header_line = "\t".join(str(c) for c in df.columns)
         parts.append(header_line)
         for idx, row in df.head(max_rows).iterrows():
@@ -768,14 +836,21 @@ def _get_memo_context_for_company(
 def _signal_first_prompt(text: str, document_type: str, schema_desc: str, memo_context: Optional[str] = None) -> tuple:
     """Build system and user prompt for signal-first extraction (monthly_update / board_deck / board_transcript)."""
     system_prompt = (
-        "You are a VC document analyst and transformation engine. Extract structured signals from company updates, board decks, and board transcripts. "
+        "You are a financial document analyst and transformation engine. Extract structured signals from company updates, board decks, and board transcripts.\n"
+        "You handle ALL business types — venture-backed startups, PE-owned portfolio companies, and traditional operating businesses.\n"
+        "CRITICAL FIRST STEP: Determine the business type from the document before applying any analytical framework.\n"
+        "  - VENTURE/SAAS: Talks about ARR, MRR, burn rate, runway, fundraising rounds, Series A/B/C, CAC/LTV, PMF.\n"
+        "  - PE/OPERATING/TRADITIONAL: Talks about EBITDA, margins, leverage, covenants, debt paydown, capex, working capital, "
+        "management accounts, board packs with budget vs actual, add-on acquisitions, 100-day plans, value creation plans.\n"
+        "  - If unclear, default to the PE/operating framework — it covers more ground.\n\n"
         "You have TWO jobs:\n"
-        "1. EXTRACT: Pull explicit numbers from text into financial_metrics (ARR, burn, headcount, etc.).\n"
-        "2. TRANSFORM: Read qualitative prose — even when NO numbers are stated — and estimate the numeric impact in impact_estimates.\n"
-        "The transform step is the critical one. Most board updates are prose, not spreadsheets. "
-        "Every qualitative signal (hire, product launch, expansion, customer win/loss, risk, pivot) implies a financial impact — estimate it. "
-        "RULE: impact_estimates MUST have at least 2 non-null numeric values. A document with zero impact estimates is a failure. "
-        "RULE: impact_reasoning MUST attribute each estimate to a source quote: '\"quote\" → why → metric change'. "
+        "1. EXTRACT: Pull explicit numbers into financial_metrics. Venture → ARR, burn, runway. "
+        "PE/operating → revenue, EBITDA, margins, capex, FCF, leverage, debt, working capital, coverage ratios. Extract WHICHEVER metrics appear.\n"
+        "2. TRANSFORM: Read qualitative prose and estimate numeric impact in impact_estimates. "
+        "For PE companies this means: EBITDA bridge analysis, thesis tracking, LBO model variance, covenant headroom, exit readiness — not just 'revenue went up'.\n\n"
+        "RULE: impact_estimates MUST have at least 2 non-null numeric values. A document with zero impact estimates is a failure.\n"
+        "RULE: impact_reasoning MUST attribute each estimate to a source quote: '\"quote\" → why → metric change'.\n"
+        "RULE: For PE companies, ALWAYS attempt to fill thesis_tracking, ebitda_bridge, and covenant_headroom when signals exist.\n"
         "Return a single JSON object. Use null for truly unknown; use empty arrays for missing lists.\n"
         "CURRENCY CONVERSION (always convert to USD before storing any numeric value):\n"
         "- £ (GBP) → multiply by 1.27\n"
@@ -791,18 +866,21 @@ def _signal_first_prompt(text: str, document_type: str, schema_desc: str, memo_c
         "Then extracted_entities: competitors_mentioned, industry_terms, partners_mentioned.",
         "Extract business_model, sector, category when inferable from context (needed for valuation and analysis).",
         "Extract red_flags: array of explicit concerns, risks, or concerning language.",
-        "Extract implications: array of 'reading between the lines' items (e.g. 'option pool likely expanded given senior product hire').",
+        "Extract implications: array of 'reading between the lines' items.",
         "",
         "PATH 1 — Explicit numbers → financial_metrics:",
-        "Any number stated in the text ('we hit $1.2M ARR', 'burn is ~$80K/mo', '45 employees') goes DIRECTLY into financial_metrics.",
+        "Any number stated in the text goes DIRECTLY into financial_metrics.",
+        "  Venture examples: 'we hit $1.2M ARR', 'burn is ~$80K/mo', '45 employees'",
+        "  PE/operating examples: 'EBITDA of £4.2M', 'leverage at 3.8x', 'DSO improved to 42 days', 'capex £1.1M YTD', 'interest coverage 2.8x'",
         "",
         "PATH 2 — Qualitative signals → impact_estimates:",
         "Most updates are prose with NO explicit numbers. Reason from signal to magnitude using the methodology below.",
         "For each estimate, impact_reasoning MUST follow: '\"verbatim quote\" → why → metric change'.",
         "MANDATORY: At least 2 non-null impact_estimates per document. Rough is better than null.",
         "",
-        "=== IMPACT REASONING METHODOLOGY ===",
-        "Work through these steps for every qualitative signal before producing a number:",
+        "========================================================================",
+        "=== VENTURE / SAAS IMPACT METHODOLOGY (use when business is a startup) ===",
+        "========================================================================",
         "",
         "STEP 1 — CLASSIFY the signal:",
         "  Revenue signals: customer win/loss/expansion, pricing change, new segment, churn, upsell, product launch",
@@ -811,54 +889,158 @@ def _signal_first_prompt(text: str, document_type: str, schema_desc: str, memo_c
         "  Growth trajectory signals: market expansion, pivot, acceleration/deceleration, PMF indicators",
         "",
         "STEP 2 — ANCHOR to company scale:",
-        "  If a BASELINE ANCHOR is provided above, USE IT. All estimates must be proportional to the company\'s actual size.",
-        "  A \'big enterprise deal\' means ~$50-100K for a $500K ARR startup, but ~$500K-2M for a $50M ARR company.",
-        "  If no baseline exists, infer approximate scale from clues in the document itself:",
-        "    - Team size, customer logos, round stage, office mentions all signal scale",
-        "    - 10-person Series A startup is likely $500K-3M ARR",
-        "    - 200-person post-Series C company is likely $20-80M ARR",
-        "  State your assumed scale in impact_reasoning so the estimate is auditable.",
+        "  If a BASELINE ANCHOR is provided above, USE IT.",
+        "  If no baseline, infer from clues: 10-person Series A ≈ $500K-3M ARR, 200-person post-C ≈ $20-80M ARR.",
         "",
-        "STEP 3 — SIZE the impact as a proportion of scale:",
-        "  Revenue impacts — think in % of current ARR:",
-        "    Single new SMB customer: +1-3% of ARR    |  Single enterprise deal: +5-15% of ARR",
-        "    New segment/market entry: +10-25% over 12mo  |  Key customer lost: -3-10% of ARR",
-        "    Pricing increase: +5-15% of ARR  |  New product/feature upsell: +5-20% over 12mo",
-        "  Burn impacts — think in per-head monthly cost:",
-        "    Junior hire: +$8-15K/mo  |  Senior/exec hire: +$15-30K/mo  |  Departure: reverse",
-        "    Batch hiring (\'scaling the team\'): estimate headcount x avg cost for role level",
-        "  Growth rate changes — percentage-point shifts:",
-        "    Acceleration (strong PMF): +5-15 ppt  |  Deceleration (churn, pivot): -5-20 ppt",
-        "    Segment shift (SMB to enterprise): -5-10 ppt short-term",
+        "STEP 3 — SIZE the impact:",
+        "  Revenue: single SMB customer +1-3% ARR | enterprise deal +5-15% ARR | new segment +10-25% yr1 | lost customer -3-10% ARR",
+        "  Burn: junior hire +$8-15K/mo | senior hire +$15-30K/mo | departure: reverse",
+        "  Growth rate: acceleration +5-15 ppt | deceleration -5-20 ppt",
         "",
-        "STEP 4 — CONVERT to dollar amount and show your math:",
-        "  proportion x anchored scale = dollar impact.",
-        "  In impact_reasoning, format as: \'\"verbatim quote\" → [reasoning at assumed scale] → [metric] [direction] $Y\'",
+        "STEP 4 — CONVERT: proportion x anchored scale = dollar impact. Show math in impact_reasoning.",
         "",
-        "=== EXAMPLES (full reasoning chain) ===",
+        "VENTURE EXAMPLES:",
+        "  'We expanded into enterprise' → new segment at ~$2M ARR baseline, +10-20% yr1 → estimated_arr_impact: +300000",
+        "  'Signed LOI with two F500' → 2 x ~$300K ACV, ~60% close rate → estimated_arr_impact: +400000",
+        "  'Head of engineering left' → senior eng ~$25K/mo loaded → estimated_burn_impact: -25000",
+        "  'Burn is ~$80K/mo' → EXPLICIT: put 80000 in BOTH financial_metrics.burn_rate AND estimated_burn_impact",
         "",
-        "Quote: \'We expanded into the enterprise segment\'",
-        "  Signal: new segment entry (revenue). Anchor: ~$2M ARR from baseline. Size: +10-20% of ARR.",
-        "  estimated_arr_impact: +300000",
-        "  impact_reasoning: \'\"expanded into enterprise segment\" → new segment at ~$2M baseline, +10-20% yr1 → ARR +$300K\'",
+        "=================================================================================",
+        "=== PE / OPERATING / TRADITIONAL COMPANY METHODOLOGY (use for non-startups) ===",
+        "=================================================================================",
         "",
-        "Quote: \'Signed LOI with two Fortune 500 companies\'",
-        "  Signal: customer win (revenue), LOI not closed. F500 contracts $200-400K. Discount: LOI-to-close ~60%.",
-        "  estimated_arr_impact: +400000",
-        "  impact_reasoning: \'\"signed LOI with two Fortune 500\" → 2 x ~$300K ACV, ~60% close rate → ARR +$400K\'",
+        "PE board packs and management updates require a fundamentally different analytical framework.",
+        "You are analyzing as an investment professional at a PE fund. Think in terms of:",
+        "  - VALUE CREATION: What is driving (or destroying) equity value?",
+        "  - EBITDA BRIDGE: Decompose EBITDA movements into drivers (volume/price/mix, cost savings, input costs, one-offs, FX)",
+        "  - THESIS TRACKING: Is the original investment thesis playing out? Ahead, on track, behind, or at risk?",
+        "  - LBO MODEL VARIANCE: How does actual performance compare to the underwrite model?",
+        "  - LEVERAGE TRAJECTORY: Is the company de-levering as planned? Covenant headroom?",
+        "  - EXIT READINESS: Are signals pointing toward or away from a successful exit?",
         "",
-        "Quote: \'Our head of engineering left last month\'",
-        "  Signal: senior departure (cost). Per-head: senior eng leader ~$25K/mo fully loaded.",
-        "  estimated_burn_impact: -25000, estimated_headcount_impact: -1",
-        "  impact_reasoning: \'\"head of engineering left\" → senior eng exec ~$25K/mo loaded → burn -$25K/mo, headcount -1\'",
+        "STEP 1 — IDENTIFY THE VALUE CREATION LEVERS being discussed:",
+        "  Revenue growth: organic (volume, price, mix) vs inorganic (add-ons, bolt-ons)",
+        "  Margin expansion: procurement savings, operational efficiency, pricing power, SG&A leverage, mix improvement",
+        "  Margin compression: input cost inflation, wage pressure, competitive pricing, regulatory costs, integration costs",
+        "  Working capital: DSO/DPO/DIO changes, seasonal patterns, contract term changes, inventory strategy",
+        "  Capex: maintenance vs growth capex, facility expansion, technology investment, asset disposals",
+        "  Capital structure: debt paydown, refinancing, dividend recaps, add-on financing, covenant amendments",
+        "  Multiple drivers: recurring revenue mix, customer diversification, market position, growth profile, ESG",
         "",
-        "Quote: \'Pivoting from SMB to mid-market\'",
-        "  Signal: segment shift (growth). Short-term churn from SMB base, slower mid-market cycles.",
-        "  estimated_growth_rate_change: -0.10, estimated_arr_impact: -100000",
-        "  impact_reasoning: \'\"pivoting from SMB to mid-market\" → 5-15% SMB churn + slower cycles → growth -10 ppt, ARR -$100K near-term\'",
+        "STEP 2 — ANCHOR to company scale and capital structure:",
+        "  If a BASELINE ANCHOR is provided, USE IT for revenue, EBITDA, leverage, debt quantum.",
+        "  If no baseline, infer from document signals:",
+        "    - 50-employee services business ≈ $5-15M revenue, $1-3M EBITDA",
+        "    - 200-employee manufacturer ≈ $30-80M revenue, $5-15M EBITDA",
+        "    - 500-employee mid-market company ≈ $80-250M revenue, $15-40M EBITDA",
+        "    - References to 'covenant headroom', 'leverage', 'debt service' → leveraged PE deal",
+        "    - References to 'budget vs actual', '100-day plan' → recent PE acquisition",
+        "  State your assumed scale in impact_reasoning.",
         "",
-        "Quote: \'Burn is ~$80K/mo\'",
-        "  EXPLICIT number — put 80000 in BOTH financial_metrics.burn_rate AND estimated_burn_impact.",
+        "STEP 3 — ANALYZE through the PE lens:",
+        "",
+        "  A. EBITDA BRIDGE (always attempt when financial data is present):",
+        "    Decompose EBITDA change into: volume/price/mix → cost savings → input cost changes → new initiatives → one-offs → FX",
+        "    Fill the ebitda_bridge object in impact_estimates.",
+        "",
+        "  B. REVENUE IMPACT — think in organic growth rate and absolute contribution:",
+        "    New contract/customer: estimate annual value from customer type, industry, deal size signals",
+        "    Lost customer: estimate revenue at risk, consider replacement timeline",
+        "    Price increase: % increase x affected revenue base",
+        "    Add-on acquisition: acquired revenue + synergy estimate",
+        "    Market/macro effect: industry growth/contraction applied to company's exposure",
+        "",
+        "  C. MARGIN IMPACT — think in basis points on EBITDA margin:",
+        "    Procurement savings: $ saved / revenue base = margin ppt",
+        "    Headcount changes: fully loaded cost / revenue base = margin ppt",
+        "    Input cost inflation: $ increase / revenue, net of pass-through pricing",
+        "    Operating leverage: incremental margin on revenue growth (typically 30-60% for operating cos)",
+        "    Integration costs: one-time vs recurring, separate from run-rate margin",
+        "",
+        "  D. LEVERAGE & COVENANT ANALYSIS:",
+        "    Debt paydown from FCF → leverage reduction in turns (debt reduction / EBITDA)",
+        "    EBITDA growth → leverage reduction even without paydown",
+        "    Add-on debt → leverage increase, check against covenant levels",
+        "    Refinancing → interest rate change → coverage ratio change → FCF impact",
+        "    ALWAYS check: is covenant headroom tightening or expanding?",
+        "",
+        "  E. WORKING CAPITAL & FCF:",
+        "    DSO change: (days change / 365) x annual revenue = cash released/consumed",
+        "    DIO change: (days change / 365) x annual COGS = cash released/consumed",
+        "    DPO change: (days change / 365) x annual purchases = cash released/consumed",
+        "    Seasonal working capital: don't confuse with structural change",
+        "    FCF = EBITDA - cash tax - maintenance capex - cash interest - working capital change",
+        "",
+        "  F. THESIS TRACKING:",
+        "    Map document signals to the likely investment thesis:",
+        "      Buy-and-build: Are add-ons being executed? Integration on track? Synergies captured?",
+        "      Margin expansion: Are operational improvements materializing? Procurement savings on plan?",
+        "      Revenue growth: New markets/products/channels delivering? Organic growth accelerating?",
+        "      Management upgrade: New hires performing? Organizational capability improving?",
+        "      Digital transformation: Technology investment yielding efficiency? Data-driven decisions?",
+        "    Fill thesis_tracking with status and key signals.",
+        "",
+        "  G. EXIT READINESS SIGNALS:",
+        "    Positive: recurring revenue growing, customer diversification improving, strong management bench, clean financials, market tailwinds",
+        "    Negative: customer concentration, key-man risk, messy carve-out issues, regulatory overhang, leverage still high",
+        "    Fill exit_readiness when signals exist.",
+        "",
+        "  H. INDUSTRY-SPECIFIC KPIS (extract when present):",
+        "    Manufacturing: OEE, yield, scrap rate, book-to-bill, order backlog, capacity utilization",
+        "    Services: utilization rate, bill rate, pipeline, win rate, revenue per FTE",
+        "    Retail: same-store sales, basket size, footfall, shrinkage, inventory turns",
+        "    Healthcare: patient volume, payer mix, collections rate, PMPM, bed occupancy",
+        "    Distribution: fill rate, delivery cost/unit, warehouse utilization, fleet efficiency",
+        "    Technology (non-SaaS): license revenue, maintenance attach, professional services margin",
+        "    Put these in operational_metrics or financial_metrics as appropriate.",
+        "",
+        "STEP 4 — CONVERT and show your math:",
+        "  All impacts must be converted to USD amounts or ppt/turns as appropriate.",
+        "  In impact_reasoning: '\"verbatim quote\" → [PE analytical reasoning] → [metric] [direction] $Y or X ppt or X turns'",
+        "",
+        "PE / OPERATING EXAMPLES (full reasoning chain):",
+        "",
+        "  'Procurement savings programme delivered £600K in H1'",
+        "    Signal: cost savings (margin expansion). Anchor: £600K in H1 = £1.2M annualized = $1.52M.",
+        "    estimated_ebitda_impact: +1524000, estimated_margin_impact: +0.025 (assuming ~$60M revenue)",
+        "    ebitda_bridge: {cost_savings: 1524000}",
+        "    thesis_tracking: {thesis_status: 'on_track', key_signals: ['procurement savings delivering']}",
+        "    impact_reasoning: '\"procurement savings £600K in H1\" → annualized £1.2M x 1.27 = $1.52M → EBITDA +$1.52M, +2.5ppt on ~$60M revenue'",
+        "",
+        "  'Net debt reduced to 3.2x EBITDA from 4.1x at acquisition'",
+        "    Signal: de-leveraging (capital structure). Prior 4.1x → current 3.2x = 0.9 turns improvement.",
+        "    estimated_leverage_impact: -0.9",
+        "    covenant_headroom: {leverage_actual: 3.2, at_risk: false}",
+        "    impact_reasoning: '\"net debt 3.2x from 4.1x at acquisition\" → 0.9 turns de-leveraging → equity value accreting, covenant headroom expanding'",
+        "",
+        "  'Completed bolt-on acquisition of SmithCo for £8M (6x EBITDA)'",
+        "    Signal: add-on (inorganic growth). SmithCo EBITDA = £8M/6 = £1.33M = $1.69M. Revenue likely ~$10-12M.",
+        "    estimated_revenue_impact: +12000000, estimated_ebitda_impact: +1690000, estimated_leverage_impact: +0.3",
+        "    thesis_tracking: {thesis_status: 'on_track', key_signals: ['buy-and-build executing']}",
+        "    impact_reasoning: '\"acquired SmithCo for £8M at 6x\" → EBITDA £1.33M = $1.69M, revenue ~$10-12M → platform EBITDA +$1.69M, leverage +~0.3 turns from acquisition debt'",
+        "",
+        "  'DSO improved from 52 to 45 days'",
+        "    Signal: working capital improvement (FCF). Anchor: assume ~$50M revenue.",
+        "    Cash release: (7/365) x $50M = $959K. Structural improvement, not seasonal.",
+        "    estimated_working_capital_impact: +959000, estimated_fcf_impact: +959000",
+        "    impact_reasoning: '\"DSO 52 to 45 days\" → 7 days on ~$50M revenue = $959K cash released → WC +$959K, FCF +$959K'",
+        "",
+        "  'Key customer (18% of revenue) not renewing contract'",
+        "    Signal: customer loss (revenue, concentration). Anchor: 18% of ~$40M = $7.2M at risk.",
+        "    estimated_revenue_impact: -7200000, estimated_ebitda_impact: -2500000 (35% incremental margin)",
+        "    estimated_multiple_impact: -0.5 (concentration was improving, now worse)",
+        "    exit_readiness: {blockers: ['customer concentration worsening'], growth_narrative_strength: 'weakened'}",
+        "    impact_reasoning: '\"key customer 18% not renewing\" → $7.2M revenue at risk, ~35% incremental margin → EBITDA -$2.5M, concentration re-risk → multiple -0.5x'",
+        "",
+        "  'Management presenting 100-day plan update: 3 of 5 initiatives on track, IT integration delayed'",
+        "    Signal: thesis tracking (post-acquisition execution). 60% on track, IT delay is a flag.",
+        "    thesis_tracking: {thesis_status: 'behind', key_signals: ['3/5 initiatives on track', 'IT integration delayed'], variance_to_plan: '2 initiatives behind schedule'}",
+        "    impact_reasoning: '\"3 of 5 on track, IT delayed\" → execution risk on integration synergies, IT delay may push cost savings 2-3 months → thesis tracking: behind'",
+        "",
+        "  'EBITDA £4.2M vs budget £4.8M, prior year £3.8M'",
+        "    Signal: underperformance vs plan but growth YoY. EBITDA = $5.33M, budget miss of £600K = $762K.",
+        "    estimated_ebitda_impact: +508000 (vs PY), lbo_model_variance: {ebitda_vs_model: 'behind by $762K (12.5%)', revenue_vs_model: null}",
+        "    impact_reasoning: '\"EBITDA £4.2M vs budget £4.8M, PY £3.8M\" → +11% YoY but -12.5% vs plan → growth on track but operational improvement lagging budget'",
         "",
         "For each extracted metric, add to value_explanations: '\"source quote\" → why → metric change'.",
         "For extrapolated values, include the doc excerpt and inference in value_explanations.",
@@ -881,13 +1063,21 @@ def _signal_first_prompt(text: str, document_type: str, schema_desc: str, memo_c
 def _memo_prompt(text: str, schema_desc: str) -> tuple:
     """Build system and user prompt for investment memo extraction."""
     system_prompt = (
-        "You are a VC document analyst. Extract structured data from an investment memo. "
-        "Capture company_name, investment_date, round, valuation_pre_money, deal_terms_summary, "
-        "and memo_assumptions (nested object of key assumptions). "
-        "Include financial baseline when stated: ARR, revenue, runway_months. "
-        "Extract market_size (tam_usd, sam_usd, som_usd) when stated, with tam_description/methodology if available. "
+        "You are an investment document analyst. Extract structured data from an investment memo — "
+        "this could be a venture capital IC memo, a PE deal memo, a credit memo, or an acquisition memo.\n"
+        "FIRST identify the deal type from the document:\n"
+        "  - VENTURE: talks about round (Seed/Series A/B/C), ARR, burn rate, runway, PMF, CAC/LTV\n"
+        "  - PE/BUYOUT: talks about EBITDA, leverage, LBO returns, management buyout, value creation plan, bolt-ons, de-leveraging\n"
+        "  - CREDIT/DEBT: talks about coverage ratios, security package, covenants, debt service, collateral\n"
+        "  - GROWTH EQUITY: talks about revenue, margins, path to profitability, minority stake, board seat\n"
+        "Capture company_name, investment_date, round (or deal_type for PE), valuation_pre_money (or EV for PE), deal_terms_summary, "
+        "and memo_assumptions (nested object of key assumptions).\n"
+        "For VENTURE: include ARR, revenue, runway_months, burn_rate, growth_rate.\n"
+        "For PE/BUYOUT: include revenue, EBITDA, EBITDA_margin, leverage_at_entry, equity_check, expected_moic, "
+        "expected_irr, value_creation_levers, exit_assumptions, management_incentive_structure.\n"
+        "For ALL: extract market_size (tam_usd, sam_usd, som_usd) when stated, with tam_description/methodology if available. "
         "Extract red_flags as array of explicit concerns, risks, or concerning language. "
-        "For each extracted metric, add to value_explanations: '\"source quote\" → why → metric change', e.g. arr: '\"$2M ARR as of Q2\" → explicit figure → ARR is $2M'. "
+        "For each extracted metric, add to value_explanations with source attribution.\n"
         "Return a single JSON object. Use null when unknown.\n"
         "CURRENCY CONVERSION (always convert to USD before storing any numeric value):\n"
         "- £ (GBP) → multiply by 1.27\n"
@@ -907,17 +1097,25 @@ def _memo_prompt(text: str, schema_desc: str) -> tuple:
 def _spreadsheet_prompt(text: str, document_type: str, schema_desc: str, memo_context: Optional[str] = None) -> tuple:
     """Build system and user prompt for spreadsheet extraction (CSV/XLSX management accounts)."""
     system_prompt = (
-        "You are a VC financial analyst. You are given raw spreadsheet data — management accounts, "
-        "P&L statements, balance sheets, or operational dashboards exported as CSV/Excel.\n"
+        "You are a financial analyst. You are given raw spreadsheet data — management accounts, "
+        "P&L statements, balance sheets, cash flow statements, or operational dashboards exported as CSV/Excel.\n"
         "Your job is to:\n"
-        "1. IDENTIFY the structure: find revenue rows, cost rows, dates/periods in headers or columns.\n"
-        "2. EXTRACT the latest-period financial metrics into financial_metrics (ARR, revenue, burn, margins, etc.).\n"
-        "3. DETECT TRENDS: if multiple periods are present, note growth rates, acceleration/deceleration.\n"
-        "4. ESTIMATE IMPACTS: qualitative signals from the data (e.g. revenue declining, burn spiking) → impact_estimates.\n"
-        "5. For time-series data (monthly/quarterly revenue), extract the trajectory for forecasting.\n\n"
+        "1. IDENTIFY the business type: is this a venture-backed startup (ARR/MRR/burn), "
+        "a PE-owned company (EBITDA/leverage/FCF), or a traditional business? This determines which metrics matter.\n"
+        "2. IDENTIFY the structure: find revenue rows, cost rows, dates/periods in headers or columns.\n"
+        "3. EXTRACT the latest-period financial metrics into financial_metrics.\n"
+        "   - For ALL companies: revenue, cogs, gross_margin, growth_rate, headcount, cash_balance\n"
+        "   - For venture/SaaS: arr, mrr, burn_rate, runway_months, customer_count\n"
+        "   - For PE/traditional: ebitda, ebitda_margin, operating_income, net_income, capex, fcf, "
+        "total_debt, interest_expense, working_capital, debt_service, tax_expense\n"
+        "   Extract WHICHEVER metrics are present — don't force venture metrics on a PE company or vice versa.\n"
+        "4. DETECT TRENDS: if multiple periods are present, note growth rates, margin trends, leverage changes.\n"
+        "5. ESTIMATE IMPACTS: qualitative signals from the data → impact_estimates.\n"
+        "6. For time-series data (monthly/quarterly), extract the full trajectory for forecasting.\n\n"
         "Spreadsheet data is messy — handle merged cells, blank rows, summary rows, and varied date formats.\n"
         "Look for rows labeled: Revenue, ARR, MRR, COGS, Gross Profit, OpEx, EBITDA, Net Income, "
-        "Cash, Burn Rate, Headcount, Customers, etc.\n"
+        "Operating Income, Capex, Interest Expense, Debt, Working Capital, Free Cash Flow, "
+        "Cash, Burn Rate, Headcount, Customers, Tax, Depreciation, Amortization, etc.\n"
         "When you see monthly columns (Jan, Feb, Mar... or 2024-01, 2024-02...), extract the LATEST non-empty value "
         "and compute growth rates from the series.\n\n"
         "Return a single JSON object. Use null for truly unknown; use empty arrays for missing lists.\n"
@@ -931,19 +1129,92 @@ def _spreadsheet_prompt(text: str, document_type: str, schema_desc: str, memo_co
     user_parts = [
         f"Document type: {document_type} (raw spreadsheet data).",
         "",
-        "This is tabular financial data. Identify the structure first, then extract:",
-        "- financial_metrics: ARR, revenue, MRR, burn_rate, runway_months, cash_balance, gross_margin, growth_rate, customer_count",
-        "- If multiple periods exist, use the LATEST period for financial_metrics and compute growth_rate from the series",
-        "- business_updates.latest_update: one-line summary of the financial position",
-        "- operational_metrics: headcount, customer_count if present",
-        "- impact_estimates: infer from trends (e.g. declining revenue → negative ARR impact)",
-        "- time_series: When the spreadsheet has monthly or quarterly columns (Jan, Feb, Mar... "
-        "or Q1, Q2... or 2024-01, 2024-02...), extract the FULL TIME SERIES as an array: "
-        '[{"period": "2025-01", "revenue": 500000, "cogs": 150000, "opex": 200000, '
-        '"ebitda": 150000, "cash_balance": 2000000, "headcount": 45, "arr": 6000000, '
-        '"burn_rate": 180000, "customers": 120}, ...] '
+        "This is tabular financial data. FIRST identify the business type, THEN extract accordingly.",
+        "",
+        "=== STEP 1: IDENTIFY BUSINESS TYPE ===",
+        "Look at the row labels and structure to determine:",
+        "  VENTURE/SAAS: Has rows like ARR, MRR, Burn Rate, Runway, CAC, LTV, Customers",
+        "  PE/OPERATING: Has rows like EBITDA, Operating Income, Interest Expense, Debt, Capex, D&A, Working Capital",
+        "  TRADITIONAL: Has rows like Revenue, COGS, Gross Profit, SG&A, Net Income (no venture or PE-specific rows)",
+        "  MULTI-ENTITY: Has divisional/segment columns, intercompany eliminations, consolidated totals",
+        "",
+        "=== STEP 2: EXTRACT financial_metrics (latest period) ===",
+        "  Universal: revenue, cogs, gross_margin, growth_rate, headcount, cash_balance",
+        "  Venture/SaaS: arr, mrr, burn_rate, runway_months, customer_count",
+        "  PE/Operating/Traditional: ebitda, ebitda_margin, operating_income, net_income, capex, fcf, "
+        "total_debt, interest_expense, working_capital, debt_service, tax_expense, depreciation, amortization",
+        "  Extract WHICHEVER metrics are present — don't force venture metrics on a PE company or vice versa.",
+        "",
+        "=== STEP 3: EXTRACT pe_operating_metrics (for PE/operating companies) ===",
+        "  If this is a PE portfolio company or traditional operating business, populate pe_operating_metrics:",
+        "  - reported_ebitda vs adjusted_ebitda (if add-backs are shown)",
+        "  - ebitda_addbacks breakdown (management fees, one-offs, run-rate synergies, non-recurring)",
+        "  - Margins: gross_margin_pct, ebitda_margin_pct, operating_margin_pct, net_margin_pct",
+        "  - Revenue/EBITDA by segment if divisional reporting exists",
+        "  - Leverage: leverage_ratio, interest_coverage, fixed_charge_coverage, dscr",
+        "  - Working capital: dso, dpo, dio, cash_conversion_cycle",
+        "  - Capex: maintenance_capex vs growth_capex, capex_as_pct_revenue",
+        "  - Efficiency: revenue_per_employee, ebitda_per_employee, roic, roe",
+        "  - Quality: recurring_revenue_pct, customer_concentration_top5_pct",
+        "  - Budget vs actual if present",
+        "  - Industry-specific KPIs (utilization, OEE, same-store, fill rate, etc.)",
+        "",
+        "=== STEP 4: EXTRACT time_series ===",
+        "When the spreadsheet has monthly or quarterly columns (Jan, Feb, Mar... or Q1, Q2... or 2024-01, 2024-02...), "
+        "extract the FULL TIME SERIES as an array.",
+        "",
+        "PE/Operating company example:",
+        '[{"period": "2025-01", "revenue": 4200000, "cogs": 2100000, "gross_profit": 2100000, '
+        '"opex": 1400000, "ebitda": 700000, "operating_income": 550000, '
+        '"depreciation": 100000, "amortization": 50000, '
+        '"interest_expense": 180000, "tax_expense": 90000, "net_income": 280000, '
+        '"capex": 120000, "fcf": 400000, "cash_balance": 3500000, '
+        '"total_debt": 12000000, "working_capital": 2800000, '
+        '"debt_service": 280000, "dividends": null, "headcount": 185, '
+        '"arr": null, "mrr": null, "burn_rate": null, "customers": null}, ...]',
+        "",
+        "Venture/SaaS example:",
+        '[{"period": "2025-01", "revenue": 120000, "arr": 1440000, "mrr": 120000, '
+        '"burn_rate": 80000, "cash_balance": 2000000, "headcount": 15, "customers": 45, '
+        '"cogs": 25000, "opex": 155000, "gross_profit": 95000, '
+        '"ebitda": null, "operating_income": null, "capex": null, "total_debt": null}, ...]',
+        "",
         "Preserve EVERY period present in the data. Do not summarize to a single value. "
         "Use null for metrics not present in a given period.",
+        "",
+        "=== STEP 4b: EXTRACT SUBCATEGORY LINE ITEMS ===",
+        "CRITICAL: Real businesses have specific cost line items — extract them ALL as subcategory entries in time_series.",
+        "Every row in the spreadsheet that is a specific cost or revenue line item should become a subcategory entry.",
+        "The ingestion system handles dynamic subcategories — pass through WHATEVER the business actually reports.",
+        "",
+        "For each specific line item, add a time_series entry with these fields:",
+        '  {"period": "2025-01", "subcategory": "raw_materials", "parent_category": "cogs", "amount": 850000}',
+        "",
+        "Map each line item to its parent category:",
+        "  cogs: direct materials, raw materials, direct labor, factory overhead, freight, packaging, food cost, ",
+        "        subcontractors, clinical supplies, third party costs — whatever the business calls its direct costs",
+        "  opex_rd: R&D salaries, lab costs, prototyping, clinical trials, product development",
+        "  opex_sm: sales salaries, marketing spend, commissions, distribution costs, trade marketing",
+        "  opex_ga: rent/occupancy, admin salaries, insurance, legal, accounting, IT, utilities, facility costs",
+        "  revenue: subscription revenue, product sales, service revenue, licensing, royalties — by stream if broken out",
+        "",
+        "Examples by business type:",
+        "  Manufacturer: raw_materials, direct_labor, factory_overhead, packaging, freight_out, quality_control, tooling",
+        "  Restaurant chain: food_cost, labor, occupancy, supplies, marketing, franchise_fees",
+        "  Healthcare: clinical_staff, medical_supplies, lab_costs, pharmacy, insurance_reimbursements, facility_lease",
+        "  Distributor: product_purchases, warehousing, freight, fleet_costs, returns_allowance",
+        "  Professional services: consultant_salaries, subcontractors, travel, training, utilization_costs",
+        "  Software (non-SaaS): license_revenue, maintenance_revenue, professional_services, hosting, support",
+        "",
+        "Normalize the label: lowercase, underscores instead of spaces (e.g. 'Raw Materials' → 'raw_materials').",
+        "Extract EVERY line item — do not roll up into summary categories. The more granular, the better.",
+        "",
+        "=== STEP 5: ADDITIONAL EXTRACTION ===",
+        "- business_updates.latest_update: one-line summary of the financial position",
+        "- operational_metrics: headcount, customer_count if present",
+        "- impact_estimates: infer from trends (e.g. declining revenue, margin compression, leverage increasing, "
+        "working capital deterioration, covenant headroom tightening)",
+        "- For PE companies: attempt to fill ebitda_bridge and thesis_tracking in impact_estimates if enough data exists",
         "- value_explanations: cite the specific cells/values you used",
         "",
         "Schema (JSON):",
@@ -964,12 +1235,17 @@ def _spreadsheet_prompt(text: str, document_type: str, schema_desc: str, memo_co
 def _flat_prompt(text: str, document_type: str, schema_desc: str) -> tuple:
     """Build system and user prompt for flat schema (pitch_deck / other)."""
     system_prompt = (
-        "You are a VC document analyst. Extract structured data from the given document text. "
-        "Return a single JSON object with exactly these keys (use null when unknown): "
-        "company_name, revenue, arr, stage, total_funding, valuation, key_metrics (array of strings), "
-        "summary, sector, target_market, business_model. "
-        "Numbers must be numeric (no currency symbols in values). key_metrics is an array of short strings. "
-        "For each extracted metric, add to value_explanations: '\"source quote\" → why → metric change', e.g. arr: '\"$1.2M ARR\" → explicit figure → ARR is $1.2M'.\n"
+        "You are a financial document analyst. Extract structured data from the given document text. "
+        "This could be a venture pitch deck, a PE CIM (confidential information memorandum), a company overview, or any business document.\n"
+        "FIRST identify the business type:\n"
+        "  - VENTURE/SAAS: ARR, MRR, burn, runway, funding rounds → extract arr, burn_rate, stage, total_funding\n"
+        "  - PE/OPERATING/TRADITIONAL: revenue, EBITDA, margins, leverage, FCF → extract revenue, ebitda, ebitda_margin, enterprise_value\n"
+        "Return a single JSON object with these keys (use null when unknown): "
+        "company_name, revenue, arr, ebitda, ebitda_margin, stage, total_funding, valuation, enterprise_value, "
+        "leverage_ratio, key_metrics (array of strings), summary, sector, target_market, business_model. "
+        "Numbers must be numeric (no currency symbols in values). key_metrics is an array of short strings — "
+        "for PE companies include metrics like 'EBITDA margin 22%', 'leverage 3.5x', 'FCF yield 8%'. "
+        "For each extracted metric, add to value_explanations with source attribution.\n"
         "CURRENCY CONVERSION (always convert to USD before storing any numeric value):\n"
         "- £ (GBP) → multiply by 1.27\n"
         "- € (EUR) → multiply by 1.09\n"

@@ -58,6 +58,10 @@ class CapTableSummary:
     latest_post_money: Optional[float] = None
     ownership: Dict[str, float] = field(default_factory=dict)  # shareholder → %
     funding_rounds: List[Dict[str, Any]] = field(default_factory=list)
+    equity_weight: Optional[float] = None   # from cap_table_entries ledger
+    debt_weight: Optional[float] = None     # from cap_table_entries ledger
+    total_debt: Optional[float] = None
+    source: str = "portfolio_companies"      # "ledger" | "portfolio_companies"
 
 
 @dataclass
@@ -338,14 +342,47 @@ async def _load_drivers(company_id: str, branch_id: str) -> Dict[str, DriverStat
 
 
 async def _load_cap_table(company_id: str) -> Optional[CapTableSummary]:
-    """Load cap table data from Supabase portfolio_companies or cap table tables."""
+    """Load cap table data from cap_table_entries ledger, fall back to portfolio_companies."""
     try:
+        # --- Try cap_table_entries ledger first ---
+        from app.services.cap_table_ledger import CapTableLedger
+        ledger = CapTableLedger()
+        ledger_data = ledger.load(company_id=company_id)
+
+        if ledger_data.get("entry_count", 0) > 0:
+            # Build ownership map from entries
+            ownership = ledger_data.get("ownership", {})
+            # Find latest round from entries
+            entries = ledger_data.get("share_entries", [])
+            latest_round = None
+            latest_date = None
+            for e in entries:
+                rd = e.get("round_name")
+                dt = e.get("investment_date")
+                if rd and dt:
+                    if latest_date is None or dt > latest_date:
+                        latest_date = dt
+                        latest_round = rd
+
+            return CapTableSummary(
+                total_raised=ledger_data.get("total_raised"),
+                latest_round=latest_round,
+                ownership=ownership,
+                equity_weight=ledger_data.get("equity_weight"),
+                debt_weight=ledger_data.get("debt_weight"),
+                total_debt=ledger_data.get("total_debt"),
+                source="ledger",
+            )
+    except Exception as e:
+        logger.debug("Cap table ledger load failed (falling back): %s", e)
+
+    try:
+        # --- Fall back to portfolio_companies ---
         from app.core.supabase_client import get_supabase_client
         sb = get_supabase_client()
         if not sb:
             return None
 
-        # Try portfolio_companies for basic funding data
         rows = (
             sb.table("portfolio_companies")
             .select("name, total_raised, last_round, stage, sector")
@@ -361,6 +398,7 @@ async def _load_cap_table(company_id: str) -> Optional[CapTableSummary]:
         return CapTableSummary(
             total_raised=co.get("total_raised"),
             latest_round=co.get("last_round"),
+            source="portfolio_companies",
         )
     except Exception as e:
         logger.warning("Cap table load failed: %s", e)

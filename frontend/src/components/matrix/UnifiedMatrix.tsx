@@ -136,7 +136,7 @@ import { exportMatrixToCSV, exportMatrixToXLS, exportToPDF } from '@/lib/matrix/
 import { buildPnlColumns, buildPnlSkeletonRows, buildBalanceSheetSkeletonRows, buildCashFlowSkeletonRows } from '@/lib/matrix/pnl-columns';
 import { useScenarioForkTree } from '@/hooks/useScenarioForkTree';
 
-export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal';
+export type MatrixMode = 'portfolio' | 'custom' | 'lp' | 'pnl' | 'legal' | 'workflow';
 
 export interface MatrixColumn {
   id: string;

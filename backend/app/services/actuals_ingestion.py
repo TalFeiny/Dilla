@@ -8,16 +8,32 @@ logger = logging.getLogger(__name__)
 
 # Metrics from extraction that map to fpa_actuals categories
 METRIC_TO_CATEGORY = {
+    # Universal
     "revenue": "revenue",
     "cogs": "cogs",
     "opex": "opex_total",
-    "ebitda": "ebitda",
     "cash_balance": "cash_balance",
     "headcount": "headcount",
+    # Venture / SaaS
     "arr": "arr",
     "mrr": "mrr",
     "burn_rate": "burn_rate",
     "customers": "customers",
+    # PE / Operating / Traditional
+    "ebitda": "ebitda",
+    "operating_income": "operating_income",
+    "net_income": "net_income",
+    "capex": "capex",
+    "fcf": "fcf",
+    "interest_expense": "interest_expense",
+    "tax_expense": "tax_expense",
+    "total_debt": "total_debt",
+    "working_capital": "working_capital",
+    "debt_service": "debt_service",
+    "depreciation": "depreciation",
+    "amortization": "amortization",
+    "gross_profit": "gross_profit",
+    "dividends": "dividends",
 }
 
 # Standard subcategory taxonomy for cost center granularity
@@ -628,43 +644,81 @@ def get_subcategory_proportions(
 # ---------------------------------------------------------------------------
 
 CATEGORY_LABELS = {
+    # Universal
     "revenue": "Revenue",
     "cogs": "COGS",
+    "gross_profit": "Gross Profit",
     "opex_total": "Operating Expenses",
     "opex_rd": "R&D",
     "opex_sm": "Sales & Marketing",
     "opex_ga": "G&A",
-    "ebitda": "EBITDA",
-    "cash_balance": "Cash Balance",
-    "burn_rate": "Burn Rate",
-    "headcount": "Headcount",
-    "customers": "Customers",
+    # Venture / SaaS
     "arr": "ARR",
     "mrr": "MRR",
+    "burn_rate": "Burn Rate",
+    "customers": "Customers",
+    # PE / Operating / Traditional
+    "ebitda": "EBITDA",
+    "operating_income": "Operating Income",
+    "net_income": "Net Income",
+    "depreciation": "Depreciation",
+    "amortization": "Amortization",
+    "capex": "Capex",
+    "fcf": "Free Cash Flow",
+    "interest_expense": "Interest Expense",
+    "tax_expense": "Tax Expense",
+    "total_debt": "Total Debt",
+    "working_capital": "Working Capital",
+    "debt_service": "Debt Service",
+    "dividends": "Dividends",
+    # Shared
+    "cash_balance": "Cash Balance",
+    "headcount": "Headcount",
 }
 
 CATEGORY_TO_SECTION = {
+    # Universal
     "revenue": "revenue",
-    "arr": "revenue",
-    "mrr": "revenue",
     "cogs": "cogs",
+    "gross_profit": "gross_profit",
     "opex_rd": "opex",
     "opex_sm": "opex",
     "opex_ga": "opex",
     "opex_total": "opex",
-    "ebitda": "ebitda",
-    "cash_balance": "bottom",
+    # Venture / SaaS
+    "arr": "revenue",
+    "mrr": "revenue",
     "burn_rate": "bottom",
-    "headcount": "operational",
     "customers": "operational",
+    # PE / Operating — income statement
+    "ebitda": "ebitda",
+    "operating_income": "ebitda",
+    "depreciation": "below_ebitda",
+    "amortization": "below_ebitda",
+    "interest_expense": "below_ebitda",
+    "tax_expense": "below_ebitda",
+    "net_income": "net_income",
+    # PE / Operating — cash flow & balance sheet
+    "capex": "cash_flow",
+    "fcf": "cash_flow",
+    "working_capital": "cash_flow",
+    "debt_service": "cash_flow",
+    "dividends": "cash_flow",
+    "total_debt": "balance_sheet",
+    "cash_balance": "balance_sheet",
+    # Operational
+    "headcount": "operational",
 }
 
 
-    # Categories that are computed (not raw data) — never returned as actuals
+    # Categories that are computed (not raw data) — never returned as actuals.
+    # NOTE: For PE/operating companies, ebitda, net_income, interest_expense,
+    # tax_expense, debt_service ARE real reported figures from management accounts,
+    # not derived. Only exclude truly synthetic/noise categories.
 _DERIVED_OR_NOISE_CATEGORIES = {
-    "gross_profit", "ebitda", "opex_total", "net_income",
-    "tax", "tax_expense", "interest", "debt_service",
-    "below_the_line", "below_line",
+    "opex_total",       # always computed from opex_rd + opex_sm + opex_ga
+    "below_the_line",   # noise category from bad extraction
+    "below_line",       # noise category from bad extraction
 }
 
 
