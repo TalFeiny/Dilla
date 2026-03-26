@@ -99,6 +99,7 @@
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.4.1",
     "react-spring": "^10.0.3",
+    "react-syntax-highlighter": "^16.1.1",
     "react-use": "^17.6.0",
     "react-window": "^2.2.5",
     "recharts": "^3.1.2",
