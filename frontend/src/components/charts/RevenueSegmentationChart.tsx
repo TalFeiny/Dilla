@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useEffect, useRef } from 'react';
-import * as d3 from 'd3';
+import { select } from 'd3-selection';
 import { sankey, sankeyLinkHorizontal, sankeyLeft } from 'd3-sankey';
 import { cn } from '@/lib/utils';
 
@@ -90,9 +90,9 @@ export default function RevenueSegmentationChart({
     if (!svgRef.current) return;
 
     // Clear previous content
-    d3.select(svgRef.current).selectAll("*").remove();
+    select(svgRef.current).selectAll("*").remove();
 
-    const svg = d3.select(svgRef.current);
+    const svg = select(svgRef.current);
     const margin = { top: 20, right: 150, bottom: 20, left: 150 };
     const innerWidth = width - margin.left - margin.right;
     const innerHeight = height - margin.top - margin.bottom;
@@ -155,10 +155,10 @@ export default function RevenueSegmentationChart({
       .attr("fill", "none")
       .attr("opacity", 0.5)
       .on("mouseover", function() {
-        d3.select(this).attr("opacity", 0.8);
+        select(this).attr("opacity", 0.8);
       })
       .on("mouseout", function() {
-        d3.select(this).attr("opacity", 0.5);
+        select(this).attr("opacity", 0.5);
       });
 
     // Draw nodes

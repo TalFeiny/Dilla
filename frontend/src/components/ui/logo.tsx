@@ -9,7 +9,7 @@ export function Logo() {
     <div className="p-3 border-b border-gray-200 text-center">
       {!imageError ? (
         <img 
-          src="/logo.png" 
+          src="/logo.svg"
           alt="Company Logo" 
           className="w-8 h-8 mx-auto object-contain"
           onError={() => setImageError(true)}

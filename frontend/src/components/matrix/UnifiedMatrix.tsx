@@ -100,7 +100,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { addMatrixColumn, addCompanyToMatrix, createCompanyForMatrix, LEGAL_COLUMNS } from '@/lib/matrix/matrix-api-service';
-import { getPortfolioColumns } from '@/lib/matrix/portfolio-matrix-builder';
+import { getPortfolioColumns, buildPortfolioSkeletonRows } from '@/lib/matrix/portfolio-matrix-builder';
 import {
   formatActionOutput,
   extractExplanation,
@@ -290,7 +290,7 @@ export function UnifiedMatrix({
     if (mode === 'portfolio') {
       return {
         columns: getPortfolioColumns(fundType),
-        rows: [],
+        rows: buildPortfolioSkeletonRows(fundType),
         metadata: {
           dataSource: 'manual',
           fundId,
@@ -411,8 +411,9 @@ export function UnifiedMatrix({
   const [editingCell, setEditingCell] = useState<{ rowId: string; columnId: string } | null>(null);
   const [editValue, setEditValue] = useState('');
   const editInFlightRef = useRef(0);
-  // Track which mode the current matrixData belongs to, so we can reset on mode switch
+  // Track which mode/fund the current matrixData belongs to, so we can reset on switch
   const matrixDataModeRef = useRef<MatrixMode>(mode);
+  const matrixDataFundIdRef = useRef<string | undefined>(fundId);
   const [query, setQuery] = useState('');
   const [showInsightsPanel, setShowInsightsPanel] = useState(false);
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
@@ -593,7 +594,7 @@ export function UnifiedMatrix({
     const data = payload?.matrixData ?? matrixData;
     if (!data) return;
     if (format === 'csv') exportMatrixToCSV(data);
-    else if (format === 'xlsx') exportMatrixToXLS(data);
+    else if (format === 'xlsx') void exportMatrixToXLS(data);
     else if (format === 'pdf') {
       const content = payload?.messageContent ?? data.rows.map((r) =>
         data.columns.map((c) => {
@@ -1232,14 +1233,16 @@ export function UnifiedMatrix({
   }, [mode, matrixData, onDataChange]);
 
   // Initialize with preset columns immediately so grid is usable right away.
-  // CRITICAL: When mode changes, always reset to that mode's defaults to prevent
-  // stale data from a previous mode contaminating the grid.
+  // CRITICAL: When mode or fundId changes, always reset to that mode's defaults to prevent
+  // stale data from a previous mode/fund contaminating the grid.
   useEffect(() => {
     const modeChanged = matrixDataModeRef.current !== mode;
+    const fundChanged = matrixDataFundIdRef.current !== fundId;
     matrixDataModeRef.current = mode;
+    matrixDataFundIdRef.current = fundId;
 
-    // Mode changed — force reset to new mode's defaults regardless of existing rows
-    if (modeChanged) {
+    // Mode or fund changed — force reset to new defaults regardless of existing rows
+    if (modeChanged || fundChanged) {
       const defaultData = getDefaultMatrixData(mode, fundId);
       setMatrixData(defaultData);
       internalLoadRef.current = true;
@@ -1247,7 +1250,7 @@ export function UnifiedMatrix({
       return;
     }
 
-    // Same mode — only initialize if we have no data
+    // Same mode+fund — only initialize if we have no data
     if (matrixData?.rows?.length) return;
     if (mode === 'portfolio' && fundId) {
       const currentData = matrixData || getDefaultMatrixData(mode, fundId);
@@ -1390,16 +1393,18 @@ export function UnifiedMatrix({
       const companies = await companiesResponse.json();
       
       if (!companies || companies.length === 0) {
-        // API returned empty - don't overwrite if we already have rows from initialData
+        // API returned empty — only preserve previous rows if they belong to the SAME fund
+        // (e.g. rows from initialData). Never carry over a different fund's rows.
         const prev = matrixDataRef.current;
-        if (prev?.rows?.length) {
+        const sameFund = prev?.metadata?.fundId === fundId;
+        if (sameFund && prev?.rows?.length) {
           const merged: MatrixData = { ...prev, columns, metadata: { ...prev.metadata, lastUpdated: new Date().toISOString(), dataSource: 'portfolio', fundId } };
           setMatrixData(merged);
           onDataChange?.(merged);
         } else {
           const emptyData: MatrixData = {
             columns,
-            rows: [],
+            rows: buildPortfolioSkeletonRows(fundType),
             metadata: { lastUpdated: new Date().toISOString(), dataSource: 'portfolio', fundId },
           };
           setMatrixData(emptyData);

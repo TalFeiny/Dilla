@@ -6,8 +6,6 @@
 import type { MatrixData } from '@/components/matrix/UnifiedMatrix';
 import { formatCellValue } from '@/lib/matrix/cell-formatters';
 import type { CellColumnType } from '@/lib/matrix/cell-formatters';
-import * as XLSX from 'xlsx';
-
 function escapeCSV(value: unknown): string {
   if (value === null || value === undefined) return '';
   const str = String(value);
@@ -57,7 +55,8 @@ export function exportMatrixToCSV(matrixData: MatrixData): void {
 }
 
 /** Export matrix to XLS/XLSX using xlsx library */
-export function exportMatrixToXLS(matrixData: MatrixData): void {
+export async function exportMatrixToXLS(matrixData: MatrixData): Promise<void> {
+  const XLSX = await import('xlsx');
   const headers = matrixData.columns.map((col) => col.name || col.id);
   const rows: unknown[][] = [headers];
 

@@ -3382,7 +3382,7 @@ class ConversationPhase(Enum):
 # Token budgets per turn type — None means inherit from previous turn
 TURN_BUDGETS: Dict[TurnType, Optional[int]] = {
     TurnType.PHATIC:     256,
-    TurnType.STATUS:     1024,
+    TurnType.STATUS:     2048,
     TurnType.RETRIEVAL:  4096,
     TurnType.ITERATION:  None,   # inherit previous budget
     TurnType.ANALYSIS:   4096,
@@ -4427,10 +4427,6 @@ class UnifiedMCPOrchestrator:
         if any(p in lower for p in _synthesis_phrases):
             return TurnType.SYNTHESIS
 
-        # Status: quick metric lookups
-        if msg_len < 15 and self._RE_STATUS.match(lower):
-            return TurnType.STATUS
-
         # Analysis signals
         _analysis_phrases = (
             "compare", "analyze", "assess", "evaluate",
@@ -4743,14 +4739,15 @@ class UnifiedMCPOrchestrator:
                 "Match the user's tone — casual gets casual."
             )
 
-        # ── STATUS: answer with the number ──
+        # ── STATUS: session/task progress check ──
         if turn_type == TurnType.STATUS:
             return (
                 f"You are a senior CFO analyst for a {fund_line}.\n\n"
-                "Answer with the specific number or fact requested. Cite the source. "
-                "If you don't have the data in context, say so — don't guess. "
-                "Keep it to 1-2 sentences."
-                f"{_fingerprint_block()}"
+                "The user is asking about the status or progress of something in this session. "
+                "Summarize what's been done, what's pending, and any blockers. "
+                "If they're asking about data, use tools to fetch from the database. "
+                "Keep it concise."
+                f"{_fingerprint_block('SESSION STATE')}"
             )
 
         # ── STEERING: adjust, don't restart ──
@@ -4990,7 +4987,7 @@ class UnifiedMCPOrchestrator:
 
         # ── Emit classification event so frontend can show intent/mode ──
         _response_mode = (
-            "reply" if turn_type in (TurnType.PHATIC, TurnType.STATUS) else
+            "reply" if turn_type == TurnType.PHATIC else
             "action" if turn_type in (TurnType.RETRIEVAL, TurnType.ITERATION, TurnType.STEERING, TurnType.ANALYSIS) else
             "task"  # only SYNTHESIS gets full task mode
         )
@@ -5070,7 +5067,7 @@ class UnifiedMCPOrchestrator:
                 "turn_type": turn_type.value,
                 "phase": self._conversation_phase.value,
                 "response_mode": (
-                    "reply" if turn_type in (TurnType.PHATIC, TurnType.STATUS) else
+                    "reply" if turn_type == TurnType.PHATIC else
                     "action" if turn_type in (TurnType.RETRIEVAL, TurnType.ITERATION, TurnType.STEERING, TurnType.ANALYSIS) else
                     "task"
                 ),
@@ -5466,7 +5463,7 @@ class UnifiedMCPOrchestrator:
             _intent = _mode_fallback.get(_grid_mode, "general")
 
         _resp_mode = (
-            "reply" if turn_type in (TurnType.PHATIC, TurnType.STATUS) else
+            "reply" if turn_type == TurnType.PHATIC else
             "action" if turn_type in (TurnType.RETRIEVAL, TurnType.ITERATION, TurnType.STEERING, TurnType.ANALYSIS) else
             "task"
         )

@@ -2,14 +2,15 @@
 
 import React, { useState, useRef, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
+import dynamic from 'next/dynamic';
 import AgentProgressTracker from '@/components/AgentProgressTracker';
 import AgentChartGenerator from '@/components/AgentChartGenerator';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { DECK_DESIGN_TOKENS } from '@/styles/deck-design-tokens';
 import { getTheme, setTheme, initTheme } from '@/lib/theme';
 import { formatMetricValue } from '@/utils/formatters';
-import { 
-  Presentation, 
+import {
+  Presentation,
   Send,
   Download,
   Eye,
@@ -52,7 +53,7 @@ import {
   ResponsiveContainer,
   Cell
 } from 'recharts';
-import TableauLevelCharts from '@/components/charts/TableauLevelCharts';
+const TableauLevelCharts = dynamic(() => import('@/components/charts/TableauLevelCharts'), { ssr: false });
 import { fixChartData, fixChartDataObject, fixHeatmapData, fixLineChartData, fixProbabilityCloudData, fixSankeyData } from '@/utils/chartDataFixer';
 
 interface Message {

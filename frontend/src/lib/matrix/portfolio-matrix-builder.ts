@@ -45,6 +45,21 @@ export function getPortfolioColumns(fundType?: string): MatrixColumn[] {
   return DEFAULT_PORTFOLIO_COLUMNS;
 }
 
+/** Build empty skeleton rows so a new/empty fund shows a usable grid. */
+export function buildPortfolioSkeletonRows(fundType?: string, count = 5): MatrixRow[] {
+  const columns = getPortfolioColumns(fundType);
+  return Array.from({ length: count }, (_, i) => {
+    const cells: Record<string, MatrixCell> = {};
+    for (const col of columns) {
+      cells[col.id] = { value: null, source: 'manual' as const };
+    }
+    return {
+      id: `skeleton-${i}`,
+      cells,
+    };
+  });
+}
+
 export interface PortfolioCompanyForMatrix {
   id: string;
   name: string;

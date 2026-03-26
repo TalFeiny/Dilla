@@ -40,7 +40,12 @@ import {
   AreaChart,
   ScatterChart,
 } from 'recharts';
-import * as d3 from 'd3';
+import { select } from 'd3-selection';
+import { scaleBand, scaleLinear, scaleLog, scaleOrdinal, scaleSequential } from 'd3-scale';
+import { interpolateRdYlBu } from 'd3-scale-chromatic';
+import { stack as d3Stack, arc as d3Arc, line as d3Line, curveMonotoneX } from 'd3-shape';
+import { axisBottom, axisLeft } from 'd3-axis';
+import { partition as d3Partition, hierarchy as d3Hierarchy, tree as d3Tree } from 'd3-hierarchy';
 import { sankey as d3Sankey, sankeyLinkHorizontal } from 'd3-sankey';
 
 interface Citation {
@@ -87,13 +92,13 @@ function CapTableWaterfallInner({ data, width, height }: { data: any; width: num
   const chartRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
-    if (!chartRef.current || !d3) return;
+    if (!chartRef.current) return;
     const container = chartRef.current;
-    d3.select(container).selectAll('*').remove();
+    select(container).selectAll('*').remove();
 
     const evolution: any[] = Array.isArray(data) ? data : data?.cap_table_evolution || data?.evolution || [];
     if (evolution.length === 0) {
-      d3.select(container).append('p').text('No cap table evolution data').attr('class', 'text-gray-500 text-center');
+      select(container).append('p').text('No cap table evolution data').attr('class', 'text-gray-500 text-center');
       return;
     }
 
@@ -101,7 +106,7 @@ function CapTableWaterfallInner({ data, width, height }: { data: any; width: num
     const w = (typeof width === 'number' ? width : container.clientWidth || 500) - margin.left - margin.right;
     const h = (height || 320) - margin.top - margin.bottom;
 
-    const svg = d3.select(container).append('svg')
+    const svg = select(container).append('svg')
       .attr('width', w + margin.left + margin.right)
       .attr('height', h + margin.top + margin.bottom)
       .append('g')
@@ -122,13 +127,13 @@ function CapTableWaterfallInner({ data, width, height }: { data: any; width: num
       return d;
     });
 
-    const x = d3.scaleBand().domain(stackData.map(d => d.round)).range([0, w]).padding(0.3);
-    const y = d3.scaleLinear().domain([0, 100]).range([h, 0]);
+    const x = scaleBand().domain(stackData.map(d => d.round)).range([0, w]).padding(0.3);
+    const y = scaleLinear().domain([0, 100]).range([h, 0]);
 
-    const stack = d3.stack().keys(keysPresent);
-    const series = stack(stackData as any);
+    const stacked = d3Stack().keys(keysPresent);
+    const series = stacked(stackData as any);
 
-    const colorScale = d3.scaleOrdinal<string>()
+    const colorScale = scaleOrdinal<string>()
       .domain(keysPresent)
       .range(['#4e79a7', '#59a14f', '#edc949', '#e15759']);
 
@@ -146,10 +151,10 @@ function CapTableWaterfallInner({ data, width, height }: { data: any; width: num
       .attr('width', x.bandwidth())
       .attr('rx', 2);
 
-    svg.append('g').attr('transform', `translate(0,${h})`).call(d3.axisBottom(x))
+    svg.append('g').attr('transform', `translate(0,${h})`).call(axisBottom(x))
       .selectAll('text').attr('font-size', '10px');
 
-    svg.append('g').call(d3.axisLeft(y).ticks(5).tickFormat((d: any) => `${d}%`))
+    svg.append('g').call(axisLeft(y).ticks(5).tickFormat((d: any) => `${d}%`))
       .selectAll('text').attr('font-size', '10px');
 
     const legend = svg.append('g').attr('transform', `translate(0, -15)`);
@@ -168,9 +173,9 @@ function TableauLevelChartsSankeyHelper({ data, width, height, colors }: { data:
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!ref.current || !d3 || !d3Sankey) return;
+    if (!ref.current || !d3Sankey) return;
     const container = ref.current;
-    d3.select(container).selectAll('*').remove();
+    select(container).selectAll('*').remove();
 
     const nodes = data.nodes || [];
     const links = data.links || [];
@@ -180,7 +185,7 @@ function TableauLevelChartsSankeyHelper({ data, width, height, colors }: { data:
     const w = (typeof width === 'number' ? width : container.clientWidth || 600) - margin.left - margin.right;
     const h = (height || 400) - margin.top - margin.bottom;
 
-    const svg = d3.select(container).append('svg')
+    const svg = select(container).append('svg')
       .attr('width', w + margin.left + margin.right)
       .attr('height', h + margin.top + margin.bottom)
       .append('g')
@@ -263,15 +268,8 @@ export default function TableauLevelCharts({
   useEffect(() => {
     setIsClient(true);
     
-    // Check if D3 is available (it's imported as ES module, so it should be available if import succeeded)
     if (typeof window !== 'undefined') {
       try {
-        // Since d3 is imported at module level, if the import succeeded, it will be available
-        // Check if d3 is actually available and has expected properties
-        if (!d3 || typeof d3 !== 'object') {
-          setChartError('D3.js library not loaded. Please refresh the page.');
-          return;
-        }
         
         // Check if d3-sankey is available (for sankey charts)
         if (type === 'sankey' || type === 'side_by_side_sankey' || type === 'dpi_sankey') {
@@ -675,31 +673,19 @@ export default function TableauLevelCharts({
 
   // Sunburst Chart using D3
   const renderSunburst = () => {
-    // Check if D3 is available (imported as ES module)
-    if (typeof window === 'undefined' || !d3) {
-      return (
-        <div className="flex items-center justify-center h-full text-gray-500">
-          <div className="text-center">
-            <p>D3.js library not loaded</p>
-            <p className="text-sm mt-2">Please refresh the page</p>
-          </div>
-        </div>
-      );
-    }
-
     try {
       const radius = Math.min(400, height) / 2;
-      
-      const partition = d3.partition()
+
+      const partitioned = d3Partition()
         .size([2 * Math.PI, radius]);
       
-      const root = d3.hierarchy(data)
+      const root = d3Hierarchy(data)
         .sum((d: any) => d.value)
         .sort((a: any, b: any) => b.value - a.value);
-      
-      partition(root);
-    
-      const arc = d3.arc()
+
+      partitioned(root);
+
+      const arcGen = d3Arc()
         .startAngle((d: any) => d.x0)
         .endAngle((d: any) => d.x1)
         .innerRadius((d: any) => d.y0)
@@ -711,7 +697,7 @@ export default function TableauLevelCharts({
             {root.descendants().map((d: any, i: number) => (
               <path
                 key={i}
-                d={arc(d) || ''}
+                d={arcGen(d) || ''}
                 fill={colors[d.depth % colors.length]}
                 opacity={hoveredElement === d ? 1 : 0.8}
                 stroke="#fff"
@@ -726,7 +712,7 @@ export default function TableauLevelCharts({
             ))}
           </g>
           {root.descendants().filter((d: any) => d.depth === zoomLevel).map((d: any, i: number) => {
-            const [x, y] = arc.centroid(d);
+            const [x, y] = arcGen.centroid(d);
             return (
               <text
                 key={`text-${i}`}
@@ -758,18 +744,6 @@ export default function TableauLevelCharts({
 
   // Heatmap implementation
   const renderHeatmap = () => {
-    // Check if D3 is available (imported as ES module)
-    if (typeof window === 'undefined' || !d3) {
-      return (
-        <div className="flex items-center justify-center h-full text-gray-500">
-          <div className="text-center">
-            <p>D3.js library not loaded</p>
-            <p className="text-sm mt-2">Please refresh the page</p>
-          </div>
-        </div>
-      );
-    }
-
     // Log the raw data for debugging
     console.log('[TableauLevelCharts] Heatmap raw data:', JSON.stringify(data, null, 2));
     
@@ -793,8 +767,8 @@ export default function TableauLevelCharts({
       const yLabels = [...new Set(validData.map((d: any) => d.y))];
       const maxValue = Math.max(...validData.map((d: any) => d.value));
       
-      const colorScale = d3.scaleSequential()
-        .interpolator(d3.interpolateRdYlBu)
+      const colorScale = scaleSequential()
+        .interpolator(interpolateRdYlBu)
         .domain([maxValue, 0]);
 
     return (
@@ -1352,12 +1326,12 @@ export default function TableauLevelCharts({
     const yMin = minMultiple || 0;
     const yMax = maxMultiple || 50;
     
-    const xScale = xConfig.type === 'log' ? d3.scaleLog() : d3.scaleLinear();
+    const xScale = xConfig.type === 'log' ? scaleLog() : scaleLinear();
     xScale
       .domain([xMin, xMax])
       .range([0, innerWidth]);
     
-    const yScale = d3.scaleLinear()
+    const yScale = scaleLinear()
       .domain([yMin, yMax])
       .range([innerHeight, 0]);
     
@@ -1509,12 +1483,12 @@ export default function TableauLevelCharts({
               
               if (lineData.length === 0) return null;
               
-              const line = d3.line<any>()
+              const linePath = d3Line<any>()
                 .x(d => xScale(d.x))
                 .y(d => yScale(d.y))
-                .curve(d3.curveMonotoneX);
+                .curve(curveMonotoneX);
               
-              const pathData = line(lineData);
+              const pathData = linePath(lineData);
               if (!pathData) return null;
               
               return (
@@ -2434,7 +2408,7 @@ export default function TableauLevelCharts({
     const innerWidth = chartWidth - margin.left - margin.right;
     const innerHeight = chartHeight - margin.top - margin.bottom;
 
-    // Build hierarchy from nodes/edges for d3.tree
+    // Build hierarchy from nodes/edges for tree
     const nodeMap = new Map<string, any>();
     rawNodes.forEach((n: any) => nodeMap.set(n.id, { ...n, children: [] }));
     (edges || []).forEach((e: any) => {
@@ -2446,9 +2420,9 @@ export default function TableauLevelCharts({
     const rootNode = nodeMap.get('root') || rawNodes[0];
     if (!rootNode) return <div className="text-gray-500 text-center p-4">No root node</div>;
 
-    const hierarchy = d3.hierarchy(rootNode, (d: any) => d.children || []);
-    const treeLayout = d3.tree<any>().size([innerHeight, innerWidth]);
-    const treeData = treeLayout(hierarchy);
+    const root = d3Hierarchy(rootNode, (d: any) => d.children || []);
+    const treeLayout = d3Tree<any>().size([innerHeight, innerWidth]);
+    const treeData = treeLayout(root);
 
     const allDescendants = treeData.descendants();
     const allLinks = treeData.links();
