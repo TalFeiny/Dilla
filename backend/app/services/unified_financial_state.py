@@ -385,7 +385,7 @@ async def _load_cap_table(company_id: str) -> Optional[CapTableSummary]:
 
         rows = (
             sb.table("companies")
-            .select("name, total_funding_usd, latest_round_name, stage, sector")
+            .select("name, current_valuation_usd, latest_round_name, stage, sector")
             .eq("id", company_id)
             .limit(1)
             .execute()
@@ -396,7 +396,7 @@ async def _load_cap_table(company_id: str) -> Optional[CapTableSummary]:
 
         co = rows[0]
         return CapTableSummary(
-            total_raised=co.get("total_funding_usd"),
+            total_raised=co.get("current_valuation_usd"),
             latest_round=co.get("latest_round_name"),
             source="companies",
         )

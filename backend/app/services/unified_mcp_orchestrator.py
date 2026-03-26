@@ -2376,13 +2376,18 @@ AGENT_TOOL_MAP: dict[str, AgentTool] = {t.name: t for t in AGENT_TOOLS}
 
 TOOL_WIRING: dict[str, dict] = {
     # ── Core data fetching ─────────────────────────────────────────────
+    # NOTE: query_portfolio is the canonical producer for "companies"
+    # (DB-backed, fund-level).  fetch_company_data (Tavily web search)
+    # produces "companies" when called directly but is NOT used for
+    # auto-resolution — otherwise wiring tries to Tavily-search an empty
+    # company name for portfolio-level operations like LP reports.
     "fetch_company_data": {
         "requires": [],
-        "produces": ["companies"],
+        "produces": [],
     },
     "lightweight_diligence": {
         "requires": [],
-        "produces": ["companies"],
+        "produces": [],
     },
     "search_companies_db": {
         "requires": [],
@@ -5018,19 +5023,15 @@ class UnifiedMCPOrchestrator:
         elif turn_type == TurnType.PHATIC:
             handler = self._fast_reply(prompt, context, turn_type)
         elif turn_type in (TurnType.STATUS, TurnType.STEERING):
-            # Gap 5/6 fix: STATUS and STEERING turns need tool access so the
-            # model can look up real data instead of hallucinating from history.
-            # STEERING often follows substantive work — the user wants to
-            # refine output, not lose access to the data layer.
             handler = self._conversational_loop(prompt, context, turn_type)
-        elif (
-            turn_type == TurnType.SYNTHESIS
-            and self._conversation_phase in (
-                ConversationPhase.CONVERGING, ConversationPhase.EXECUTING,
-            )
-            and len(self._conversation_history) >= 8  # 4+ exchanges
-        ):
-            handler = self._crystallize_and_execute(prompt, context, turn_type)
+        elif turn_type == TurnType.SYNTHESIS:
+            # SYNTHESIS = task. Trust the classification.
+            # Multi-turn: crystallize conversation history first.
+            # First-turn: skip crystallization, go straight to agent loop.
+            if len(self._conversation_history) >= 8:
+                handler = self._crystallize_and_execute(prompt, context, turn_type)
+            else:
+                handler = self._first_turn_task(prompt, context, turn_type)
         else:
             handler = self._conversational_loop(prompt, context, turn_type)
 
@@ -5399,23 +5400,99 @@ class UnifiedMCPOrchestrator:
                 f"{self._history_summary}\n"
             )
 
-        # Scope tools by grid mode + turn type so the model sees a focused set
-        # (~15-40) instead of the full 150+ catalog (causes tool-selection paralysis).
+        # Scope tools by (classified_intent, grid_mode) so the agent sees
+        # only the 5-15 tools it needs.  Two-layer resolution:
+        #   1. _classify_query_intent → specific intent from user prompt
+        #   2. (intent, mode) → INTENT_TOOLS key for tool scoping
+        # Falls back to mode-only mapping when no intent is classified.
         _grid_mode = self.shared_data.get("grid_mode", "portfolio")
-        _mode_intent_map = {
+
+        # Step 1: Classify the user prompt into a specific intent
+        _classification = self._classify_query_intent(prompt)
+        _classified_intent = _classification["intent"] if _classification else None
+
+        # Step 2: (intent, mode) → INTENT_TOOLS key.
+        # Keyed by (classified_intent, grid_mode) with (intent, "*") wildcard.
+        # This lets the same intent resolve differently per mode — e.g.
+        # "scenario_stress" in pnl mode uses "scenario" (fpa tools), but in
+        # portfolio mode uses "portfolio" (fund-level tools).
+        _INTENT_MODE_SCOPE: dict[tuple[str, str], str] = {
+            # ── Portfolio mode ──
+            ("portfolio_overview", "portfolio"): "portfolio",
+            ("company_deep_dive", "portfolio"): "valuation",
+            ("comparable_tracking", "portfolio"): "portfolio",
+            ("fund_metrics", "portfolio"): "portfolio",
+            ("followon_decision", "portfolio"): "portfolio",
+            ("exit_analysis", "portfolio"): "portfolio",
+            ("scenario_stress", "portfolio"): "scenario",
+            ("round_modeling", "portfolio"): "portfolio",
+            ("portfolio_construction", "portfolio"): "portfolio",
+            ("portfolio_enrichment_valuation", "portfolio"): "valuation",
+            ("lp_query", "portfolio"): "portfolio",
+            ("team_comparison", "portfolio"): "portfolio",
+            ("followon_deep_dive", "portfolio"): "portfolio",
+            # ── PNL mode ──
+            ("scenario_stress", "pnl"): "scenario",
+            ("fund_metrics", "pnl"): "forecast",
+            ("portfolio_overview", "pnl"): "forecast",
+            ("lp_query", "pnl"): "forecast",
+            # ── Wildcards (any mode) ──
+            ("memo_writing", "*"): "memo",
+            ("deck_generation", "*"): "deck",
+            ("contract_drafting", "*"): "legal_analysis",
+            ("company_research", "*"): "company_lookup",
+            ("competitive_landscape", "*"): "company_lookup",
+            ("comparable_search", "*"): "company_lookup",
+            ("sourcing", "*"): "sourcing",
+            ("company_list_build", "*"): "sourcing",
+            ("bulk_enrichment", "*"): "enrichment",
+            ("transfer_pricing", "*"): "legal_analysis",
+        }
+
+        _mode_fallback = {
             "pnl": "forecast",
             "legal": "legal_analysis",
             "portfolio": "general",
         }
-        _intent = _mode_intent_map.get(_grid_mode, "general")
+
+        _intent = None
+        if _classified_intent:
+            # Try (intent, mode) first, then (intent, "*") wildcard
+            _intent = (
+                _INTENT_MODE_SCOPE.get((_classified_intent, _grid_mode))
+                or _INTENT_MODE_SCOPE.get((_classified_intent, "*"))
+            )
+        if not _intent:
+            _intent = _mode_fallback.get(_grid_mode, "general")
+
         _resp_mode = (
             "reply" if turn_type in (TurnType.PHATIC, TurnType.STATUS) else
             "action" if turn_type in (TurnType.RETRIEVAL, TurnType.ITERATION, TurnType.STEERING, TurnType.ANALYSIS) else
             "task"
         )
         tools = self._build_tool_definitions(intent=_intent, response_mode=_resp_mode)
+
+        # Inject the classified chain + mode-aware guidance so the agent
+        # knows the exact tool sequence to follow.
+        if _classification and _classification.get("chain"):
+            system_prompt += (
+                f"\n\n## RECOMMENDED WORKFLOW\n"
+                f"Intent: {_classified_intent} | Mode: {_grid_mode}\n"
+                f"Tool chain: {_classification['chain']}\n"
+                f"Description: {_classification.get('description', '')}\n"
+                f"Follow this chain. Do NOT deviate unless data is unavailable.\n"
+            )
+        # Also inject mode-specific guidance from INTENT_GUIDANCE if available
+        _guidance = (
+            INTENT_GUIDANCE.get((_intent, _grid_mode))
+            or INTENT_GUIDANCE.get((_intent, "*"))
+        )
+        if _guidance:
+            system_prompt += f"\n\n## MODE GUIDANCE\n{_guidance}\n"
+
         logger.info(
-            f"[CONV_LOOP] Tool scoping: grid_mode={_grid_mode} intent={_intent} "
+            f"[CONV_LOOP] Tool scoping: grid_mode={_grid_mode} "
+            f"classified_intent={_classified_intent} scope={_intent} "
             f"response_mode={_resp_mode} tools={len(tools)}"
         )
         max_tokens = TURN_BUDGETS[turn_type] or self._prev_turn_budget or 2048
@@ -5730,6 +5807,84 @@ class UnifiedMCPOrchestrator:
             "full_text": "\n".join(all_text_parts),
             "tool_calls_made": tool_calls_made,
             "extra_result_fields": extra,
+        }
+
+    async def _first_turn_task(
+        self,
+        prompt: str,
+        context: Optional[Dict[str, Any]],
+        turn_type: TurnType,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """First-turn SYNTHESIS: classify intent → agent loop. No crystallization needed.
+
+        The prompt IS the task — no conversation history to synthesize.
+        Builds a QueryClassification from _classify_query_intent and hands
+        off directly to _run_agent_loop with full tool access.
+        """
+        _grid_mode = self.shared_data.get("grid_mode", "portfolio")
+
+        # Classify intent from the prompt
+        _qi = self._classify_query_intent(prompt)
+        _intent = _qi["intent"] if _qi else "general"
+        _chain_str = _qi["chain"] if _qi else None
+        # suggested_chain expects List[str] of tool names
+        _chain_list = [s.strip() for s in _chain_str.split("→")] if _chain_str else None
+
+        classification = QueryClassification(
+            complexity="complex",
+            intent=_intent,
+            response_mode="task",
+            needs_portfolio=_grid_mode == "portfolio",
+            suggested_chain=_chain_list,
+        )
+
+        logger.info(
+            f"[FIRST_TURN_TASK] intent={_intent} mode={_grid_mode} "
+            f"chain={_chain or 'none'}"
+        )
+
+        yield {
+            "type": "progress",
+            "stage": "planning",
+            "message": f"Planning: {_intent}",
+        }
+
+        # Hand off to agent loop — it handles plan generation, tool scoping,
+        # TaskPlanner, etc. using the classification we built.
+        full_text_parts: List[str] = []
+        tool_calls_made: List[Dict[str, Any]] = []
+        agent_result_fields: Dict[str, Any] = {}
+
+        try:
+            async for event in self._run_agent_loop(
+                prompt=prompt,
+                context=context or {},
+                classification=classification,
+            ):
+                evt_type = event.get("type")
+                if evt_type == "complete":
+                    result = event.get("result", {})
+                    content = result.get("content", "")
+                    if content:
+                        full_text_parts.append(content)
+                    tool_calls_made = result.get("tool_calls", []) or []
+                    agent_result_fields = {
+                        k: v for k, v in result.items()
+                        if k not in ("content", "reply", "tool_calls")
+                        and v is not None
+                    }
+                else:
+                    yield event
+        except Exception as e:
+            logger.error(f"[FIRST_TURN_TASK] Agent loop failed: {e}")
+            async for event in self._conversational_loop(prompt, context, turn_type):
+                yield event
+            return
+
+        self._turn_result = {
+            "full_text": "\n\n".join(full_text_parts),
+            "tool_calls_made": tool_calls_made,
+            "extra_result_fields": agent_result_fields,
         }
 
     async def _crystallize_and_execute(

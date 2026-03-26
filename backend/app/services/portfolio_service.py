@@ -121,7 +121,7 @@ class PortfolioService:
 
         try:
             result = client.table("companies").select(
-                "current_valuation_usd, last_valuation_usd, total_funding_usd"
+                "current_valuation_usd, last_valuation_usd"
             ).eq("fund_id", fund_id).execute()
 
             rows = result.data or []
@@ -169,8 +169,8 @@ class PortfolioService:
             fund_size = fund_data.get("size") or 0
 
             # Get total deployed
-            pc_result = client.table("companies").select("total_funding_usd").eq("fund_id", fund_id).execute()
-            deployed = sum(r.get("total_funding_usd") or 0 for r in (pc_result.data or []))
+            pc_result = client.table("companies").select("current_valuation_usd").eq("fund_id", fund_id).execute()
+            deployed = sum(r.get("current_valuation_usd") or 0 for r in (pc_result.data or []))
 
             remaining = fund_size - deployed
             pct_deployed = deployed / fund_size if fund_size > 0 else 0
@@ -267,7 +267,7 @@ class PortfolioService:
             # Try exact ilike on name first
             result = client.table("companies").select(
                 "id, name, sector, stage, description, current_arr_usd, "
-                "current_valuation_usd, last_valuation_usd, total_funding_usd, "
+                "current_valuation_usd, last_valuation_usd, "
                 "growth_rate, employee_count, hq_location, founded_year, "
                 "burn_rate_monthly_usd, runway_months, business_model"
             ).ilike("name", f"%{query}%").limit(limit).execute()
@@ -278,7 +278,7 @@ class PortfolioService:
             if len(companies) < 3:
                 broader = client.table("companies").select(
                     "id, name, sector, stage, description, current_arr_usd, "
-                    "current_valuation_usd, last_valuation_usd, total_funding_usd, "
+                    "current_valuation_usd, last_valuation_usd, "
                     "growth_rate, employee_count, hq_location, founded_year, "
                     "burn_rate_monthly_usd, runway_months, business_model"
                 ).or_(

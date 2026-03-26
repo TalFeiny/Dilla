@@ -694,7 +694,7 @@ def pull_fund_companies(fund_id: str) -> FundCompanies:
     try:
         pc_rows = (
             sb.table("companies")
-            .select("id, name, current_valuation_usd, last_valuation_usd, total_funding_usd, stage, sector, current_arr_usd")
+            .select("id, name, current_valuation_usd, last_valuation_usd, stage, sector, current_arr_usd")
             .eq("fund_id", fund_id)
             .execute()
             .data
@@ -718,7 +718,7 @@ def pull_fund_companies(fund_id: str) -> FundCompanies:
         company_ids.append(cid)
         names[cid] = pc.get("name", "")
         # Investment data from company record
-        inv_amount = pc.get("total_funding_usd")
+        inv_amount = pc.get("total_funding_usd") or pc.get("current_valuation_usd")
         investments[cid] = {
             "amount": inv_amount,
             "ownership_pct": None,
