@@ -252,6 +252,8 @@ interface UnifiedMatrixProps {
   onRetrySuggestion?: (suggestion: import('./DocumentSuggestions').DocumentSuggestion) => Promise<void>;
   /** When true, skip internal data fetching (parent owns data loading via initialData). */
   skipInternalFetch?: boolean;
+  /** Current P&L sub-view (e.g. 'captable') so CSV uploads route to the right endpoint. */
+  pnlView?: string;
 }
 
 export function UnifiedMatrix({
@@ -284,6 +286,7 @@ export function UnifiedMatrix({
   onRunService,
   onRetrySuggestion,
   skipInternalFetch = false,
+  pnlView,
 }: UnifiedMatrixProps) {
   // Helper to create default matrix structure based on mode
   const getDefaultMatrixData = useCallback((mode: MatrixMode, fundId?: string): MatrixData => {
@@ -664,15 +667,20 @@ export function UnifiedMatrix({
         fd.append('company_id', cid!);
         if (opts.fundId || fundId) fd.append('fund_id', (opts.fundId || fundId)!);
 
+        // Cap table view: route to cap table CSV endpoint
+        const uploadEndpoint = pnlView === 'captable'
+          ? '/api/agent/cap-table-entries/upload-csv'
+          : '/api/fpa/upload-actuals';
+
         onToolCallLog?.({
-          action_id: 'pnl.upload_csv',
+          action_id: pnlView === 'captable' ? 'captable.upload_csv' : 'pnl.upload_csv',
           row_id: 'pnl_root',
           column_id: 'csv_upload',
           status: 'running',
           companyName: csvFile.name,
         });
 
-        const csvRes = await fetch('/api/fpa/upload-actuals', { method: 'POST', body: fd });
+        const csvRes = await fetch(uploadEndpoint, { method: 'POST', body: fd });
         const csvData = await csvRes.json();
         if (!csvRes.ok) {
           const errMsg = csvData.error || 'CSV upload failed';
@@ -4613,6 +4621,50 @@ export function UnifiedMatrix({
       formData.append('company_id', companyId);
       if (fundId) formData.append('fund_id', fundId);
 
+      // Cap table view: route to dedicated cap table CSV endpoint
+      if (pnlView === 'captable') {
+        setCellActionStatus((prev) => ({ ...prev, [statusKey]: { state: 'loading', message: 'Parsing cap table CSV...' } }));
+        onToolCallLog?.({
+          action_id: 'captable.upload_csv',
+          row_id: 'pnl_root',
+          column_id: 'csv_upload',
+          status: 'running',
+          companyName: displayCompany,
+        });
+
+        const res = await fetch('/api/agent/cap-table-entries/upload-csv', {
+          method: 'POST',
+          body: formData,
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || data.detail || 'Cap table CSV upload failed');
+        }
+
+        const rowsParsed = data.rows_parsed || 0;
+        const inserted = data.inserted || 0;
+        const updated = data.updated || 0;
+        const summaryParts: string[] = [`${rowsParsed} rows parsed`];
+        if (inserted) summaryParts.push(`${inserted} inserted`);
+        if (updated) summaryParts.push(`${updated} updated`);
+        setCellActionStatus((prev) => ({ ...prev, [statusKey]: { state: 'success', message: summaryParts.join(' · ') } }));
+
+        onToolCallLog?.({
+          action_id: 'captable.upload_csv',
+          row_id: 'pnl_root',
+          column_id: 'csv_upload',
+          status: 'success',
+          companyName: displayCompany,
+          explanation: `Imported ${rowsParsed} cap table entries (${inserted} new, ${updated} updated).`,
+        });
+
+        toast.success(`Cap table imported: ${rowsParsed} entries`);
+        await loadPnlData();
+        setIsPnlUploading(false);
+        return;
+      }
+
       // Stage 2: Cleaning & matching (shown while backend processes)
       setCellActionStatus((prev) => ({ ...prev, [statusKey]: { state: 'loading', message: 'Cleaning & matching rows...' } }));
       onToolCallLog?.({
@@ -4715,7 +4767,7 @@ export function UnifiedMatrix({
       setIsPnlUploading(false);
       if (event?.target) event.target.value = '';
     }
-  }, [mode, companyId, fundId, matrixData?.rows, loadPnlData, onToolCallLog]);
+  }, [mode, companyId, fundId, matrixData?.rows, loadPnlData, onToolCallLog, pnlView]);
 
   // ── PnL mode: Import actuals from Xero ─────────────────────────────
   // Calls the backend Xero sync endpoint which pulls P&L from Xero

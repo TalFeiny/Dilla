@@ -1316,6 +1316,7 @@ export default function MatrixControlPanel() {
               fundId={fundId}
               fundType={funds.find((f: any) => f.id === fundId)?.fund_type}
               companyId={mode === 'pnl' ? pnlCompanyId : undefined}
+              pnlView={mode === 'pnl' ? pnlView : undefined}
               initialData={matrixData ?? undefined}
               onDataChange={setMatrixData}
               skipInternalFetch={mode === 'pnl'}

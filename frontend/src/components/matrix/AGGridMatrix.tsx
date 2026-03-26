@@ -543,6 +543,27 @@ export function AGGridMatrix({
           if (isCompanyCol && params.data.companyName) return params.data.companyName;
           return params.data[col.id] ?? null;
         },
+        // valueSetter required when valueGetter is used — without it AG Grid can't write the
+        // edited value back, so onCellValueChanged fires with newValue === oldValue and the
+        // edit is silently dropped.
+        valueSetter: (params) => {
+          if (!params?.data) return false;
+          const newVal = params.newValue;
+          // Update the cell object so valueGetter picks up the change
+          const cellKey = `_${col.id}_cell`;
+          const existing = params.data[cellKey] as MatrixCell | undefined;
+          params.data[cellKey] = {
+            ...existing,
+            value: newVal,
+            displayValue: String(newVal ?? ''),
+          };
+          // Also update flat field for fallback paths
+          params.data[col.id] = newVal;
+          if ((col.id === 'company' || col.id === 'companyName') && newVal != null) {
+            params.data.companyName = String(newVal);
+          }
+          return true;
+        },
         cellRenderer: CellDropdownRenderer,
         cellRendererParams: (params: any) => ({
           rowId: params.data?.id,
