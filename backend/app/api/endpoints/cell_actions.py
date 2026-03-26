@@ -1233,29 +1233,28 @@ async def _route_to_service(
                 client = _get_supabase_client()
                 if client:
                     # Get portfolio companies
-                    portfolio_response = client.from_("portfolio_companies").select("*, companies(*)").eq("fund_id", fund_id).execute()
+                    portfolio_response = client.from_("companies").select("*").eq("fund_id", fund_id).execute()
                     companies = portfolio_response.data if portfolio_response.data else []
-                    
+
                     # Calculate fund metrics using OwnershipReturnAnalyzer
                     analyzer = OwnershipReturnAnalyzer()
                     total_nav = 0
                     total_invested = 0
                     total_distributed = 0
-                    
+
                     for pc in companies:
-                        company = pc.get('companies', {})
-                        investment = pc.get('investment_amount', 0) or 0
-                        current_valuation = company.get('current_valuation_usd', 0) or 0
-                        ownership_pct = pc.get('ownership_pct', 0) or 0
-                        
+                        investment = pc.get('total_funding_usd', 0) or 0
+                        current_valuation = pc.get('current_valuation_usd', 0) or 0
+                        ownership_pct = 0
+
                         total_invested += investment
                         # NAV = ownership % * current valuation
                         total_nav += (ownership_pct / 100) * current_valuation
-                        
+
                         # Get actual distributed amounts from exited companies
-                        status = pc.get('status') or company.get('status', 'active')
+                        status = pc.get('status', 'active')
                         if status == 'exited':
-                            exit_value = pc.get('exit_value_usd') or company.get('exit_value_usd', 0) or 0
+                            exit_value = pc.get('exit_value_usd', 0) or 0
                             # Distributed amount = ownership % * exit value
                             distributed = (ownership_pct / 100) * exit_value
                             total_distributed += distributed
@@ -1292,9 +1291,9 @@ async def _route_to_service(
                 client = _get_supabase_client()
                 if client:
                     # Get portfolio companies
-                    portfolio_response = client.from_("portfolio_companies").select("*, companies(*)").eq("fund_id", fund_id).execute()
+                    portfolio_response = client.from_("companies").select("*").eq("fund_id", fund_id).execute()
                     companies = portfolio_response.data if portfolio_response.data else []
-                    
+
                     # Fetch actual fund name
                     fund_name = "Fund"
                     try:
@@ -1309,17 +1308,16 @@ async def _route_to_service(
                         {"id": 0, "name": fund_name, "level": 0},
                     ]
                     links = []
-                    
+
                     total_invested = 0
                     total_distributed = 0
                     node_id = 1
-                    
+
                     for pc in companies:
-                        company = pc.get('companies', {})
-                        company_name = company.get('name', f"Company {node_id}")
-                        investment = pc.get('investment_amount', 0) or pc.get('total_invested_usd', 0) or 0
-                        ownership_pct = pc.get('ownership_pct', 0) or pc.get('ownership_percentage', 0) or 0
-                        status = pc.get('status') or company.get('status', 'active')
+                        company_name = pc.get('name', f"Company {node_id}")
+                        investment = pc.get('total_funding_usd', 0) or 0
+                        ownership_pct = 0
+                        status = pc.get('status', 'active')
                         
                         total_invested += investment
                         
@@ -1340,10 +1338,10 @@ async def _route_to_service(
                         
                         # If exited, add exit and distribution nodes
                         if status == 'exited':
-                            exit_value = pc.get('exit_value_usd') or company.get('exit_value_usd', 0) or 0
+                            exit_value = pc.get('exit_value_usd', 0) or 0
                             distributed = (ownership_pct / 100) * exit_value
                             total_distributed += distributed
-                            
+
                             # Exit node
                             exit_node_id = node_id + 1000
                             nodes.append({
@@ -1424,20 +1422,19 @@ async def _route_to_service(
             try:
                 client = _get_supabase_client()
                 if client:
-                    portfolio_response = client.from_("portfolio_companies").select("*, companies(*)").eq("fund_id", fund_id).execute()
+                    portfolio_response = client.from_("companies").select("*").eq("fund_id", fund_id).execute()
                     companies = portfolio_response.data if portfolio_response.data else []
-                    
+
                     if 'total_nav' in action_id:
                         total_nav = 0
                         for pc in companies:
-                            company = pc.get('companies', {})
-                            current_valuation = company.get('current_valuation_usd', 0) or 0
-                            ownership_pct = pc.get('ownership_pct', 0) or 0
+                            current_valuation = pc.get('current_valuation_usd', 0) or 0
+                            ownership_pct = 0
                             total_nav += (ownership_pct / 100) * current_valuation
                         return total_nav
-                    
+
                     elif 'total_invested' in action_id:
-                        total_invested = sum(pc.get('investment_amount', 0) or 0 for pc in companies)
+                        total_invested = sum(pc.get('total_funding_usd', 0) or 0 for pc in companies)
                         return total_invested
                     
                     elif 'ltm_ntm' in action_id:
@@ -1446,13 +1443,12 @@ async def _route_to_service(
                         from app.services.data_validator import ensure_numeric
                         flat_companies = []
                         for pc in companies:
-                            co = pc.get('companies', {}) or {}
                             flat_companies.append({
-                                "company": co.get('name', 'Unknown'),
-                                "revenue": ensure_numeric(co.get('current_arr_usd') or co.get('revenue'), 0),
-                                "arr": ensure_numeric(co.get('current_arr_usd'), 0),
-                                "growth_rate": ensure_numeric(co.get('growth_rate'), 0),
-                                "inferred_revenue": ensure_numeric(co.get('inferred_revenue'), 0),
+                                "company": pc.get('name', 'Unknown'),
+                                "revenue": ensure_numeric(pc.get('current_arr_usd') or pc.get('revenue'), 0),
+                                "arr": ensure_numeric(pc.get('current_arr_usd'), 0),
+                                "growth_rate": ensure_numeric(pc.get('growth_rate'), 0),
+                                "inferred_revenue": ensure_numeric(pc.get('inferred_revenue'), 0),
                             })
                         cds = ChartDataService()
                         chart = cds.generate_ltm_ntm_regression(flat_companies)
@@ -1464,21 +1460,20 @@ async def _route_to_service(
                         from app.services.data_validator import ensure_numeric
                         fund_response = client.from_("funds").select("size").eq("id", fund_id).single().execute()
                         fund_size = (fund_response.data.get('size', 260_000_000) if fund_response.data else 260_000_000)
-                        # Flatten portfolio_companies join into CDS-compatible dicts
+                        # Flatten companies into CDS-compatible dicts
                         flat_companies = []
                         for pc in companies:
-                            co = pc.get('companies', {}) or {}
                             flat_companies.append({
-                                "company": co.get('name', 'Unknown'),
-                                "investment_amount": ensure_numeric(pc.get('investment_amount'), 0),
-                                "cost_basis": ensure_numeric(pc.get('investment_amount'), 0),
-                                "ownership_pct": ensure_numeric(pc.get('ownership_pct'), 0),
-                                "valuation": ensure_numeric(co.get('current_valuation_usd'), 0),
-                                "total_funding": ensure_numeric(co.get('total_funding_usd') or co.get('total_raised'), 0),
-                                "stage": co.get('stage', 'Series A'),
-                                "status": pc.get('status') or co.get('status', 'active'),
-                                "realized": ensure_numeric(pc.get('exit_value_usd') or co.get('exit_value_usd'), 0),
-                                "last_round_date": co.get('last_round_date'),
+                                "company": pc.get('name', 'Unknown'),
+                                "investment_amount": ensure_numeric(pc.get('total_funding_usd'), 0),
+                                "cost_basis": ensure_numeric(pc.get('total_funding_usd'), 0),
+                                "ownership_pct": 0,
+                                "valuation": ensure_numeric(pc.get('current_valuation_usd'), 0),
+                                "total_funding": ensure_numeric(pc.get('total_funding_usd') or pc.get('total_raised'), 0),
+                                "stage": pc.get('stage', 'Series A'),
+                                "status": pc.get('status', 'active'),
+                                "realized": ensure_numeric(pc.get('exit_value_usd'), 0),
+                                "last_round_date": pc.get('last_round_date'),
                             })
                         cds = ChartDataService()
                         chart = cds.generate_dpi_sankey(flat_companies, fund_size)
@@ -1486,26 +1481,24 @@ async def _route_to_service(
 
                     elif 'dpi' in action_id:
                         # Scalar DPI = distributed / paid-in
-                        total_invested = sum(pc.get('investment_amount', 0) or 0 for pc in companies)
+                        total_invested = sum(pc.get('total_funding_usd', 0) or 0 for pc in companies)
                         total_distributed = 0
                         for pc in companies:
-                            company = pc.get('companies', {})
-                            status = pc.get('status') or company.get('status', 'active')
+                            status = pc.get('status', 'active')
                             if status == 'exited':
-                                exit_value = pc.get('exit_value_usd') or company.get('exit_value_usd', 0) or 0
-                                ownership_pct = pc.get('ownership_pct', 0) or 0
+                                exit_value = pc.get('exit_value_usd', 0) or 0
+                                ownership_pct = 0
                                 distributed = (ownership_pct / 100) * exit_value
                                 total_distributed += distributed
                         return total_distributed / total_invested if total_invested > 0 else 0
                     
                     elif 'tvpi' in action_id:
                         # TVPI = total value / paid-in
-                        total_invested = sum(pc.get('investment_amount', 0) or 0 for pc in companies)
+                        total_invested = sum(pc.get('total_funding_usd', 0) or 0 for pc in companies)
                         total_nav = 0
                         for pc in companies:
-                            company = pc.get('companies', {})
-                            current_valuation = company.get('current_valuation_usd', 0) or 0
-                            ownership_pct = pc.get('ownership_pct', 0) or 0
+                            current_valuation = pc.get('current_valuation_usd', 0) or 0
+                            ownership_pct = 0
                             total_nav += (ownership_pct / 100) * current_valuation
                         return total_nav / total_invested if total_invested > 0 else 0
                     
@@ -1525,10 +1518,9 @@ async def _route_to_service(
                                 # Get current portfolio companies as opportunities
                                 opportunities = []
                                 for pc in companies:
-                                    company = pc.get('companies', {})
-                                    company_id = pc.get('company_id')
-                                    investment = pc.get('investment_amount', 0) or 0
-                                    current_valuation = company.get('current_valuation_usd', 0) or 0
+                                    company_id = pc.get('id')
+                                    investment = pc.get('total_funding_usd', 0) or 0
+                                    current_valuation = pc.get('current_valuation_usd', 0) or 0
                                     
                                     # Calculate expected return (simplified: valuation growth)
                                     # In real implementation, this would use historical returns
@@ -1537,14 +1529,14 @@ async def _route_to_service(
                                     
                                     opportunities.append(InvestmentOpportunity(
                                         opportunity_id=company_id,
-                                        name=company.get('name', 'Unknown'),
+                                        name=pc.get('name', 'Unknown'),
                                         expected_return=expected_return,
                                         volatility=volatility,
                                         probability_success=0.5,
                                         minimum_investment=investment * 0.5,
                                         maximum_investment=investment * 2.0,
-                                        sector=company.get('sector', ''),
-                                        stage=company.get('stage', '')
+                                        sector=pc.get('sector', ''),
+                                        stage=pc.get('stage', '')
                                     ))
                                 
                                 # Get fund size
@@ -1597,8 +1589,8 @@ async def _route_to_service(
                                     'efficient_frontier': [],
                                     'opportunities': [
                                         {
-                                            'id': pc.get('company_id'),
-                                            'name': pc.get('companies', {}).get('name', 'Unknown'),
+                                            'id': pc.get('id'),
+                                            'name': pc.get('name', 'Unknown'),
                                             'optimal_weight': equal_weight
                                         }
                                         for pc in companies
@@ -1646,14 +1638,14 @@ async def _route_to_service(
                                 .order("edited_at")\
                                 .execute()
                             
-                            # Get portfolio company for ownership
-                            pc_response = client.from_("portfolio_companies")\
-                                .select("ownership_pct")\
+                            # Get company for ownership (ownership_pct may not exist on companies table)
+                            pc_response = client.from_("companies")\
+                                .select("*")\
                                 .eq("fund_id", fund_id)\
-                                .eq("company_id", company_id)\
+                                .eq("id", company_id)\
                                 .single().execute()
-                            
-                            ownership_pct = pc_response.data.get('ownership_pct', 0) if pc_response.data else 0
+
+                            ownership_pct = 0
                             
                             # Build time series from edits and historical data
                             nav_series = []
@@ -1693,13 +1685,13 @@ async def _route_to_service(
                             }
                         else:
                             # Portfolio-level NAV time series
-                            portfolio_response = client.from_("portfolio_companies")\
-                                .select("company_id, ownership_pct")\
+                            portfolio_response = client.from_("companies")\
+                                .select("id")\
                                 .eq("fund_id", fund_id)\
                                 .execute()
-                            
-                            company_ids = [pc.get('company_id') for pc in (portfolio_response.data or [])]
-                            
+
+                            company_ids = [pc.get('id') for pc in (portfolio_response.data or [])]
+
                             if company_ids:
                                 # Query historical metrics
                                 history_response = client.from_("company_metrics_history")\
@@ -1707,9 +1699,9 @@ async def _route_to_service(
                                     .in_("company_id", company_ids)\
                                     .order("recorded_at")\
                                     .execute()
-                                
-                                # Build ownership map
-                                ownership_map = {pc.get('company_id'): pc.get('ownership_pct', 0) 
+
+                                # Build ownership map (ownership_pct not available on companies table)
+                                ownership_map = {pc.get('id'): 0
                                                 for pc in (portfolio_response.data or [])}
                                 
                                 # Group by date and calculate NAV
@@ -1762,13 +1754,13 @@ async def _route_to_service(
                     client = _get_supabase_client()
                     if client:
                         # Get NAV timeseries data (reuse timeseries logic)
-                        portfolio_response = client.from_("portfolio_companies")\
-                            .select("company_id, ownership_pct")\
+                        portfolio_response = client.from_("companies")\
+                            .select("id")\
                             .eq("fund_id", fund_id)\
                             .execute()
-                        
-                        company_ids = [pc.get('company_id') for pc in (portfolio_response.data or [])]
-                        
+
+                        company_ids = [pc.get('id') for pc in (portfolio_response.data or [])]
+
                         if company_ids:
                             # Query historical metrics
                             history_response = client.from_("company_metrics_history")\
@@ -1776,9 +1768,9 @@ async def _route_to_service(
                                 .in_("company_id", company_ids)\
                                 .order("recorded_at")\
                                 .execute()
-                            
-                            # Build ownership map
-                            ownership_map = {pc.get('company_id'): pc.get('ownership_pct', 0) 
+
+                            # Build ownership map (ownership_pct not available on companies table)
+                            ownership_map = {pc.get('id'): 0
                                             for pc in (portfolio_response.data or [])}
                             
                             # Group by date and calculate NAV
@@ -1895,16 +1887,15 @@ async def _route_to_service(
                 try:
                     client = _get_supabase_client()
                     if client:
-                        portfolio_response = client.from_("portfolio_companies")\
-                            .select("*, companies(*)")\
+                        portfolio_response = client.from_("companies")\
+                            .select("*")\
                             .eq("fund_id", fund_id)\
                             .execute()
-                        
+
                         total_nav = 0
                         for pc in (portfolio_response.data or []):
-                            company = pc.get('companies', {})
                             # Check for manual valuation edit first
-                            company_id = pc.get('company_id')
+                            company_id = pc.get('id')
                             edits_response = client.from_("matrix_edits")\
                                 .select("value")\
                                 .eq("company_id", company_id)\
@@ -1913,16 +1904,16 @@ async def _route_to_service(
                                 .order("edited_at", desc=True)\
                                 .limit(1)\
                                 .execute()
-                            
+
                             if edits_response.data and edits_response.data[0].get('value'):
                                 current_valuation = float(edits_response.data[0].get('value', 0))
                             else:
-                                current_valuation = company.get('current_valuation_usd', 0) or 0
-                            
-                            ownership_pct = pc.get('ownership_pct', 0) or 0
+                                current_valuation = pc.get('current_valuation_usd', 0) or 0
+
+                            ownership_pct = 0
                             nav = (ownership_pct / 100) * current_valuation
                             total_nav += nav
-                        
+
                         return {'nav': total_nav, 'company_count': len(portfolio_response.data or [])}
                 except Exception as e:
                     logger.error(f"Error calculating portfolio NAV: {e}")
@@ -1947,28 +1938,27 @@ async def _route_to_service(
                                 .limit(1)\
                                 .execute()
                             
-                            # Get portfolio company record
-                            pc_response = client.from_("portfolio_companies")\
-                                .select("*, companies(*)")\
+                            # Get company record
+                            pc_response = client.from_("companies")\
+                                .select("*")\
                                 .eq("fund_id", fund_id)\
-                                .eq("company_id", company_id)\
+                                .eq("id", company_id)\
                                 .single().execute()
-                            
+
                             if pc_response.data:
                                 pc = pc_response.data
-                                company = pc.get('companies', {})
-                                
+
                                 # Use manual edit if available, otherwise use company valuation
                                 if edits_response.data and edits_response.data[0].get('value'):
                                     current_valuation = float(edits_response.data[0].get('value', 0))
                                     manual = True
                                 else:
-                                    current_valuation = company.get('current_valuation_usd', 0) or 0
+                                    current_valuation = pc.get('current_valuation_usd', 0) or 0
                                     manual = False
-                                
-                                ownership_pct = pc.get('ownership_pct', 0) or 0
+
+                                ownership_pct = 0
                                 nav = (ownership_pct / 100) * current_valuation
-                                
+
                                 return {
                                     'nav': nav,
                                     'valuation': current_valuation,
@@ -2013,27 +2003,26 @@ async def _route_to_service(
                 client = _get_supabase_client()
                 if client:
                     # Get portfolio companies with exits
-                    portfolio_response = client.from_("portfolio_companies").select("*, companies(*)").eq("fund_id", fund_id).execute()
+                    portfolio_response = client.from_("companies").select("*").eq("fund_id", fund_id).execute()
                     companies = portfolio_response.data if portfolio_response.data else []
-                    
-                    # Calculate fund waterfall: Gross Proceeds → Return of Capital → Preferred Return → GP Catch-up → Carried Interest → LP Share
-                    lp_investment = sum(pc.get('investment_amount', 0) or 0 for pc in companies)
+
+                    # Calculate fund waterfall: Gross Proceeds -> Return of Capital -> Preferred Return -> GP Catch-up -> Carried Interest -> LP Share
+                    lp_investment = sum(pc.get('total_funding_usd', 0) or 0 for pc in companies)
                     total_exits = 0
                     distributions = []
-                    
+
                     for pc in companies:
-                        company = pc.get('companies', {})
-                        status = pc.get('status') or company.get('status', 'active')
+                        status = pc.get('status', 'active')
                         if status == 'exited':
-                            exit_value = pc.get('exit_value_usd') or company.get('exit_value_usd', 0) or 0
-                            ownership_pct = pc.get('ownership_pct', 0) or 0
+                            exit_value = pc.get('exit_value_usd', 0) or 0
+                            ownership_pct = 0
                             distributed = (ownership_pct / 100) * exit_value
                             total_exits += distributed
                             distributions.append({
-                                'company': company.get('name', 'Unknown'),
+                                'company': pc.get('name', 'Unknown'),
                                 'amount': distributed,
                                 'exit_value': exit_value,
-                                'multiple': exit_value / (pc.get('investment_amount', 1) or 1)
+                                'multiple': exit_value / (pc.get('total_funding_usd', 1) or 1)
                             })
                     
                     # Fund waterfall parameters (from deck agent)
@@ -2154,13 +2143,13 @@ async def _route_to_service(
                 if not client:
                     raise ValueError("Database client not available")
                 
-                pc_response = client.from_("portfolio_companies").select("*").eq("fund_id", fund_id).eq("company_id", company_id).single().execute()
+                pc_response = client.from_("companies").select("*").eq("fund_id", fund_id).eq("id", company_id).single().execute()
                 if not pc_response.data:
-                    raise ValueError(f"Portfolio company not found for fund_id: {fund_id}, company_id: {company_id}")
-                
+                    raise ValueError(f"Company not found for fund_id: {fund_id}, company_id: {company_id}")
+
                 portfolio_company = pc_response.data
-                current_ownership_pct = portfolio_company.get('ownership_pct', 0) or 0
-                current_investment = portfolio_company.get('investment_amount', 0) or 0
+                current_ownership_pct = 0
+                current_investment = portfolio_company.get('total_funding_usd', 0) or 0
                 
                 # Get fund size for context
                 fund_response = client.from_("funds").select("size").eq("id", fund_id).single().execute()
@@ -2431,12 +2420,12 @@ async def _route_to_service(
                     if not client:
                         raise ValueError("Database client not available")
                     
-                    portfolio_response = client.from_("portfolio_companies")\
-                        .select("*, companies(*)")\
+                    portfolio_response = client.from_("companies")\
+                        .select("*")\
                         .eq("fund_id", fund_id)\
                         .execute()
-                    
-                    companies = [pc.get('companies', {}) for pc in (portfolio_response.data or [])]
+
+                    companies = portfolio_response.data or []
                     
                     scoring_service = CompanyScoringVisualizer()
                     result = await scoring_service.generate_portfolio_dashboard(companies)

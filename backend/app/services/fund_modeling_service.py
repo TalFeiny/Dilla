@@ -48,34 +48,15 @@ class FundModelingService:
         """
         client = supabase_service.client
 
-        # Strategy 1: junction table
-        if fund_id:
-            try:
-                r = client.table("portfolio_companies").select("*, companies(*)").eq("fund_id", fund_id).execute()
-                if r.data:
-                    # Flatten: extract nested company fields to top level
-                    companies = []
-                    for pc in r.data:
-                        company = dict(pc.get("companies") or {})
-                        # Merge portfolio_companies fields (investment_amount, ownership_pct, etc.)
-                        for k, v in pc.items():
-                            if k != "companies":
-                                company.setdefault(k, v)
-                        companies.append(company)
-                    logger.info(f"[PORTFOLIO_FETCH] Strategy 1 (junction table): {len(companies)} companies")
-                    return companies
-            except Exception as e:
-                logger.debug(f"[PORTFOLIO_FETCH] Strategy 1 failed: {e}")
-
-        # Strategy 2: companies WHERE fund_id = fund_id
+        # Strategy 1: companies WHERE fund_id = fund_id
         if fund_id:
             try:
                 r = client.table("companies").select("*").eq("fund_id", fund_id).execute()
                 if r.data:
-                    logger.info(f"[PORTFOLIO_FETCH] Strategy 2 (fund_id FK): {len(r.data)} companies")
+                    logger.info(f"[PORTFOLIO_FETCH] Strategy 1 (fund_id FK): {len(r.data)} companies")
                     return list(r.data)
             except Exception as e:
-                logger.debug(f"[PORTFOLIO_FETCH] Strategy 2 failed: {e}")
+                logger.debug(f"[PORTFOLIO_FETCH] Strategy 1 failed: {e}")
 
         # Strategy 3: companies with a non-unaffiliated funnel_status
         try:

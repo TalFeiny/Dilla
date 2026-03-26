@@ -33,41 +33,32 @@ class PortfolioService:
             return {"id": fund_id, "companies": [], "total_investments": 0, "total_value": 0}
 
         try:
-            # Join portfolio_companies with companies
-            result = client.table("portfolio_companies").select(
-                "*, companies(*)"
-            ).eq("fund_id", fund_id).execute()
+            # Query companies directly (companies table has fund_id)
+            result = client.table("companies").select("*").eq("fund_id", fund_id).execute()
 
             companies = []
-            total_invested = 0
             total_value = 0
             for row in (result.data or []):
-                company = row.get("companies") or {}
+                valuation = row.get("current_valuation_usd") or row.get("last_valuation_usd") or 0
                 companies.append({
-                    "company_id": row.get("company_id"),
-                    "companyName": company.get("name", ""),
-                    "stage": company.get("stage", ""),
-                    "sector": company.get("sector", ""),
-                    "arr": company.get("current_arr_usd"),
-                    "valuation": company.get("current_valuation_usd") or company.get("last_valuation_usd"),
-                    "burn_rate": company.get("burn_rate_monthly_usd"),
-                    "runway_months": company.get("runway_months"),
-                    "employee_count": company.get("employee_count"),
-                    "growth_rate": company.get("growth_rate"),
-                    "investment_status": row.get("investment_status"),
-                    "initial_investment": row.get("initial_investment"),
-                    "current_valuation": row.get("current_valuation"),
-                    "ownership_percentage": row.get("ownership_percentage"),
-                    "unrealized_gain": row.get("unrealized_gain"),
-                    "risk_level": row.get("risk_level"),
+                    "company_id": row.get("id"),
+                    "companyName": row.get("name", ""),
+                    "stage": row.get("stage", ""),
+                    "sector": row.get("sector", ""),
+                    "arr": row.get("current_arr_usd"),
+                    "valuation": valuation or None,
+                    "burn_rate": row.get("burn_rate_monthly_usd"),
+                    "runway_months": row.get("runway_months"),
+                    "employee_count": row.get("employee_count"),
+                    "growth_rate": row.get("growth_rate"),
+                    "total_funding": row.get("total_funding_usd"),
                 })
-                total_invested += (row.get("initial_investment") or 0)
-                total_value += (row.get("current_valuation") or 0)
+                total_value += valuation
 
             return {
                 "id": fund_id,
                 "companies": companies,
-                "total_investments": total_invested,
+                "total_investments": 0,
                 "total_value": total_value,
                 "count": len(companies),
             }
@@ -129,15 +120,15 @@ class PortfolioService:
             return {"fund_id": fund_id, "error": "Supabase unavailable"}
 
         try:
-            result = client.table("portfolio_companies").select(
-                "initial_investment, current_valuation, unrealized_gain, realized_gain, ownership_percentage"
+            result = client.table("companies").select(
+                "current_valuation_usd, last_valuation_usd, total_funding_usd"
             ).eq("fund_id", fund_id).execute()
 
             rows = result.data or []
-            total_invested = sum(r.get("initial_investment") or 0 for r in rows)
-            total_current = sum(r.get("current_valuation") or 0 for r in rows)
-            total_realized = sum(r.get("realized_gain") or 0 for r in rows)
-            total_unrealized = sum(r.get("unrealized_gain") or 0 for r in rows)
+            total_invested = sum(r.get("total_funding_usd") or 0 for r in rows)
+            total_current = sum(r.get("current_valuation_usd") or r.get("last_valuation_usd") or 0 for r in rows)
+            total_realized = 0
+            total_unrealized = total_current - total_invested if total_current > total_invested else 0
 
             # Fund-level info
             fund_result = client.table("funds").select("*").eq("id", fund_id).limit(1).execute()
@@ -178,8 +169,8 @@ class PortfolioService:
             fund_size = fund_data.get("size") or 0
 
             # Get total deployed
-            pc_result = client.table("portfolio_companies").select("initial_investment").eq("fund_id", fund_id).execute()
-            deployed = sum(r.get("initial_investment") or 0 for r in (pc_result.data or []))
+            pc_result = client.table("companies").select("total_funding_usd").eq("fund_id", fund_id).execute()
+            deployed = sum(r.get("total_funding_usd") or 0 for r in (pc_result.data or []))
 
             remaining = fund_size - deployed
             pct_deployed = deployed / fund_size if fund_size > 0 else 0
@@ -212,15 +203,14 @@ class PortfolioService:
             return {"fund_id": fund_id, "graduation_rate": 0, "time_horizon": time_horizon}
 
         try:
-            result = client.table("portfolio_companies").select(
-                "investment_status, companies(stage, current_arr_usd)"
+            result = client.table("companies").select(
+                "stage, current_arr_usd"
             ).eq("fund_id", fund_id).execute()
 
             rows = result.data or []
             stage_counts: Dict[str, int] = {}
             for r in rows:
-                company = r.get("companies") or {}
-                stage = company.get("stage", "unknown")
+                stage = r.get("stage", "unknown")
                 stage_counts[stage] = stage_counts.get(stage, 0) + 1
 
             total = len(rows)
@@ -229,7 +219,7 @@ class PortfolioService:
                 "time_horizon": time_horizon,
                 "total_companies": total,
                 "stage_distribution": stage_counts,
-                "graduation_rate": 0.15 if total == 0 else sum(1 for r in rows if (r.get("companies") or {}).get("stage", "") in ("Series B", "Series C", "Growth", "Late")) / total,
+                "graduation_rate": 0.15 if total == 0 else sum(1 for r in rows if r.get("stage", "") in ("Series B", "Series C", "Growth", "Late")) / total,
             }
         except Exception as e:
             logger.error(f"PortfolioService.calculate_graduation_rates failed: {e}")

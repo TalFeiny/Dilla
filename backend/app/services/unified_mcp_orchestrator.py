@@ -35058,8 +35058,8 @@ Return a JSON with this structure:
             )
             company_name = inputs.get("company") or inputs.get("company_name")
 
-            # Query portfolio companies
-            query = supabase_service.client.table("portfolio_companies").select("*, companies(*)")
+            # Query companies
+            query = supabase_service.client.table("companies").select("*")
             if fund_id:
                 query = query.eq("fund_id", fund_id)
             result = query.execute()
@@ -35070,7 +35070,7 @@ Return a JSON with this structure:
                 company_name_lower = company_name.lower().strip().lstrip("@")
                 portfolio_companies = [
                     pc for pc in portfolio_companies
-                    if company_name_lower in (pc.get("companies", {}).get("name", "") or "").lower()
+                    if company_name_lower in (pc.get("name", "") or "").lower()
                 ]
 
             if not portfolio_companies:
@@ -35081,9 +35081,8 @@ Return a JSON with this structure:
             # --- Enhanced path: use fund_modeling_service ---
             if self.fund_modeling and fund_id:
                 for pc in portfolio_companies:
-                    company = pc.get("companies", {}) or {}
-                    cid = company.get("id", pc.get("id", "unknown"))
-                    name = company.get("name", "Unknown")
+                    cid = pc.get("id", "unknown")
+                    name = pc.get("name", "Unknown")
 
                     try:
                         # Full follow-on analysis with exit impact and fund return context
@@ -35097,11 +35096,11 @@ Return a JSON with this structure:
                         if self.valuation_engine:
                             try:
                                 scenario_caps = self.valuation_engine.generate_scenario_cap_tables(
-                                    company_data=company,
+                                    company_data=pc,
                                     analytics=fo_analysis.get("analytics"),
                                     our_investment={
-                                        "amount": fo_analysis.get("our_invested", pc.get("investment_amount", 0)),
-                                        "round": fo_analysis.get("our_entry_round", company.get("stage", "Series A")),
+                                        "amount": fo_analysis.get("our_invested", pc.get("total_funding_usd", 0)),
+                                        "round": fo_analysis.get("our_entry_round", pc.get("stage", "Series A")),
                                     },
                                 )
                             except Exception as e:
@@ -35111,7 +35110,7 @@ Return a JSON with this structure:
                         cap_table_history = {}
                         if self.cap_table_service:
                             try:
-                                cap_table_history = self.cap_table_service.calculate_full_cap_table_history(company)
+                                cap_table_history = self.cap_table_service.calculate_full_cap_table_history(pc)
                             except Exception as e:
                                 logger.warning(f"[FOLLOWON] Cap table history failed for {name}: {e}")
 
@@ -35126,7 +35125,7 @@ Return a JSON with this structure:
                     except Exception as e:
                         logger.warning(f"[FOLLOWON] Enhanced analysis failed for {name}, falling back: {e}")
                         # Fall through to simple path below
-                        followon_results[name] = self._followon_simple(pc, company, cid, name)
+                        followon_results[name] = self._followon_simple(pc, pc, cid, name)
 
                 # Reserve forecast for entire fund
                 reserve_forecast = {}
@@ -35141,10 +35140,9 @@ Return a JSON with this structure:
 
             # --- Fallback path: simple pro-rata when fund_modeling unavailable ---
             for pc in portfolio_companies:
-                company = pc.get("companies", {}) or {}
-                cid = company.get("id", pc.get("id", "unknown"))
-                name = company.get("name", "Unknown")
-                followon_results[name] = self._followon_simple(pc, company, cid, name)
+                cid = pc.get("id", "unknown")
+                name = pc.get("name", "Unknown")
+                followon_results[name] = self._followon_simple(pc, pc, cid, name)
 
             self.shared_data["followon_strategy"] = followon_results
             return {"followon_strategy": followon_results}
@@ -35156,7 +35154,7 @@ Return a JSON with this structure:
     def _followon_simple(self, pc: Dict, company: Dict, cid: str, name: str) -> Dict[str, Any]:
         """Simple pro-rata follow-on analysis (fallback when fund_modeling unavailable)."""
         current_ownership = pc.get("ownership_pct", 0) or 0
-        investment_amount = pc.get("investment_amount", 0) or 0
+        investment_amount = pc.get("total_funding_usd", 0) or 0
         current_valuation = company.get("current_valuation_usd", 0) or 0
 
         upcoming_round_size = current_valuation * 0.15 if current_valuation else 5_000_000
@@ -35209,17 +35207,17 @@ Return a JSON with this structure:
             # Find company in portfolio
             if company_name:
                 company_name_lower = company_name.lower().strip().lstrip("@")
-                result = supabase_service.client.table("portfolio_companies").select(
-                    "*, companies(*)"
+                result = supabase_service.client.table("companies").select(
+                    "*"
                 ).execute()
                 matches = [
                     pc for pc in (result.data or [])
-                    if company_name_lower in (pc.get("companies", {}).get("name", "") or "").lower()
+                    if company_name_lower in (pc.get("name", "") or "").lower()
                 ]
                 if not matches:
                     return {"error": f"Company '{company_name}' not found in portfolio"}
                 pc = matches[0]
-                company = pc.get("companies", {}) or {}
+                company = pc
             else:
                 # Use first company from shared_data
                 companies = self.shared_data.get("companies", [])

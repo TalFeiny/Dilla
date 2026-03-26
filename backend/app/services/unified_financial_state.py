@@ -377,15 +377,15 @@ async def _load_cap_table(company_id: str) -> Optional[CapTableSummary]:
         logger.debug("Cap table ledger load failed (falling back): %s", e)
 
     try:
-        # --- Fall back to portfolio_companies ---
+        # --- Fall back to companies table ---
         from app.core.supabase_client import get_supabase_client
         sb = get_supabase_client()
         if not sb:
             return None
 
         rows = (
-            sb.table("portfolio_companies")
-            .select("name, total_raised, last_round, stage, sector")
+            sb.table("companies")
+            .select("name, total_funding_usd, latest_round_name, stage, sector")
             .eq("id", company_id)
             .limit(1)
             .execute()
@@ -396,9 +396,9 @@ async def _load_cap_table(company_id: str) -> Optional[CapTableSummary]:
 
         co = rows[0]
         return CapTableSummary(
-            total_raised=co.get("total_raised"),
-            latest_round=co.get("last_round"),
-            source="portfolio_companies",
+            total_raised=co.get("total_funding_usd"),
+            latest_round=co.get("latest_round_name"),
+            source="companies",
         )
     except Exception as e:
         logger.warning("Cap table load failed: %s", e)

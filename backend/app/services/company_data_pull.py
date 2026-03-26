@@ -670,7 +670,7 @@ class FundCompanies:
 def pull_fund_companies(fund_id: str) -> FundCompanies:
     """Pull ALL companies in a fund with their full financials in a single batch.
 
-    1. Query portfolio_companies for all company_ids + investment data + names.
+    1. Query companies table by fund_id for all company ids + names.
     2. Batch query fpa_actuals for ALL those company_ids.
     3. Group by company_id, build a CompanyData per company.
     4. Return FundCompanies with everything.
@@ -690,17 +690,17 @@ def pull_fund_companies(fund_id: str) -> FundCompanies:
     if not sb or not fund_id:
         return empty
 
-    # --- Step 1: Get company list + investment data from portfolio_companies ---
+    # --- Step 1: Get companies directly (companies table has fund_id) ---
     try:
         pc_rows = (
-            sb.table("portfolio_companies")
-            .select("company_id, investment_amount, initial_investment, ownership_pct, ownership_percentage, investment_status, investment_date, companies(name)")
+            sb.table("companies")
+            .select("id, name, current_valuation_usd, last_valuation_usd, total_funding_usd, stage, sector, current_arr_usd")
             .eq("fund_id", fund_id)
             .execute()
             .data
         ) or []
     except Exception as e:
-        logger.warning("[FUND_PULL] portfolio_companies query failed: %s", e)
+        logger.warning("[FUND_PULL] companies query failed: %s", e)
         return empty
 
     if not pc_rows:
@@ -712,21 +712,18 @@ def pull_fund_companies(fund_id: str) -> FundCompanies:
     names: Dict[str, str] = {}
 
     for pc in pc_rows:
-        cid = pc.get("company_id")
+        cid = pc.get("id")
         if not cid:
             continue
         company_ids.append(cid)
-        # Name from joined companies table
-        co = pc.get("companies") or {}
-        names[cid] = co.get("name", "") if isinstance(co, dict) else ""
-        # Investment data
-        inv_amount = pc.get("investment_amount") or pc.get("initial_investment")
-        own_pct = pc.get("ownership_pct") or pc.get("ownership_percentage")
+        names[cid] = pc.get("name", "")
+        # Investment data from company record
+        inv_amount = pc.get("total_funding_usd")
         investments[cid] = {
             "amount": inv_amount,
-            "ownership_pct": own_pct,
-            "date": pc.get("investment_date"),
-            "status": pc.get("investment_status"),
+            "ownership_pct": None,
+            "date": None,
+            "status": pc.get("stage"),
         }
 
     if not company_ids:

@@ -91,10 +91,9 @@ class SupabaseCompanyDataRepo(CompanyDataRepo):
         with_company_details: bool = True,
     ) -> List[Dict[str, Any]]:
         try:
-            select = "*, companies(*)" if with_company_details else "*"
             r = (
-                self._client.from_("portfolio_companies")
-                .select(select)
+                self._client.from_("companies")
+                .select("*")
                 .eq("fund_id", fund_id)
                 .execute()
             )
@@ -110,10 +109,10 @@ class SupabaseCompanyDataRepo(CompanyDataRepo):
     ) -> Optional[Dict[str, Any]]:
         try:
             r = (
-                self._client.from_("portfolio_companies")
-                .select("*, companies(*)")
+                self._client.from_("companies")
+                .select("*")
                 .eq("fund_id", fund_id)
-                .eq("company_id", company_id)
+                .eq("id", company_id)
                 .single()
                 .execute()
             )

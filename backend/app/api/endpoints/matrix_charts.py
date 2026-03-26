@@ -23,8 +23,8 @@ def _build_dpi_sankey(fund_id: str) -> Optional[Dict[str, Any]]:
         client = supabase_service.get_client()
         if not client:
             return None
-        portfolio_response = client.from_("portfolio_companies").select(
-            "*, companies(*)"
+        portfolio_response = client.from_("companies").select(
+            "*"
         ).eq("fund_id", fund_id).execute()
         companies = portfolio_response.data if portfolio_response.data else []
         nodes = [{"id": 0, "name": f"Fund {fund_id[:8]}...", "level": 0}]
@@ -33,11 +33,10 @@ def _build_dpi_sankey(fund_id: str) -> Optional[Dict[str, Any]]:
         total_distributed = 0
         node_id = 1
         for pc in companies:
-            company = pc.get("companies", {})
-            company_name = company.get("name", f"Company {node_id}")
-            investment = pc.get("investment_amount", 0) or pc.get("total_invested_usd", 0) or 0
-            ownership_pct = pc.get("ownership_pct", 0) or pc.get("ownership_percentage", 0) or 0
-            status = pc.get("status") or company.get("status", "active")
+            company_name = pc.get("name", f"Company {node_id}")
+            investment = pc.get("total_funding_usd", 0) or 0
+            ownership_pct = 0
+            status = pc.get("status", "active")
             total_invested += investment
             nodes.append({"id": node_id, "name": company_name, "level": 1})
             links.append({"source": 0, "target": node_id, "value": investment})
