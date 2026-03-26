@@ -4,7 +4,7 @@ Natural Language FP&A query processing
 """
 
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from pydantic import BaseModel, Field
 import logging
 import time
@@ -1047,10 +1047,63 @@ def _parse_month_header(header: str) -> Optional[str]:
 
 
 def _match_category(label: str) -> Optional[str]:
-    """Match a row label to an fpa_actuals category."""
+    """Match a row label to an fpa_actuals category.
+
+    Handles text labels (regex) AND numeric account codes (standard CoA ranges).
+    """
     for pattern, category in _CATEGORY_PATTERNS:
         if pattern.search(label):
             return category
+
+    # Standard chart-of-accounts numeric code ranges
+    # Works across most ERPs (Xero, QBO, SAP, NetSuite, Sage, FreshBooks)
+    stripped = label.strip()
+    if re.match(r"^\d{3,6}$", stripped):
+        code = int(stripped)
+        if 4000 <= code < 5000:
+            return "revenue"
+        elif 5000 <= code < 6000:
+            return "cogs"
+        elif 6000 <= code < 6200:
+            return "opex_sm"
+        elif 6200 <= code < 6400:
+            return "opex_rd"
+        elif 6400 <= code < 7000:
+            return "opex_ga"
+        elif 7000 <= code < 7500:
+            return "depreciation"
+        elif 7500 <= code < 8000:
+            return "interest_expense"
+        elif 8000 <= code < 8500:
+            return "other_income"
+        elif 8500 <= code < 9000:
+            return "tax"
+        elif 9000 <= code < 10000:
+            return "net_income"
+        # 1xxx = assets, 2xxx = liabilities, 3xxx = equity (balance sheet)
+        elif 1000 <= code < 1100:
+            return "bs_cash"
+        elif 1100 <= code < 1200:
+            return "bs_receivables"
+        elif 1200 <= code < 1300:
+            return "bs_inventory"
+        elif 1300 <= code < 1500:
+            return "bs_prepayments"
+        elif 1500 <= code < 2000:
+            return "bs_ppe"
+        elif 2000 <= code < 2100:
+            return "bs_payables"
+        elif 2100 <= code < 2500:
+            return "bs_accrued_expenses"
+        elif 2500 <= code < 3000:
+            return "bs_lt_debt"
+        elif 3000 <= code < 3100:
+            return "bs_share_capital"
+        elif 3100 <= code < 3200:
+            return "bs_apic"
+        elif 3200 <= code < 4000:
+            return "bs_retained_earnings"
+
     return None
 
 
@@ -1109,10 +1162,11 @@ _SUBCATEGORY_COL_NAMES = {"subcategory", "sub_category", "sub-category", "line_i
 _CATEGORY_COL_NAMES = {"category", "type", "account_type", "group", "section"}
 
 
-def _detect_hierarchy_columns(headers: List[str]) -> Dict[str, Any]:
+def _detect_hierarchy_columns(headers: List[str], data_rows: Optional[List[List[str]]] = None) -> Dict[str, Any]:
     """Scan CSV headers to detect ERP hierarchy strategy.
 
     Precedence: explicit_subcategory > parent_id > level_column > account_number > indent (default).
+    When header names don't match, sniffs the first column's data to detect numeric account codes.
     """
     lower_headers = [h.lower().strip() for h in headers]
     result: Dict[str, Any] = {"strategy": "indent"}
@@ -1153,45 +1207,82 @@ def _detect_hierarchy_columns(headers: List[str]) -> Dict[str, Any]:
     elif account_col is not None:
         result = {"strategy": "account_number", "account_col": account_col,
                   "label_col": label_col}
+    elif data_rows:
+        # Sniff first column data: if predominantly numeric codes (3-6 digits like 4000, 5100),
+        # infer account_number strategy even when the header isn't named "account".
+        _acct_re = re.compile(r"^\d{3,6}$")
+        sample = data_rows[:30]
+        non_empty = [r[0].strip() for r in sample if r and r[0].strip()]
+        if non_empty:
+            numeric_ratio = sum(1 for v in non_empty if _acct_re.match(v)) / len(non_empty)
+            if numeric_ratio >= 0.5:
+                account_col = 0
+                # Look for a second column with text labels to use as label_col
+                for ci in range(1, min(len(headers), 4)):
+                    text_vals = [r[ci].strip() for r in sample if ci < len(r) and r[ci].strip()]
+                    if text_vals and all(not _acct_re.match(v) for v in text_vals[:5]):
+                        label_col = ci
+                        break
+                result = {"strategy": "account_number", "account_col": account_col,
+                          "label_col": label_col}
+                logger.info("[upload-actuals] Sniffed account codes in col 0 (%.0f%% numeric), label_col=%d",
+                            numeric_ratio * 100, label_col)
 
     return result
 
 
 def _build_account_number_tree(
     data_rows: List[List[str]], account_col: int, label_col: int
-) -> Dict[int, int]:
-    """Derive depth per row from account number hierarchy (e.g. 4000→4100→4110).
+) -> Tuple[Dict[int, int], Dict[int, int]]:
+    """Derive depth per row from account number hierarchy using significant-prefix matching.
 
-    Returns {row_index: depth}.
+    Standard CoA codes use trailing zeros for hierarchy levels:
+        4000 (sig="4") → 4010 (sig="401") → 4011 (sig="4011")
+        4100 (sig="41") → 4110 (sig="411")
+
+    Returns (row_depth, parent_map) where:
+        row_depth:  {row_index: depth}
+        parent_map: {row_index: parent_row_index}
     """
     account_numbers: List[Optional[str]] = []
     for row in data_rows:
         val = row[account_col].strip() if account_col < len(row) else ""
         account_numbers.append(val if val else None)
 
-    # Build set of known account numbers
-    known = {a for a in account_numbers if a}
+    # Build significant-prefix map: strip trailing zeros for hierarchy matching
+    # e.g., 4000→"4", 4010→"401", 4011→"4011", 4100→"41"
+    sig_to_row: Dict[str, int] = {}
+    sigs: Dict[int, str] = {}  # row_idx → significant prefix
+    for idx, acct in enumerate(account_numbers):
+        if acct and re.match(r"^\d{3,6}$", acct):
+            sig = acct.rstrip("0") or acct
+            sig_to_row.setdefault(sig, idx)  # first occurrence wins
+            sigs[idx] = sig
 
     row_depth: Dict[int, int] = {}
+    parent_map: Dict[int, int] = {}
     for idx, acct in enumerate(account_numbers):
-        if not acct:
+        if not acct or idx not in sigs:
             row_depth[idx] = 0
             continue
-        # Walk up by trimming trailing characters until we find a parent
+
+        sig = sigs[idx]
+        # Walk up by trimming significant prefix to find all ancestors
         depth = 0
-        candidate = acct
+        nearest_parent_idx: Optional[int] = None
+        candidate = sig
         while len(candidate) > 1:
             candidate = candidate[:-1]
-            # Trim trailing zeros for cleaner matching (4100 → 41 → 4)
-            trimmed = candidate.rstrip("0") or candidate
-            if trimmed in known or candidate in known:
+            if candidate in sig_to_row and sig_to_row[candidate] != idx:
                 depth += 1
-                # Keep walking up from trimmed
-                candidate = trimmed if trimmed in known else candidate
-            # Also check padded variants
-        row_depth[idx] = depth
+                if nearest_parent_idx is None:
+                    nearest_parent_idx = sig_to_row[candidate]
 
-    return row_depth
+        row_depth[idx] = depth
+        if nearest_parent_idx is not None:
+            parent_map[idx] = nearest_parent_idx
+
+    return row_depth, parent_map
 
 
 def _build_parent_id_tree(
@@ -1664,11 +1755,12 @@ async def upload_actuals_csv(
             # Standard orientation: 3-pass pipeline
 
             # --- Detect ERP hierarchy strategy ---
-            hierarchy_info = _detect_hierarchy_columns(headers)
+            hierarchy_info = _detect_hierarchy_columns(headers, data_rows)
             row_depth_map: Dict[int, int] = {}
+            acct_parent_map: Dict[int, int] = {}
 
             if hierarchy_info["strategy"] == "account_number":
-                row_depth_map = _build_account_number_tree(
+                row_depth_map, acct_parent_map = _build_account_number_tree(
                     data_rows, hierarchy_info["account_col"], hierarchy_info.get("label_col", 0)
                 )
             elif hierarchy_info["strategy"] == "parent_id":
@@ -1867,38 +1959,66 @@ async def upload_actuals_csv(
                                     unmapped_labels.append(original)
 
                 else:
-                    cat = _match_category(cleaned)
-                    if cat and cat != current_section_parent:
-                        info["category"] = cat
-                        info["match_type"] = "regex"
-                    elif cat and cat == current_section_parent:
-                        sub_name = _label_to_subcategory(original, _biz_model)
-                        if sub_name:
-                            info["category"] = cat
+                    # --- account_number strategy: use parent_map for category ---
+                    if hierarchy_info["strategy"] == "account_number" and acct_parent_map:
+                        parent_idx = acct_parent_map.get(idx_row)
+                        parent_cat = None
+                        if parent_idx is not None and parent_idx < len(row_info):
+                            parent_cat = row_info[parent_idx].get("category")
+                        if not parent_cat:
+                            parent_cat = _match_category(cleaned) or current_section_parent
+
+                        if parent_cat:
+                            acct_col = hierarchy_info["account_col"]
+                            lbl_col = hierarchy_info.get("label_col", 0)
+                            if lbl_col != acct_col:
+                                # Text label column available — use it
+                                sub_name = _label_to_subcategory(original, _biz_model)
+                            else:
+                                # Label IS the account code — use code as-is
+                                sub_name = original.strip()
+                            info["category"] = parent_cat
                             info["subcategory"] = sub_name
                             info["match_type"] = "hierarchy"
-                            if sub_name not in subcategories_created:
+                            if sub_name and sub_name not in subcategories_created:
                                 subcategories_created.append(sub_name)
                         else:
+                            info["skip"] = "unmapped"
+                            unmapped_labels.append(original)
+                    else:
+                        # --- indent / other strategies: existing logic ---
+                        cat = _match_category(cleaned)
+                        if cat and cat != current_section_parent:
                             info["category"] = cat
                             info["match_type"] = "regex"
-                    else:
-                        fuzzy = _fuzzy_match_category(cleaned)
-                        if fuzzy and fuzzy[0] != current_section_parent:
-                            info["category"] = fuzzy[0]
-                            info["match_type"] = f"fuzzy ({fuzzy[1]})"
-                            warnings.append(f"Fuzzy-matched '{original}' → {fuzzy[0]} (score: {fuzzy[1]})")
-                        elif current_section_parent:
+                        elif cat and cat == current_section_parent:
                             sub_name = _label_to_subcategory(original, _biz_model)
                             if sub_name:
-                                info["category"] = current_section_parent
+                                info["category"] = cat
                                 info["subcategory"] = sub_name
                                 info["match_type"] = "hierarchy"
                                 if sub_name not in subcategories_created:
                                     subcategories_created.append(sub_name)
+                            else:
+                                info["category"] = cat
+                                info["match_type"] = "regex"
                         else:
-                            info["skip"] = "unmapped"
-                            unmapped_labels.append(original)
+                            fuzzy = _fuzzy_match_category(cleaned)
+                            if fuzzy and fuzzy[0] != current_section_parent:
+                                info["category"] = fuzzy[0]
+                                info["match_type"] = f"fuzzy ({fuzzy[1]})"
+                                warnings.append(f"Fuzzy-matched '{original}' → {fuzzy[0]} (score: {fuzzy[1]})")
+                            elif current_section_parent:
+                                sub_name = _label_to_subcategory(original, _biz_model)
+                                if sub_name:
+                                    info["category"] = current_section_parent
+                                    info["subcategory"] = sub_name
+                                    info["match_type"] = "hierarchy"
+                                    if sub_name not in subcategories_created:
+                                        subcategories_created.append(sub_name)
+                            else:
+                                info["skip"] = "unmapped"
+                                unmapped_labels.append(original)
 
                 row_info.append(info)
 

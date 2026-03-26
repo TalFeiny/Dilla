@@ -35,8 +35,12 @@ _DEBT_INSTRUMENT_TYPES = frozenset({
 
 # Each tuple: (set of possible header names, canonical field name)
 _COLUMN_PATTERNS: List[Tuple[re.Pattern, str]] = [
-    # Shareholder / holder
-    (re.compile(r"share\s*holder|holder|investor|name|owner|stakeholder|party|lender|creditor", re.I), "shareholder_name"),
+    # --- Specific patterns BEFORE greedy ones to avoid mis-matches ---
+
+    # Ownership % (before shareholder_name — "owner" would grab "Ownership %")
+    (re.compile(r"own(?:ership)?\s*(?:pct|%|percent)|%\s*own|fully\s*diluted\s*%", re.I), "ownership_pct"),
+    # Shareholder / holder (removed "owner" — conflicts with "Ownership %")
+    (re.compile(r"share\s*holder|holder|investor|name|stakeholder|party|lender|creditor", re.I), "shareholder_name"),
     # Stakeholder type
     (re.compile(r"stakeholder\s*type|type\s*of\s*(?:holder|investor)|role|category", re.I), "stakeholder_type"),
     # Share class / instrument
@@ -45,16 +49,16 @@ _COLUMN_PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"instrument\s*type|security\s*type|asset\s*class", re.I), "instrument_type"),
     # Number of shares
     (re.compile(r"(?:num(?:ber)?\s*(?:of\s*)?)?shares|units|quantity|amount\s*of\s*shares", re.I), "num_shares"),
+    # Exercise / conversion price (before price_per_share — "Conversion Price" would match generic "price")
+    (re.compile(r"exercise\s*price|conversion\s*price|strike|hurdle", re.I), "exercise_price"),
     # Price per share
-    (re.compile(r"price\s*(?:per\s*share)?|pps|issue\s*price|strike\s*price|cost\s*(?:per\s*share)?", re.I), "price_per_share"),
+    (re.compile(r"price\s*(?:per\s*(?:share|unit))?|pps|issue\s*price|cost\s*(?:per\s*share)?", re.I), "price_per_share"),
     # Investment amount (if given directly instead of shares*price)
     (re.compile(r"invest(?:ment)?\s*(?:amount)?|total\s*invest|committed|amount\s*invested|consideration", re.I), "investment_amount_direct"),
     # Round
     (re.compile(r"round|funding\s*round|series\s*name|tranche|stage", re.I), "round_name"),
     # Date
     (re.compile(r"(?:invest(?:ment)?|issue|closing|grant)\s*date|date", re.I), "investment_date"),
-    # Ownership %
-    (re.compile(r"own(?:ership)?\s*(?:pct|%|percent)|%\s*own|fully\s*diluted\s*%", re.I), "ownership_pct"),
     # Liquidation preference
     (re.compile(r"liq(?:uidation)?\s*pref|preference\s*multiple", re.I), "liquidation_pref"),
     # Participating
@@ -76,7 +80,10 @@ _COLUMN_PATTERNS: List[Tuple[re.Pattern, str]] = [
     # --- Debt fields ---
     # Outstanding principal
     (re.compile(r"principal|outstanding|balance|face\s*value|notional|loan\s*amount|facility\s*(?:size|amount)", re.I), "outstanding_principal"),
-    # Interest rate
+    # PIK / cash rate (before interest_rate — bare "rate" would grab "PIK Rate")
+    (re.compile(r"pik\s*rate", re.I), "pik_rate"),
+    (re.compile(r"cash\s*rate", re.I), "cash_rate"),
+    # Interest rate / coupon (after pik/cash so those win first)
     (re.compile(r"interest\s*rate|coupon|rate|yield|spread|margin", re.I), "interest_rate"),
     # Maturity
     (re.compile(r"maturity|due\s*date|expir(?:y|ation)|term\s*end", re.I), "maturity_date"),
@@ -96,15 +103,10 @@ _COLUMN_PATTERNS: List[Tuple[re.Pattern, str]] = [
     # MFN
     (re.compile(r"mfn|most\s*favou?red", re.I), "mfn"),
     # --- Warrant ---
-    # Exercise price
-    (re.compile(r"exercise\s*price|strike", re.I), "exercise_price"),
     # Warrant coverage
     (re.compile(r"(?:warrant\s*)?coverage", re.I), "warrant_coverage_pct"),
     # Expiry
     (re.compile(r"expir(?:y|ation)\s*date", re.I), "expiry_date"),
-    # --- PIK ---
-    (re.compile(r"pik\s*rate", re.I), "pik_rate"),
-    (re.compile(r"cash\s*rate", re.I), "cash_rate"),
     # --- RBF ---
     (re.compile(r"repayment\s*cap|repayment\s*multiple", re.I), "repayment_cap"),
     (re.compile(r"revenue\s*share", re.I), "revenue_share_pct"),
@@ -166,8 +168,14 @@ _STAKEHOLDER_TYPE_MAP: List[Tuple[re.Pattern, str]] = [
 # Amount / value parsing (mirrors fpa_query._parse_amount)
 # ---------------------------------------------------------------------------
 
-def _parse_amount(raw: str) -> Optional[float]:
-    """Parse a cell value as a number. Handles currency, commas, parens, K/M/B, European notation."""
+def _parse_amount(raw: str, as_percentage: bool = False) -> Optional[float]:
+    """Parse a cell value as a number. Handles currency, commas, parens, K/M/B, European notation.
+
+    Args:
+        raw: Raw cell string.
+        as_percentage: If True, keep percentage values as-is (20% → 20.0).
+                       If False (default), percentage sign is stripped but value is NOT divided.
+    """
     if not raw:
         return None
     s = raw.strip()
@@ -204,8 +212,10 @@ def _parse_amount(raw: str) -> Optional[float]:
     elif suffix == "k":
         val *= 1_000
 
-    if pct:
-        val = val / 100.0  # Convert 20% → 0.20
+    # Percentage normalization: DB stores as whole numbers (20 = 20%)
+    if as_percentage and not pct and val <= 1:
+        # No % sign and value <= 1 → treat as decimal (0.20 → 20.0)
+        val *= 100
 
     return -val if neg else val
 
@@ -381,6 +391,7 @@ def parse_cap_table_csv(file_content: bytes | str) -> List[dict]:
                 entry["stakeholder_type"] = _match_stakeholder_type(raw)
 
             elif field_name == "share_class":
+                entry["_raw_security"] = raw  # preserve for dedup
                 sc, it = _match_share_class(raw)
                 entry["share_class"] = sc
                 # Only set instrument_type from share_class if not explicitly provided
@@ -395,10 +406,26 @@ def parse_cap_table_csv(file_content: bytes | str) -> List[dict]:
             elif field_name in ("num_shares", "price_per_share", "outstanding_principal",
                                 "investment_amount_direct", "liquidation_pref",
                                 "participation_cap", "valuation_cap", "qualified_financing",
-                                "exercise_price", "warrant_coverage_pct", "pik_rate",
-                                "cash_rate", "repayment_cap", "revenue_share_pct",
-                                "vested_pct", "interest_rate", "conversion_discount"):
+                                "exercise_price", "repayment_cap"):
                 val = _parse_amount(raw)
+                if val is not None:
+                    entry[field_name] = val
+
+            elif field_name in ("interest_rate", "conversion_discount",
+                                "warrant_coverage_pct", "vested_pct",
+                                "pik_rate", "cash_rate", "revenue_share_pct"):
+                val = _parse_amount(raw, as_percentage=True)
+                if val is None and raw:
+                    # Fallback: extract from complex rate strings
+                    # e.g., "SOFR + 350 bps (7.83% all-in)" → 7.83
+                    pct_m = re.search(r"(\d+\.?\d*)\s*%", raw)
+                    if pct_m:
+                        val = float(pct_m.group(1))
+                    else:
+                        # "350 bps" → 3.5%
+                        bps_m = re.search(r"(\d+\.?\d*)\s*(?:bps|basis\s*points?)", raw, re.I)
+                        if bps_m:
+                            val = float(bps_m.group(1)) / 100
                 if val is not None:
                     entry[field_name] = val
 
@@ -437,8 +464,9 @@ def parse_cap_table_csv(file_content: bytes | str) -> List[dict]:
                     entry["vesting_total_months"] = int(val)
 
             elif field_name == "ownership_pct":
-                # Informational only — we recompute from shares
-                pass
+                val = _parse_amount(raw, as_percentage=True)
+                if val is not None:
+                    entry["ownership_pct"] = val
 
         # Skip rows without a shareholder name
         if not entry.get("shareholder_name"):
@@ -456,8 +484,10 @@ def parse_cap_table_csv(file_content: bytes | str) -> List[dict]:
                     entry.setdefault("outstanding_principal", direct_amt)
                 else:
                     # Set shares=1, price=amount so investment_amount computes
+                    # Flag so downstream consumers don't use for dilution math
                     entry["num_shares"] = 1
                     entry["price_per_share"] = direct_amt
+                    entry["notes"] = (entry.get("notes", "") + " [shares_estimated]").strip()
             elif entry.get("price_per_share") and not entry.get("num_shares"):
                 pps = entry["price_per_share"]
                 if pps > 0:
@@ -496,6 +526,19 @@ def parse_cap_table_csv(file_content: bytes | str) -> List[dict]:
         entry.setdefault("price_per_share", 0)
 
         entries.append(entry)
+
+    # --- Dedup: keep last occurrence per identity key ---
+    # Use raw security name (if available) to distinguish different instruments
+    # from the same holder (e.g., Term Loan vs DDTL from same bank)
+    seen: Dict[tuple, int] = {}
+    for i, e in enumerate(entries):
+        security = e.pop("_raw_security", None) or e.get("share_class")
+        key = (e.get("shareholder_name"), security, e.get("round_name"))
+        seen[key] = i  # last wins
+    if len(seen) < len(entries):
+        deduped = [entries[i] for i in sorted(seen.values())]
+        logger.info("[cap-table-csv] Deduped %d → %d entries", len(entries), len(deduped))
+        entries = deduped
 
     logger.info("[cap-table-csv] Parsed %d entries from %d data rows", len(entries), len(rows) - 1)
     return entries

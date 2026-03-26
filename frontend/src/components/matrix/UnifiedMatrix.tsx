@@ -725,7 +725,7 @@ export function UnifiedMatrix({
           // Also reload P&L data directly — refreshMatrix handler uses a ref
           // that may be stale; direct call ensures grid updates immediately.
           if (mode === 'pnl') {
-            await loadPnlData();
+            await loadPnlData({ force: true });
           }
         }
       }
@@ -1757,8 +1757,8 @@ export function UnifiedMatrix({
   // Uses the same abort/retry/guard pattern as loadPortfolioData.
   const pnlAbortRef = useRef<AbortController | null>(null);
   const pnlCsvInputRef = useRef<HTMLInputElement | null>(null);
-  const loadPnlData = useCallback(async () => {
-    if (editInFlightRef.current > 0) {
+  const loadPnlData = useCallback(async (opts?: { force?: boolean }) => {
+    if (!opts?.force && editInFlightRef.current > 0) {
       console.log('[UnifiedMatrix] Skipping loadPnlData - edit/upload in flight');
       return;
     }
@@ -3581,7 +3581,12 @@ export function UnifiedMatrix({
       }
 
       // ── Portfolio / LP / other modes: create company in DB ──
-      const companyName = `New Company ${Date.now()}`;
+      const label = mode === 'lp' ? 'LP' : 'company';
+      const companyName = window.prompt(`Enter ${label} name:`)?.trim();
+      if (!companyName) {
+        setIsLoading(false);
+        return;
+      }
 
       // Use shared helper to create real company
       const newCompany = await createCompanyForMatrix({
@@ -3640,7 +3645,12 @@ export function UnifiedMatrix({
           companyName: newCompany.companyName ?? companyName,
           cells: columns.reduce(
             (acc, col) => {
-              acc[col.id] = { value: null, source: 'manual' as const };
+              const isNameCol = col.id === 'company' || col.id === 'companyName';
+              acc[col.id] = {
+                value: isNameCol ? (newCompany.companyName ?? companyName) : null,
+                displayValue: isNameCol ? (newCompany.companyName ?? companyName) : undefined,
+                source: 'manual' as const,
+              };
               return acc;
             },
             {} as Record<string, MatrixCell>
@@ -3659,7 +3669,6 @@ export function UnifiedMatrix({
 
       // For portfolio mode, refresh in background to sync with API (but row is already visible and editable)
       if (mode === 'portfolio' && fundId) {
-        // Refresh in background - don't wait, row is already added and editable
         if (onRefresh) {
           Promise.resolve(onRefresh()).catch(err => console.warn('Background refresh failed:', err));
         } else {
@@ -3667,7 +3676,7 @@ export function UnifiedMatrix({
         }
       }
 
-      toast.success(`Empty row added - fill in the details or let the agent complete it`);
+      toast.success(`Added "${companyName}" — fill in the details or let the agent complete it`);
     } catch (error) {
       console.error('[handleAddRowSimple]', error);
       toast.error(error instanceof Error ? error.message : 'Failed to add company');
@@ -4660,7 +4669,7 @@ export function UnifiedMatrix({
         });
 
         toast.success(`Cap table imported: ${rowsParsed} entries`);
-        await loadPnlData();
+        await loadPnlData({ force: true });
         setIsPnlUploading(false);
         return;
       }
@@ -4737,7 +4746,7 @@ export function UnifiedMatrix({
       // (Stage 1 of the next upload resets it to 'loading')
 
       // Reload grid from Supabase — upsert is synchronous, no delay needed.
-      await loadPnlData();
+      await loadPnlData({ force: true });
     } catch (err) {
       console.error('[PnL CSV upload] error:', err);
       const errMsg = err instanceof Error ? err.message : 'CSV upload failed';
