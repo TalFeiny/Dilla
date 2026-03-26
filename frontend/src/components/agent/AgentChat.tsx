@@ -501,9 +501,18 @@ export default function AgentChat({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  // Only auto-scroll on new messages, not on tool call status updates
+  const prevMessageCount = useRef(messages.length);
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, toolCallEntries.length, suggestions.length]);
+    if (messages.length > prevMessageCount.current) {
+      scrollToBottom();
+    }
+    prevMessageCount.current = messages.length;
+  }, [messages]);
+  // Scroll once when suggestions first appear
+  useEffect(() => {
+    if (suggestions.length > 0) scrollToBottom();
+  }, [suggestions.length > 0]);
 
   /** Collapse the multiple possible response shapes into one canonical object. */
   const normalizeResponse = (data: any) => {
@@ -1700,7 +1709,7 @@ export default function AgentChat({
                       </div>
                     ) : (
                       <>
-                        <div className="prose prose-xs dark:prose-invert max-w-none break-words overflow-wrap-anywhere text-xs leading-snug max-h-[200px] overflow-y-auto">
+                        <div className="prose prose-xs dark:prose-invert max-w-none break-words overflow-wrap-anywhere text-xs leading-snug">
                           <ReactMarkdown
                             components={{
                               code({ node, className, children, ...props }: any) {

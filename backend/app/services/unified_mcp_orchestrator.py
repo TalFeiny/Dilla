@@ -638,11 +638,18 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="free",
     ),
     AgentTool(
+        name="pull_company_data",
+        description="Pull a single company's full financials from DB (fpa_actuals). Returns time series, latest metrics, and analytics. Use this to build context for any single-company analysis.",
+        handler="_tool_pull_company_data",
+        input_schema={"company_id": "str?", "company_name": "str?"},
+        cost_tier="free",
+    ),
+    AgentTool(
         name="query_grid",
         description=(
             "Read the current grid data. Works in ALL modes: portfolio (companies), "
             "PNL (line items), legal (contracts/clauses). Returns rows with cell values. "
-            "Use this FIRST to see what data exists before doing analysis."
+            "Fallback only — prefer query_portfolio or pull_company_data for SQL reads."
         ),
         handler="_tool_query_grid",
         input_schema={"query": "str?", "row_name": "str?", "column": "str?"},
@@ -660,7 +667,7 @@ AGENT_TOOLS: list[AgentTool] = [
         description="Calculate fund-level metrics: MOIC, IRR, DPI, TVPI across portfolio positions.",
         handler="_tool_fund_metrics",
         input_schema={"fund_id": "str?"},
-        cost_tier="cheap",
+        cost_tier="free",  # pure DB math — must be visible in reply mode for STATUS questions
         timeout_ms=30_000,
     ),
     AgentTool(
@@ -668,7 +675,7 @@ AGENT_TOOLS: list[AgentTool] = [
         description="Run PWERM/DCF/OPM/comparables valuation for a company.",
         handler="_tool_valuation",
         input_schema={"company_id": "str", "method": "str?"},
-        cost_tier="expensive",
+        cost_tier="cheap",
         timeout_ms=60_000,
     ),
     AgentTool(
@@ -1061,7 +1068,7 @@ AGENT_TOOLS: list[AgentTool] = [
         description="Side-by-side comparison of portfolio companies: operating metrics, margins, growth, leverage, returns.",
         handler="_tool_portfolio_comparison",
         input_schema={"companies": "list[str]?", "metrics": "list[str]?"},
-        cost_tier="cheap",
+        cost_tier="free",  # pure DB compare — must be visible in reply for "compare our companies"
         timeout_ms=30_000,
     ),
     AgentTool(
@@ -1479,7 +1486,7 @@ AGENT_TOOLS: list[AgentTool] = [
         description="Full P&L waterfall (actuals + forecast) for a company. Hierarchical rows, split derivation. Views: waterfall (default), actuals_vs_budget, actuals_vs_forecast.",
         handler="_tool_fpa_pnl",
         input_schema={"company_id": "str", "fund_id": "str?", "start": "str?", "end": "str?", "months": "int?", "view": "str?", "budget_id": "str?", "forecast_id": "str?"},
-        cost_tier="cheap",
+        cost_tier="free",  # pure DB read — must be visible in reply mode for "show me the P&L"
         timeout_ms=30_000,
     ),
     AgentTool(
@@ -1487,7 +1494,7 @@ AGENT_TOOLS: list[AgentTool] = [
         description="Full Balance Sheet (assets / liabilities / equity) with computed totals, balance check. Hierarchical rows by section.",
         handler="_tool_fpa_balance_sheet",
         input_schema={"company_id": "str", "fund_id": "str?", "start": "str?", "end": "str?"},
-        cost_tier="cheap",
+        cost_tier="free",  # pure DB read — must be visible in reply mode for "show me the balance sheet"
         timeout_ms=30_000,
     ),
     AgentTool(
@@ -1495,7 +1502,7 @@ AGENT_TOOLS: list[AgentTool] = [
         description="Budget vs actuals variance report with status flags and monthly trend. budget_id/start/end are optional — defaults to approved branch and YTD.",
         handler="_tool_fpa_variance",
         input_schema={"company_id": "str", "budget_id": "str?", "start": "str?", "end": "str?"},
-        cost_tier="cheap",
+        cost_tier="free",  # DB read + math — must be visible in reply for "how are we vs budget?"
         timeout_ms=30_000,
     ),
     AgentTool(
@@ -1511,7 +1518,7 @@ AGENT_TOOLS: list[AgentTool] = [
         description="Monthly cash flow model: revenue → COGS → gross profit → OpEx → EBITDA → FCF → cash → runway.",
         handler="_tool_fpa_cash_flow",
         input_schema={"company_id": "str", "months": "int?", "monthly_overrides": "dict?"},
-        cost_tier="cheap",
+        cost_tier="free",  # computed from actuals — must be visible in reply for "show me cash flow"
         timeout_ms=30_000,
     ),
     AgentTool(
@@ -1652,7 +1659,7 @@ AGENT_TOOLS: list[AgentTool] = [
         description="Compute KPIs for a company: adapts to business type (SaaS, services, ecommerce, manufacturing). Returns time series + trends.",
         handler="_tool_fpa_kpi_dashboard",
         input_schema={"company_id": "str", "as_of": "str?", "periods": "int?"},
-        cost_tier="cheap",
+        cost_tier="free",  # DB compute from actuals — must be visible in reply mode for KPI questions
         timeout_ms=30_000,
     ),
     # --- Forecast Persistence & Explainability tools ---
@@ -1824,7 +1831,7 @@ AGENT_TOOLS: list[AgentTool] = [
         description="Compute company health profile: operating metrics, margin trends, growth trajectory, risk signals. Uses actuals from DB.",
         handler="_tool_company_health_score",
         input_schema={"company": "str?", "company_id": "str?"},
-        cost_tier="cheap",
+        cost_tier="free",  # pure DB compute — must be visible in reply mode for STATUS questions
         timeout_ms=30_000,
     ),
     AgentTool(
@@ -1832,7 +1839,7 @@ AGENT_TOOLS: list[AgentTool] = [
         description="Compute per-company return metrics: MOIC, IRR, holding period, unrealized gains, cost basis.",
         handler="_tool_company_return_metrics",
         input_schema={"company": "str?", "company_id": "str?"},
-        cost_tier="cheap",
+        cost_tier="free",  # pure DB compute — must be visible in reply for "what's Acme's MOIC?"
         timeout_ms=30_000,
     ),
     AgentTool(
@@ -1884,7 +1891,7 @@ AGENT_TOOLS: list[AgentTool] = [
         ),
         handler="_tool_fpa_computed_metrics",
         input_schema={"company_id": "str", "driver_overrides": "dict?"},
-        cost_tier="cheap",
+        cost_tier="free",  # pure compute from actuals — must be visible in reply for "unit economics?"
         timeout_ms=15_000,
     ),
 
@@ -2022,7 +2029,7 @@ AGENT_TOOLS: list[AgentTool] = [
             "trigger_driver": "str?",
             "trigger_delta": "float?",
         },
-        cost_tier="standard",
+        cost_tier="cheap",
         timeout_ms=45_000,
     ),
     AgentTool(
@@ -2085,6 +2092,51 @@ AGENT_TOOLS: list[AgentTool] = [
         },
         cost_tier="cheap",
         timeout_ms=45_000,
+    ),
+
+    # ------------------------------------------------------------------
+    # Legal Intelligence — promoted from skills to first-class tools
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="compare_term_sheets",
+        description="Compare N term sheets clause-by-clause against existing capital structure. Returns per-clause diffs, stakeholder impact matrix, and negotiation risk flags.",
+        handler="_execute_term_sheet_comparison",
+        input_schema={
+            "company_id": "str",
+            "term_sheets": "dict",  # {name: [extracted_clauses]}
+            "existing_docs": "list?",
+            "reference_exits": "dict?",
+        },
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="redline_impact",
+        description="Quantify the financial impact of redline changes to a legal document. Compares original vs redlined clauses and computes dollar/percentage impact on returns, dilution, and obligations.",
+        handler="_execute_redline_impact",
+        input_schema={
+            "company_id": "str",
+            "original": "dict",     # original document clauses
+            "redlined": "dict",     # redlined document clauses
+            "existing_docs": "list?",
+            "reference_exits": "dict?",
+        },
+        cost_tier="expensive",
+        timeout_ms=90_000,
+    ),
+    AgentTool(
+        name="negotiate_contract",
+        description="Analyze two negotiation positions, classify each delta as concede/counter/fight, and generate a counter-proposal with reasoning. Works for any contract type.",
+        handler="_execute_negotiation_analysis",
+        input_schema={
+            "company_id": "str",
+            "our_position_docs": "list",    # our extracted clauses
+            "their_position_docs": "list",   # their extracted clauses
+            "our_objectives": "list?",
+            "reference_exits": "dict?",
+        },
+        cost_tier="expensive",
+        timeout_ms=90_000,
     ),
 
     # ------------------------------------------------------------------
@@ -2232,7 +2284,7 @@ AGENT_TOOLS: list[AgentTool] = [
             "query": "str",
             "answer_type": "str?",
         },
-        cost_tier="standard",
+        cost_tier="cheap",
         timeout_ms=120_000,
     ),
     # ── Priors-based custom model engine ───────────────────────────────
@@ -2777,16 +2829,15 @@ INTENT_TOOLS: dict[str, list[str]] = {
 
     # --- Analysis ---
     "valuation": [
-        "query_grid",               # READ THE GRID — see current data before valuing
+        "pull_company_data",        # primary read — single company SQL pull
         "run_valuation",            # primary action (auto-fetches company)
         "cap_table_evolution",      # ownership context
         "run_scenario",             # exit scenarios
         "generate_chart",           # visualize results
-        "query_portfolio",          # portfolio context
         "analyze_financials",       # financial detail
     ],
     "scenario": [
-        "query_grid",               # READ THE GRID — see current state before modeling
+        "pull_company_data",        # primary read — single company SQL pull
         "run_scenario",             # primary action
         "run_scenario_tree",        # branching scenario trees
         "run_bull_bear_base",       # bull/bear/base scenarios
@@ -2808,35 +2859,66 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "monte_carlo_portfolio",    # probabilistic modeling
         "run_cash_flow_model",      # P&L / cash flow modeling
         "generate_chart",           # visualize
-        "query_portfolio",          # portfolio context
     ],
     "forecast": [
-        "query_grid",               # READ THE GRID — see P&L line items, actuals, forecasts
+        # Read
+        "pull_company_data",        # primary read — single company SQL pull
+        "fpa_pnl",                  # P&L waterfall view (actuals + forecast)
+        "fpa_actuals",              # fetch structured actuals
+        "fpa_balance_sheet",        # balance sheet context (assets, liabilities, equity)
+        "fpa_cash_flow",            # monthly cash flow model
+        "fpa_kpi_dashboard",        # KPI dashboard with time series
+        "fpa_variance",             # budget vs actuals variance report
+        "fpa_computed_metrics",     # unit economics: LTV, CAC, burn, runway
+        # Budget
+        "fpa_budget_list",          # list budgets
+        "fpa_budget_lines",         # get budget line items
+        "fpa_budget_create",        # create a budget
+        "fpa_upload_budget",        # upload budget lines
+        "auto_budget",              # auto-generate full-year budget
+        # Forecast
         "run_fpa",                  # primary: FP&A forecast, stress test
         "fpa_forecast",             # generate forecast from actuals (persists to DB)
-        "fpa_pnl",                  # P&L waterfall view (actuals + forecast)
-        "fpa_balance_sheet",        # balance sheet context (assets, liabilities, equity)
-        "fpa_actuals",              # fetch structured actuals
-        "fpa_cell_edit",            # edit a single P&L cell
         "fpa_apply_forecast",       # write forecast values into fpa_actuals
+        "fpa_save_forecast",        # save forecast with provenance
+        "fpa_list_forecasts",       # list saved forecasts
+        "fpa_explain_forecast",     # explain forecast methodology + derivations
+        "fpa_rolling_forecast",     # rolling actuals+forecast timeline
+        "fpa_detect_seasonality",   # detect seasonal patterns
+        "fpa_apply_seasonality",    # apply seasonal factors to forecast
+        # Write
+        "fpa_cell_edit",            # edit a single P&L cell
         "fpa_upload_actuals",       # bulk ingest actuals
+        "bulk_write_grid",          # batch write forecast values to grid
+        # Scenarios
         "fpa_scenario_create",      # create scenario branch with driver overrides
         "fpa_scenario_update",      # iteratively adjust branch drivers and re-cascade
         "fpa_scenario_compare",     # side-by-side branch comparison
-        "bulk_write_grid",          # batch write forecast values to grid
-        "strategic_analysis",       # cross-domain strategic reasoning
+        "fpa_resolve_drivers",      # show all drivers with base/override/effective values
+        "fpa_monte_carlo",          # Monte Carlo over cash flow model
+        "fpa_correlate_actuals",    # correlate two time series
+        "fpa_driver_impact_ranking",# rank drivers by impact on target metric
         "run_bull_bear_base",       # bull/bear/base scenario modeling
-        "analyse_macro_event",      # macro event impact on forecasts
         "three_scenario_cash_flow", # 3-scenario P&L
+        "run_scenario",             # scenario composition
+        "run_scenario_tree",        # branching growth scenarios
+        # Liquidity
+        "liquidity_model",          # granular liquidity model
+        "liquidity_scenarios",      # bull/base/bear liquidity comparison
+        "liquidity_sensitivity",    # runway sensitivity to OpEx/COGS changes
+        # Analysis
+        "strategic_analysis",       # cross-domain strategic reasoning
+        "cross_domain_analysis",    # weave financial + legal analysis
+        "analyse_macro_event",      # macro event impact on forecasts
+        "company_health_score",     # company health profile
+        # Modeling
         "run_regression",           # regression, monte carlo, sensitivity, time-series
         "run_projection",           # revenue projections with decay
-        "run_scenario_tree",        # branching growth scenarios
         "run_cash_flow_model",      # full P&L / cash flow model
         "sensitivity_matrix",       # 2D sensitivity analysis
         "monte_carlo_portfolio",    # probabilistic portfolio modeling
-        "run_scenario",             # scenario composition
+        # Output
         "generate_chart",           # visualize results (tornado, histogram, etc.)
-        "query_portfolio",          # portfolio context for company data
     ],
     # Aliases — route to same toolset as "forecast" / "scenario"
     "regression": [
@@ -2890,9 +2972,11 @@ INTENT_TOOLS: dict[str, list[str]] = {
 
     # --- Portfolio (restored — full analysis + memo tools) ---
     "portfolio": [
-        "query_grid",               # primary read
-        "query_portfolio",          # read portfolio companies
+        # Read
+        "query_portfolio",          # primary read — SQL via pull_fund_companies (N+1 batch)
+        "pull_company_data",        # single company SQL pull (financials, time series)
         "fetch_company_data",       # deep company pull from DB
+        # Metrics
         "portfolio_snapshot",       # NAV, DPI, TVPI, MOIC
         "portfolio_health_analysis",# health + returns across all companies
         "portfolio_comparison",     # side-by-side company comparison
@@ -2900,17 +2984,25 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "company_return_metrics",   # per-company MOIC, IRR
         "calculate_fund_metrics",   # fund-level metrics
         "run_portfolio_health",     # benchmark analysis across portfolio
+        "fpa_kpi_dashboard",        # per-company KPIs
+        "fpa_computed_metrics",     # unit economics
+        "analyze_financials",       # compute derived metrics
+        # Operations
         "add_company_to_portfolio", # add new company
         "company_history",          # historical timeline
         "graduation_rates",         # stage progression analysis
         "market_landscape",         # competitive landscape
         "market_timing",            # macro timing signals
         "fund_deployment_model",    # deployment pacing
+        "enrich_portfolio",         # fill missing data
+        # Modeling
         "run_followon_strategy",    # follow-on modeling
         "run_round_modeling",       # financing round modeling
         "run_exit_modeling",        # exit scenario modeling
         "batch_valuate",            # parallel valuations
         "run_followon_analysis",    # follow-on opportunity analysis
+        "strategic_analysis",       # strategic CFO reasoning
+        # Output
         "generate_memo",            # analysis memo
         "generate_ic_memo",         # IC memo
         "generate_followon_memo",   # follow-on memo
@@ -2919,16 +3011,14 @@ INTENT_TOOLS: dict[str, list[str]] = {
         "generate_comparison_report",# comparison report
         "generate_plan_memo",       # strategic plan memo
         "run_report",               # structured report
-        "enrich_portfolio",         # fill missing data
         "bulk_write_grid",          # batch write to grid
         "generate_chart",           # portfolio charts
-        "analyze_financials",       # compute derived metrics
         "emit_todo",                # action items
     ],
     "sourcing": [
         "generate_rubric",          # thesis → weights + filters (call first)
         "source_companies",         # primary action — DB query + web discovery + scoring
-        "query_grid",               # grid context
+        "query_portfolio",          # portfolio context — SQL via pull_fund_companies
         "bulk_write_grid",          # batch write sourced data to grid
         "generate_chart",           # visualize results
         "suggest_grid_edit",        # push to grid
@@ -2945,15 +3035,19 @@ INTENT_TOOLS: dict[str, list[str]] = {
 
     # --- KPI ---
     "kpi": [
-        "query_grid",                  # READ THE GRID — see current data before computing KPIs
+        "pull_company_data",           # primary read — single company SQL pull
         "fpa_kpi_dashboard",           # primary: compute KPIs with time series
         "fpa_pnl",                     # P&L context
         "fpa_balance_sheet",           # balance sheet for liquidity/solvency KPIs
+        "fpa_cash_flow",               # cash flow for cash conversion KPIs
         "fpa_actuals",                 # raw actuals
+        "fpa_computed_metrics",        # unit economics: LTV, CAC, burn, rule of 40
+        "fpa_variance",                # budget vs actuals for performance KPIs
         "fpa_forecast",                # generate forecast from actuals
+        "fpa_correlate_actuals",       # correlate KPI pairs (revenue vs headcount)
+        "company_health_score",        # health profile
         "fpa_cell_edit",               # edit a single P&L cell
         "generate_chart",              # visualize KPI trends
-        "query_grid",                  # company context
     ],
 
     # --- Transfer Pricing ---
@@ -2969,28 +3063,52 @@ INTENT_TOOLS: dict[str, list[str]] = {
 
     # --- Strategic ---
     "strategy": [
-        "query_grid",                   # READ THE GRID — see current state before strategizing
+        "pull_company_data",            # primary read — single company SQL pull
         "strategic_analysis",           # primary: cross-domain CFO reasoning
+        "cross_domain_analysis",        # weave financial + legal analysis
         "fpa_kpi_dashboard",            # KPI context
         "fpa_pnl",                      # P&L waterfall view
         "fpa_balance_sheet",            # balance sheet for capital structure
-        "fpa_actuals",                  # raw actuals
-        "fpa_forecast",                 # generate forecast from actuals
         "fpa_cash_flow",                # cash flow model
+        "fpa_actuals",                  # raw actuals
+        "fpa_computed_metrics",         # unit economics
+        "fpa_variance",                 # budget vs actuals
+        "fpa_forecast",                 # generate forecast from actuals
         "fpa_scenario_compare",         # scenario comparison
+        "fpa_driver_impact_ranking",    # what levers matter most
+        "fpa_trace_strategic_impact",   # cross-silo impact chains
+        "liquidity_model",              # liquidity context
         "analyse_macro_event",          # macro event impact
+        "company_health_score",         # company health
         "run_valuation",                # valuation context
         "generate_chart",               # visualize
+        "generate_memo",                # strategic memo
         "query_portfolio",              # portfolio context
+        "query_documents",              # legal document context
     ],
 
     # --- Legal Intelligence ---
     "legal_analysis": [
-        "query_grid",               # READ THE GRID — see contracts, clauses, obligations, flags
-        "run_skill",                # dispatches to term-sheet-comparator, redline-impact-analyzer, negotiation-analyzer
-        "query_portfolio",          # read company/document context
-        "query_documents",          # search uploaded contracts/documents
+        # Read
+        "query_documents",          # primary read — SQL pull for contracts/documents
+        "pull_company_data",        # company context via SQL
+        "search_across_documents",  # ask a question across multiple documents
+        "contract_pnl_attribution", # which contracts drive each P&L line
+        "contract_lifecycle_query", # contracts by expiration, renewal, break clauses
+        # Contract operations
+        "draft_contract",           # draft from template (NDA, SHA, employment, vendor, review)
+        "model_contract_changes",   # model P&L impact of contract changes
+        "ingest_documents",         # extract structured data from uploaded docs
+        "compare_term_sheets",      # clause-by-clause term sheet comparison
+        "redline_impact",           # quantify financial impact of redline changes
+        "negotiate_contract",       # analyze positions, generate counter-proposals
+        # Analysis
         "strategic_analysis",       # cross-domain reasoning (risk, compliance)
+        "cross_domain_analysis",    # weave financial + legal analysis together
+        "compliance_check",         # filing requirements, regulatory checks
+        "fpa_pnl",                  # financial context for contract impact analysis
+        "fpa_balance_sheet",        # capital structure context
+        # Output
         "suggest_grid_edit",        # push findings back to grid
         "bulk_write_grid",          # batch write findings
         "generate_memo",            # render results as memo
@@ -3008,29 +3126,42 @@ INTENT_TOOLS: dict[str, list[str]] = {
 
     # --- Fallback: intentionally broader but still curated ---
     "general": [
-        "query_grid",               # READ THE GRID FIRST — works in all modes
-        "fetch_company_data",       # most common need
-        "query_portfolio",          # read state
-        "bulk_write_grid",          # batch write to grid
+        # Read — portfolio
+        "query_portfolio",          # primary read — fund-level SQL via pull_fund_companies
+        "pull_company_data",        # single company SQL pull
+        "query_documents",          # legal/document SQL pull
+        # Read — CFO
         "fpa_pnl",                  # P&L waterfall view
         "fpa_actuals",              # fetch structured actuals
+        "fpa_balance_sheet",        # balance sheet
+        "fpa_cash_flow",            # cash flow model
+        "fpa_kpi_dashboard",        # KPI dashboard
+        "fpa_variance",             # budget vs actuals
+        "fpa_computed_metrics",     # unit economics
+        # Write
         "fpa_cell_edit",            # edit a single P&L cell
         "fpa_upload_actuals",       # bulk ingest actuals
         "fpa_forecast",             # generate forecast from actuals
-        "web_search",               # research
-        "analyse_macro_event",      # macro event impact analysis
+        "bulk_write_grid",          # batch write to grid
+        # Analysis
         "strategic_analysis",       # strategic CFO reasoning
-        "suggest_action",           # help user decide
-        "generate_chart",           # visualize anything
+        "cross_domain_analysis",    # cross-domain analysis
+        "analyse_macro_event",      # macro event impact analysis
         "run_valuation",            # common analysis
-        "generate_memo",            # common output
-        "emit_todo",                # track items
-        # Portfolio tools (visible in general since portfolio maps here)
+        "analyze_financials",       # derived metrics from actuals
+        # Portfolio metrics
         "portfolio_snapshot",       # NAV, DPI, TVPI
         "company_health_score",     # per-company health
+        "company_return_metrics",   # per-company MOIC, IRR
         "portfolio_health_analysis",# cross-portfolio health
         "calculate_fund_metrics",   # fund-level metrics
-        "analyze_financials",       # derived metrics from actuals
+        "portfolio_comparison",     # side-by-side comparison
+        # Output
+        "suggest_action",           # help user decide
+        "generate_chart",           # visualize anything
+        "generate_memo",            # common output
+        "emit_todo",                # track items
+        "web_search",               # research
     ],
 }
 
@@ -3169,17 +3300,22 @@ _ALWAYS_LOADED_TOOLS = {"find_tools"}
 def filter_tools_by_response_mode(tools: list[AgentTool], response_mode: str) -> list[AgentTool]:
     """Gate tools by response_mode to reduce prompt noise and prevent over-action.
 
-    - "reply": free-tier tools + metatools (allows 1 lookup)
-    - "action": free + cheap tier tools (can read/act, but skip expensive ops)
-    - "task": full tool set
+    - "reply": free-tier tools + metatools (quick lookups only)
+    - "action" / "task": full tool set + metatools (iteration caps are the real cost guard)
     All tools remain callable via _execute_tool() and wiring regardless —
     this only controls what appears in the agent prompt.
     """
     if response_mode == "reply":
         return [t for t in tools if t.cost_tier == "free" or t.name in _ALWAYS_LOADED_TOOLS]
-    if response_mode == "action":
-        return [t for t in tools if t.cost_tier in ("free", "cheap") or t.name in _ALWAYS_LOADED_TOOLS]
-    return tools  # "task" gets everything
+    # "action" and "task" get full intent-scoped set + always-loaded metatools
+    tool_names = {t.name for t in tools}
+    result = list(tools)
+    for meta_name in _ALWAYS_LOADED_TOOLS:
+        if meta_name not in tool_names:
+            meta_tool = AGENT_VISIBLE_TOOL_MAP.get(meta_name)
+            if meta_tool:
+                result.append(meta_tool)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -3682,21 +3818,21 @@ class PlanContext:
 PLAN_TEMPLATES: Dict[str, List[str]] = {
     "company_research": ["web_search", "run_valuation", "generate_chart"],
     # REMOVED: portfolio_overview, ic_memo, lp_report, fund_metrics, fund_deployment, gp_update, followon_decision, round_modeling — legacy investor
-    "company_deep_dive": ["query_grid", "run_valuation", "generate_chart"],
-    "comparison": ["query_grid", "run_valuation", "generate_chart"],
-    "stress_test": ["query_grid", "stress_test_portfolio", "run_regression", "generate_chart"],
-    "exit_analysis": ["query_grid", "liquidation_waterfall", "generate_chart"],
-    "deck_generation": ["query_grid", "run_valuation", "cap_table_evolution", "generate_deck"],
-    "cap_table_analysis": ["query_grid", "cap_table_evolution", "liquidation_waterfall", "generate_chart"],
-    "ma_analysis": ["query_grid", "ma_workflow", "run_valuation", "generate_chart"],
+    "company_deep_dive": ["pull_company_data", "run_valuation", "generate_chart"],
+    "comparison": ["query_portfolio", "run_valuation", "generate_chart"],
+    "stress_test": ["query_portfolio", "stress_test_portfolio", "run_regression", "generate_chart"],
+    "exit_analysis": ["pull_company_data", "liquidation_waterfall", "generate_chart"],
+    "deck_generation": ["pull_company_data", "run_valuation", "cap_table_evolution", "generate_deck"],
+    "cap_table_analysis": ["pull_company_data", "cap_table_evolution", "liquidation_waterfall", "generate_chart"],
+    "ma_analysis": ["pull_company_data", "ma_workflow", "run_valuation", "generate_chart"],
     "market_research": ["web_search", "generate_chart"],
-    "compliance_review": ["compliance_check", "query_grid"],
-    "scenario_analysis": ["query_grid", "world_model_scenario", "sensitivity_matrix", "generate_chart"],
-    "portfolio_stress": ["query_grid", "stress_test_portfolio", "monte_carlo_portfolio", "generate_chart"],
+    "compliance_review": ["compliance_check", "query_documents"],
+    "scenario_analysis": ["pull_company_data", "world_model_scenario", "sensitivity_matrix", "generate_chart"],
+    "portfolio_stress": ["query_portfolio", "stress_test_portfolio", "monte_carlo_portfolio", "generate_chart"],
     # Phase 8: New plan templates
     "proactive_enrichment": ["enrich_company_proactive", "suggest_grid_edit", "generate_chart"],
     "company_list_building": ["source_companies", "run_valuation"],
-    "projection_analysis": ["query_grid", "run_projection", "generate_chart"],
+    "projection_analysis": ["pull_company_data", "run_projection", "generate_chart"],
     "forecast_analysis": ["run_fpa", "run_regression", "run_projection", "sensitivity_matrix", "generate_chart"],
     "revenue_forecast": ["query_portfolio", "run_fpa", "run_projection", "generate_chart"],
     "monte_carlo_analysis": ["query_portfolio", "monte_carlo_portfolio", "generate_chart"],
@@ -3788,7 +3924,15 @@ class UnifiedMCPOrchestrator:
     - Self-optimizing: Parallel execution when possible
     - Self-formatting: Adapts output to requested format
     """
-    
+
+    # Class-level state for throttled valuation engine reloads.
+    # Shared across all instances so we only reload when the source file
+    # has actually changed or after a cooldown period (60 s).
+    _ve_last_reload_time: float = 0.0
+    _ve_last_file_mtime: float = 0.0
+    _ve_cached_module = None  # type: ignore[assignment]
+    _VE_RELOAD_COOLDOWN_SECS: float = 60.0
+
     def __init__(self):
         # Track orchestrator readiness for higher-level health checks
         self._is_ready: bool = False
@@ -4006,19 +4150,64 @@ class UnifiedMCPOrchestrator:
         self._fund_companies_cache = None
 
     def _load_valuation_engine(self):
-        """Ensure the latest valuation engine implementation is loaded."""
-        # Use imported classes directly instead of modifying globals
-        # This avoids "cannot access local variable" errors
+        """Ensure the latest valuation engine implementation is loaded.
+
+        To avoid expensive ``importlib.reload`` calls on every request, the
+        module is only reloaded when the source file's mtime has changed **or**
+        when more than ``_VE_RELOAD_COOLDOWN_SECS`` seconds (default 60) have
+        elapsed since the last reload.  A class-level cache keeps the resolved
+        module across instances.
+        """
         if valuation_module is None:
             raise RuntimeError("valuation_engine_service module is unavailable due to import failure")
-        try:
-            # Try to reload for development, but keep original imports if it fails
-            module = importlib.reload(valuation_module)
-            logger.info("[SERVICE_RELOAD] valuation_engine_service reloaded to pick up latest PWERM schema")
-            return module.ValuationEngineService()
-        except Exception as exc:
-            logger.warning(f"[SERVICE_RELOAD] Unable to reload valuation_engine_service: {exc}, using original imports")
-            return valuation_module.ValuationEngineService()
+
+        now = _time_mod.monotonic()
+        cls = type(self)
+
+        # Determine the source file path for mtime comparison.
+        source_file = getattr(valuation_module, "__file__", None)
+        current_mtime: float = 0.0
+        if source_file:
+            try:
+                current_mtime = os.path.getmtime(source_file)
+            except OSError:
+                pass
+
+        needs_reload = False
+        if cls._ve_cached_module is None:
+            # First load ever — must reload.
+            needs_reload = True
+        elif current_mtime and current_mtime != cls._ve_last_file_mtime:
+            # Source file has been modified on disk.
+            needs_reload = True
+        elif (now - cls._ve_last_reload_time) >= cls._VE_RELOAD_COOLDOWN_SECS:
+            # Cooldown expired — reload as a safety net for dev workflows.
+            needs_reload = True
+
+        if needs_reload:
+            try:
+                module = importlib.reload(valuation_module)
+                cls._ve_cached_module = module
+                cls._ve_last_reload_time = now
+                cls._ve_last_file_mtime = current_mtime
+                logger.info(
+                    "[SERVICE_RELOAD] valuation_engine_service reloaded to pick up latest PWERM schema "
+                    "(mtime=%s)", current_mtime
+                )
+                return module.ValuationEngineService()
+            except Exception as exc:
+                logger.warning(
+                    "[SERVICE_RELOAD] Unable to reload valuation_engine_service: %s, using original imports",
+                    exc,
+                )
+                return valuation_module.ValuationEngineService()
+        else:
+            logger.debug(
+                "[SERVICE_RELOAD] valuation_engine_service reload skipped — "
+                "source unchanged and cooldown not expired (%.1fs remaining)",
+                cls._VE_RELOAD_COOLDOWN_SECS - (now - cls._ve_last_reload_time),
+            )
+            return cls._ve_cached_module.ValuationEngineService()
 
     def _build_system_prompt(self, task_instruction: str) -> str:
         """Build a system prompt with dynamic fund context instead of hardcoded values.
@@ -4476,6 +4665,9 @@ class UnifiedMCPOrchestrator:
         model receives a focused set (typically 15-40 tools) instead of the
         full 150+ catalog.
 
+        Note: _run_agent_loop applies its own two-tier formatting (primary=full,
+        secondary=compact) using cost_tier. This method just scopes the list.
+
         ToolAdapter converts from here to OpenAI/Google/etc as needed.
         """
         if not ToolAdapter:
@@ -4748,7 +4940,7 @@ class UnifiedMCPOrchestrator:
             yield {
                 "type": "classification",
                 "intent": turn_type.value,
-                "response_mode": "task",
+                "response_mode": "action",
                 "confidence": 1.0,
             }
 
@@ -4794,8 +4986,8 @@ class UnifiedMCPOrchestrator:
         # ── Emit classification event so frontend can show intent/mode ──
         _response_mode = (
             "reply" if turn_type in (TurnType.PHATIC, TurnType.STATUS) else
-            "action" if turn_type in (TurnType.RETRIEVAL, TurnType.ITERATION, TurnType.STEERING) else
-            "task"
+            "action" if turn_type in (TurnType.RETRIEVAL, TurnType.ITERATION, TurnType.STEERING, TurnType.ANALYSIS) else
+            "task"  # only SYNTHESIS gets full task mode
         )
         yield {
             "type": "classification",
@@ -4876,7 +5068,11 @@ class UnifiedMCPOrchestrator:
                 "path": "conversational",
                 "turn_type": turn_type.value,
                 "phase": self._conversation_phase.value,
-                "response_mode": "task" if turn_type == TurnType.SYNTHESIS else "reply",
+                "response_mode": (
+                    "reply" if turn_type in (TurnType.PHATIC, TurnType.STATUS) else
+                    "action" if turn_type in (TurnType.RETRIEVAL, TurnType.ITERATION, TurnType.STEERING, TurnType.ANALYSIS) else
+                    "task"
+                ),
                 "tool_calls_count": len(tool_calls_made),
                 "tools_used": [tc["tool"] for tc in tool_calls_made],
                 "budget": self.model_router.end_budget() or {},
@@ -5214,7 +5410,7 @@ class UnifiedMCPOrchestrator:
         _intent = _mode_intent_map.get(_grid_mode, "general")
         _resp_mode = (
             "reply" if turn_type in (TurnType.PHATIC, TurnType.STATUS) else
-            "action" if turn_type in (TurnType.RETRIEVAL, TurnType.ITERATION, TurnType.STEERING) else
+            "action" if turn_type in (TurnType.RETRIEVAL, TurnType.ITERATION, TurnType.STEERING, TurnType.ANALYSIS) else
             "task"
         )
         tools = self._build_tool_definitions(intent=_intent, response_mode=_resp_mode)
@@ -8209,6 +8405,49 @@ Answer using specific company names and numbers from the portfolio grid above.""
         except Exception as e:
             logger.warning(f"[TOOL] query_portfolio failed: {e}")
             return {"summary": f"Query failed: {e}", "rows": []}
+
+    async def _tool_pull_company_data(self, inputs: dict) -> dict:
+        """Pull a single company's full financials from DB via pull_company_data (SQL)."""
+        try:
+            company_id = inputs.get("company_id")
+            company_name = inputs.get("company_name")
+
+            # Resolve company_id from name if needed
+            if not company_id and company_name:
+                fc = self._get_fund_companies()
+                for cid, name, _cd, _inv in fc.iter_companies():
+                    if company_name.lower() in name.lower():
+                        company_id = cid
+                        break
+
+            if not company_id:
+                # Try shared_data context
+                company_id = self.shared_data.get("company_id")
+
+            if not company_id:
+                return {"summary": "No company_id provided or resolvable from name.", "data": {}}
+
+            if pull_company_data is None:
+                return {"summary": "pull_company_data not available.", "data": {}}
+
+            cd = pull_company_data(company_id)
+            if cd.metadata.get("row_count", 0) == 0:
+                return {"summary": f"No financial data found for company {company_id}.", "data": {}}
+
+            return {
+                "company_id": company_id,
+                "latest": cd.latest,
+                "analytics": cd.analytics,
+                "periods": cd.periods,
+                "categories": cd.metadata.get("categories", []),
+                "period_range": cd.metadata.get("period_range", []),
+                "period_count": cd.metadata.get("period_count", 0),
+                "summary": f"Company {company_id}: {cd.metadata.get('row_count', 0)} actuals rows, {len(cd.periods)} periods, {len(cd.latest)} metrics",
+                "source": "pull_company_data_sql",
+            }
+        except Exception as e:
+            logger.warning(f"[TOOL] pull_company_data failed: {e}")
+            return {"summary": f"Pull failed: {e}", "data": {}}
 
     async def _tool_query_grid(self, inputs: dict) -> dict:
         """Universal grid reader. Pulls from DB via pull_fund_companies."""
@@ -17486,8 +17725,8 @@ Rules:
         )
         logger.info(f"[AGENT_LOOP] Tool gating: intent={_intent}, response_mode={_resp_mode}, tools={len(_scoped_tools)}")
 
-        # Tiered catalog: first 5 tools get full description + params (primary),
-        # rest get compact name:hint format (secondary). Cuts prompt tokens ~60%.
+        # Tiered catalog by cost_tier: free+cheap get full description + params (primary),
+        # expensive get compact name:hint format (secondary). Cuts prompt tokens ~60%.
         def _format_tool_full(t: AgentTool) -> str:
             schema_parts = []
             for k, v in (t.input_schema or {}).items():
@@ -17502,12 +17741,12 @@ Rules:
             desc = t.description.split(".")[0] if t.description else ""
             return f"  {t.name}: {desc}"
 
-        _PRIMARY_COUNT = 5  # top tools get full format
-        _primary = _scoped_tools[:_PRIMARY_COUNT]
-        _secondary = _scoped_tools[_PRIMARY_COUNT:]
+        # Split by cost_tier: free+cheap = primary (full format), expensive = secondary (compact)
+        _primary = [t for t in _scoped_tools if t.cost_tier in ("free", "cheap") or t.name in _ALWAYS_LOADED_TOOLS]
+        _secondary = [t for t in _scoped_tools if t.cost_tier == "expensive" and t.name not in _ALWAYS_LOADED_TOOLS]
         tool_catalog_full = "\n".join(_format_tool_full(t) for t in _primary)
         if _secondary:
-            tool_catalog_full += "\nAlso available:\n" + "\n".join(_format_tool_compact(t) for t in _secondary)
+            tool_catalog_full += "\nAlso available (callable by name):\n" + "\n".join(_format_tool_compact(t) for t in _secondary)
         # Iteration 1+: just names — agent already knows what they do
         tool_catalog_names = "Tools: " + ", ".join(t.name for t in _scoped_tools)
 
@@ -17997,9 +18236,9 @@ JSON — pick one:
                         # Agent tried to quit without looking. Force a read
                         # appropriate to the current mode.
                         _orient_tool = {
-                            "pnl": "fpa_actuals",
+                            "pnl": "pull_company_data",
                             "legal": "query_documents",
-                        }.get(grid_mode, "query_grid")
+                        }.get(grid_mode, "query_portfolio")
                         action = {
                             "action": "call_tool",
                             "tool": _orient_tool,

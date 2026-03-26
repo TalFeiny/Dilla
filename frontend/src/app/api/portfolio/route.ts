@@ -152,6 +152,7 @@ export async function GET() {
         id: fund.id,
         name: fund.name,
         fundSize: fund.fund_size_usd,
+        fundType: fund.fund_type,
         totalInvested,
         totalValuation,
         companies: companies.map(company => {

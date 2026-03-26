@@ -140,8 +140,14 @@ export function buildMatrixDataFromPortfolioCompanies(
       } else {
         // Generic fallthrough — PE columns and any future columns read
         // from company[col.id] via the index signature.
-        const raw = company[col.id];
+        let raw = company[col.id];
         if (raw != null) {
+          // Flatten arrays (e.g. extra_data.sectors, deal_team) to comma-separated strings
+          if (Array.isArray(raw)) {
+            raw = raw.join(', ');
+          } else if (typeof raw === 'boolean') {
+            raw = raw ? 'Yes' : 'No';
+          }
           value = raw;
           source = 'document';
           if (col.type === 'currency' && typeof raw === 'number') {

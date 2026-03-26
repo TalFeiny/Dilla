@@ -3695,9 +3695,9 @@ async def analyze_assumption(request: AnalyzeAssumptionRequest):
 
         if request.mode == "macro":
             from app.services.macro_event_analysis_service import MacroEventAnalysisService
-            from app.services.model_router import ModelRouter
+            from app.services.model_router import get_model_router
 
-            svc = MacroEventAnalysisService(ModelRouter())
+            svc = MacroEventAnalysisService(get_model_router())
             analysis = await svc.analyse_event(
                 event=request.assumption_text,
                 companies=[{
@@ -3728,9 +3728,9 @@ async def analyze_assumption(request: AnalyzeAssumptionRequest):
             }
         else:
             from app.services.business_event_analysis_service import BusinessEventAnalysisService
-            from app.services.model_router import ModelRouter
+            from app.services.model_router import get_model_router
 
-            svc = BusinessEventAnalysisService(ModelRouter())
+            svc = BusinessEventAnalysisService(get_model_router())
             analysis = await svc.analyse_event(
                 event=request.assumption_text,
                 company_id=request.company_id,

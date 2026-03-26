@@ -42,7 +42,7 @@ def set_provider_affinity(user_id: str) -> int:
     """
     offset = int(hashlib.md5(user_id.encode()).hexdigest(), 16)
     _provider_affinity.set(offset)
-    logger.info(f"[AFFINITY] User {user_id[:8]}… → rotation offset {offset % 5}")
+    logger.debug(f"[AFFINITY] User {user_id[:8]}… → rotation offset {offset % 5}")
     return offset
 
 
@@ -481,6 +481,9 @@ class ModelRouter:
     Handles rate limiting, errors, and cost optimization
     """
 
+    # Class-level flag: verbose init logging only fires on the first instance
+    _init_logged: bool = False
+
     def __init__(self):
         # Initialize API clients (lazy initialization - don't create async clients here)
         self.anthropic_client = None
@@ -526,53 +529,57 @@ class ModelRouter:
         self.anyscale_key = os.getenv("ANYSCALE_API_KEY")  # Not in settings yet, keeping os.getenv
         self.openrouter_key = os.getenv("OPENROUTER_API_KEY")
         
-        # VERIFY INITIALIZATION: Log which API keys are available
-        logger.info(f"[MODEL_ROUTER_INIT] 🚀 Initializing ModelRouter...")
-        logger.info(f"[MODEL_ROUTER_INIT] 📋 API Keys Status:")
-        logger.info(f"[MODEL_ROUTER_INIT]   - Anthropic: {'✅ Present' if self.anthropic_key else '❌ Missing'}")
-        logger.info(f"[MODEL_ROUTER_INIT]   - OpenAI: {'✅ Present' if self.openai_key else '❌ Missing'}")
-        logger.info(f"[MODEL_ROUTER_INIT]   - Groq: {'✅ Present' if self.groq_key else '❌ Missing'}")
-        logger.info(f"[MODEL_ROUTER_INIT]   - Google: {'✅ Present' if self.google_key else '❌ Missing'}")
-        logger.info(f"[MODEL_ROUTER_INIT]   - Together: {'✅ Present' if self.together_key else '❌ Missing'}")
-        logger.info(f"[MODEL_ROUTER_INIT]   - OpenRouter: {'✅ Present' if self.openrouter_key else '❌ Missing'}")
-        logger.info(f"[MODEL_ROUTER_INIT]   - Perplexity: {'✅ Present' if self.perplexity_key else '❌ Missing'}")
-        logger.info(f"[MODEL_ROUTER_INIT]   - Anyscale: {'✅ Present' if self.anyscale_key else '❌ Missing'}")
-        
         # DON'T initialize clients here - do it lazily in async context
         # This prevents "no current event loop" errors during synchronous initialization
-        
+
         # Model configurations with capabilities and costs
         self.model_configs: Dict[str, Dict[str, Any]] = {}
         self.model_configs = self._build_default_model_configs()
-        
-        # LOG MODEL CONFIGS: Show registered models (must be after model_configs is defined)
-        logger.info(f"[MODEL_ROUTER_INIT] 📊 Registered model configs: {len(self.model_configs)} models")
-        for name, config in self.model_configs.items():
-            capabilities = [c.value for c in config["capabilities"]]
-            logger.info(f"[MODEL_ROUTER_INIT]   - {name}: provider={config['provider'].value}, capabilities={capabilities}, priority={config['priority']}")
-        
-        # Summary: Check if any LLM keys are available
-        available_keys = [
-            name for name, key in [
-                ("Anthropic", self.anthropic_key),
-                ("OpenAI", self.openai_key),
-                ("Google", self.google_key),
-                ("Groq", self.groq_key),
-                ("Together", self.together_key),
-                ("OpenRouter", self.openrouter_key),
-                ("Perplexity", self.perplexity_key),
-                ("Anyscale", self.anyscale_key)
-            ] if key
-        ]
-        
-        if available_keys:
-            logger.info(f"[MODEL_ROUTER_INIT] ✅ ModelRouter ready with {len(available_keys)} API key(s): {', '.join(available_keys)}")
+
+        # Only log verbose init details on the FIRST instantiation to avoid log noise
+        if not ModelRouter._init_logged:
+            ModelRouter._init_logged = True
+
+            logger.debug(f"[MODEL_ROUTER_INIT] Initializing ModelRouter...")
+            logger.debug(f"[MODEL_ROUTER_INIT] API Keys Status:")
+            logger.debug(f"[MODEL_ROUTER_INIT]   - Anthropic: {'Present' if self.anthropic_key else 'Missing'}")
+            logger.debug(f"[MODEL_ROUTER_INIT]   - OpenAI: {'Present' if self.openai_key else 'Missing'}")
+            logger.debug(f"[MODEL_ROUTER_INIT]   - Groq: {'Present' if self.groq_key else 'Missing'}")
+            logger.debug(f"[MODEL_ROUTER_INIT]   - Google: {'Present' if self.google_key else 'Missing'}")
+            logger.debug(f"[MODEL_ROUTER_INIT]   - Together: {'Present' if self.together_key else 'Missing'}")
+            logger.debug(f"[MODEL_ROUTER_INIT]   - OpenRouter: {'Present' if self.openrouter_key else 'Missing'}")
+            logger.debug(f"[MODEL_ROUTER_INIT]   - Perplexity: {'Present' if self.perplexity_key else 'Missing'}")
+            logger.debug(f"[MODEL_ROUTER_INIT]   - Anyscale: {'Present' if self.anyscale_key else 'Missing'}")
+
+            logger.debug(f"[MODEL_ROUTER_INIT] Registered model configs: {len(self.model_configs)} models")
+            for name, config in self.model_configs.items():
+                capabilities = [c.value for c in config["capabilities"]]
+                logger.debug(f"[MODEL_ROUTER_INIT]   - {name}: provider={config['provider'].value}, capabilities={capabilities}, priority={config['priority']}")
+
+            # Summary: Check if any LLM keys are available
+            available_keys = [
+                name for name, key in [
+                    ("Anthropic", self.anthropic_key),
+                    ("OpenAI", self.openai_key),
+                    ("Google", self.google_key),
+                    ("Groq", self.groq_key),
+                    ("Together", self.together_key),
+                    ("OpenRouter", self.openrouter_key),
+                    ("Perplexity", self.perplexity_key),
+                    ("Anyscale", self.anyscale_key)
+                ] if key
+            ]
+
+            if available_keys:
+                logger.info(f"[MODEL_ROUTER] Ready with {len(available_keys)} API key(s): {', '.join(available_keys)}")
+            else:
+                logger.error("=" * 80)
+                logger.error("[MODEL_ROUTER_INIT] CRITICAL: NO LLM API KEYS CONFIGURED!")
+                logger.error("[MODEL_ROUTER_INIT] ModelRouter will NOT work without at least one API key")
+                logger.error("[MODEL_ROUTER_INIT] Configure at least one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY, etc.")
+                logger.error("=" * 80)
         else:
-            logger.error("=" * 80)
-            logger.error("🔴 [MODEL_ROUTER_INIT] CRITICAL: NO LLM API KEYS CONFIGURED!")
-            logger.error("🔴 [MODEL_ROUTER_INIT] ModelRouter will NOT work without at least one API key")
-            logger.error("🔴 [MODEL_ROUTER_INIT] Configure at least one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY, etc.")
-            logger.error("=" * 80)
+            logger.debug("[MODEL_ROUTER_INIT] Reusing ModelRouter config (already logged on first init)")
         
     def _build_default_model_configs(self) -> Dict[str, Dict[str, Any]]:
         """Build the default set of model configurations with defensive logging."""
@@ -773,23 +780,18 @@ class ModelRouter:
         
     async def _init_clients_if_needed(self):
         """Lazy initialization of API clients - only call this from async context"""
-        logger.info(f"[_init_clients] Called - clients_initialized={self._clients_initialized}")
-        
         if self._clients_initialized:
-            logger.info("[_init_clients] Clients already initialized, skipping")
             return
-        
-        logger.info("[_init_clients] 🚀 Starting client initialization...")
-        
+
+        logger.debug("[_init_clients] Starting client initialization...")
+
         # Clear any stale circuit breakers on startup
-        logger.info("[_init_clients] Clearing any stale circuit breakers")
         self.circuit_breaker_until.clear()
         self.error_counts.clear()
-        logger.info("[_init_clients] ✅ Cleared all circuit breakers and error counts")
-            
+
         try:
             if self.anthropic_key:
-                logger.info("[_init_clients] Initializing Anthropic client...")
+                logger.debug("[_init_clients] Initializing Anthropic client...")
                 try:
                     anthropic_module = importlib.import_module("anthropic")
                     AsyncAnthropic = getattr(anthropic_module, "AsyncAnthropic")
@@ -797,7 +799,7 @@ class ModelRouter:
                         api_key=self.anthropic_key,
                         timeout=300.0,  # 5min per-request timeout (SDK default is 600s)
                     )
-                    logger.info("[_init_clients] ✅ Anthropic client initialized successfully")
+                    logger.debug("[_init_clients] Anthropic client initialized")
                 except ImportError as exc:
                     logger.warning(f"[_init_clients] ⚠️  Anthropic SDK not available: {exc}")
                     self.anthropic_client = None
@@ -809,7 +811,7 @@ class ModelRouter:
                 self.anthropic_client = None
             
             if self.openai_key:
-                logger.info("[_init_clients] Initializing OpenAI client...")
+                logger.debug("[_init_clients] Initializing OpenAI client...")
                 if not self.openai_key or not isinstance(self.openai_key, str) or len(self.openai_key.strip()) == 0:
                     logger.error("[_init_clients] ❌ Invalid OpenAI API key format")
                     raise ValueError("Invalid OpenAI API key")
@@ -820,7 +822,7 @@ class ModelRouter:
                     self.openai_client = AsyncOpenAI(api_key=self.openai_key)
                     if not self.openai_client:
                         raise ValueError("Failed to create OpenAI client - client is None")
-                    logger.info("[_init_clients] ✅ OpenAI client initialized successfully")
+                    logger.debug("[_init_clients] OpenAI client initialized")
                 except Exception as exc:
                     logger.warning(f"[_init_clients] ⚠️  OpenAI client init failed (non-fatal, Anthropic still available): {exc}")
                     self.openai_client = None
@@ -829,7 +831,7 @@ class ModelRouter:
                 self.openai_client = None
                 
             if self.groq_key:
-                logger.info("[_init_clients] Initializing Groq client...")
+                logger.debug("[_init_clients] Initializing Groq client...")
                 if not self.groq_key or not isinstance(self.groq_key, str) or len(self.groq_key.strip()) == 0:
                     logger.warning("[_init_clients] ⚠️  Invalid Groq API key format, skipping")
                 else:
@@ -840,20 +842,20 @@ class ModelRouter:
                         if not self.groq_client:
                             logger.warning("[_init_clients] ⚠️  Failed to create Groq client")
                         else:
-                            logger.info("[_init_clients] ✅ Groq client initialized successfully")
+                            logger.debug("[_init_clients] Groq client initialized")
                     except Exception as exc:
                         logger.warning(f"[_init_clients] ⚠️  Groq client init failed (non-fatal): {exc}")
                         self.groq_client = None
             
             if self.google_key:
-                logger.info("[_init_clients] Configuring Google Gemini...")
+                logger.debug("[_init_clients] Configuring Google Gemini...")
                 if not self.google_key or not isinstance(self.google_key, str) or len(self.google_key.strip()) == 0:
                     logger.warning("[_init_clients] ⚠️  Invalid Google API key format, skipping")
                 else:
                     try:
                         self._genai_module = importlib.import_module("google.generativeai")
                         self._genai_module.configure(api_key=self.google_key)
-                        logger.info("[_init_clients] ✅ Google Gemini configured successfully")
+                        logger.debug("[_init_clients] Google Gemini configured")
                     except ImportError as exc:
                         logger.warning(f"[_init_clients] ⚠️  Google generative AI SDK not available: {exc}")
                         self._genai_module = None
@@ -862,7 +864,7 @@ class ModelRouter:
                         self._genai_module = None
             
             self._clients_initialized = True
-            logger.info("[_init_clients] ✅ All clients initialized successfully")
+            logger.debug("[_init_clients] All clients initialized")
         except Exception as e:
             logger.error(f"[_init_clients] ❌ Unexpected error during client init: {e}")
             import traceback
@@ -918,24 +920,20 @@ class ModelRouter:
                 f"${self._active_budget.max_cost:.2f}). Returning partial results."
             )
 
-        # COMPREHENSIVE LOGGING: Log all get_completion calls with full context
+        # Logging context
         context_info = f" (called by: {caller_context})" if caller_context else ""
         prompt_length = len(prompt)
         system_length = len(system_prompt) if system_prompt else 0
         total_length = prompt_length + system_length
-        
-        logger.info(f"[MODEL_ROUTER] 🚀 get_completion called{context_info}")
-        logger.info(f"[MODEL_ROUTER] 📊 Prompt length: {prompt_length:,} chars | System prompt: {system_length:,} chars | Total: {total_length:,} chars")
-        logger.info(f"[MODEL_ROUTER] 🎯 Capability: {capability.value} | Max tokens: {max_tokens} | Temperature: {temperature}")
-        logger.info(f"[MODEL_ROUTER] 📋 Preferred models: {preferred_models} | JSON mode: {json_mode} | Fallback: {fallback_enabled}")
-        logger.info(f"[MODEL_ROUTER] 📝 Prompt preview (first 200 chars): {prompt[:200]}...")
+
+        logger.debug(f"[MODEL_ROUTER] get_completion{context_info} | {total_length:,} chars | cap={capability.value} | preferred={preferred_models} | json={json_mode}")
         
         # Check cache first (only for non-json_mode requests to avoid stale structured data)
         if not json_mode:
             cache_key = self._get_request_cache_key(prompt, system_prompt, "any", max_tokens, temperature)
             cached = self._get_cached_response(cache_key)
             if cached:
-                logger.info(f"[MODEL_ROUTER] ✅ Returning cached response")
+                logger.debug(f"[MODEL_ROUTER] Cache hit{context_info}")
                 return cached
         
         # Lazy initialization of clients in async context
@@ -945,7 +943,7 @@ class ModelRouter:
         if not preferred_models and caller_context:
             preferred_models = self.preferred_models_for_task(caller_context)
             if preferred_models:
-                logger.info(f"[MODEL_ROUTER] Task-routed {caller_context} → {preferred_models[0]}")
+                logger.debug(f"[MODEL_ROUTER] Task-routed {caller_context} → {preferred_models[0]}")
 
         # Get ordered list of models based on capability and preference
         models = self._get_model_order(capability, preferred_models)
@@ -959,11 +957,7 @@ class ModelRouter:
                 logger.error(f"[MODEL_ROUTER] {name}: capabilities={config['capabilities']}")
             raise Exception(f"No models available for capability={capability.value}")
         
-        logger.info(f"[MODEL_ROUTER] 🎯 Models to try in order: {models}")
-        logger.info(f"[MODEL_ROUTER] 📋 Preferred models requested: {preferred_models}")
-        logger.info(f"[MODEL_ROUTER] 🎯 Capability requested: {capability.value}")
-        logger.info(f"[MODEL_ROUTER] Current circuit breaker state: {self.circuit_breaker_until}")
-        logger.info(f"[MODEL_ROUTER] Current error counts: {self.error_counts}")
+        logger.debug(f"[MODEL_ROUTER] Models to try: {models} | capability={capability.value}")
         
         # Check if all models are blocked by circuit breakers - if so, reset them all
         ready_models = [m for m in models if self._is_model_ready(m)]
@@ -977,7 +971,7 @@ class ModelRouter:
             model_config = self.model_configs[model_name]
             
             # Check circuit breaker
-            logger.info(f"[MODEL_ROUTER] Attempting model: {model_name}")
+            logger.debug(f"[MODEL_ROUTER] Attempting model: {model_name}")
 
             if not self._is_model_ready(model_name):
                 logger.warning(f"[MODEL_ROUTER] ⚠️  Skipping {model_name} - client not initialized or API key missing")
@@ -996,7 +990,7 @@ class ModelRouter:
                 # Reset circuit breaker for this attempt
                 self.reset_circuit_breakers(model_name)
             
-            logger.info(f"[MODEL_ROUTER] ✅ {model_name} passed circuit breaker check")
+            logger.debug(f"[MODEL_ROUTER] {model_name} passed circuit breaker check")
             
             # Wait for concurrency slot
             await self._wait_for_slot(model_name)
@@ -1038,12 +1032,9 @@ class ModelRouter:
                         # Reset error count on success
                         self.error_counts[model_name] = 0
 
-                        # COMPREHENSIVE LOGGING: Log successful model router calls
-                        logger.info(f"[MODEL_ROUTER] ✅ SUCCESS with {model_name}{context_info}")
-                        logger.info(f"[MODEL_ROUTER] 📊 Model: {model_name} | Provider: {model_config['provider'].value}")
-                        logger.info(f"[MODEL_ROUTER] ⏱️  Latency: {latency:.2f}s | Cost: ${cost:.4f}")
-                        logger.info(f"[MODEL_ROUTER] 📏 Tokens in={input_tokens} out={output_tokens} | Retry: {retry}")
-                        logger.info(f"[MODEL_ROUTER] 📝 Response preview: {response_text[:200]}...")
+                        # One-line summary per LLM call
+                        caller = caller_context or "unknown"
+                        logger.info(f"[MODEL_ROUTER] ✅ {model_name} | {caller} | {latency:.2f}s | ${cost:.4f} | in={input_tokens} out={output_tokens}")
 
                         # Record in active budget if set
                         if self._active_budget:
@@ -1189,7 +1180,7 @@ class ModelRouter:
         json_mode: bool = False
     ) -> str:
         """Call Anthropic Claude API - async client with proper error handling"""
-        logger.info(f"[_call_anthropic] 🚀 CALLING ANTHROPIC with model: {model}")
+        logger.debug(f"[_call_anthropic] Calling Anthropic model: {model}")
         
         if not self.anthropic_client:
             logger.error("[_call_anthropic] ❌ Anthropic client not initialized!")
@@ -1197,7 +1188,7 @@ class ModelRouter:
         
         messages = [{"role": "user", "content": prompt}]
         
-        logger.info(f"[_call_anthropic] Making API call to Anthropic...")
+        logger.debug("[_call_anthropic] Making API call...")
         try:
             # Call Anthropic Messages API (async client)
             # Wrap system prompt as cacheable content block for prompt caching.
@@ -1243,12 +1234,11 @@ class ModelRouter:
                 cache_read = getattr(response.usage, "cache_read_input_tokens", 0)
                 cache_create = getattr(response.usage, "cache_creation_input_tokens", 0)
                 if cache_read or cache_create:
-                    logger.info(
-                        f"[_call_anthropic] PROMPT CACHE: read={cache_read} tokens (90% off), "
-                        f"created={cache_create} tokens (1.25x write)"
+                    logger.debug(
+                        f"[_call_anthropic] PROMPT CACHE: read={cache_read} created={cache_create}"
                     )
 
-            logger.info(f"[_call_anthropic] ✅ Anthropic API call successful! tokens_in={usage['input_tokens']} tokens_out={usage['output_tokens']}")
+            logger.debug(f"[_call_anthropic] OK tokens_in={usage['input_tokens']} tokens_out={usage['output_tokens']}")
             return text, usage
             
         except Exception as e:
@@ -1330,8 +1320,8 @@ class ModelRouter:
         working_messages = list(messages)  # Don't mutate caller's list
 
         for round_idx in range(max_tool_rounds):
-            logger.info(f"[TOOL_USE] Round {round_idx + 1}/{max_tool_rounds} — "
-                        f"{len(working_messages)} messages, {len(tools)} tools")
+            logger.debug(f"[TOOL_USE] Round {round_idx + 1}/{max_tool_rounds} — "
+                         f"{len(working_messages)} messages, {len(tools)} tools")
 
             try:
                 response = await asyncio.wait_for(
@@ -1373,8 +1363,8 @@ class ModelRouter:
             # If no tool calls → we're done
             if not tool_use_blocks:
                 final_text = "\n".join(text_parts)
-                logger.info(f"[TOOL_USE] Complete after {round_idx + 1} rounds, "
-                            f"{len(all_tool_calls)} tool calls, ${total_cost:.4f}")
+                logger.debug(f"[TOOL_USE] Complete after {round_idx + 1} rounds, "
+                             f"{len(all_tool_calls)} tool calls, ${total_cost:.4f}")
                 return {
                     "response": final_text,
                     "tool_calls": all_tool_calls,
@@ -1393,7 +1383,7 @@ class ModelRouter:
                 tool_name = tb.name
                 tool_input = tb.input
                 tool_id = tb.id
-                logger.info(f"[TOOL_USE] Calling {tool_name}({json.dumps(tool_input)[:200]})")
+                logger.debug(f"[TOOL_USE] Calling {tool_name}({json.dumps(tool_input)[:200]})")
 
                 if on_tool_start:
                     await on_tool_start(tool_name, tool_input)
@@ -1487,14 +1477,14 @@ class ModelRouter:
         modern_token_param_models = ("gpt-5", "gpt-4o", "o1")
         if any(identifier in model_lower for identifier in modern_token_param_models):
             kwargs["max_completion_tokens"] = max_tokens
-            logger.info(f"Using max_completion_tokens for {model}")
+            logger.debug(f"Using max_completion_tokens for {model}")
         else:
             kwargs["max_tokens"] = max_tokens
         
         # Add response_format for JSON mode (supported by newer GPT models)
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
-            logger.info(f"Using JSON mode for {model}")
+            logger.debug(f"Using JSON mode for {model}")
         
         try:
             response = await self.openai_client.chat.completions.create(**kwargs)
@@ -1517,7 +1507,7 @@ class ModelRouter:
                 usage["input_tokens"] = getattr(response.usage, "prompt_tokens", 0) or 0
                 usage["output_tokens"] = getattr(response.usage, "completion_tokens", 0) or 0
 
-            logger.info(f"[_call_openai] ✅ tokens_in={usage['input_tokens']} tokens_out={usage['output_tokens']}")
+            logger.debug(f"[_call_openai] OK tokens_in={usage['input_tokens']} tokens_out={usage['output_tokens']}")
             return content, usage
             
         except Exception as e:
@@ -1760,7 +1750,7 @@ class ModelRouter:
         result = preferred_in_config + other_models
         if set(preferred_in_config) != set(m for m in preferred if m in capable_models):
             skipped = [m for m in preferred_in_config if m not in capable_models]
-            logger.info(f"[_get_model_order] Preferred models {skipped} lack capability={capability} but included anyway (task routing wins)")
+            logger.debug(f"[_get_model_order] Preferred models {skipped} lack capability={capability} but included anyway (task routing wins)")
         logger.debug(f"[_get_model_order] Preferred={preferred}, Result={result}")
         return result
     
@@ -1774,7 +1764,7 @@ class ModelRouter:
         if cache_key in self.request_cache:
             response, timestamp = self.request_cache[cache_key]
             if time.time() - timestamp < self.cache_ttl:
-                logger.info(f"[MODEL_ROUTER] ✅ Cache hit for request")
+                logger.debug("[MODEL_ROUTER] Cache hit")
                 return response
             else:
                 # Expired, remove from cache
@@ -1848,14 +1838,11 @@ class ModelRouter:
     
     def _is_circuit_broken(self, model_name: str) -> bool:
         """Check if circuit breaker is active for a model"""
-        logger.info(f"[CIRCUIT_BREAKER] Checking {model_name}...")
-        logger.info(f"[CIRCUIT_BREAKER] Error counts: {self.error_counts}")
-        logger.info(f"[CIRCUIT_BREAKER] Circuit breaker state: {self.circuit_breaker_until}")
+        logger.debug(f"[CIRCUIT_BREAKER] Checking {model_name}...")
         
         if model_name in self.circuit_breaker_until:
             cb_time = self.circuit_breaker_until[model_name]
-            logger.info(f"[CIRCUIT_BREAKER] {model_name} has circuit breaker until: {cb_time}")
-            logger.info(f"[CIRCUIT_BREAKER] Current time: {datetime.now()}")
+            logger.debug(f"[CIRCUIT_BREAKER] {model_name} has circuit breaker until: {cb_time}")
             
             if datetime.now() < cb_time:
                 time_remaining = cb_time - datetime.now()
@@ -1863,7 +1850,7 @@ class ModelRouter:
                 return True
             else:
                 # Circuit breaker timeout expired - reset it
-                logger.info(f"[CIRCUIT_BREAKER] ✅ {model_name} circuit breaker expired, resetting")
+                logger.debug(f"[CIRCUIT_BREAKER] {model_name} circuit breaker expired, resetting")
                 del self.circuit_breaker_until[model_name]
                 self.error_counts[model_name] = 0
         
@@ -1874,10 +1861,10 @@ class ModelRouter:
                 return False
             time_since = time.time() - self.last_request_time.get(model_name, 0)
             if time_since > 60:  # 1 minute (reduced from 5 minutes for faster recovery)
-                logger.info(f"[CIRCUIT_BREAKER] Resetting error count for {model_name} after {time_since:.0f}s")
+                logger.debug(f"[CIRCUIT_BREAKER] Resetting error count for {model_name} after {time_since:.0f}s")
                 self.error_counts[model_name] = 0
         
-        logger.info(f"[CIRCUIT_BREAKER] ✅ {model_name} is NOT broken")
+        logger.debug(f"[CIRCUIT_BREAKER] {model_name} is OK")
         return False
     
     def _increment_error_count(self, model_name: str):
@@ -1915,7 +1902,7 @@ class ModelRouter:
                 try:
                     self._genai_module = importlib.import_module("google.generativeai")
                     self._genai_module.configure(api_key=self.google_key)
-                    logger.info("[MODEL_ROUTER] ✅ Google generative AI module loaded on demand")
+                    logger.debug("[MODEL_ROUTER] Google generative AI module loaded on demand")
                 except Exception as exc:
                     logger.warning(f"[MODEL_ROUTER] ⚠️  Unable to load Google generative AI module: {exc}")
                     self._genai_module = None
@@ -1945,11 +1932,11 @@ class ModelRouter:
                 del self.circuit_breaker_until[model_name]
             if model_name in self.error_counts:
                 self.error_counts[model_name] = 0
-            logger.info(f"[MODEL_ROUTER] ✅ Reset circuit breaker for {model_name}")
+            logger.debug(f"[MODEL_ROUTER] Reset circuit breaker for {model_name}")
         else:
             self.circuit_breaker_until.clear()
             self.error_counts.clear()
-            logger.info(f"[MODEL_ROUTER] ✅ Reset all circuit breakers")
+            logger.debug("[MODEL_ROUTER] Reset all circuit breakers")
     
     # ------------------------------------------------------------------
     # 4-Tier Intelligent Task Routing
@@ -2075,7 +2062,7 @@ class ModelRouter:
 
         chain = self._TIER_MODEL_CHAINS.get(tier)
         if chain:
-            logger.info(f"[TIER_ROUTING] {caller_context} → {tier.value} → {chain[0]}")
+            logger.debug(f"[TIER_ROUTING] {caller_context} → {tier.value} → {chain[0]}")
         return chain
 
     # ------------------------------------------------------------------
@@ -2085,7 +2072,7 @@ class ModelRouter:
     def start_budget(self, max_cost: float = 2.0, max_tokens: int = 500_000) -> RequestBudget:
         """Start a new per-request budget. Returns the budget object."""
         self._active_budget = RequestBudget(max_cost=max_cost, max_tokens=max_tokens)
-        logger.info(f"[MODEL_ROUTER] Budget started: max_cost=${max_cost}, max_tokens={max_tokens}")
+        logger.debug(f"[MODEL_ROUTER] Budget started: max_cost=${max_cost}, max_tokens={max_tokens}")
         return self._active_budget
 
     def end_budget(self) -> Optional[Dict[str, Any]]:
@@ -2093,7 +2080,7 @@ class ModelRouter:
         if not self._active_budget:
             return None
         summary = self._active_budget.summary()
-        logger.info(f"[MODEL_ROUTER] Budget ended: {summary}")
+        logger.debug(f"[MODEL_ROUTER] Budget ended: {summary}")
         self._active_budget = None
         return summary
 
@@ -2155,7 +2142,7 @@ class ModelRouter:
         models = self._get_model_order(ModelCapability.ANALYSIS, preferred_models)
 
         context_info = f" (called by: {caller_context})" if caller_context else ""
-        logger.info(f"[MODEL_ROUTER] get_completion_with_tools{context_info} tools={len(tools)}")
+        logger.debug(f"[MODEL_ROUTER] get_completion_with_tools{context_info} tools={len(tools)}")
 
         # Provider dispatch table
         _PROVIDER_CALLERS = {
@@ -2274,7 +2261,7 @@ class ModelRouter:
 
         models = self._get_model_order(ModelCapability.ANALYSIS, preferred_models)
         context_info = f" (called by: {caller_context})" if caller_context else ""
-        logger.info(f"[MODEL_ROUTER] stream_completion_with_tools{context_info} tools={len(tools)}")
+        logger.debug(f"[MODEL_ROUTER] stream_completion_with_tools{context_info} tools={len(tools)}")
 
         last_error = None
         for idx, model_name in enumerate(models):

@@ -100,6 +100,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { addMatrixColumn, addCompanyToMatrix, createCompanyForMatrix, LEGAL_COLUMNS } from '@/lib/matrix/matrix-api-service';
+import { getPortfolioColumns } from '@/lib/matrix/portfolio-matrix-builder';
 import {
   formatActionOutput,
   extractExplanation,
@@ -212,6 +213,7 @@ export interface MatrixData {
 interface UnifiedMatrixProps {
   mode?: MatrixMode;
   fundId?: string;
+  fundType?: string;
   companyId?: string;
   initialData?: MatrixData;
   onDataChange?: (data: MatrixData) => void;
@@ -255,6 +257,7 @@ interface UnifiedMatrixProps {
 export function UnifiedMatrix({
   mode = 'portfolio',
   fundId,
+  fundType,
   companyId,
   initialData,
   onDataChange,
@@ -286,22 +289,7 @@ export function UnifiedMatrix({
   const getDefaultMatrixData = useCallback((mode: MatrixMode, fundId?: string): MatrixData => {
     if (mode === 'portfolio') {
       return {
-        columns: [
-          { id: 'company', name: 'Company', type: 'text', width: 200, editable: true },
-          { id: 'documents', name: 'Documents', type: 'text', width: 140, editable: false },
-          { id: 'sector', name: 'Sector', type: 'text', width: 120, editable: true },
-          { id: 'stage', name: 'Stage', type: 'text', width: 100, editable: true },
-          { id: 'arr', name: 'ARR', type: 'currency', width: 120, editable: true },
-          { id: 'burnRate', name: 'Burn Rate', type: 'currency', width: 120, editable: true },
-          { id: 'runway', name: 'Runway (mo)', type: 'number', width: 100, editable: true },
-          { id: 'grossMargin', name: 'Gross Margin', type: 'percentage', width: 120, editable: true },
-          { id: 'cashInBank', name: 'Cash in Bank', type: 'currency', width: 140, editable: true },
-          { id: 'valuation', name: 'Current Valuation', type: 'currency', width: 140, editable: true },
-          { id: 'ownership', name: 'Ownership %', type: 'percentage', width: 120, editable: true },
-          { id: 'optionPool', name: 'Option Pool (bps)', type: 'number', width: 120, editable: true },
-          { id: 'latestUpdate', name: 'Latest Update', type: 'text', width: 160, editable: true },
-          { id: 'productUpdates', name: 'Product Updates', type: 'text', width: 160, editable: true },
-        ],
+        columns: getPortfolioColumns(fundType),
         rows: [],
         metadata: {
           dataSource: 'manual',
@@ -413,7 +401,7 @@ export function UnifiedMatrix({
         metadata: { dataSource: 'query', lastUpdated: new Date().toISOString() },
       };
     }
-  }, []);
+  }, [fundType]);
 
   // ALWAYS initialize with defaults - never allow null
   const [matrixData, setMatrixData] = useState<MatrixData>(
@@ -1421,6 +1409,64 @@ export function UnifiedMatrix({
         return;
       }
 
+      // Auto-detect columns from extra_data keys that don't match any existing column.
+      // This makes any fund's data self-describing regardless of how it was uploaded.
+      const BASE_PORTFOLIO_FIELDS = new Set([
+        'id', 'name', 'sector', 'stage', 'fundId', 'investmentAmount', 'ownershipPercentage',
+        'currentArr', 'valuation', 'investmentDate', 'exitDate', 'exitValue', 'exitMultiple',
+        'cashInBank', 'investmentLead', 'lastContacted', 'burnRate', 'runwayMonths', 'grossMargin',
+        'revenueGrowthMonthly', 'revenueGrowthAnnual', 'documents',
+        'cashUpdatedAt', 'burnRateUpdatedAt', 'runwayUpdatedAt', 'revenueUpdatedAt', 'grossMarginUpdatedAt',
+        'revenueDocumentId', 'burnRateDocumentId', 'runwayDocumentId', 'grossMarginDocumentId', 'cashDocumentId',
+        // Internal/metadata keys to skip
+        'source', 'fund_name',
+      ]);
+      const existingColIds = new Set(columns.map(c => normalizeColumnIdForMatch(c.id)));
+      const detectedCols: MatrixColumn[] = [];
+      const detectedIds = new Set<string>();
+
+      for (const company of companies) {
+        for (const key of Object.keys(company)) {
+          if (BASE_PORTFOLIO_FIELDS.has(key)) continue;
+          const normalizedKey = normalizeColumnIdForMatch(key);
+          if (existingColIds.has(normalizedKey) || detectedIds.has(normalizedKey)) continue;
+          detectedIds.add(normalizedKey);
+
+          // Infer display name: snake_case → Title Case
+          const displayName = key
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, c => c.toUpperCase());
+
+          // Infer type from first non-null value across all companies
+          const sample = companies.find((c: any) => c[key] != null)?.[key];
+          let colType: MatrixColumn['type'] = 'text';
+          if (typeof sample === 'number') colType = 'number';
+          // Arrays (deal_team, sectors) render as comma-separated text
+          // Booleans (exited) as text
+
+          detectedCols.push({ id: key, name: displayName, type: colType, width: 150, editable: true });
+        }
+      }
+
+      if (detectedCols.length > 0) {
+        columns = [...columns, ...detectedCols];
+
+        // Persist auto-detected columns to matrix_columns so they survive page reloads
+        for (const col of detectedCols) {
+          fetch('/api/matrix/columns', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fundId,
+              columnId: col.id,
+              name: col.name,
+              type: col.type,
+              createdBy: 'auto-detection',
+            }),
+          }).catch(() => {}); // Fire-and-forget; column already in local state
+        }
+      }
+
       // NAV time series: load grid first without waiting; fetch NAV in background and patch sparklines later
       const companyIds = companies.map((c: any) => c.id);
       const navTimeSeriesMap = new Map<string, number[]>();
@@ -1546,6 +1592,12 @@ export function UnifiedMatrix({
                 raw = v;
                 break;
               }
+            }
+            // Flatten arrays (e.g. extra_data.sectors, deal_team) to comma-separated strings
+            if (Array.isArray(raw)) {
+              raw = raw.join(', ');
+            } else if (typeof raw === 'boolean') {
+              raw = raw ? 'Yes' : 'No';
             }
             value = raw;
             if (value != null && value !== '') {

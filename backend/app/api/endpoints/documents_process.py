@@ -289,7 +289,7 @@ async def _stream_single_doc(doc: DocumentBatchDocItem, storage, document_repo):
 
 async def _stream_parallel_batch(docs: List[DocumentBatchDocItem], storage, document_repo):
     """Multi-doc path — download + text extract, then ParallelDocProcessor.ingest_batch()."""
-    from app.services.model_router import ModelRouter
+    from app.services.model_router import get_model_router
     from app.services.parallel_doc_processor import ParallelDocProcessor
 
     total = len(docs)
@@ -369,7 +369,7 @@ async def _stream_parallel_batch(docs: List[DocumentBatchDocItem], storage, docu
         "total": total, "completed": download_errors, "stage": "extracting",
     }) + "\n"
 
-    router = ModelRouter()
+    router = get_model_router()
     processor = ParallelDocProcessor(model_router=router, max_concurrent=MAX_CONCURRENT_DOCS)
 
     completed = download_errors

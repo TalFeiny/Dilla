@@ -421,7 +421,10 @@ export function AGGridMatrix({
         } else if (isNumericType) {
           // Extract raw numeric value — avoid wrapping in display format
           let numVal = rawValue;
-          if (typeof rawValue === 'object' && rawValue !== null && !Array.isArray(rawValue)) {
+          if (Array.isArray(rawValue)) {
+            // Arrays from extra_data (e.g. sectors, deal_team) — render as text
+            numVal = rawValue.join(', ');
+          } else if (typeof rawValue === 'object' && rawValue !== null) {
             numVal = (rawValue as any).value ?? (rawValue as any).fair_value ?? (rawValue as any).displayValue ?? rawValue;
           }
           rowData[col.id] = numVal;

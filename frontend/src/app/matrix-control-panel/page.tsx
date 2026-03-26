@@ -1314,6 +1314,7 @@ export default function MatrixControlPanel() {
             <UnifiedMatrix
               mode={mode}
               fundId={fundId}
+              fundType={funds.find((f: any) => f.id === fundId)?.fund_type}
               companyId={mode === 'pnl' ? pnlCompanyId : undefined}
               initialData={matrixData ?? undefined}
               onDataChange={setMatrixData}

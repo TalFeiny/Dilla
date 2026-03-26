@@ -11,7 +11,7 @@ import re
 from datetime import datetime
 
 from app.core.config import settings
-from app.services.model_router import ModelRouter, ModelCapability
+from app.services.model_router import ModelCapability, get_model_router
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +23,12 @@ class StructuredDataExtractor:
     """
     
     def __init__(self):
-        # Initialize ModelRouter for premium model support with automatic fallback
+        # Use singleton ModelRouter — avoids duplicate init logging
         try:
-            self.model_router = ModelRouter()
-            logger.info("ModelRouter initialized with multi-provider fallback support")
+            self.model_router = get_model_router()
         except Exception as e:
             logger.warning(f"ModelRouter initialization failed: {e}")
             self.model_router = None
-            # Model router is the single source of truth - no direct client fallback
     
     async def extract_from_html(self, html_content: str, company_name: str) -> Dict[str, Any]:
         """

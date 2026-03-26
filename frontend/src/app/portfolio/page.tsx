@@ -930,6 +930,7 @@ export default function PortfolioPage() {
                   <UnifiedMatrix
                     mode="portfolio"
                     fundId={portfolio.id}
+                    fundType={portfolio.fundType}
                     initialData={buildMatrixDataFromPortfolioCompanies(portfolio.companies as unknown as PortfolioCompanyForMatrix[], portfolio.id, portfolio.fundType)}
                     availableActions={availableActions}
                     onCellEdit={async (rowId, columnId, value, options) => {

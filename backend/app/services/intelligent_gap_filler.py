@@ -21,7 +21,7 @@ if not os.getenv("ANTHROPIC_API_KEY"):
     from dotenv import load_dotenv
     load_dotenv()
 
-from app.services.model_router import ModelRouter, ModelCapability
+from app.services.model_router import ModelCapability, get_model_router
 
 # Import centralized data validator to prevent None errors
 from app.services.data_validator import (
@@ -323,10 +323,9 @@ class IntelligentGapFiller:
     def __init__(self, fund_profile: Optional[FundProfile] = None):
         self.fund = fund_profile or FundProfile()
         self.growth_adjusted_multiples_cache = None  # Cache for database multiples
-        # Initialize ModelRouter for LLM calls
+        # Use singleton ModelRouter — avoids duplicate init logging
         try:
-            self.model_router = ModelRouter()
-            logger.info("ModelRouter initialized for TAM extraction")
+            self.model_router = get_model_router()
         except Exception as e:
             logger.warning(f"ModelRouter initialization failed: {e}")
             self.model_router = None
