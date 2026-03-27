@@ -13867,7 +13867,7 @@ Return JSON with ONLY these fields (use null if unknown):
                     "amount": float(amount),
                     "source": "agent_edit",
                 },
-                on_conflict="company_id,period,category,subcategory,hierarchy_path",
+                on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
             ).execute()
 
             return {"success": True, "category": category, "period": period, "amount": amount}
@@ -36170,7 +36170,7 @@ Return a JSON with this structure:
                 chunk = rows[i:i + 500]
                 sb.table("fpa_actuals").upsert(
                     chunk,
-                    on_conflict="company_id,period,category,subcategory,hierarchy_path",
+                    on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
                 ).execute()
 
             # Build grid_commands for frontend

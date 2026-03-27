@@ -210,7 +210,7 @@ def bridge_contract_to_pnl(
             chunk = rows[i:i + 500]
             sb.table("fpa_actuals").upsert(
                 chunk,
-                on_conflict="company_id,period,category,subcategory,hierarchy_path",
+                on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
             ).execute()
 
         logger.info(

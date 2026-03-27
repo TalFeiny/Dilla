@@ -784,7 +784,7 @@ async def sync_xero_data(
 
     sb.table("fpa_actuals").upsert(
         rows,
-        on_conflict="company_id,period,category,subcategory,hierarchy_path",
+        on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
     ).execute()
 
     # --- Also sync Balance Sheet ---
@@ -803,7 +803,7 @@ async def sync_xero_data(
             if bs_rows:
                 sb.table("fpa_actuals").upsert(
                     bs_rows,
-                    on_conflict="company_id,period,category,subcategory,hierarchy_path",
+                    on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
                 ).execute()
                 logger.info("Xero BS sync: %d rows for company %s", len(bs_rows), company_id)
     except Exception as bs_err:

@@ -208,7 +208,7 @@ async def upsert_pnl_cell(req: PnlCellEditRequest):
     try:
         sb.table("fpa_actuals").upsert(
             row,
-            on_conflict="company_id,period,category,subcategory,hierarchy_path",
+            on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
         ).execute()
     except Exception as e:
         logger.error("P&L cell upsert failed: %s", e, exc_info=True)
@@ -239,7 +239,7 @@ async def bulk_upsert_pnl_cells(req: BulkPnlWriteRequest):
             chunk = rows[i:i + 500]
             sb.table("fpa_actuals").upsert(
                 chunk,
-                on_conflict="company_id,period,category,subcategory,hierarchy_path",
+                on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
             ).execute()
     except Exception as e:
         logger.error("Bulk P&L upsert failed: %s", e, exc_info=True)
@@ -315,7 +315,7 @@ async def upsert_bs_cell(req: PnlCellEditRequest):
     try:
         sb.table("fpa_actuals").upsert(
             row,
-            on_conflict="company_id,period,category,subcategory,hierarchy_path",
+            on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
         ).execute()
     except Exception as e:
         logger.error("BS cell upsert failed: %s", e, exc_info=True)
@@ -2165,7 +2165,7 @@ async def upload_actuals_csv(
 
         sb.table("fpa_actuals").upsert(
             actuals_rows,
-            on_conflict="company_id,period,category,subcategory,hierarchy_path",
+            on_conflict="company_id,period,category,subcategory,hierarchy_path,source",
         ).execute()
 
         periods = sorted(set(r["period"][:7] for r in actuals_rows))
