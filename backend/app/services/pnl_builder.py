@@ -312,6 +312,22 @@ class PnlBuilder:
 
         result = query.order("period").execute()
 
+        # Auto-detect: if date-windowed query returned nothing but data exists,
+        # retry without date filter so uploaded actuals are always discovered.
+        if not result.data and (start or end):
+            logger.info(
+                "No actuals in window %s–%s for %s — retrying without date filter",
+                start, end, self.company_id or self.fund_id,
+            )
+            q2 = sb.table("fpa_actuals").select(select_cols)
+            if self.company_id:
+                q2 = q2.eq("company_id", self.company_id)
+            elif self.fund_id:
+                q2 = q2.eq("fund_id", self.fund_id)
+            if entity_id:
+                q2 = q2.eq("entity_id", entity_id)
+            result = q2.order("period").execute()
+
         if not result.data:
             return {}, []
 
