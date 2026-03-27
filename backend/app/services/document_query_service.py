@@ -414,7 +414,7 @@ class DocumentQueryService:
         # — poll until it finishes rather than returning empty data.
         if doc.get("status") == "processing":
             import asyncio
-            max_polls = 60  # up to ~120 seconds
+            max_polls = 150  # up to ~300 seconds (LLM extraction can take 200s+)
             for _ in range(max_polls):
                 await asyncio.sleep(2)
                 doc = repo.get(document_id)

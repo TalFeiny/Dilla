@@ -6,7 +6,10 @@ from celery import Task
 from app.core.celery_app import celery_app
 from app.core.exceptions import RateLimitError
 from app.services.pwerm_service import pwerm_service
-from app.services.market_research_service import market_research_service
+try:
+    from app.services.market_research_service import market_research_service
+except ImportError:
+    market_research_service = None  # Module removed; Celery task will handle gracefully
 try:
     from app.services.document_service import document_processor
 except ImportError:
@@ -141,12 +144,14 @@ def research_market(
 ) -> Dict[str, Any]:
     """Conduct market research as background task"""
     try:
+        if market_research_service is None:
+            return {"status": "error", "error": "market_research_service not available"}
         self.update_state(state="PROGRESS", meta={"status": "Researching market"})
-        
+
         import asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
+
         research = loop.run_until_complete(
             market_research_service.research_market(
                 query=query,

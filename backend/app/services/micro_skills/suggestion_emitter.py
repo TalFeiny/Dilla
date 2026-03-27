@@ -390,9 +390,18 @@ def _flatten_extracted_data(extracted_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     fields: Dict[str, Any] = {}
 
-    # financial_metrics
+    # financial_metrics — extract ALL fields (VC and PE alike)
     fm = extracted_data.get("financial_metrics") or {}
-    for key in ("arr", "revenue", "burn_rate", "runway_months", "cash_balance", "gross_margin", "growth_rate"):
+    _FM_KEYS = (
+        # VC / universal
+        "arr", "revenue", "burn_rate", "runway_months", "cash_balance",
+        "gross_margin", "growth_rate", "customer_count",
+        # PE / operating
+        "ebitda", "ebitda_margin", "operating_income", "net_income",
+        "capex", "fcf", "total_debt", "interest_expense", "working_capital",
+        "debt_service", "tax_expense",
+    )
+    for key in _FM_KEYS:
         v = fm.get(key)
         if v is not None:
             fields[key] = v
@@ -401,9 +410,6 @@ def _flatten_extracted_data(extracted_data: Dict[str, Any]) -> Dict[str, Any]:
         mrr = fm.get("mrr")
         if mrr is not None:
             fields["arr"] = mrr * 12
-    # customer_count from financial_metrics as backup
-    if "customer_count" not in fields and fm.get("customer_count") is not None:
-        fields["customer_count"] = fm["customer_count"]
 
     # growth_metrics
     gm = extracted_data.get("growth_metrics") or {}
@@ -499,17 +505,40 @@ def _flatten_extracted_data(extracted_data: Dict[str, Any]) -> Dict[str, Any]:
                 fields[field_key] = {"delta": v}
 
     # pe_operating_metrics — PE / operating company metrics from extraction.
-    # The extraction schema returns these for PE portfolio companies but
-    # they were previously not flattened into `fields`.
+    # Keys must match COMPANY_UPDATE_SIGNAL_SCHEMA field names exactly.
     pe = extracted_data.get("pe_operating_metrics")
     if isinstance(pe, dict):
         _PE_FIELD_MAP = {
-            "ebitda_reported": "ebitda", "ebitda_adjusted": "ebitda",
-            "ebitda_margin": "ebitda_margin", "operating_margin": "operating_margin",
-            "leverage_ratio": "leverage_ratio", "interest_coverage": "interest_coverage",
-            "dscr": "debt_service_coverage", "roic": "roic",
-            "dso": "dso", "dpo": "dpo", "dio": "dio",
-            "customer_concentration_pct": "customer_concentration",
+            # EBITDA variants — adjusted wins over reported
+            "adjusted_ebitda": "ebitda",
+            "reported_ebitda": "ebitda",
+            "covenant_ebitda": "ebitda",
+            # Margins (schema uses _pct suffix)
+            "gross_margin_pct": "gross_margin",
+            "ebitda_margin_pct": "ebitda_margin",
+            "operating_margin_pct": "operating_margin",
+            "net_margin_pct": "net_margin",
+            # Debt & leverage
+            "senior_debt": "total_debt",
+            "net_debt": "net_debt",
+            "leverage_ratio": "leverage_ratio",
+            "interest_coverage": "interest_coverage",
+            "fixed_charge_coverage": "interest_coverage",
+            "dscr": "debt_service_coverage",
+            # Working capital cycle
+            "dso": "dso",
+            "dpo": "dpo",
+            "dio": "dio",
+            # Capex
+            "maintenance_capex": "capex",
+            "growth_capex": "capex",
+            "capex_as_pct_revenue": "capex",
+            # Returns & efficiency
+            "roic": "roic",
+            "revenue_per_employee": "revenue_per_employee",
+            "ebitda_per_employee": "ebitda_per_employee",
+            # Concentration & quality
+            "customer_concentration_top5_pct": "customer_concentration",
             "recurring_revenue_pct": "recurring_revenue_pct",
         }
         for pe_key, field_key in _PE_FIELD_MAP.items():
@@ -620,6 +649,7 @@ def emit_document_suggestions(
     # Build a lookup that maps both impact key names AND field names to reasoning.
     # LLM returns keys like "estimated_arr_impact" but field_updates uses "arr".
     _IMPACT_KEY_TO_FIELD = {
+        # VC
         "estimated_arr_impact": "arr",
         "estimated_burn_impact": "burn_rate",
         "estimated_runway_impact": "runway_months",
@@ -627,6 +657,15 @@ def emit_document_suggestions(
         "estimated_cash_impact": "cash_balance",
         "estimated_valuation_impact": "valuation",
         "estimated_growth_rate_change": "growth_rate",
+        # PE / operating
+        "estimated_revenue_impact": "revenue",
+        "estimated_ebitda_impact": "ebitda",
+        "estimated_margin_impact": "ebitda_margin",
+        "estimated_fcf_impact": "fcf",
+        "estimated_leverage_impact": "leverage_ratio",
+        "estimated_coverage_ratio_impact": "interest_coverage",
+        "estimated_working_capital_impact": "working_capital",
+        "estimated_multiple_impact": "ev_ebitda_multiple",
     }
     impact_reasoning: Dict[str, str] = {}
     for ik, reasoning_text in impact_reasoning_raw.items():

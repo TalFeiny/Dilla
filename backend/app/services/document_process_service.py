@@ -81,7 +81,7 @@ LEGAL_BASE_SCHEMA = {
         "parent_id: string or null (parent clause id, null for top-level), "
         "children: array of strings (child clause ids), "
         "title: string (clause heading), "
-        "text: string (verbatim clause text, first 500 chars), "
+        "text: string (verbatim clause text, first 200 chars — keep brief to avoid truncation), "
         "clause_type: string (e.g. 'liquidation_preference', 'anti_dilution', 'termination', "
             "'auto_renewal', 'indemnification', 'ip_assignment', 'non_compete', 'confidentiality', "
             "'payment_terms', 'liability_cap', 'minimum_commitment', 'data_processing', "
@@ -312,13 +312,16 @@ def _normalize_legal_extraction(d: dict) -> dict:
 def _legal_extraction_prompt(text: str, document_type: str, schema_desc: str, **kwargs) -> tuple:
     """Build system + user prompts for legal document clause extraction."""
     system_prompt = (
+        "YOU ARE A JSON-ONLY EXTRACTION BOT. OUTPUT FORMAT: PURE JSON ONLY.\n"
+        "RULE #1: Your entire response must be valid JSON starting with { and ending with }\n"
+        "RULE #2: Zero explanations, zero markdown, zero commentary\n"
+        "RULE #3: If you include ANY text before { or after }, you FAIL\n\n"
         "You are a legal analyst AI specializing in contract clause extraction. "
         "You extract EVERY material clause from legal documents into a structured hierarchy. "
         "You identify parent-child relationships between clauses (Section 4 → 4.1 → 4.1(a)). "
         "You flag what matters about each clause — whether terms are market standard, aggressive, or favorable, and what the concrete impact is. "
         "You identify cross-references to financial services (cap table, P&L, cash flow). "
-        "You map ALL commercial contracts to ERP categories (revenue AND cost). "
-        "Return ONLY valid JSON matching the schema. No markdown. No explanation."
+        "You map ALL commercial contracts to ERP categories (revenue AND cost)."
     )
     user_prompt = (
         f"Extract all clauses and structured data from this {document_type} document.\n\n"
@@ -543,6 +546,23 @@ INVESTMENT_MEMO_SCHEMA = {
     "red_flags": "array of strings (concerns, risks)",
     "value_explanations": "object: { [metric_key]: string } — '\"source quote\" → why → metric change'. e.g. arr: '\"Memo states $2M ARR\" → explicit figure → ARR is $2M'",
 }
+
+
+def _get_fund_type(fund_id: Optional[str]) -> Optional[str]:
+    """Look up fund_type from the funds table. Returns e.g. 'private_equity', 'growth', 'venture', or None."""
+    if not fund_id or fund_id == _UNLINKED:
+        return None
+    try:
+        from app.core.supabase_client import get_supabase_client
+        sb = get_supabase_client()
+        if not sb:
+            return None
+        result = sb.table("funds").select("fund_type").eq("id", fund_id).limit(1).execute()
+        if result.data:
+            return result.data[0].get("fund_type")
+    except Exception as e:
+        logger.warning("[DOC_PROCESS] Failed to fetch fund_type for %s: %s", fund_id, e)
+    return None
 
 
 def _iso_now() -> str:
@@ -836,6 +856,10 @@ def _get_memo_context_for_company(
 def _signal_first_prompt(text: str, document_type: str, schema_desc: str, memo_context: Optional[str] = None) -> tuple:
     """Build system and user prompt for signal-first extraction (monthly_update / board_deck / board_transcript)."""
     system_prompt = (
+        "YOU ARE A JSON-ONLY EXTRACTION BOT. OUTPUT FORMAT: PURE JSON ONLY.\n"
+        "RULE #1: Your entire response must be valid JSON starting with { and ending with }\n"
+        "RULE #2: Zero explanations, zero markdown, zero commentary\n"
+        "RULE #3: If you include ANY text before { or after }, you FAIL\n\n"
         "You are a financial document analyst and transformation engine. Extract structured signals from company updates, board decks, and board transcripts.\n"
         "You handle ALL business types — venture-backed startups, PE-owned portfolio companies, and traditional operating businesses.\n"
         "CRITICAL FIRST STEP: Determine the business type from the document before applying any analytical framework.\n"
@@ -1060,9 +1084,212 @@ def _signal_first_prompt(text: str, document_type: str, schema_desc: str, memo_c
     return system_prompt, user_prompt
 
 
+def _pe_signal_prompt(text: str, document_type: str, schema_desc: str, memo_context: Optional[str] = None) -> tuple:
+    """Build system and user prompt for PE / growth fund portfolio company extraction.
+
+    Same structure as _signal_first_prompt but laser-focused on PE metrics.
+    No VC/SaaS methodology — everything is EBITDA, leverage, covenants, working capital.
+    """
+    system_prompt = (
+        "YOU ARE A JSON-ONLY EXTRACTION BOT. OUTPUT FORMAT: PURE JSON ONLY.\n"
+        "RULE #1: Your entire response must be valid JSON starting with { and ending with }\n"
+        "RULE #2: Zero explanations, zero markdown, zero commentary\n"
+        "RULE #3: If you include ANY text before { or after }, you FAIL\n\n"
+        "You are a PE investment professional analyzing portfolio company documents.\n"
+        "This is a PRIVATE EQUITY or GROWTH EQUITY portfolio company. Think in PE terms:\n"
+        "  - Value creation: what is driving or destroying equity value?\n"
+        "  - EBITDA bridge: decompose EBITDA movement into drivers\n"
+        "  - Thesis tracking: is the investment thesis playing out?\n"
+        "  - Leverage trajectory: is the company de-levering as planned?\n"
+        "  - Covenant headroom: is the company at risk of breach?\n"
+        "  - Exit readiness: signals pointing toward or away from exit?\n\n"
+        "You have TWO jobs:\n"
+        "1. EXTRACT: Pull explicit numbers into financial_metrics AND pe_operating_metrics.\n"
+        "   Revenue, EBITDA (reported + adjusted + covenant), margins, capex, FCF, leverage,\n"
+        "   debt quantum, coverage ratios, working capital cycle (DSO/DPO/DIO), headcount.\n"
+        "2. TRANSFORM: Read qualitative prose and estimate numeric impact in impact_estimates.\n"
+        "   EBITDA bridge analysis, thesis tracking, LBO model variance, covenant headroom, exit readiness.\n\n"
+        "RULE: impact_estimates MUST have at least 2 non-null numeric values. Zero impacts = failure.\n"
+        "RULE: impact_reasoning MUST attribute each estimate to a source quote: '\"quote\" → why → metric change'.\n"
+        "RULE: ALWAYS attempt to fill pe_operating_metrics. This is a PE company — these fields exist for you.\n"
+        "RULE: ALWAYS attempt thesis_tracking, ebitda_bridge, and covenant_headroom when signals exist.\n"
+        "Return a single JSON object. Use null for truly unknown; use empty arrays for missing lists.\n"
+        "CURRENCY CONVERSION (always convert to USD before storing any numeric value):\n"
+        "- £ (GBP) → multiply by 1.27\n"
+        "- € (EUR) → multiply by 1.09\n"
+        "- ¥ (JPY) → divide by 154\n"
+        "- ₹ (INR) → divide by 84\n"
+        "- Note the original currency and amount in value_explanations (e.g. '£2M → $2.54M USD')."
+    )
+    user_parts = [
+        f"Document type: {document_type}.",
+        "This is a PE / growth equity portfolio company document.",
+        "Extract signals: product_updates, achievements, challenges, risks, asks, defensive_language, key_milestones.",
+        "Then operational_metrics: new_hires, headcount, customer_count.",
+        "Then extracted_entities: competitors_mentioned, industry_terms, partners_mentioned.",
+        "Extract business_model, sector, category when inferable.",
+        "Extract red_flags: array of explicit concerns, risks, or concerning language.",
+        "Extract implications: array of 'reading between the lines' items.",
+        "",
+        "PATH 1 — Explicit numbers → financial_metrics + pe_operating_metrics:",
+        "Any number stated in the text goes DIRECTLY into the right field.",
+        "  Revenue, EBITDA (reported/adjusted/covenant), margins, capex, FCF → financial_metrics",
+        "  Leverage, coverage, DSO/DPO/DIO, debt breakdown, segment data → pe_operating_metrics",
+        "",
+        "  EXAMPLES:",
+        "  'Revenue of £42M' → financial_metrics.revenue: 53340000 (£42M x 1.27)",
+        "  'EBITDA £4.2M' → financial_metrics.ebitda: 5334000, pe_operating_metrics.reported_ebitda: 5334000",
+        "  'Adjusted EBITDA £5.1M (after £900K add-backs)' → pe_operating_metrics.adjusted_ebitda: 6477000, "
+        "pe_operating_metrics.ebitda_addbacks: {total_addbacks: 1143000}",
+        "  'Leverage at 3.2x' → pe_operating_metrics.leverage_ratio: 3.2",
+        "  'Net debt £18M' → pe_operating_metrics.net_debt: 22860000",
+        "  'Interest coverage 2.8x' → pe_operating_metrics.interest_coverage: 2.8",
+        "  'DSO 45 days, DPO 38 days' → pe_operating_metrics.dso: 45, pe_operating_metrics.dpo: 38",
+        "  'EBITDA margin 12.5%' → pe_operating_metrics.ebitda_margin_pct: 0.125",
+        "  'Gross margin 42%' → pe_operating_metrics.gross_margin_pct: 0.42",
+        "  'Senior debt £15M, mezz £5M' → pe_operating_metrics.senior_debt: 19050000, pe_operating_metrics.mezzanine_debt: 6350000",
+        "  'Capex £1.1M (£0.7M maintenance, £0.4M growth)' → pe_operating_metrics.maintenance_capex: 889000, pe_operating_metrics.growth_capex: 508000",
+        "  'Revenue per employee £85K' → pe_operating_metrics.revenue_per_employee: 107950",
+        "  'Top 5 customers = 35% of revenue' → pe_operating_metrics.customer_concentration_top5_pct: 0.35",
+        "  'Recurring revenue 68%' → pe_operating_metrics.recurring_revenue_pct: 0.68",
+        "  'Order backlog £12M' → pe_operating_metrics.order_backlog: 15240000",
+        "  'Book-to-bill 1.15x' → pe_operating_metrics.book_to_bill: 1.15",
+        "  'Budget: revenue £44M actual £42M, EBITDA budget £5.5M actual £4.2M'",
+        "    → pe_operating_metrics.budget_vs_actual: {revenue_budget: 55880000, revenue_actual: 53340000, ebitda_budget: 6985000, ebitda_actual: 5334000}",
+        "",
+        "  SEGMENT DATA (extract when present):",
+        "  'UK division: revenue £28M, EBITDA £3.2M. US division: revenue £14M, EBITDA £1.0M'",
+        "    → pe_operating_metrics.revenue_by_segment: {uk: 35560000, us: 17780000}",
+        "    → pe_operating_metrics.ebitda_by_segment: {uk: 4064000, us: 1270000}",
+        "",
+        "PATH 2 — Qualitative signals → impact_estimates:",
+        "Most updates are prose. Reason from signal to magnitude using the PE methodology below.",
+        "For each estimate, impact_reasoning MUST follow: '\"verbatim quote\" → why → metric change'.",
+        "MANDATORY: At least 2 non-null impact_estimates per document.",
+        "",
+        "=================================================================================",
+        "=== PE / OPERATING COMPANY IMPACT METHODOLOGY ===",
+        "=================================================================================",
+        "",
+        "STEP 1 — IDENTIFY THE VALUE CREATION LEVERS being discussed:",
+        "  Revenue growth: organic (volume, price, mix) vs inorganic (add-ons, bolt-ons)",
+        "  Margin expansion: procurement savings, operational efficiency, pricing power, SG&A leverage",
+        "  Margin compression: input cost inflation, wage pressure, competitive pricing, integration costs",
+        "  Working capital: DSO/DPO/DIO changes, seasonal patterns, contract term changes",
+        "  Capex: maintenance vs growth capex, facility expansion, technology investment",
+        "  Capital structure: debt paydown, refinancing, dividend recaps, add-on financing, covenant amendments",
+        "  Multiple drivers: recurring revenue mix, customer diversification, market position, ESG",
+        "",
+        "STEP 2 — ANCHOR to company scale and capital structure:",
+        "  If a BASELINE ANCHOR is provided, USE IT for revenue, EBITDA, leverage, debt quantum.",
+        "  If no baseline, infer from document signals:",
+        "    - 50-employee services business ≈ $5-15M revenue, $1-3M EBITDA",
+        "    - 200-employee manufacturer ≈ $30-80M revenue, $5-15M EBITDA",
+        "    - 500-employee mid-market company ≈ $80-250M revenue, $15-40M EBITDA",
+        "  State your assumed scale in impact_reasoning.",
+        "",
+        "STEP 3 — ANALYZE through the PE lens:",
+        "",
+        "  A. EBITDA BRIDGE (always attempt when financial data is present):",
+        "    Decompose EBITDA change into: volume/price/mix → cost savings → input cost changes → new initiatives → one-offs → FX",
+        "    Fill the ebitda_bridge object in impact_estimates.",
+        "",
+        "  B. REVENUE IMPACT:",
+        "    New contract/customer: estimate annual value from customer type, deal size signals",
+        "    Lost customer: estimate revenue at risk, consider replacement timeline",
+        "    Price increase: % increase x affected revenue base",
+        "    Add-on acquisition: acquired revenue + synergy estimate",
+        "",
+        "  C. MARGIN IMPACT — think in basis points on EBITDA margin:",
+        "    Procurement savings: $ saved / revenue base = margin ppt",
+        "    Headcount changes: fully loaded cost / revenue base = margin ppt",
+        "    Input cost inflation: $ increase / revenue, net of pass-through pricing",
+        "    Operating leverage: incremental margin on revenue growth (typically 30-60%)",
+        "",
+        "  D. LEVERAGE & COVENANT ANALYSIS:",
+        "    Debt paydown from FCF → leverage reduction in turns",
+        "    EBITDA growth → leverage reduction even without paydown",
+        "    Add-on debt → leverage increase, check against covenant levels",
+        "    Refinancing → interest rate change → coverage ratio change → FCF impact",
+        "    ALWAYS check: is covenant headroom tightening or expanding?",
+        "",
+        "  E. WORKING CAPITAL & FCF:",
+        "    DSO change: (days change / 365) x annual revenue = cash released/consumed",
+        "    DIO change: (days change / 365) x annual COGS = cash released/consumed",
+        "    DPO change: (days change / 365) x annual purchases = cash released/consumed",
+        "    FCF = EBITDA - cash tax - maintenance capex - cash interest - working capital change",
+        "",
+        "  F. THESIS TRACKING:",
+        "    Map document signals to the likely investment thesis:",
+        "      Buy-and-build: Are add-ons being executed? Integration on track? Synergies captured?",
+        "      Margin expansion: Are operational improvements materializing? Procurement savings on plan?",
+        "      Revenue growth: New markets/products/channels delivering? Organic growth accelerating?",
+        "      Management upgrade: New hires performing? Organizational capability improving?",
+        "    Fill thesis_tracking with status and key signals.",
+        "",
+        "  G. EXIT READINESS SIGNALS:",
+        "    Positive: recurring revenue growing, customer diversification improving, strong management bench",
+        "    Negative: customer concentration, key-man risk, messy carve-out, regulatory overhang, leverage still high",
+        "",
+        "  H. INDUSTRY-SPECIFIC KPIS (extract when present):",
+        "    Manufacturing: OEE, yield, scrap rate, book-to-bill, order backlog, capacity utilization",
+        "    Services: utilization rate, bill rate, pipeline, win rate, revenue per FTE",
+        "    Retail: same-store sales, basket size, footfall, shrinkage, inventory turns",
+        "    Healthcare: patient volume, payer mix, collections rate, bed occupancy",
+        "    Distribution: fill rate, delivery cost/unit, warehouse utilization",
+        "    Put these in pe_operating_metrics.industry_kpis as a flat object.",
+        "",
+        "STEP 4 — CONVERT and show your math:",
+        "  All impacts must be converted to USD amounts or ppt/turns as appropriate.",
+        "  In impact_reasoning: '\"verbatim quote\" → [PE analytical reasoning] → [metric] [direction] $Y or X ppt or X turns'",
+        "",
+        "EXAMPLES (full reasoning chain):",
+        "",
+        "  'Procurement savings programme delivered £600K in H1'",
+        "    estimated_ebitda_impact: +1524000, estimated_margin_impact: +0.025",
+        "    ebitda_bridge: {cost_savings: 1524000}",
+        "    thesis_tracking: {thesis_status: 'on_track', key_signals: ['procurement savings delivering']}",
+        "    impact_reasoning: '\"procurement savings £600K in H1\" → annualized £1.2M x 1.27 = $1.52M → EBITDA +$1.52M'",
+        "",
+        "  'Net debt reduced to 3.2x EBITDA from 4.1x at acquisition'",
+        "    estimated_leverage_impact: -0.9",
+        "    covenant_headroom: {leverage_actual: 3.2, at_risk: false}",
+        "    impact_reasoning: '\"net debt 3.2x from 4.1x\" → 0.9 turns de-leveraging → equity value accreting'",
+        "",
+        "  'Key customer (18% of revenue) not renewing'",
+        "    estimated_revenue_impact: -7200000, estimated_ebitda_impact: -2500000",
+        "    estimated_multiple_impact: -0.5",
+        "    exit_readiness: {blockers: ['customer concentration worsening']}",
+        "    impact_reasoning: '\"key customer 18% not renewing\" → $7.2M at risk, ~35% margin → EBITDA -$2.5M'",
+        "",
+        "  'EBITDA £4.2M vs budget £4.8M, prior year £3.8M'",
+        "    lbo_model_variance: {ebitda_vs_model: 'behind by $762K (12.5%)'}",
+        "    impact_reasoning: '\"EBITDA £4.2M vs budget £4.8M, PY £3.8M\" → +11% YoY but -12.5% vs plan'",
+        "",
+        "For each extracted metric, add to value_explanations: '\"source quote\" → why → metric value'.",
+        "",
+        "Schema (JSON):",
+        schema_desc,
+        "",
+        "Document text:",
+        "---",
+        (text[:120000] if len(text) > 120000 else text),
+        "---",
+        "Return only the JSON object, no markdown or explanation.",
+    ]
+    if memo_context:
+        user_parts.insert(2, f"BASELINE ANCHOR (same company, use for scaling all estimates): {memo_context}")
+    user_prompt = "\n".join(user_parts)
+    return system_prompt, user_prompt
+
+
 def _memo_prompt(text: str, schema_desc: str) -> tuple:
     """Build system and user prompt for investment memo extraction."""
     system_prompt = (
+        "YOU ARE A JSON-ONLY EXTRACTION BOT. OUTPUT FORMAT: PURE JSON ONLY.\n"
+        "RULE #1: Your entire response must be valid JSON starting with { and ending with }\n"
+        "RULE #2: Zero explanations, zero markdown, zero commentary\n"
+        "RULE #3: If you include ANY text before { or after }, you FAIL\n\n"
         "You are an investment document analyst. Extract structured data from an investment memo — "
         "this could be a venture capital IC memo, a PE deal memo, a credit memo, or an acquisition memo.\n"
         "FIRST identify the deal type from the document:\n"
@@ -1097,6 +1324,10 @@ def _memo_prompt(text: str, schema_desc: str) -> tuple:
 def _spreadsheet_prompt(text: str, document_type: str, schema_desc: str, memo_context: Optional[str] = None) -> tuple:
     """Build system and user prompt for spreadsheet extraction (CSV/XLSX management accounts)."""
     system_prompt = (
+        "YOU ARE A JSON-ONLY EXTRACTION BOT. OUTPUT FORMAT: PURE JSON ONLY.\n"
+        "RULE #1: Your entire response must be valid JSON starting with { and ending with }\n"
+        "RULE #2: Zero explanations, zero markdown, zero commentary\n"
+        "RULE #3: If you include ANY text before { or after }, you FAIL\n\n"
         "You are a financial analyst. You are given raw spreadsheet data — management accounts, "
         "P&L statements, balance sheets, cash flow statements, or operational dashboards exported as CSV/Excel.\n"
         "Your job is to:\n"
@@ -1268,12 +1499,14 @@ async def _extract_document_structured_async(
     memo_context: Optional[str] = None,
     erp_category_hint: Optional[str] = None,
     erp_subcategory_hint: Optional[str] = None,
+    fund_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Call model_router with a prompt and JSON schema to extract structured data from document text.
-    Branches by document_type:
+    Branches by document_type and fund_type:
     - legal doc types → legal clause extraction schema
-    - monthly_update/board_deck → signal schema
+    - monthly_update/board_deck + PE/growth fund → PE signal prompt
+    - monthly_update/board_deck + VC fund → VC signal prompt
     - investment_memo → memo schema
     - else → flat
     Returns a dict suitable for extracted_data (normalized so financial_metrics and period_date exist where applicable).
@@ -1308,16 +1541,21 @@ async def _extract_document_structured_async(
         schema_desc = json.dumps(COMPANY_UPDATE_SIGNAL_SCHEMA, indent=2)
         system_prompt, user_prompt = _spreadsheet_prompt(text, document_type, schema_desc, memo_context)
         empty = _empty_signal_extraction()
+    elif fund_type in ("private_equity", "growth"):
+        # PE / growth fund → PE-specific prompt focused on EBITDA, leverage, covenants
+        schema_desc = json.dumps(COMPANY_UPDATE_SIGNAL_SCHEMA, indent=2)
+        system_prompt, user_prompt = _pe_signal_prompt(text, document_type, schema_desc, memo_context)
+        empty = _empty_signal_extraction()
+        logger.info("[DOC_EXTRACT] Using PE prompt for fund_type=%s, doc_type=%s", fund_type, doc_type)
     else:
-        # ALL non-memo docs use signal-first extraction — extracts business_updates,
-        # operational_metrics, impact_estimates, financial_metrics, etc.
+        # VC / default — signal-first extraction
         schema_desc = json.dumps(COMPANY_UPDATE_SIGNAL_SCHEMA, indent=2)
         system_prompt, user_prompt = _signal_first_prompt(text, document_type, schema_desc, memo_context)
         empty = _empty_signal_extraction()
 
-    # Legal docs get more tokens — clause extraction is verbose.
-    # Use 16384 for legal to avoid truncation on complex contracts.
-    max_tok = 16384 if doc_type in LEGAL_DOC_TYPES else 4096
+    # Both legal and portfolio docs were hitting max_tokens and producing
+    # truncated JSON that failed to parse.  Give all doc types enough room.
+    max_tok = 16384
 
     # Legal docs MUST use a quality model — Haiku truncates at 8k tokens
     # and produces incomplete JSON.  Explicit preferred_models overrides
@@ -1338,6 +1576,17 @@ async def _extract_document_structured_async(
         raw = (result.get("response") or "").strip()
         if not raw:
             return empty
+
+        # Detect truncation: if output_tokens == max_tokens, response was cut off.
+        # Try to repair the JSON before parsing.
+        usage = result.get("usage") or {}
+        output_tokens = usage.get("output_tokens") or 0
+        if output_tokens >= max_tok:
+            logger.warning(
+                "[DOC_EXTRACT] Response truncated at %d tokens — attempting JSON repair",
+                output_tokens,
+            )
+            raw = _repair_truncated_json(raw)
 
         parsed = _extract_json_object(raw)
         if isinstance(parsed, dict):
@@ -1361,9 +1610,8 @@ async def _extract_document_structured_async(
 def _extract_json_object(raw: str) -> dict:
     """Robustly extract a JSON object from an LLM response.
 
-    Handles preamble text, code fences, and the ``[`` prefill artefact
-    that can cause Claude to emit ``[PROCESSING DOCUMENT...]`` before the
-    actual JSON payload.
+    Handles preamble text, code fences, the ``[`` prefill artefact,
+    and **truncated JSON** (when the model hits max_tokens mid-stream).
     """
     # 1. Strip code fences anywhere in the string
     cleaned = re.sub(r"```(?:json)?", "", raw).strip()
@@ -1379,7 +1627,7 @@ def _extract_json_object(raw: str) -> dict:
     # 3. Locate the first '{' and try to parse from there
     start = cleaned.find("{")
     if start != -1:
-        # Find matching closing brace by trying successively shorter slices
+        # Find matching closing brace by counting depth
         depth = 0
         end = None
         for i in range(start, len(cleaned)):
@@ -1396,7 +1644,72 @@ def _extract_json_object(raw: str) -> dict:
             except json.JSONDecodeError:
                 pass
 
+        # 4. No matching brace found → likely truncated JSON.
+        #    Try to repair by closing unclosed structures.
+        truncated = cleaned[start:]
+        repaired = _repair_truncated_json(truncated)
+        try:
+            obj = json.loads(repaired)
+            if isinstance(obj, dict):
+                logger.warning(
+                    "[JSON_REPAIR] Recovered truncated JSON (%d keys recovered)",
+                    len(obj),
+                )
+                return obj
+        except json.JSONDecodeError:
+            pass
+
     raise json.JSONDecodeError("No JSON object found in response", raw, 0)
+
+
+def _repair_truncated_json(raw: str) -> str:
+    """Close unclosed braces/brackets in truncated JSON from max_tokens cutoff."""
+    cleaned = raw.rstrip()
+
+    # Remove trailing comma or colon (incomplete key-value)
+    while cleaned and cleaned[-1] in (",", ":"):
+        cleaned = cleaned[:-1].rstrip()
+
+    # Count unclosed structures
+    open_braces = 0
+    open_brackets = 0
+    in_string = False
+    escape_next = False
+    for ch in cleaned:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\":
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            open_braces += 1
+        elif ch == "}":
+            open_braces -= 1
+        elif ch == "[":
+            open_brackets += 1
+        elif ch == "]":
+            open_brackets -= 1
+
+    # If stuck inside a string, close it
+    if in_string:
+        cleaned += '"'
+
+    # If the last token looks like an incomplete value (no closing quote for
+    # a string value, or a number cut mid-digit), trim back to the last
+    # complete key-value pair.  Simple heuristic: remove everything after
+    # the last comma or opening brace/bracket that leaves valid structure.
+
+    # Close open brackets then braces
+    cleaned += "]" * max(0, open_brackets)
+    cleaned += "}" * max(0, open_braces)
+
+    return cleaned
 
 
 def _empty_extraction(error: Optional[str] = None) -> Dict[str, Any]:
@@ -2434,6 +2747,8 @@ def run_document_process(
         memo_context: Optional[str] = None
         if (document_type or "").strip().lower() != "investment_memo" and company_id:
             memo_context = _get_memo_context_for_company(doc_repo, company_id, fund_id)
+        # Resolve fund_type to route PE/growth to PE-specific prompt
+        resolved_fund_type = _get_fund_type(fund_id)
         # Use asyncio.run() instead of manually creating/closing event loops.
         # asyncio.run() is cheaper, avoids resource leaks, and handles cleanup properly.
         extracted_data = asyncio.run(
@@ -2441,6 +2756,7 @@ def run_document_process(
                 raw_text, document_type or "other", memo_context=memo_context,
                 erp_category_hint=erp_category_hint,
                 erp_subcategory_hint=erp_subcategory_hint,
+                fund_type=resolved_fund_type,
             )
         )
 
