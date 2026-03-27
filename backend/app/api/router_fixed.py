@@ -85,7 +85,7 @@ OPTIONAL_ROUTERS = {
     "app.api.endpoints.scenarios": {"prefix": "/scenarios", "tags": ["scenarios"], "key": "scenarios"},
     "app.api.endpoints.world_models": {"prefix": "/world-models", "tags": ["world-models"], "key": "world_models"},
     "app.api.endpoints.fund_modeling": {"prefix": "/fund-modeling", "tags": ["fund-modeling"], "key": "fund_modeling"},
-    "app.api.endpoints.nl_scenarios": {"prefix": "/nl-scenarios", "tags": ["nl-scenarios"], "key": "nl_scenarios"},
+    # nl_scenarios endpoint removed — dead (double prefix bug), what-if goes through agent chat
     "app.api.endpoints.spreadsheet_formulas": {"prefix": "/spreadsheet-formulas", "tags": ["formulas"], "key": "spreadsheet_formulas"},
     "app.api.endpoints.valuation_engine": {"prefix": "/valuation", "tags": ["valuation"], "key": "valuation"},
     "app.api.endpoints.advanced_debt": {"prefix": "/debt", "tags": ["debt"], "key": "advanced_debt"},

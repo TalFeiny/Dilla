@@ -558,6 +558,10 @@ class PnlBuilder:
 
         If actuals had "revenue:saas" and "revenue:services" at 80/20,
         forecast revenue gets split 80/20 into those same keys.
+
+        If the month contains a ``subcategories`` dict (populated by
+        LiquidityManagementService), those real per-line-item values are
+        used instead of ratio-splitting.
         """
         result: Dict[str, float] = {}
         revenue = month.get("revenue", 0)
@@ -567,6 +571,9 @@ class PnlBuilder:
         sm = month.get("sm_spend", 0)
         ga = month.get("ga_spend", 0)
         total_opex = month.get("total_opex", 0)
+
+        # LMS subcategories — real per-line-item projections
+        lms_subs: Dict[str, Dict[str, float]] = month.get("subcategories") or {}
 
         # --- Revenue subcategories ---
         rev_splits = {k: v for k, v in ratios.items() if k.startswith("split:revenue")}
@@ -581,40 +588,54 @@ class PnlBuilder:
         result["total_revenue"] = revenue
 
         # --- COGS subcategories ---
-        cogs_splits = {k: v for k, v in ratios.items() if k.startswith("split:cogs")}
-        if cogs_splits:
-            for split_key, pct in cogs_splits.items():
-                key = split_key.replace("split:", "")
-                result[key] = cogs * pct
-        else:
+        if lms_subs.get("cogs"):
+            for sub_key, sub_val in lms_subs["cogs"].items():
+                result[f"cogs:{sub_key}"] = sub_val
             result["cogs"] = cogs
+        else:
+            cogs_splits = {k: v for k, v in ratios.items() if k.startswith("split:cogs")}
+            if cogs_splits:
+                for split_key, pct in cogs_splits.items():
+                    key = split_key.replace("split:", "")
+                    result[key] = cogs * pct
+            else:
+                result["cogs"] = cogs
         result["total_cogs"] = cogs
 
         # --- Gross profit (always computed) ---
         result["gross_profit"] = gross_profit
 
         # --- OpEx subcategories ---
-        # First, check if actuals had detailed opex categories (opex_rd, opex_sm, etc.)
-        opex_splits = {k: v for k, v in ratios.items() if k.startswith("split:opex")}
-        if opex_splits:
-            # Actuals had opex subcategories — distribute total_opex by those ratios
-            for split_key, pct in opex_splits.items():
-                key = split_key.replace("split:", "")
-                result[key] = total_opex * pct
-        else:
-            # No detailed opex in actuals — use the forecast engine's R&D/S&M/G&A breakdown
+        # Prefer LMS subcategories over ratio-splitting
+        _opex_parents = ["opex_rd", "opex_sm", "opex_ga"]
+        if any(lms_subs.get(p) for p in _opex_parents):
+            # LMS provided real subcategory breakdowns
             result["opex_rd"] = rd
             result["opex_sm"] = sm
             result["opex_ga"] = ga
-
-        # Check for opex sub-subcategories (e.g. opex_rd:salaries, opex_rd:tooling)
-        for cat_key in ["opex_rd", "opex_sm", "opex_ga"]:
-            cat_subs = {k: v for k, v in ratios.items() if k.startswith(f"split:{cat_key}:")}
-            if cat_subs and cat_key in result:
-                parent_val = result[cat_key]
-                for split_key, pct in cat_subs.items():
+            for parent in _opex_parents:
+                for sub_key, sub_val in (lms_subs.get(parent) or {}).items():
+                    result[f"{parent}:{sub_key}"] = sub_val
+        else:
+            # Fall back to ratio-based splitting
+            opex_splits = {k: v for k, v in ratios.items() if k.startswith("split:opex")}
+            if opex_splits:
+                for split_key, pct in opex_splits.items():
                     key = split_key.replace("split:", "")
-                    result[key] = parent_val * pct
+                    result[key] = total_opex * pct
+            else:
+                result["opex_rd"] = rd
+                result["opex_sm"] = sm
+                result["opex_ga"] = ga
+
+            # Check for opex sub-subcategories (e.g. opex_rd:salaries, opex_rd:tooling)
+            for cat_key in _opex_parents:
+                cat_subs = {k: v for k, v in ratios.items() if k.startswith(f"split:{cat_key}:")}
+                if cat_subs and cat_key in result:
+                    parent_val = result[cat_key]
+                    for split_key, pct in cat_subs.items():
+                        key = split_key.replace("split:", "")
+                        result[key] = parent_val * pct
 
         result["total_opex"] = total_opex
 

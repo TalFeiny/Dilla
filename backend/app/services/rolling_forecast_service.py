@@ -54,7 +54,7 @@ class RollingForecastService:
         4. Aggregate to requested granularity
         """
         from app.services.company_data_pull import pull_company_data
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
+        from app.services.forecast_method_router import ForecastMethodRouter
 
         # Single data pull — all actuals + analytics in one query
         cd = pull_company_data(company_id)
@@ -91,14 +91,19 @@ class RollingForecastService:
             if saved_forecast:
                 forecast_monthly = saved_forecast
             else:
-                # Fall back to computing forecast on the fly
+                # Fall back to computing forecast via method router
+                # (auto-selects best method: driver-based, seasonal, regression, etc.)
                 company_data = cd.to_forecast_seed()
                 if company_data.get("revenue", 0) > 0:
-                    svc = CashFlowPlanningService()
-                    forecast_monthly = svc.build_monthly_cash_flow_model(
-                        company_data,
+                    router = ForecastMethodRouter()
+                    method, _reasoning = router.auto_select_method(company_id, company_data, company_data=cd)
+                    forecast_monthly, _provenance = router.build_forecast(
+                        company_id=company_id,
+                        method=method,
+                        seed_data=company_data,
                         months=forecast_months_needed,
                         start_period=forecast_start,
+                        company_data=cd,
                     )
             for row in forecast_monthly:
                 row["source"] = "forecast"

@@ -240,6 +240,7 @@ class ModelSpecExecutor:
         months: int = 24,
         start_period: Optional[str] = None,
         parent_result: Optional[ExecutionResult] = None,
+        company_id: Optional[str] = None,
     ) -> ExecutionResult:
         """Execute a ModelSpec and return full forecast with confidence bands.
 
@@ -299,13 +300,26 @@ class ModelSpecExecutor:
         seed = dict(company_data)
         seed.update(spec.driver_overrides)
 
-        # 4. Feed into existing P&L cascade
-        forecast = self._cfp.build_monthly_cash_flow_model(
-            company_data=seed,
-            months=months,
-            start_period=start_period,
-            revenue_trajectory=trajectory,
-        )
+        # 4. Feed into P&L cascade — prefer LMS for subcategory detail
+        if company_id:
+            from app.services.liquidity_management_service import LiquidityManagementService
+            lms = LiquidityManagementService()
+            if trajectory:
+                seed["_revenue_trajectory"] = trajectory
+            lms_result = lms.build_liquidity_model(
+                company_id=company_id,
+                months=months,
+                start_period=start_period,
+                scenario_overrides=seed,
+            )
+            forecast = lms_result.get("monthly", [])
+        else:
+            forecast = self._cfp.build_monthly_cash_flow_model(
+                company_data=seed,
+                months=months,
+                start_period=start_period,
+                revenue_trajectory=trajectory,
+            )
 
         # 5. Override non-revenue metrics if spec defines them.
         # Map common LLM metric names to cascade keys.

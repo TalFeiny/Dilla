@@ -10,7 +10,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Loader2, Play, GitBranch, Plus, Trash2, MessageSquare } from 'lucide-react';
-import { parseNLScenario } from '@/lib/memo/api-helpers';
+import { constructForecastModel, executeForecastModel } from '@/lib/memo/api-helpers';
 import { fmtCurrency } from '@/lib/memo/format';
 
 const TableauLevelCharts = dynamic(
@@ -139,20 +139,50 @@ export function ScenarioSection({ onDelete, readOnly = false }: ScenarioSectionP
     });
   }, [baseForecast, branches, forecasts]);
 
-  // NL scenario composer — parse "what if..." into branch (correct endpoint: /what-if not /parse)
+  // NL scenario creation via ModelSpec construction + execution.
+  // User types "what if..." → AgentModelConstructor builds a ModelSpec with
+  // custom curves, events, shocks → ModelSpecExecutor runs it → creates branch
+  // with full forecast, event_chain, confidence_bands, cascade_ripple.
   const handleNLSubmit = useCallback(async () => {
-    if (!nlInput.trim()) return;
+    if (!nlInput.trim() || !ctx.companyId) return;
     setParsing(true);
     try {
-      const data = await parseNLScenario(nlInput, ctx.companyId);
-      const scenario = data.composed_scenario || data;
-      const assumptions = scenario.assumptions || scenario.drivers || data.assumptions || data.drivers || {};
-      const name = scenario.scenario_name || data.name || nlInput.slice(0, 40);
-      const forkPeriod = data.fork_period || null;
-      await ctx.createFork(name, ctx.activeBranchId, forkPeriod, assumptions);
+      // Step 1: Construct ModelSpec from NL prompt
+      const constructResult = await constructForecastModel(ctx.companyId, nlInput);
+      const constructData = constructResult.result || constructResult;
+      const modelIds: string[] = constructData.model_ids || [];
+
+      if (modelIds.length === 0) {
+        console.warn('Model construction returned no models');
+        return;
+      }
+
+      // Step 2: Execute the ModelSpec → full P&L with custom curves
+      const execResult = await executeForecastModel(ctx.companyId, modelIds[0]);
+      const execData = execResult.result || execResult;
+
+      // Extract execution outputs
+      const forecast = execData.forecast || [];
+      const spec = execData.spec || {};
+      const eventChain = execData.event_chain;
+      const cascadeRipple = execData.cascade_ripple;
+      const confidenceBands = execData.confidence_bands;
+
+      // Step 3: Create branch with ModelSpec attached as assumptions
+      const name = spec.name || spec.model_id || nlInput.slice(0, 40);
+      const assumptions: Record<string, any> = {
+        model_spec: spec,
+        model_spec_id: modelIds[0],
+        ...(eventChain ? { event_chain: eventChain } : {}),
+        ...(cascadeRipple ? { cascade_ripple: cascadeRipple } : {}),
+        ...(confidenceBands ? { confidence_bands: confidenceBands } : {}),
+        ...(spec.driver_overrides || {}),
+      };
+
+      await ctx.createFork(name, ctx.activeBranchId, null, assumptions);
       setNlInput('');
     } catch (err) {
-      console.warn('NL scenario parse failed:', err);
+      console.warn('Model construction failed:', err);
     } finally {
       setParsing(false);
     }
@@ -282,7 +312,7 @@ export function ScenarioSection({ onDelete, readOnly = false }: ScenarioSectionP
             <MessageSquare className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               className="h-8 pl-7 text-sm"
-              placeholder="What if we hire 3 more engineers and raise prices 15%..."
+              placeholder="What if we raise Series A in Q2 and hire 5 more engineers..."
               value={nlInput}
               onChange={e => setNlInput(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleNLSubmit()}

@@ -404,6 +404,40 @@ export function ForecastMethodSection({ onDelete, readOnly = false }: ForecastMe
           {chartExplanation && (
             <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">{chartExplanation}</p>
           )}
+          {/* Ripple path cascade — shows how driver changes cascade through P&L */}
+          {methodResult?.ripple_paths && methodResult.ripple_paths.length > 0 && (
+            <div className="mt-3 pt-2 border-t border-border/30">
+              <div className="text-[10px] uppercase font-mono text-muted-foreground mb-1.5">Cascade Path</div>
+              <div className="flex items-center gap-1 flex-wrap text-[11px]">
+                {(() => {
+                  // Build ordered cascade chain from ripple_paths
+                  const paths = methodResult.ripple_paths!;
+                  const nodes = new Set<string>();
+                  paths.forEach(p => { nodes.add(p.from); nodes.add(p.to); });
+                  // Order: Revenue → COGS → GP → OpEx → EBITDA → FCF → Cash → Runway
+                  const order = ['revenue', 'cogs', 'gross_profit', 'total_opex', 'ebitda', 'free_cash_flow', 'cash_balance', 'runway_months'];
+                  const ordered = order.filter(n => nodes.has(n));
+                  const labels: Record<string, string> = {
+                    revenue: 'Revenue', cogs: 'COGS', gross_profit: 'GP',
+                    total_opex: 'OpEx', ebitda: 'EBITDA', free_cash_flow: 'FCF',
+                    cash_balance: 'Cash', runway_months: 'Runway',
+                  };
+                  return ordered.map((node, i) => {
+                    const impact = paths.find(p => p.to === node)?.impact;
+                    const impactStr = impact != null ? ` ${impact >= 0 ? '+' : ''}${(impact * 100).toFixed(1)}%` : '';
+                    return (
+                      <React.Fragment key={node}>
+                        {i > 0 && <span className="text-muted-foreground/50">→</span>}
+                        <span className={`px-1.5 py-0.5 rounded ${impact != null && impact >= 0 ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : impact != null ? 'bg-red-500/10 text-red-700 dark:text-red-400' : 'bg-muted'}`}>
+                          {labels[node] || node}{impactStr}
+                        </span>
+                      </React.Fragment>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+          )}
         </>
       )}
     </MemoSectionWrapper>

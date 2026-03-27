@@ -121,9 +121,13 @@ class ForecastMethodRouter:
         if self._has_approved_budget(company_id):
             return ("budget_pct", "Approved budget found — projecting from budget × achievement rate")
 
-        # 5. Default
-        reason = f"Growth-rate extrapolation from {rev_months or '?'} months of actuals"
-        return ("growth_rate", reason)
+        # 5. Default — use LiquidityManagementService for full subcategory-level
+        # modeling with dynamic driver interactions (headcount, usage, stepped, etc.)
+        reason = (
+            f"Liquidity model with subcategory-level decomposition from "
+            f"{rev_months or '?'} months of actuals"
+        )
+        return ("liquidity", reason)
 
     def build_forecast(
         self,
@@ -200,7 +204,9 @@ class ForecastMethodRouter:
     def _build_growth_rate(
         self, seed_data: Dict, months: int, assumptions: Dict = None
     ) -> List[Dict]:
-        """Default growth-rate model via CashFlowPlanningService."""
+        """Last-resort fallback only — basic growth-rate extrapolation.
+        auto_select_method() should never pick this when company_id is available;
+        it should pick 'liquidity' or better instead."""
         from app.services.cash_flow_planning_service import CashFlowPlanningService
 
         svc = CashFlowPlanningService()
@@ -281,11 +287,8 @@ class ForecastMethodRouter:
 
         company_id = seed_data.get("company_id", "")
         if not company_id:
-            # Fallback: use CashFlowPlanningService if no company_id for LMS
-            from app.services.cash_flow_planning_service import CashFlowPlanningService
-            enriched = {**seed_data, **overrides}
-            svc = CashFlowPlanningService()
-            return svc.build_monthly_cash_flow_model(enriched, months=months)
+            logger.warning("driver_based called without company_id — cannot use LiquidityManagementService")
+            return []
 
         lms = LiquidityManagementService()
         lms_result = lms.build_liquidity_model(
@@ -294,7 +297,7 @@ class ForecastMethodRouter:
             scenario_overrides=overrides,
         )
         forecast = lms_result.get("monthly", [])
-        return forecast if forecast else self._build_growth_rate(seed_data, months)
+        return forecast
 
     def _build_model_construction(
         self, company_id: str, seed_data: Dict, months: int,
@@ -358,6 +361,7 @@ class ForecastMethodRouter:
                 company_data=seed_data,
                 months=months,
                 start_period=start_period,
+                company_id=company_id,
             )
 
             provenance["model_id"] = specs[0].model_id

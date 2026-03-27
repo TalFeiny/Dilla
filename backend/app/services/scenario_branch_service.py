@@ -404,6 +404,7 @@ class ScenarioBranchService:
             months=forecast_months,
             start_period=start_period,
             parent_result=parent_result,
+            company_id=company_id,
         )
 
         # Build base forecast for comparison (same as default path)
@@ -1826,18 +1827,54 @@ def build_forecast_charts(forecast: List[Dict[str, Any]]) -> List[Dict[str, Any]
     """Standard chart set for fpa_forecast / fpa_cash_flow results."""
     if not forecast:
         return []
-    return [
+
+    charts = [
         build_fpa_line_chart(forecast, "revenue", "Revenue", "$", "#6366f1"),
         build_fpa_line_chart(forecast, "ebitda", "EBITDA", "$", "#10b981"),
         build_fpa_line_chart(forecast, "cash_balance", "Cash Balance", "$", "#f59e0b"),
         build_fpa_line_chart(forecast, "runway_months", "Runway (Months)", "#", "#ef4444"),
-        build_fpa_stacked_bar(
-            forecast,
-            [
-                ("rd_spend", "R&D", "#8b5cf6"),
-                ("sm_spend", "S&M", "#06b6d4"),
-                ("ga_spend", "G&A", "#f97316"),
-            ],
-            "OpEx Breakdown",
-        ),
     ]
+
+    # Dynamic subcategory OpEx stacked bar when LMS subcategories are present
+    _SUBCAT_COLORS = ["#8b5cf6", "#06b6d4", "#f97316", "#10b981", "#ef4444", "#f59e0b", "#6366f1", "#ec4899", "#14b8a6", "#a855f7"]
+    _first = forecast[0] if forecast else {}
+    _subs = _first.get("subcategories") or {}
+    _has_subs = any(_subs.get(p) for p in ("opex_rd", "opex_sm", "opex_ga", "cogs"))
+
+    if _has_subs:
+        metrics = []
+        _ci = 0
+        for parent, parent_label in [("opex_rd", "R&D"), ("opex_sm", "S&M"), ("opex_ga", "G&A"), ("cogs", "COGS")]:
+            sub_keys = sorted((_subs.get(parent) or {}).keys())
+            for sk in sub_keys:
+                # Check if any month has a non-zero value for this subcategory
+                has_data = any(
+                    (m.get("subcategories") or {}).get(parent, {}).get(sk, 0)
+                    for m in forecast
+                )
+                if has_data:
+                    # Build a synthetic key so build_fpa_stacked_bar can read it
+                    synth_key = f"_sub_{parent}_{sk}"
+                    label = f"{parent_label}: {sk.replace('_', ' ').title()}"
+                    color = _SUBCAT_COLORS[_ci % len(_SUBCAT_COLORS)]
+                    metrics.append((synth_key, label, color))
+                    # Inject synthetic key into each month for the chart builder
+                    for m in forecast:
+                        m[synth_key] = (m.get("subcategories") or {}).get(parent, {}).get(sk, 0)
+                    _ci += 1
+        if metrics:
+            charts.append(build_fpa_stacked_bar(forecast, metrics, "OpEx Breakdown"))
+        else:
+            charts.append(build_fpa_stacked_bar(
+                forecast,
+                [("rd_spend", "R&D", "#8b5cf6"), ("sm_spend", "S&M", "#06b6d4"), ("ga_spend", "G&A", "#f97316")],
+                "OpEx Breakdown",
+            ))
+    else:
+        charts.append(build_fpa_stacked_bar(
+            forecast,
+            [("rd_spend", "R&D", "#8b5cf6"), ("sm_spend", "S&M", "#06b6d4"), ("ga_spend", "G&A", "#f97316")],
+            "OpEx Breakdown",
+        ))
+
+    return charts

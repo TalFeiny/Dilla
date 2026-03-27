@@ -101,6 +101,9 @@ export interface ForecastMeta {
   extrapolation_risk?: string;
   confidence?: string;
   data_characteristics?: Record<string, any>;
+  // Ripple effects — how driver changes cascade through the P&L
+  ripple_paths?: Array<{ from: string; to: string; impact: number }>;
+  driver_impacts?: Record<string, Record<string, number>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -294,14 +297,52 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
     setMatrixData(prev => {
       const rowMap = new Map(prev.rows.map(r => [r.id, { ...r, cells: { ...r.cells } }]));
 
+      // Build dynamic field→row map: static base + subcategory keys from first month
+      const fieldMap: Record<string, string> = { ...FORECAST_FIELD_TO_ROW };
+      const firstMonth = forecast[0] as any;
+      const subs = firstMonth?.subcategories as Record<string, Record<string, number>> | undefined;
+      if (subs) {
+        for (const [parent, children] of Object.entries(subs)) {
+          for (const subKey of Object.keys(children)) {
+            // Map e.g. "opex_rd:engineering_salaries" → "opex_rd:engineering_salaries"
+            const compositeKey = `${parent}:${subKey}`;
+            fieldMap[compositeKey] = compositeKey;
+          }
+        }
+      }
+
       for (const month of forecast) {
         const colId = month.period; // e.g. "2025-01"
+        const mSubs = (month as any).subcategories as Record<string, Record<string, number>> | undefined;
+
+        // Apply top-level fields
         for (const [field, rowId] of Object.entries(FORECAST_FIELD_TO_ROW)) {
           const val = month[field];
           if (val == null) continue;
           const row = rowMap.get(rowId);
           if (!row) continue;
           row.cells[colId] = { ...(row.cells[colId] || {}), value: val, source: 'scenario' as const };
+        }
+
+        // Apply subcategory fields
+        if (mSubs) {
+          for (const [parent, children] of Object.entries(mSubs)) {
+            for (const [subKey, subVal] of Object.entries(children)) {
+              const rowId = `${parent}:${subKey}`;
+              let row = rowMap.get(rowId);
+              if (!row) {
+                // Auto-create child row for this subcategory
+                row = {
+                  id: rowId,
+                  label: subKey.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                  parentId: parent,
+                  cells: {},
+                } as any;
+                rowMap.set(rowId, row);
+              }
+              row.cells[colId] = { ...(row.cells[colId] || {}), value: subVal, source: 'scenario' as const };
+            }
+          }
         }
       }
 
@@ -372,121 +413,59 @@ export function MemoProvider({ companyId, companyName = '', fundId = '', matrixD
   }, [forkTree, bump]);
 
   // ---- Build forecast ----
-  // Regression methods → /api/fpa/regression
-  // Connected model (driver-based) → /api/fpa/forecast (full P&L cascade)
+  // All methods → /api/fpa/forecast (full P&L cascade with subcategories).
+  // ForecastMethodRouter handles method selection backend-side.
+  // /api/fpa/regression is kept only for MonteCarloSection & SensitivitySection.
   const buildForecast = useCallback(async (params?: Record<string, any>) => {
     setLoading(true);
     try {
       const method = params?.method || 'auto';
-      const metric = params?.metric || 'revenue';
       const forecastPeriods = params?.forecast_periods ?? 12;
       const gran = params?.granularity || 'monthly';
 
-      // ── Connected model: driver-based uses the full P&L engine ──
-      if (method === 'driver-based') {
-        // Collect current driver overrides as assumptions
-        const driverOverrides: Record<string, any> = {};
-        const branchId = forkTree?.activeBranchId;
-        if (branchId && driverValues[branchId]) {
-          for (const dv of driverValues[branchId]) {
-            if (dv.source === 'override') driverOverrides[dv.id] = dv.value;
-          }
+      // Collect current driver overrides as assumptions
+      const driverOverrides: Record<string, any> = {};
+      const branchId = forkTree?.activeBranchId;
+      if (branchId && driverValues[branchId]) {
+        for (const dv of driverValues[branchId]) {
+          if (dv.source === 'override') driverOverrides[dv.id] = dv.value;
         }
-
-        const res = await fetch(`/api/fpa/forecast`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            company_id: companyId,
-            forecast_periods: forecastPeriods,
-            granularity: gran,
-            assumptions: driverOverrides,
-          }),
-        });
-        if (!res.ok) throw new Error(`Connected forecast failed: ${res.status}`);
-        const data = await res.json();
-
-        // data.forecast is ForecastMonth[] with ALL metrics per period
-        const forecast: ForecastMonth[] = data.forecast || [];
-        setForecastRows(forecast);
-        if (forecast.length) {
-          applyForecastToGrid(forecast);
-        }
-
-        // Backend now returns fit_data with real actuals→forecast fork point,
-        // same contract as regression. Just pass through.
-        const runway = data.runway_months;
-        const runwayNote = runway ? ` Runway: ${runway} months.` : '';
-
-        setForecastMeta({
-          method: 'driver-based',
-          description: `Connected P&L model — all metrics cascade from revenue through to cash.${runwayNote}`,
-          fit_data: data.fit_data,
-          model_name: data.model_name || 'Connected P&L',
-          confidence: data.confidence || 'high',
-          business_interpretation: `Full P&L projection with ${forecastPeriods} ${gran} periods.${runwayNote}`,
-        });
-        bump();
-        return;
       }
 
-      // ── Single-metric regression methods ──
-      const methodToRegType: Record<string, string> = {
-        auto: 'advanced', linear: 'linear', regression: 'advanced',
-        polynomial: 'polynomial',
-        exponential: 'exponential_growth', exponential_growth: 'exponential_growth',
-        logistic: 'logistic', power_law: 'power_law', gompertz: 'gompertz',
-        piecewise: 'piecewise_linear', piecewise_linear: 'piecewise_linear',
-        weighted_linear: 'weighted_linear', seasonal: 'advanced',
-      };
-      const regType = methodToRegType[method] || 'advanced';
-
-      const res = await fetch(`/api/fpa/regression`, {
+      const res = await fetch(`/api/fpa/forecast`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          regression_type: regType,
-          data: { company_id: companyId },
-          options: {
-            metric,
-            forecast_periods: forecastPeriods,
-            granularity: gran,
-          },
+          company_id: companyId,
+          method,
+          forecast_periods: forecastPeriods,
+          granularity: gran,
+          assumptions: driverOverrides,
         }),
       });
       if (!res.ok) throw new Error(`Forecast failed: ${res.status}`);
       const data = await res.json();
 
-      // Apply regression forecast to grid
-      const forecastVals: number[] = data.forecast || data.best_model?.predictions || [];
-      const forecastLabels: string[] = data.forecast_labels || [];
-
-      if (forecastVals.length > 0 && forecastLabels.length > 0) {
-        // Build ForecastMonth[] from regression output
-        const forecastMonths = forecastLabels.map((period: string, i: number) => ({
-          period,
-          [metric]: forecastVals[i],
-        }));
-        setForecastRows(forecastMonths);
-        applyForecastToGrid(forecastMonths);
+      // data.forecast is ForecastMonth[] with ALL metrics + subcategories per period
+      const forecast: ForecastMonth[] = data.forecast || [];
+      setForecastRows(forecast);
+      if (forecast.length) {
+        applyForecastToGrid(forecast);
       }
 
-      // Set full forecast metadata — everything the backend computes
-      const bestModel = data.best_model || data;
-      setForecastMeta({
-        method: bestModel.model_name || method || 'auto',
-        r_squared: data.r_squared ?? bestModel.r_squared,
-        mape: data.mape ?? null,
-        description: data.description || data.selection_reasoning,
-        fit_data: data.fit_data,
-        alternatives: data.all_models_ranked || data.alternatives,
-        model_name: bestModel.model_name,
-        business_interpretation: bestModel.business_interpretation,
-        extrapolation_risk: bestModel.extrapolation_risk,
-        confidence: bestModel.confidence,
-        data_characteristics: data.data_characteristics,
-      });
+      const runway = data.runway_months;
+      const runwayNote = runway ? ` Runway: ${runway} months.` : '';
 
+      setForecastMeta({
+        method: data.method || method,
+        description: `Full P&L model — all metrics cascade from revenue through to cash.${runwayNote}`,
+        fit_data: data.fit_data,
+        model_name: data.model_name || 'Connected P&L',
+        confidence: data.confidence || 'high',
+        business_interpretation: `Full P&L projection with ${forecastPeriods} ${gran} periods.${runwayNote}`,
+        ripple_paths: data.ripple_paths,
+        driver_impacts: data.driver_impacts,
+      });
       bump();
     } finally {
       setLoading(false);

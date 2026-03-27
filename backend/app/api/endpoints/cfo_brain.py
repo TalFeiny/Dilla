@@ -63,9 +63,10 @@ def _build_cfo_system_prompt(company_context: Optional[Dict] = None) -> str:
             return f"${n / 1e3:.0f}K"
         return f"${n:.0f}"
 
-    # Build P&L snapshot from actuals + ForecastMethodRouter when company_id available
+    # Build snapshot from actuals + tell agent what data sections exist
     pnl_snapshot = ""
     methodology_note = ""
+    data_sections_note = ""
     company_id = ctx.get("company_id") or ctx.get("companyId")
     if company_id:
         try:
@@ -100,7 +101,7 @@ def _build_cfo_system_prompt(company_context: Optional[Dict] = None) -> str:
                 parts.append(f"Growth trend: {dq['growth_trend']}")
 
             if parts:
-                pnl_snapshot = "Current P&L snapshot: " + ", ".join(parts) + "."
+                pnl_snapshot = "Current P&L snapshot (latest month only — call pull_company_data for full history): " + ", ".join(parts) + "."
 
             # Tell agent what forecast method the router auto-selected and why
             router = ForecastMethodRouter()
@@ -112,12 +113,33 @@ def _build_cfo_system_prompt(company_context: Optional[Dict] = None) -> str:
                 "run Monte Carlo simulations using fpa_regression, "
                 "and create scenario branches to compare alternatives."
             )
+
+            # Tell the agent what data is available — from metadata only, no extra DB calls
+            available_sections = []
+            categories = cd.metadata.get("categories", [])
+            if categories:
+                available_sections.append(f"P&L actuals: {len(cd.periods)} periods, categories: {', '.join(categories[:15])}")
+            if cd.analytics:
+                available_sections.append("Analytics: growth rates, burn analysis, margins, runway, data quality")
+            # Always hint about cross-domain data available via strategic_analysis
+            available_sections.append(
+                "Cross-domain (cap table, drivers, KPIs, scenario branches, trajectories): "
+                "call strategic_analysis when reasoning across financial domains matters"
+            )
+
+            if available_sections:
+                data_sections_note = (
+                    "\n\nAVAILABLE DATA (call pull_company_data for full time_series; "
+                    "call strategic_analysis for cross-domain reasoning):\n- "
+                    + "\n- ".join(available_sections)
+                )
+
         except Exception:
             pnl_snapshot = ""
 
     # Fall back to legacy KPIs only if no P&L data from actuals
     if pnl_snapshot:
-        snapshot = pnl_snapshot + methodology_note
+        snapshot = pnl_snapshot + methodology_note + data_sections_note
     else:
         snapshot_parts = [
             fmt(ctx.get("currentARR") or ctx.get("current_arr")) and f"ARR: {fmt(ctx.get('currentARR') or ctx.get('current_arr'))}",

@@ -2420,22 +2420,38 @@ def _build_forecast_charts(rows: list, boundary_index: int = 0) -> list:
             },
         })
 
-    # OpEx breakdown stacked bar
-    rd = [r.get("rd_spend", 0) for r in rows]
-    sm = [r.get("sm_spend", 0) for r in rows]
-    ga = [r.get("ga_spend", 0) for r in rows]
-    if any(v for v in rd) or any(v for v in sm) or any(v for v in ga):
+    # OpEx breakdown stacked bar — dynamic subcategories when available
+    _opex_datasets = []
+    _SUBCAT_COLORS = ["#8b5cf6", "#06b6d4", "#f97316", "#10b981", "#ef4444", "#f59e0b", "#6366f1", "#ec4899", "#14b8a6", "#a855f7"]
+    _first = rows[0] if rows else {}
+    _subs = _first.get("subcategories") or {}
+    _has_subs = any(_subs.get(p) for p in ("opex_rd", "opex_sm", "opex_ga", "cogs"))
+
+    if _has_subs:
+        _ci = 0
+        for parent, parent_label in [("opex_rd", "R&D"), ("opex_sm", "S&M"), ("opex_ga", "G&A"), ("cogs", "COGS")]:
+            sub_keys = sorted((_subs.get(parent) or {}).keys())
+            for sk in sub_keys:
+                vals = [(r.get("subcategories") or {}).get(parent, {}).get(sk, 0) for r in rows]
+                if any(v for v in vals):
+                    label = f"{parent_label}: {sk.replace('_', ' ').title()}"
+                    _opex_datasets.append({"label": label, "data": vals, "color": _SUBCAT_COLORS[_ci % len(_SUBCAT_COLORS)]})
+                    _ci += 1
+    else:
+        # Fallback to top-level R&D / S&M / G&A
+        for key, label in [("rd_spend", "R&D"), ("sm_spend", "S&M"), ("ga_spend", "G&A")]:
+            vals = [r.get(key, 0) for r in rows]
+            if any(v for v in vals):
+                _opex_datasets.append({"label": label, "data": vals})
+
+    if _opex_datasets:
         charts.append({
             "type": "stacked_bar",
             "title": "OpEx Breakdown",
             "renderType": "tableau",
             "data": {
                 "labels": periods,
-                "datasets": [
-                    {"label": "R&D", "data": rd},
-                    {"label": "S&M", "data": sm},
-                    {"label": "G&A", "data": ga},
-                ],
+                "datasets": _opex_datasets,
             },
         })
 
@@ -2988,13 +3004,14 @@ async def execute_model(
         if stored_assumptions:
             seed_data.update(stored_assumptions)
 
-        # Execute
+        # Execute — pass company_id so LMS provides subcategory detail
         executor = ModelSpecExecutor()
         result = executor.execute(
             spec=spec,
             company_data=seed_data,
             months=months,
             start_period=start_period,
+            company_id=cid,
         )
 
         return result.model_dump()

@@ -777,6 +777,19 @@ class ChartRendererService:
         return fig
 
     def _build_stacked_bar(self, data: Any, width: int, height: int) -> go.Figure:
+        # Normalize FPA format (x_axis/series) to Chart.js format (labels/datasets)
+        if isinstance(data, dict) and "x_axis" in data and "series" in data:
+            data = {
+                "labels": data["x_axis"],
+                "datasets": [
+                    {
+                        "label": s.get("name", f"Series {i}"),
+                        "data": s.get("data", []),
+                        "backgroundColor": s.get("color", "#666"),
+                    }
+                    for i, s in enumerate(data.get("series", []))
+                ],
+            }
         labels, datasets = self._extract_labels_datasets(data)
         fig = go.Figure()
         for i, ds in enumerate(datasets):

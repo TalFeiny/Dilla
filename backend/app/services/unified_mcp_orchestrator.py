@@ -639,7 +639,16 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="pull_company_data",
-        description="Pull a single company's full financials from DB (fpa_actuals). Returns time series, latest metrics, and analytics. Use this to build context for any single-company analysis.",
+        description=(
+            "Pull a single company's COMPLETE raw financials from DB. Returns: "
+            "time_series ({category: {period: amount}} — full history across ALL periods "
+            "for revenue, COGS, R&D, S&M, G&A, cash, headcount, etc.), "
+            "latest (most recent values), analytics (growth rates, burn, margins, runway, "
+            "driver detection, data quality). "
+            "Call this FIRST for any company question — gives you the full P&L history. "
+            "If you need cross-domain reasoning (cap table, ownership, scenario drivers, "
+            "KPIs, trajectories, negotiating position), follow up with strategic_analysis."
+        ),
         handler="_tool_pull_company_data",
         input_schema={"company_id": "str?", "company_name": "str?"},
         cost_tier="free",
@@ -1507,7 +1516,17 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="fpa_forecast",
-        description="Generate forecast from actuals. Auto-selects method. Saves to DB.",
+        description=(
+            "Generate a COMPLETE P&L forecast from actuals — returns ALL metrics "
+            "(revenue, COGS, gross profit, R&D, S&M, G&A, EBITDA, FCF, cash, runway) "
+            "in a single call. Auto-selects best method via ForecastMethodRouter: "
+            "driver_based (headcount/usage/CAC drivers via LiquidityManagementService), "
+            "seasonal (12+ months with detected patterns), advanced_regression "
+            "(polynomial, exponential, logistic, gompertz, power-law curve fits), "
+            "regression (linear/log on 12+ months), model_construction (custom ModelSpec), "
+            "budget_pct (approved budget). Do NOT call this per-metric — one call "
+            "produces the full multi-metric forecast with driver ripple effects."
+        ),
         handler="_tool_fpa_forecast",
         input_schema={"company_id": "str", "months": "int?", "method": "str?", "monthly_overrides": "dict?", "drivers": "dict?", "activate": "bool?", "name": "str?"},
         cost_tier="cheap",
@@ -2002,10 +2021,13 @@ AGENT_TOOLS: list[AgentTool] = [
     AgentTool(
         name="strategic_analysis",
         description=(
-            "Strategic CFO analysis — connects financial performance, capital structure, "
-            "valuation, and market conditions to give actionable recommendations. "
-            "Use when the user asks 'should we...', 'what if...', 'how should we think about...', "
-            "'what are our options', or any strategic question about fundraising, burn, growth, or hiring."
+            "Strategic CFO analysis with LLM reasoning — connects P&L actuals, cap table, "
+            "drivers, KPIs, and market conditions to produce actionable recommendations. "
+            "Detects signals (threshold crosses, trend breaks, anomalies), traces cross-domain "
+            "impact chains, and synthesizes into prioritized actions with quantified impact. "
+            "Use when the question requires REASONING across multiple financial domains, "
+            "not just data retrieval. pull_company_data gives you the raw data; this tool "
+            "gives you the analysis and recommendations."
         ),
         handler="_tool_strategic_analysis",
         input_schema={"company_id": "str", "query": "str?", "trigger_event": "str?", "branch_id": "str?"},
@@ -2290,7 +2312,18 @@ AGENT_TOOLS: list[AgentTool] = [
     # ── Priors-based custom model engine ───────────────────────────────
     AgentTool(
         name="construct_forecast_model",
-        description="Build custom forecast model from NL prompt + actuals. Returns ModelSpec with curves, priors, macro shocks.",
+        description=(
+            "Build a CUSTOM forecast model using LLM-generated regressions, events, "
+            "and drivers. Creates a ModelSpec with custom curves (logistic, exponential, "
+            "gompertz, power-law, piecewise-linear, polynomial), Bayesian priors, "
+            "macro shocks (probability-weighted via MacroEventAnalysisService + web search), "
+            "business events (via BusinessEventAnalysisService), and driver adjustments "
+            "(via DriverImpactService with ripple paths and sensitivity ranking). "
+            "Returns full P&L forecast with confidence bands (Monte Carlo). "
+            "Use for what-if analysis, scenario planning, event-driven modeling, "
+            "or when the user wants a custom model — NOT the basic growth-rate method. "
+            "Integrates with ScenarioBranchService for fork-aware branching and comparison."
+        ),
         handler="_tool_construct_forecast_model",
         input_schema={"prompt": "str", "company_id": "str?"},
         cost_tier="expensive",
@@ -8559,7 +8592,12 @@ Answer using specific company names and numbers from the portfolio grid above.""
             return {"summary": f"Query failed: {e}", "rows": []}
 
     async def _tool_pull_company_data(self, inputs: dict) -> dict:
-        """Pull a single company's full financials from DB via pull_company_data (SQL)."""
+        """Pull a single company's full raw financials from DB (SQL).
+
+        Returns all raw data: time_series (full history), latest, analytics, metadata.
+        For cross-domain reasoning (cap table, drivers, KPIs, trajectories),
+        the agent should call strategic_analysis separately.
+        """
         try:
             company_id = inputs.get("company_id")
             company_name = inputs.get("company_name")
@@ -8586,15 +8624,23 @@ Answer using specific company names and numbers from the portfolio grid above.""
             if cd.metadata.get("row_count", 0) == 0:
                 return {"summary": f"No financial data found for company {company_id}.", "data": {}}
 
+            # Cache in shared_data so downstream tools have it
+            async with self.shared_data_lock:
+                self.shared_data["company_id"] = company_id
+                self.shared_data["company_fpa_data"] = {
+                    "latest": cd.latest,
+                    "time_series": cd.time_series,
+                    "periods": cd.periods,
+                    "metadata": cd.metadata,
+                }
+
             return {
                 "company_id": company_id,
                 "latest": cd.latest,
+                "time_series": cd.time_series,
                 "analytics": cd.analytics,
                 "periods": cd.periods,
-                "categories": cd.metadata.get("categories", []),
-                "period_range": cd.metadata.get("period_range", []),
-                "period_count": cd.metadata.get("period_count", 0),
-                "summary": f"Company {company_id}: {cd.metadata.get('row_count', 0)} actuals rows, {len(cd.periods)} periods, {len(cd.latest)} metrics",
+                "metadata": cd.metadata,
                 "source": "pull_company_data_sql",
             }
         except Exception as e:
@@ -10458,6 +10504,13 @@ Answer using specific company names and numbers from the portfolio grid above.""
                 "market_map": lambda: cds.generate_market_map(companies),
                 "nav_live": lambda: cds.generate_nav_live(companies),
                 "fpa_stress_test": lambda: cds.generate_fpa_stress_test(companies),
+                # ── P&L forecast charts (from pre-computed pnl_chart_data) ──
+                "pnl_forecast": lambda: self._build_pnl_line_chart(
+                    self.shared_data.get("pnl_chart_data", {})),
+                "pnl_waterfall": lambda: cds.generate_waterfall(
+                    self.shared_data.get("pnl_chart_data", {}).get("rows", companies)),
+                "pnl_stacked_bar": lambda: cds.generate_stacked_bar(
+                    self.shared_data.get("pnl_chart_data", {}).get("rows", companies)),
                 # ── Analytics-bridge charts (use stored results from shared_data) ──
                 "sensitivity_tornado": lambda: cds.generate_sensitivity_tornado(
                     self.shared_data.get("fpa_result", {})),
@@ -10476,25 +10529,27 @@ Answer using specific company names and numbers from the portfolio grid above.""
             if generator:
                 config = generator()
                 return {"chart_config": config} if config else {"error": f"No data for {chart_type}"}
-            # Fallback: use ChartGenerationSkill for auto/unknown types
-            skill = self.skills.get("chart-generator") or self.skills.get("chart_generation")
-            if skill:
-                skill_result = await skill.execute({
-                    "chart_type": chart_type,
-                    "companies": companies,
-                    "data": grid,
-                })
-                charts = skill_result.get("charts", [])
-                if charts:
-                    return {"chart_config": charts[0]}
-            # Last resort: revenue_multiples_scatter
-            config = cds.generate_revenue_multiples_scatter(grid) if grid.get("rows") else None
-            if config:
-                return {"chart_config": config}
-            return {"error": f"Unknown chart type: {chart_type}. Available: {list(chart_dispatch.keys())}"}
+            # No skill fallback — return available chart types
+            return {"error": f"Unknown chart type: '{chart_type}'. Available: {list(chart_dispatch.keys())}"}
         except Exception as e:
             logger.warning(f"[TOOL] chart failed: {e}")
             return {"error": str(e)}
+
+    def _build_pnl_line_chart(self, pnl_data: dict) -> Optional[dict]:
+        """Build a line chart config from pre-computed pnl_chart_data."""
+        if not pnl_data or not pnl_data.get("periods"):
+            return None
+        return {
+            "type": "line",
+            "title": "P&L Forecast",
+            "labels": pnl_data["periods"],
+            "datasets": [
+                {"label": "Revenue", "data": pnl_data.get("revenue", [])},
+                {"label": "EBITDA", "data": pnl_data.get("ebitda", [])},
+                {"label": "Cash", "data": pnl_data.get("cash_balance", [])},
+            ],
+            "boundary_index": pnl_data.get("boundary_index"),
+        }
 
     async def _tool_web_search(self, inputs: dict) -> dict:
         """Search the web via existing Tavily integration."""
@@ -12538,6 +12593,7 @@ Return JSON with ONLY these fields (use null if unknown):
                     company_data=seed,
                     months=months,
                     parent_result=pr,
+                    company_id=company_id,
                 )
                 parent_result = result  # for chaining
                 results.append(result)
@@ -12823,6 +12879,18 @@ Return JSON with ONLY these fields (use null if unknown):
             driver_impacts = explainer.explain_drivers(company_data, monthly_overrides or {})
             line_derivations = explainer.generate_line_derivations(method, company_data, forecast)
 
+            # Driver ripple interactions — show how metrics affect each other
+            ripple_paths = {}
+            try:
+                from app.services.driver_impact_service import DriverImpactService
+                dis = DriverImpactService()
+                for driver_id in ("revenue", "headcount", "churn_rate", "burn_rate"):
+                    path = dis.explain_ripple_path(driver_id)
+                    if path and path.get("chain"):
+                        ripple_paths[driver_id] = path
+            except Exception as rip_err:
+                logger.debug(f"[TOOL] ripple path enrichment failed: {rip_err}")
+
             result = {
                 "company_id": company_id,
                 "months": months,
@@ -12838,6 +12906,7 @@ Return JSON with ONLY these fields (use null if unknown):
                 "explanation": explanation,
                 "driver_impacts": driver_impacts,
                 "line_derivations": line_derivations,
+                "ripple_paths": ripple_paths,
             }
 
             # Auto-save to DB
@@ -12864,30 +12933,50 @@ Return JSON with ONLY these fields (use null if unknown):
             async with self.shared_data_lock:
                 self.shared_data["fpa_forecast_result"] = result
 
-            # Grid suggestions: map forecast months to proposed cell edits with explanations
-            seeded_rev = company_data.get("revenue", 0)
-            growth = company_data.get("growth_rate", 0)
-            gm = company_data.get("gross_margin")
-            _fc_row_map = {
-                "revenue": ("revenue", f"Projected from ${seeded_rev:,.0f} base at {growth:.0%} annual growth ({method})"),
-                "cogs": ("cogs", f"Cost of sales at {(1 - (gm or 0.65)):.0%} of revenue" if gm else "COGS derived from gross margin assumption"),
-                "gross_profit": ("gross_profit", f"Revenue minus COGS ({(gm or 0.65):.0%} gross margin)"),
-                "rd_spend": ("opex_rd", "R&D spend per stage-based OpEx benchmark with efficiency decay"),
-                "sm_spend": ("opex_sm", "S&M spend per stage-based OpEx benchmark with efficiency decay"),
-                "ga_spend": ("opex_ga", "G&A spend per stage-based OpEx benchmark with efficiency decay"),
-                "total_opex": ("total_opex", "Sum of R&D + S&M + G&A"),
-                "ebitda": ("ebitda", "Gross profit minus total operating expenses"),
-                "cash_balance": ("cash_balance", "Prior cash balance plus free cash flow for the period"),
-            }
+            # Grid suggestions: dynamically emit every metric the forecast produced,
+            # including subcategory breakdowns (parent:subcat) and driver detail.
+            # Handles both flat dicts (rd_breakdown) and nested (subcategories.opex_rd).
+            _skip_keys = {"period", "source", "month_idx", "events"}
             suggestions = []
             for month in forecast:
                 period = month.get("period")
                 if not period:
                     continue
-                for fc_key, (row_id, reasoning) in _fc_row_map.items():
-                    val = month.get(fc_key)
-                    if val is not None:
-                        suggestions.append({"rowId": row_id, "columnId": period, "value": val, "reasoning": reasoning})
+                for key, val in month.items():
+                    if key in _skip_keys or val is None:
+                        continue
+                    if isinstance(val, dict):
+                        # Could be nested subcategories dict or flat breakdown
+                        for parent_or_subcat, inner in val.items():
+                            if parent_or_subcat.startswith("_"):
+                                continue
+                            if isinstance(inner, dict):
+                                # Nested: subcategories → {parent → {subcat → amount}}
+                                for subcat, subval in inner.items():
+                                    if subcat.startswith("_") or not isinstance(subval, (int, float)):
+                                        continue
+                                    suggestions.append({
+                                        "rowId": f"{parent_or_subcat}:{subcat}",
+                                        "columnId": period,
+                                        "value": subval,
+                                        "reasoning": f"{subcat} under {parent_or_subcat} — {method}",
+                                    })
+                            elif isinstance(inner, (int, float)):
+                                # Flat breakdown: rd_breakdown → {engineering_salaries → amount}
+                                parent_id = key.replace("_breakdown", "")
+                                suggestions.append({
+                                    "rowId": f"{parent_id}:{parent_or_subcat}",
+                                    "columnId": period,
+                                    "value": inner,
+                                    "reasoning": f"{parent_or_subcat} under {parent_id} — {method}",
+                                })
+                    elif isinstance(val, (int, float)):
+                        suggestions.append({
+                            "rowId": key,
+                            "columnId": period,
+                            "value": val,
+                            "reasoning": f"{key} via {method}",
+                        })
             result["grid_suggestions"] = suggestions
 
             # Charts: revenue, EBITDA, cash, runway, OpEx stacked bar
@@ -33693,33 +33782,33 @@ Return a JSON with this structure:
                 except Exception as company_err:
                     logger.error("[MEMO] _populate_memo_service_data failed for %s: %s", company_name, company_err, exc_info=True)
 
-            # ── Revenue decay projections via RevenueProjectionService ───
-            # Upgrade raw revenue_projections from basic {current, growth_rate}
-            # to full year-by-year decay curves that ChartDataService can plot.
-            try:
-                from app.services.revenue_projection_service import RevenueProjectionService
-                for company_name, rp in list(revenue_projections.items()):
-                    if isinstance(rp, dict) and not rp.get("yearly"):
-                        base_rev = ensure_numeric(rp.get("current_revenue"), 0)
-                        growth = ensure_numeric(rp.get("growth_rate"), 0.5)
-                        if base_rev > 0:
-                            company = next((c for c in companies if c.get("company") == company_name), {})
-                            yearly = RevenueProjectionService.project_revenue_with_decay(
-                                base_revenue=base_rev,
-                                initial_growth=growth,
-                                years=6,
-                                quality_score=1.0,
-                                stage=company.get("stage"),
-                                sector=company.get("sector") or company.get("business_model"),
-                                investor_quality=company.get("investor_quality"),
-                                geography=company.get("geography"),
-                                return_projections=True,
-                            )
-                            if isinstance(yearly, list):
-                                rp["yearly"] = yearly
-                                logger.debug("[MEMO] Decay projections for %s: %d years", company_name, len(yearly))
-            except Exception as rps_err:
-                logger.warning("[MEMO] RevenueProjectionService enrichment failed: %s", rps_err)
+            # ── Real FPA forecasts per company ───────────────────────────
+            # Uses ForecastMethodRouter → auto-selects best method (driver-based,
+            # liquidity, regression, seasonal, etc.) with full subcategory detail.
+            fpa_forecasts = {}
+            for company_name, rp in list(revenue_projections.items()):
+                company = next((c for c in companies if c.get("company") == company_name), {})
+                company_id = company.get("id") or company.get("company_id")
+                if not company_id:
+                    continue
+                try:
+                    forecast_result = await self._tool_fpa_forecast({
+                        "company_id": company_id,
+                        "months": 24,
+                    })
+                    if forecast_result and not forecast_result.get("error"):
+                        fpa_forecasts[company_name] = forecast_result
+                        rp["forecast"] = forecast_result.get("forecast", [])
+                        rp["method"] = forecast_result.get("method")
+                        rp["charts"] = forecast_result.get("charts", [])
+                        rp["method_reasoning"] = forecast_result.get("method_reasoning")
+                        logger.info("[MEMO] FPA forecast for %s via %s", company_name, forecast_result.get("method"))
+                except Exception as fpa_err:
+                    logger.warning("[MEMO] FPA forecast failed for %s: %s", company_name, fpa_err)
+
+            # Store for memo chart building
+            async with self.shared_data_lock:
+                self.shared_data["fpa_forecasts"] = fpa_forecasts
 
             # ── ScenarioTreeService: portfolio-level bull/base/bear ─────
             if not self.shared_data.get("fund_scenarios"):
