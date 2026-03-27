@@ -781,6 +781,14 @@ AGENT_TOOLS: list[AgentTool] = [
         timeout_ms=90_000,
     ),
     AgentTool(
+        name="ingest_pe_model",
+        description="Ingest a PE/LBO model Excel file (.xlsx/.xls) and extract structured deal data (transaction, S&U, operating model, debt, returns).",
+        handler="_tool_ingest_pe_model",
+        input_schema={"file_path": "str"},
+        cost_tier="expensive",
+        timeout_ms=120_000,
+    ),
+    AgentTool(
         name="draft_contract",
         description="Draft a legal contract from template. Types: nda, employment, sha, vendor, service_agreement, contract_review. Auto-fills with company data from DB. For contract_review, include document_clauses in shared_data first.",
         handler="_tool_draft_contract",
@@ -2573,6 +2581,10 @@ TOOL_WIRING: dict[str, dict] = {
     "generate_memo": {
         "requires": ["companies", "valuations", "cap_table_history", "scenario_analysis"],
         "produces": ["memo_artifacts"],
+    },
+    "ingest_pe_model": {
+        "requires": [],
+        "produces": ["pe_model_data", "companies"],
     },
     "draft_contract": {
         "requires": ["companies"],
@@ -8617,6 +8629,24 @@ Answer using specific company names and numbers from the portfolio grid above.""
             if not company_id:
                 return {"summary": "No company_id provided or resolvable from name.", "data": {}}
 
+            # Return cached data if we already pulled for this company this session
+            cached_fpa = self.shared_data.get("company_fpa_data")
+            if (
+                cached_fpa
+                and self.shared_data.get("company_id") == company_id
+                and cached_fpa.get("time_series")
+            ):
+                logger.info("[TOOL] pull_company_data cache HIT for %s — skipping DB query", company_id)
+                return {
+                    "company_id": company_id,
+                    "latest": cached_fpa["latest"],
+                    "time_series": cached_fpa["time_series"],
+                    "analytics": cached_fpa.get("analytics", {}),
+                    "periods": cached_fpa["periods"],
+                    "metadata": cached_fpa["metadata"],
+                    "source": "cached_shared_data",
+                }
+
             if pull_company_data is None:
                 return {"summary": "pull_company_data not available.", "data": {}}
 
@@ -8630,6 +8660,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
                 self.shared_data["company_fpa_data"] = {
                     "latest": cd.latest,
                     "time_series": cd.time_series,
+                    "analytics": cd.analytics,
                     "periods": cd.periods,
                     "metadata": cd.metadata,
                 }
@@ -16027,6 +16058,79 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
         except Exception as e:
             logger.warning(f"[TOOL] generate_deck failed: {e}")
             return {"error": str(e), "format": "deck", "slides": []}
+
+    async def _tool_ingest_pe_model(self, inputs: dict) -> dict:
+        """Ingest a PE/LBO model Excel file and extract structured deal data.
+
+        Reads all sheets, sends to LLM for extraction, stores structured JSON
+        in shared_data["pe_model_data"]. Also creates a minimal company entry
+        so downstream memo generation has a company context.
+        """
+        try:
+            file_path = inputs.get("file_path", "")
+            if not file_path:
+                return {"error": "file_path is required"}
+
+            from app.services.pe_model_ingestion_service import PEModelIngestionService
+
+            svc = PEModelIngestionService(self.model_router)
+            pe_data = await svc.ingest(file_path)
+
+            # Store in shared_data
+            self.shared_data["pe_model_data"] = pe_data
+
+            # Store validation results separately so memo can access them
+            validation = pe_data.get("_validation", {})
+            self.shared_data["pe_validation"] = validation
+
+            # Create a minimal company entry from the transaction data
+            txn = pe_data.get("transaction", {})
+            company_name = txn.get("company_name", "PE Target")
+            company_entry = {
+                "company": company_name,
+                "name": company_name,
+                "stage": "PE / Buyout",
+                "sector": "Private Equity",
+                "revenue": (pe_data.get("operating_model") or {}).get("revenue", [None])[0],
+                "valuation": txn.get("entry_ev", 0),
+                "total_funding": txn.get("equity_check", 0),
+                "_source": "pe_model",
+            }
+
+            # Add to companies list (don't overwrite existing)
+            companies = self.shared_data.get("companies", [])
+            # Check if already present
+            existing_names = {(c.get("company") or "").lower() for c in companies}
+            if company_name.lower() not in existing_names:
+                companies.append(company_entry)
+                self.shared_data["companies"] = companies
+
+            logger.info(
+                "[PE_INGEST] Stored pe_model_data: company=%s, entry_ev=%s, tranches=%d, valid=%s",
+                company_name, txn.get("entry_ev"),
+                len((pe_data.get("debt_structure") or {}).get("tranches", [])),
+                validation.get("valid", "?"),
+            )
+
+            result = {
+                "status": "success",
+                "company_name": company_name,
+                "entry_ev": txn.get("entry_ev"),
+                "entry_multiple": txn.get("entry_multiple"),
+                "equity_check": txn.get("equity_check"),
+                "management_rollover": txn.get("management_rollover"),
+                "debt_tranches": len((pe_data.get("debt_structure") or {}).get("tranches", [])),
+                "projection_periods": len((pe_data.get("operating_model") or {}).get("periods", [])),
+                "has_sensitivity": bool((pe_data.get("returns") or {}).get("sensitivity_matrix")),
+                "has_per_tranche_schedule": bool(pe_data.get("debt_schedule", {}).get("per_tranche")),
+                "validation": validation,
+            }
+            if not validation.get("valid"):
+                result["has_validation_errors"] = True
+            return result
+        except Exception as e:
+            logger.error("[PE_INGEST] Tool failed: %s", e, exc_info=True)
+            return {"error": f"PE model ingestion failed: {str(e)}"}
 
     async def _tool_generate_memo(self, inputs: dict) -> dict:
         """Invoke lightweight memo pipeline from agent loop.
@@ -33488,6 +33592,13 @@ Return a JSON with this structure:
         skill chain ran upstream services first.
         """
         try:
+            # Guard: if PE model data exists, skip VC-specific enrichment.
+            # PE memos use the model data directly — PWERM, TAM, cap table
+            # synthesis would overwrite real numbers from the LBO model.
+            if self.shared_data.get("pe_model_data"):
+                logger.info("[MEMO] _populate_memo_service_data: pe_model_data present, skipping VC enrichment")
+                return
+
             companies = self.shared_data.get("companies", [])
             companies = [c for c in companies if c and isinstance(c, dict) and c.get("company")]
             if not companies:

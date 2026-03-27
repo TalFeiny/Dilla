@@ -66,6 +66,10 @@ class LightweightMemoService:
             if keyword in prompt_lower:
                 return INTENT_TO_TEMPLATE[keyword]
 
+        # If PE model data exists, default to PE IC memo
+        if self.shared_data.get("pe_model_data"):
+            return "pe_ic_memo"
+
         # Fallback: if companies are mentioned, default to IC memo; else bespoke LP
         companies = self.shared_data.get("companies", [])
         if companies:
@@ -241,10 +245,64 @@ class LightweightMemoService:
         num_companies = len(companies)
         is_portfolio = num_companies > 3
 
-        # Check if this is a contract template — use legal system prompt
+        # Check template type — PE, contract, or default VC
+        is_pe = template.get("pe_mode", False)
         is_contract = template.get("contract_type") is not None
 
-        if is_contract:
+        if is_pe:
+            # PE system prompt — LBO/buyout professional, EBITDA-centric
+            pe_data = available_data.get("pe_model_data", {})
+            txn = pe_data.get("transaction", {})
+            company_name = txn.get("company_name", "the target")
+            entry_ev = txn.get("entry_ev", 0)
+            entry_multiple = txn.get("entry_multiple", 0)
+            equity_check = txn.get("equity_check", 0)
+
+            pe_context = ""
+            if entry_ev:
+                pe_context += f"Entry EV: ${entry_ev / 1e6:,.0f}M. "
+            if entry_multiple:
+                pe_context += f"Entry Multiple: {entry_multiple:.1f}x EBITDA. "
+            if equity_check:
+                pe_context += f"Equity Check: ${equity_check / 1e6:,.0f}M. "
+
+            system_prompt = (
+                "You are a senior investment professional at a top-tier private equity firm "
+                "(KKR, Blackstone, or equivalent). Write with authority and precision — "
+                "this memo drives multi-hundred-million dollar investment decisions. "
+                f"Target: {company_name}. {pe_context}"
+                f"{fund_size_str}"
+                "\n\nYOU ARE WRITING A PE INVESTMENT COMMITTEE MEMO, NOT A MARKDOWN DOCUMENT.\n"
+                "Write the way Bain Capital, Apollo, or a top PE firm writes IC memos: "
+                "clean prose, structured tables, clear section flow. Think printed PDF, not a README.\n"
+                "\nPE-SPECIFIC GUIDANCE:\n"
+                "- Value multiples are EV/EBITDA, never EV/Revenue.\n"
+                "- Value creation = revenue growth + margin expansion + multiple expansion + de-leveraging.\n"
+                "- Returns = IRR and MOIC, always show both.\n"
+                "- Debt = leverage ratios, covenant headroom, interest coverage, paydown trajectory.\n"
+                "- Do NOT use VC language: no TAM/SAM/SOM, no 'burn rate', no 'runway', no 'dilution rounds'.\n"
+                "- Use PE language: EBITDA, leverage, de-leveraging, value creation levers, bolt-ons, "
+                "add-backs, quality of earnings, management rollover, covenant package.\n"
+                "\nFORMATTING — CRITICAL:\n"
+                "- DO NOT use ** or * for bold/italic. Ever. No exceptions.\n"
+                "- DO NOT use ### sub-headings inside sections. Each section already has its heading.\n"
+                "- Write plain prose. Emphasize through word choice and sentence structure.\n"
+                "- Numbers inline naturally: $142M EBITDA, 8.5x entry multiple, 22% IRR.\n"
+                "- Cite data source: 'management projections', 'the model', 'comparable transactions'.\n"
+                "- Use markdown tables for structured data (scenarios, tranches, comps).\n"
+                "\nCONTENT:\n"
+                "- DEEP DIVE: 2-4 dense paragraphs per section (150-400 words).\n"
+                "- Lead each section with the single most important finding.\n"
+                "- End each section with a clear takeaway.\n"
+                "- All numbers must come from the PE model data provided.\n"
+                "- For comparable transactions: use EV/EBITDA multiples from similar PE deals.\n"
+                "- For risk factors: severity table with specific mitigants.\n"
+                "\nSECTION STRUCTURE:\n"
+                "- Separate each section with its exact ## heading as shown below.\n"
+                "- The headings split your output — they MUST match exactly.\n"
+                "- Within each section: prose paragraphs, tables where data warrants."
+            )
+        elif is_contract:
             contract_type = template.get("contract_type", "agreement")
             governing_law = template.get("governing_law_default", "Delaware")
             preamble_text = template.get("preamble", "")
@@ -1443,6 +1501,152 @@ class LightweightMemoService:
                     lines.append(f"    - {t.get('title', '')} ({t.get('url', '')})")
         return "\n".join(lines)
 
+    @staticmethod
+    def _summarize_pe_model(pe_data: Dict[str, Any], max_chars: int = 50000) -> str:
+        """Create a compact text summary of PE model data for LLM context."""
+        parts: List[str] = []
+
+        # Transaction overview
+        txn = pe_data.get("transaction") or {}
+        if txn:
+            parts.append("\n**Transaction Overview**:")
+            for k, label in [("company_name", "Target"), ("sponsor", "Sponsor"),
+                             ("entry_ev", "Entry EV"), ("entry_ebitda", "Entry EBITDA"),
+                             ("entry_multiple", "Entry Multiple"), ("equity_check", "Equity Check"),
+                             ("hold_period", "Hold Period")]:
+                v = txn.get(k)
+                if v is not None and v != 0:
+                    if k in ("entry_ev", "entry_ebitda", "equity_check") and isinstance(v, (int, float)):
+                        parts.append(f"  {label}: ${v / 1e6:,.1f}M")
+                    elif k == "entry_multiple":
+                        parts.append(f"  {label}: {v:.1f}x EBITDA")
+                    elif k == "hold_period":
+                        parts.append(f"  {label}: {v} years")
+                    else:
+                        parts.append(f"  {label}: {v}")
+
+        # Sources & Uses
+        su = pe_data.get("sources_uses") or {}
+        sources = su.get("sources") or []
+        uses = su.get("uses") or []
+        if sources or uses:
+            parts.append("\n**Sources & Uses**:")
+            if sources:
+                parts.append("  Sources:")
+                for item in sources:
+                    amt = item.get("amount", 0)
+                    pct = item.get("pct", 0)
+                    parts.append(f"    {item.get('name', '?')}: ${amt / 1e6:,.1f}M ({pct:.0f}%)" if amt else f"    {item.get('name', '?')}")
+            if uses:
+                parts.append("  Uses:")
+                for item in uses:
+                    amt = item.get("amount", 0)
+                    pct = item.get("pct", 0)
+                    parts.append(f"    {item.get('name', '?')}: ${amt / 1e6:,.1f}M ({pct:.0f}%)" if amt else f"    {item.get('name', '?')}")
+
+        # Operating Model
+        om = pe_data.get("operating_model") or {}
+        periods = om.get("periods") or []
+        if periods:
+            parts.append(f"\n**Operating Model** ({len(periods)} periods: {', '.join(str(p) for p in periods)}):")
+            for metric, label in [("revenue", "Revenue"), ("ebitda", "EBITDA"),
+                                  ("ebitda_margin", "EBITDA Margin %"), ("capex", "CapEx"),
+                                  ("fcf", "FCF"), ("revenue_growth", "Revenue Growth %")]:
+                arr = om.get(metric) or []
+                if arr:
+                    if metric in ("ebitda_margin", "revenue_growth"):
+                        vals = ", ".join(f"{v:.1f}%" for v in arr)
+                    elif metric in ("revenue", "ebitda", "capex", "fcf"):
+                        vals = ", ".join(f"${v / 1e6:,.1f}M" for v in arr)
+                    else:
+                        vals = ", ".join(str(v) for v in arr)
+                    parts.append(f"  {label}: [{vals}]")
+
+        # Debt Structure
+        ds = pe_data.get("debt_structure") or {}
+        tranches = ds.get("tranches") or []
+        if tranches:
+            parts.append(f"\n**Debt Structure** (Entry Leverage: {ds.get('entry_leverage', 0):.1f}x):")
+            parts.append("  | Tranche | Amount | Rate | Maturity | Amort |")
+            parts.append("  |---------|--------|------|----------|-------|")
+            for t in tranches:
+                amt = t.get("amount", 0)
+                parts.append(f"  | {t.get('name', '?')} | ${amt / 1e6:,.0f}M | {t.get('rate', '?')} | {t.get('maturity', '?')} | {t.get('amort', '?')} |")
+
+        # Debt Schedule
+        sched = pe_data.get("debt_schedule") or {}
+        if sched.get("periods"):
+            parts.append(f"\n**Debt Schedule**:")
+            parts.append(f"  Periods: {', '.join(str(p) for p in sched['periods'])}")
+            for metric, label in [("ending_balance", "Ending Balance"), ("leverage_ratio", "Leverage"),
+                                  ("interest_expense", "Interest")]:
+                arr = sched.get(metric) or []
+                if arr:
+                    if metric == "leverage_ratio":
+                        vals = ", ".join(f"{v:.1f}x" for v in arr)
+                    else:
+                        vals = ", ".join(f"${v / 1e6:,.1f}M" for v in arr)
+                    parts.append(f"  {label}: [{vals}]")
+
+        # Returns
+        returns = pe_data.get("returns") or {}
+        for case in ("base", "bull", "bear"):
+            r = returns.get(case)
+            if r and isinstance(r, dict) and (r.get("irr") or r.get("moic")):
+                irr = r.get("irr", 0)
+                moic = r.get("moic", 0)
+                irr_display = f"{irr * 100:.1f}%" if abs(irr) < 1 else f"{irr:.1f}%"
+                parts.append(f"\n**{case.title()} Case Returns**: IRR={irr_display}, MOIC={moic:.2f}x")
+                for k in ("exit_year", "exit_ebitda", "exit_multiple", "exit_ev", "equity_value"):
+                    v = r.get(k)
+                    if v:
+                        if k in ("exit_ebitda", "exit_ev", "equity_value"):
+                            parts.append(f"  {k}: ${v / 1e6:,.1f}M")
+                        elif k == "exit_multiple":
+                            parts.append(f"  {k}: {v:.1f}x")
+                        else:
+                            parts.append(f"  {k}: {v}")
+
+        # Sensitivity matrix
+        sm = returns.get("sensitivity_matrix")
+        if sm and isinstance(sm, dict) and sm.get("irr_grid"):
+            parts.append(f"\n**Sensitivity Matrix** ({sm.get('row_label', 'Row')} × {sm.get('col_label', 'Col')}):")
+            row_vals = sm.get("row_values", [])
+            col_vals = sm.get("col_values", [])
+            irr_grid = sm.get("irr_grid", [])
+            if col_vals:
+                parts.append("  | " + " | ".join([""] + [str(c) for c in col_vals]) + " |")
+                parts.append("  | " + " | ".join(["---"] * (len(col_vals) + 1)) + " |")
+            for i, row in enumerate(irr_grid):
+                label = str(row_vals[i]) if i < len(row_vals) else str(i)
+                cells = [f"{v * 100:.1f}%" if abs(v) < 1 else f"{v:.1f}%" for v in row]
+                parts.append("  | " + label + " | " + " | ".join(cells) + " |")
+
+        # Append validation results so LLM knows about data quality issues
+        validation = pe_data.get("_validation") or {}
+        v_warnings = validation.get("warnings") or []
+        v_errors = validation.get("errors") or []
+        if v_errors or v_warnings:
+            parts.append("\n**⚠ Data Quality Notes**:")
+            for e in v_errors:
+                parts.append(f"  ERROR: {e}")
+            for w in v_warnings:
+                parts.append(f"  WARNING: {w}")
+        else:
+            parts.append("\n**Data Quality**: All extraction checks passed.")
+
+        # Rollover info
+        txn = pe_data.get("transaction") or {}
+        rollover = txn.get("management_rollover", 0)
+        rollover_pct = txn.get("rollover_pct", 0)
+        if rollover:
+            parts.append(f"\n**Management Rollover**: ${rollover / 1e6:,.1f}M ({rollover_pct * 100:.0f}% of total equity)")
+
+        result = "\n".join(parts)
+        if len(result) > max_chars:
+            result = result[:max_chars] + "\n... (truncated)"
+        return result
+
     def _summarize_company_compact(self, c: Dict[str, Any]) -> str:
         """Single markdown table row for compact portfolio mode."""
         name = c.get("company", "Unknown")
@@ -1530,6 +1734,11 @@ class LightweightMemoService:
                 agg_parts.append(f"  Approx. portfolio revenue multiple (deployed): {total_rev / total_deployed:.2f}x")
 
         agg_block = "\n".join(agg_parts) + "\n" if agg_parts else ""
+
+        # ── PE model data (replaces company data for PE memos) ─────────
+        pe_data = data.get("pe_model_data")
+        if pe_data:
+            return agg_block + self._summarize_pe_model(pe_data, max_chars - len(agg_block))
 
         company_budget = int((max_chars - len(agg_block)) * 0.7)
         fund_budget = max_chars - len(agg_block) - company_budget
@@ -1840,6 +2049,17 @@ class LightweightMemoService:
             return None
 
         data_keys = section_def.get("data_keys", [])
+
+        # ── PE model charts — dispatch to pe_chart_generators ──────────
+        pe_data = data.get("pe_model_data")
+        if pe_data and chart_type in ("ebitda_bridge", "sources_uses", "debt_paydown", "returns_sensitivity"):
+            try:
+                from app.services.pe_chart_generators import build_pe_chart
+                result = build_pe_chart(section_def["key"], pe_data)
+                if result:
+                    return result
+            except Exception as exc:
+                logger.warning("[MEMO] PE chart build failed for %s: %s", chart_type, exc)
 
         # Dynamic chart selection — inspect data and pick the best chart
         if chart_type == "auto":

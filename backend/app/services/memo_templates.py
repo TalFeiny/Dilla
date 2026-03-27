@@ -999,6 +999,98 @@ NEGOTIATION_ANALYSIS = {
 
 
 # ---------------------------------------------------------------------------
+# PE IC Memo — Private Equity Investment Committee presentation
+# ---------------------------------------------------------------------------
+PE_IC_MEMO = {
+    "id": "pe_ic_memo",
+    "title_pattern": "PE Investment Committee Memo — {companies}",
+    "pe_mode": True,
+    "required_data": ["pe_model_data"],
+    "optional_data": ["companies", "fund_context"],
+    "sections": [
+        _section("executive_summary", "Executive Summary",
+                 data_keys=["pe_model_data"],
+                 prompt_hint="Transaction overview: target company, sponsor, entry EV, entry multiple, "
+                            "equity check, management rollover (if any), hold period. "
+                            "Headline returns: base case IRR and MOIC. "
+                            "2-3 sentences on why this deal."),
+        _section("data_quality", "Data Quality & Extraction Notes",
+                 data_keys=["pe_model_data", "pe_validation"],
+                 prompt_hint="If there are validation warnings or errors, list them clearly. "
+                            "Flag any data that was estimated vs directly extracted from the model. "
+                            "Note any missing fields that limit analysis confidence. "
+                            "If all checks passed, state that model data validated successfully and skip this section."),
+        _section("investment_thesis", "Investment Thesis & Value Creation",
+                 data_keys=["pe_model_data"],
+                 prompt_hint="Quantified value creation levers — NOT founder/market timing stories. "
+                            "Revenue growth, margin expansion, multiple expansion, de-leveraging. "
+                            "Show the math: entry EBITDA → exit EBITDA, what drives each dollar of gain."),
+        _section("management", "Management Assessment",
+                 data_keys=["pe_model_data"],
+                 prompt_hint="Management rollover %, alignment mechanisms, key person risk. "
+                            "Incentive structure, retention provisions, track record if known."),
+        _section("industry", "Industry & Competitive Position",
+                 data_keys=["pe_model_data"],
+                 prompt_hint="Competitive moat, customer concentration, market position. "
+                            "NOT TAM/SAM/SOM — focus on defensibility, switching costs, pricing power."),
+        _section("historical_performance", "Historical Financial Performance",
+                 type="metrics",
+                 data_keys=["pe_model_data"],
+                 prompt_hint="EBITDA trends, quality of earnings, revenue trajectory. "
+                            "Use the operating model data. Present as a table with periods."),
+        _section("ebitda_bridge", "EBITDA Bridge",
+                 type="chart",
+                 data_keys=["pe_model_data"],
+                 chart_type="ebitda_bridge",
+                 prompt_hint="Waterfall chart: entry EBITDA → value creation steps → exit EBITDA."),
+        _section("projected_financials", "Projected Financials",
+                 data_keys=["pe_model_data"],
+                 prompt_hint="Base/Bull/Bear financial projections. Present revenue, EBITDA, "
+                            "EBITDA margin, capex, FCF in a table by period. "
+                            "Call out key assumptions driving each scenario."),
+        _section("comparable_transactions", "Comparable Transactions & Comps",
+                 data_keys=["pe_model_data"],
+                 prompt_hint="EV/EBITDA multiples for comparable transactions (NOT EV/Revenue). "
+                            "How does our entry multiple compare? Is there multiple arbitrage opportunity?"),
+        _section("sources_uses_chart", "Sources & Uses",
+                 type="chart",
+                 data_keys=["pe_model_data"],
+                 chart_type="sources_uses",
+                 prompt_hint="Grouped bar chart showing sources (equity, debt tranches) and uses "
+                            "(purchase price, fees, working capital)."),
+        _section("capital_structure", "Capital Structure & Debt",
+                 data_keys=["pe_model_data"],
+                 prompt_hint="Debt tranches: name, amount, rate, maturity, amortization, covenants. "
+                            "Entry leverage ratio. Covenant headroom. Interest coverage."),
+        _section("debt_paydown", "Debt Paydown Schedule",
+                 type="chart",
+                 data_keys=["pe_model_data"],
+                 chart_type="debt_paydown",
+                 prompt_hint="Stacked bar chart showing debt balance by tranche over the hold period."),
+        _section("returns_analysis", "Returns Analysis",
+                 data_keys=["pe_model_data"],
+                 prompt_hint="IRR and MOIC by scenario (Base/Bull/Bear). Present as a table. "
+                            "Show exit year, exit EBITDA, exit multiple, exit EV, equity value. "
+                            "Compare to fund hurdle rate (typically 20% net IRR)."),
+        _section("returns_sensitivity", "Returns Sensitivity",
+                 type="chart",
+                 data_keys=["pe_model_data"],
+                 chart_type="returns_sensitivity",
+                 prompt_hint="Heatmap: IRR by exit multiple × EBITDA growth rate."),
+        _section("risk_factors", "Risk Factors & Mitigants",
+                 data_keys=["pe_model_data"],
+                 prompt_hint="Top 5-7 risks with severity (High/Medium/Low) and specific mitigants. "
+                            "Present as a table: Risk | Severity | Mitigant | Residual Exposure."),
+        _section("recommendation", "IC Recommendation",
+                 data_keys=["pe_model_data"],
+                 prompt_hint="Approve or decline. Compare base case IRR to hurdle rate. "
+                            "State conviction level. Recommended equity check size. "
+                            "Key conditions for approval (if conditional)."),
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
 # Registry — lookup by ID
 # ---------------------------------------------------------------------------
 MEMO_TEMPLATES: Dict[str, Dict[str, Any]] = {
@@ -1064,6 +1156,11 @@ MEMO_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "tp_cbcr": TP_CBCR,
     "cbcr": TP_CBCR,                            # alias
     "country_by_country": TP_CBCR,              # alias
+    # --- PE templates ---
+    "pe_ic_memo": PE_IC_MEMO,
+    "pe_memo": PE_IC_MEMO,                        # alias
+    "pe_ic": PE_IC_MEMO,                           # alias
+    "lbo_memo": PE_IC_MEMO,                        # alias
 }
 
 # Intent keyword → template ID mapping for auto-detection
@@ -1196,6 +1293,17 @@ INTENT_TO_TEMPLATE: Dict[str, str] = {
     "country by country": "tp_cbcr",
     "country-by-country": "tp_cbcr",
     "cbc report": "tp_cbcr",
+    # --- PE intent mappings ---
+    "pe ic memo": "pe_ic_memo",
+    "pe memo": "pe_ic_memo",
+    "pe ic": "pe_ic_memo",
+    "lbo memo": "pe_ic_memo",
+    "lbo model": "pe_ic_memo",
+    "pe model": "pe_ic_memo",
+    "buyout memo": "pe_ic_memo",
+    "leveraged buyout": "pe_ic_memo",
+    "private equity memo": "pe_ic_memo",
+    "private equity ic": "pe_ic_memo",
 }
 
 # --- Contract drafting templates (Phase 4) ---
