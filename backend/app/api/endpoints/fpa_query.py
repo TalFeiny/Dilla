@@ -3156,7 +3156,7 @@ async def run_regression(request: FPARegressionRequest):
             # charts (stacked bar, treemap) have real subcategories and the
             # grid shows the curve-fit forecast instead of rolling growth.
             from app.services.forecast_chart_transforms import build_all_chart_shapes
-            from app.services.cash_flow_planning_service import CashFlowPlanningService
+            from app.services.liquidity_management_service import LiquidityManagementService
             from app.services.forecast_persistence_service import FORECAST_KEY_TO_CATEGORY
 
             cascaded_forecast: list[dict] = []
@@ -3171,13 +3171,14 @@ async def run_regression(request: FPARegressionRequest):
                         {"period": p, "revenue": float(v)}
                         for p, v in zip(forecast_labels, forecast_vals)
                     ]
-                    svc = CashFlowPlanningService()
-                    cascaded_forecast = svc.build_projection(
-                        company_data=seed,
-                        granularity="monthly",
-                        horizon=len(forecast_vals),
-                        revenue_trajectory=revenue_trajectory,
+                    seed["_revenue_trajectory"] = revenue_trajectory
+                    lms = LiquidityManagementService()
+                    lms_result = lms.build_liquidity_model(
+                        company_id=company_id,
+                        months=len(forecast_vals),
+                        scenario_overrides=seed,
                     )
+                    cascaded_forecast = lms_result.get("monthly", [])
                     # Build subcategories dynamically from all actuals categories
                     subcategories = {}
                     for cat, ts_data in cd.time_series.items():
@@ -3454,7 +3455,7 @@ async def generate_forecast(request: FPAForecastRequest):
     Generate a forecast seeded from actuals (if company_id provided) or from
     explicit base_data. Returns a full P&L projection at the requested granularity.
     """
-    from app.services.cash_flow_planning_service import CashFlowPlanningService
+    from app.services.liquidity_management_service import LiquidityManagementService
     from app.services.company_data_pull import pull_company_data
     from app.services.forecast_method_router import ForecastMethodRouter
 
@@ -3552,9 +3553,9 @@ async def generate_forecast(request: FPAForecastRequest):
         # Aggregate if needed
         forecast = monthly
         if request.granularity == "quarterly":
-            forecast = CashFlowPlanningService._aggregate_to_quarterly(monthly)
+            forecast = LiquidityManagementService._aggregate_to_quarterly(monthly)
         elif request.granularity == "annual":
-            forecast = CashFlowPlanningService._aggregate_to_annual(monthly)
+            forecast = LiquidityManagementService._aggregate_to_annual(monthly)
 
         # ── Write forecast into budget_lines ──────────────────────────
         # Transpose monthly P&L rows into budget_lines (one row per category

@@ -918,7 +918,7 @@ class KPIEngine:
                 return None, None, None
             result = (
                 sb.table("companies")
-                .select("business_model, sector, fund_id")
+                .select("revenue_model, sector, fund_id")
                 .eq("id", company_id)
                 .limit(1)
                 .execute()
@@ -937,7 +937,7 @@ class KPIEngine:
                     )
                     if fund_result.data:
                         fund_type = fund_result.data[0].get("fund_type")
-                return row.get("business_model"), row.get("sector"), fund_type
+                return row.get("revenue_model"), row.get("sector"), fund_type
         except Exception as e:
             logger.warning(f"[KPI] Failed to fetch company type: {e}")
         return None, None, None

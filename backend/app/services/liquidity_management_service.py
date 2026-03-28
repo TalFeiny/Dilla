@@ -213,6 +213,18 @@ class LiquidityManagementService:
         """Build month-by-month P&L with full subcategory decomposition."""
 
         # ── Revenue inputs ────────────────────────────────────────────
+        # _revenue_trajectory: pre-computed monthly revenue from ModelSpecExecutor
+        # (custom curves like logistic, gompertz, S-curve). When present, these
+        # override the simple growth-rate model entirely.
+        _revenue_trajectory_raw = seed.get("_revenue_trajectory")
+        _revenue_trajectory: Dict[str, float] = {}
+        if _revenue_trajectory_raw:
+            for entry in _revenue_trajectory_raw:
+                p = entry.get("period", "")
+                r = entry.get("revenue", 0)
+                if p and r:
+                    _revenue_trajectory[p] = float(r)
+
         base_revenue = seed.get("revenue") or seed.get("arr") or 0
         monthly_revenue = base_revenue / 12 if base_revenue > 12000 else base_revenue
         # If base_revenue looks annual (>12k), convert to monthly
@@ -297,7 +309,10 @@ class LiquidityManagementService:
             period = f"{period_y}-{period_m:02d}"
 
             # ── Revenue ───────────────────────────────────────────────
-            if use_customer_model and acv and acv > 0:
+            # Priority: _revenue_trajectory (from ModelSpec curves) > customer model > growth rate
+            if _revenue_trajectory and period in _revenue_trajectory:
+                revenue = _revenue_trajectory[period]
+            elif use_customer_model and acv and acv > 0:
                 revenue, existing_customers, new_customer_pipeline = (
                     self._compute_customer_revenue(
                         existing_customers, new_customer_pipeline,
@@ -1296,3 +1311,154 @@ class LiquidityManagementService:
             "base_runway_months": base_runway,
             "sensitivities": sensitivities,
         }
+
+    # ------------------------------------------------------------------
+    # Aggregation helpers (quarterly / annual rollup)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _aggregate_to_quarterly(monthly: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Roll up monthly P&L to quarterly. Flow items sum, stock items take end-of-quarter.
+        Preserves subcategory breakdowns."""
+        from itertools import groupby
+
+        def quarter_key(m: Dict[str, Any]) -> str:
+            period = m.get("period", "")
+            if len(period) >= 7:
+                y, mo = int(period[:4]), int(period[5:7])
+                q = (mo - 1) // 3 + 1
+                return f"{y}-Q{q}"
+            return "unknown"
+
+        _FLOW_KEYS = [
+            "revenue", "cogs", "gross_profit",
+            "rd_spend", "sm_spend", "ga_spend", "total_opex",
+            "ebitda", "capex", "free_cash_flow",
+            "depreciation", "interest_expense", "debt_service",
+            "tax_expense", "net_income",
+            "operating_cash_flow", "investing_cash_flow", "financing_cash_flow",
+            "net_cash_flow", "working_capital_delta", "event_impact",
+        ]
+        _STOCK_KEYS = [
+            "cash_balance", "runway_months", "outstanding_debt",
+            "headcount", "customers",
+            "accounts_receivable", "accounts_payable", "inventory",
+            "deferred_revenue", "prepaid_expenses", "working_capital",
+        ]
+        _SUBCAT_PARENTS = ("cogs", "opex_rd", "opex_sm", "opex_ga")
+
+        quarters: List[Dict[str, Any]] = []
+        for qk, group in groupby(monthly, key=quarter_key):
+            months_in_q = list(group)
+            if not months_in_q:
+                continue
+
+            row: Dict[str, Any] = {"period": qk}
+
+            # Sum flow items
+            for k in _FLOW_KEYS:
+                row[k] = round(sum(m.get(k, 0) or 0 for m in months_in_q), 2)
+
+            # Stock items: take last month of quarter
+            last = months_in_q[-1]
+            for k in _STOCK_KEYS:
+                if last.get(k) is not None:
+                    row[k] = last[k]
+
+            # Derived ratios
+            row["gross_margin"] = (
+                round(row["gross_profit"] / row["revenue"], 4)
+                if row.get("revenue", 0) > 0 else 0
+            )
+            row["ebitda_margin"] = (
+                round(row["ebitda"] / row["revenue"], 4)
+                if row.get("revenue", 0) > 0 else -1.0
+            )
+            rates = [m.get("growth_rate_annual", 0) for m in months_in_q]
+            row["growth_rate_annual"] = round(sum(rates) / len(rates), 4) if rates else 0
+
+            # Aggregate subcategories — sum each subcategory across the quarter
+            agg_subs: Dict[str, Dict[str, float]] = {}
+            for parent in _SUBCAT_PARENTS:
+                merged: Dict[str, float] = {}
+                for m in months_in_q:
+                    for sk, sv in ((m.get("subcategories") or {}).get(parent) or {}).items():
+                        merged[sk] = merged.get(sk, 0) + (sv or 0)
+                if merged:
+                    agg_subs[parent] = {k: round(v, 2) for k, v in merged.items()}
+            if agg_subs:
+                row["subcategories"] = agg_subs
+
+            quarters.append(row)
+
+        return quarters
+
+    @staticmethod
+    def _aggregate_to_annual(monthly: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Roll up monthly P&L to annual. Flow items sum, stock items take year-end.
+        Preserves subcategory breakdowns."""
+        from itertools import groupby
+
+        def year_key(m: Dict[str, Any]) -> str:
+            period = m.get("period", "")
+            return period[:4] if len(period) >= 4 else "unknown"
+
+        _FLOW_KEYS = [
+            "revenue", "cogs", "gross_profit",
+            "rd_spend", "sm_spend", "ga_spend", "total_opex",
+            "ebitda", "capex", "free_cash_flow",
+            "depreciation", "interest_expense", "debt_service",
+            "tax_expense", "net_income",
+            "operating_cash_flow", "investing_cash_flow", "financing_cash_flow",
+            "net_cash_flow", "working_capital_delta", "event_impact",
+        ]
+        _STOCK_KEYS = [
+            "cash_balance", "runway_months", "outstanding_debt",
+            "headcount", "customers",
+            "accounts_receivable", "accounts_payable", "inventory",
+            "deferred_revenue", "prepaid_expenses", "working_capital",
+        ]
+        _SUBCAT_PARENTS = ("cogs", "opex_rd", "opex_sm", "opex_ga")
+
+        years: List[Dict[str, Any]] = []
+        for yk, group in groupby(monthly, key=year_key):
+            months_in_y = list(group)
+            if not months_in_y:
+                continue
+
+            row: Dict[str, Any] = {"period": yk, "year": len(years) + 1}
+
+            for k in _FLOW_KEYS:
+                row[k] = round(sum(m.get(k, 0) or 0 for m in months_in_y), 2)
+
+            last = months_in_y[-1]
+            for k in _STOCK_KEYS:
+                if last.get(k) is not None:
+                    row[k] = last[k]
+
+            row["gross_margin"] = (
+                round(row["gross_profit"] / row["revenue"], 4)
+                if row.get("revenue", 0) > 0 else 0
+            )
+            row["ebitda_margin"] = (
+                round(row["ebitda"] / row["revenue"], 4)
+                if row.get("revenue", 0) > 0 else -1.0
+            )
+            rates = [m.get("growth_rate_annual", 0) for m in months_in_y]
+            row["growth_rate"] = round(sum(rates) / len(rates), 4) if rates else 0
+
+            # Aggregate subcategories
+            agg_subs: Dict[str, Dict[str, float]] = {}
+            for parent in _SUBCAT_PARENTS:
+                merged: Dict[str, float] = {}
+                for m in months_in_y:
+                    for sk, sv in ((m.get("subcategories") or {}).get(parent) or {}).items():
+                        merged[sk] = merged.get(sk, 0) + (sv or 0)
+                if merged:
+                    agg_subs[parent] = {k: round(v, 2) for k, v in merged.items()}
+            if agg_subs:
+                row["subcategories"] = agg_subs
+
+            years.append(row)
+
+        return years

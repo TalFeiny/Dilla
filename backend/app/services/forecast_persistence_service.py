@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-# Map from CashFlowPlanningService output keys to fpa_forecast_lines categories
+# Map from LiquidityManagementService output keys to fpa_forecast_lines categories
 FORECAST_KEY_TO_CATEGORY = {
     "revenue": "revenue",
     "cogs": "cogs",
@@ -332,7 +332,7 @@ class ForecastPersistenceService:
     def _forecast_to_lines(
         self, forecast_id: str, forecast: List[Dict]
     ) -> List[Dict]:
-        """Convert CashFlowPlanningService output to fpa_forecast_lines rows."""
+        """Convert LiquidityManagementService output to fpa_forecast_lines rows."""
         lines = []
         for month in forecast:
             period = month.get("period", "")

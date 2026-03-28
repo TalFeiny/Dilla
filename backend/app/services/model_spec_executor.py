@@ -1,18 +1,15 @@
 """
 Model Spec Executor
-Turns a ModelSpec into monthly arrays, feeds into existing cascade.
+Turns a ModelSpec into monthly arrays, feeds into LiquidityManagementService.
 
-Not a replacement for anything — it's the bridge between:
-  LLM-constructed ModelSpec → CashFlowPlanningService (via revenue_trajectory)
+Bridge between:
+  LLM-constructed ModelSpec → LiquidityManagementService (via revenue_trajectory)
 
 Reuses:
-  - CashFlowPlanningService.build_monthly_cash_flow_model() for P&L cascade
+  - LiquidityManagementService.build_liquidity_model() for P&L cascade
   - MonteCarloEngine patterns for confidence bands
   - DriverRegistry keys for driver_overrides passthrough
   - date_utils for period arithmetic
-
-The curve evaluation IS new (logistic/gompertz/etc with known params is different
-from AdvancedRegressionService's curve_fit which FINDS params from data).
 """
 
 from __future__ import annotations
@@ -227,11 +224,28 @@ def _period_diff(a: str, b: str) -> int:
 # ---------------------------------------------------------------------------
 
 class ModelSpecExecutor:
-    """Execute a ModelSpec → full P&L forecast via existing cascade."""
+    """Execute a ModelSpec → full P&L forecast via LiquidityManagementService."""
 
-    def __init__(self):
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
-        self._cfp = CashFlowPlanningService()
+    # Metrics that LMS produces and we can modify
+    _KNOWN_METRICS = {
+        "revenue", "cogs", "gross_profit", "rd_spend", "sm_spend", "ga_spend",
+        "total_opex", "ebitda", "capex", "free_cash_flow", "cash_balance",
+        "debt_service", "tax_expense", "headcount",
+    }
+
+    _METRIC_ALIASES = {
+        "opex": "total_opex",
+        "operating_expenses": "total_opex",
+        "rd": "rd_spend",
+        "r_and_d": "rd_spend",
+        "sales_marketing": "sm_spend",
+        "s_and_m": "sm_spend",
+        "general_admin": "ga_spend",
+        "g_and_a": "ga_spend",
+        "fcf": "free_cash_flow",
+        "cash": "cash_balance",
+        "gp": "gross_profit",
+    }
 
     def execute(
         self,
@@ -244,133 +258,43 @@ class ModelSpecExecutor:
     ) -> ExecutionResult:
         """Execute a ModelSpec and return full forecast with confidence bands.
 
-        Args:
-            spec: The model specification to execute.
-            company_data: Forecast seed dict (from CompanyData.to_forecast_seed()).
-            months: Projection horizon.
-            start_period: YYYY-MM start (defaults to next month).
-            parent_result: If spec.parent_model, pass the parent's result for inheritance.
-
-        Returns:
-            ExecutionResult with forecast, confidence_bands, milestones, raw curves.
+        Uses event-chain-driven execution when the spec has an event chain
+        with causal links. Falls back to curve evaluation for legacy specs.
         """
         if not start_period:
             today = date.today()
             start_period = f"{today.year}-{today.month:02d}"
 
-        x = np.arange(months, dtype=float)
-        context: Dict[str, np.ndarray] = {}
+        if not company_id:
+            logger.warning("ModelSpecExecutor: no company_id — cannot build forecast")
+            return ExecutionResult(model_id=spec.model_id, forecast=[], curves={})
 
-        # Resolve parent curves for inheritance
-        if parent_result and parent_result.curves:
-            context["_parent_curves"] = parent_result.curves
+        # Choose execution path: event chain (preferred) vs curves (legacy)
+        has_event_chain = (
+            spec.event_chain
+            and spec.event_chain.links
+        )
 
-        # 1. Evaluate each metric's curve in dependency order
-        eval_order = _topo_sort(spec.curves)
-        for metric in eval_order:
-            curve = spec.curves[metric]
-            values = evaluate_curve(curve, x, context)
-
-            # Apply macro shocks (probability-weighted)
-            for shock in spec.macro_shocks:
-                if metric in shock.impacts:
-                    imp = shock.impacts[metric]
-                    shock_mod_params = {
-                        "start_month": imp.get("start_month", 0),
-                        "magnitude": imp.get("magnitude", 0) * shock.probability,
-                        "duration_months": imp.get("duration_months", 6),
-                        "recovery": imp.get("recovery", "gradual"),
-                    }
-                    from app.services.model_spec_schema import ModifierSpec
-                    shock_mod = ModifierSpec(type="shock", params=shock_mod_params)
-                    values = _apply_modifiers(values, x, [shock_mod])
-
-            context[metric] = values
-
-        # 2. Build revenue_trajectory for cascade
-        revenue = context.get("revenue")
-        trajectory = None
-        if revenue is not None:
-            trajectory = [
-                {"period": _period_add(start_period, i), "revenue": float(revenue[i])}
-                for i in range(months)
-            ]
-
-        # 3. Merge driver_overrides into company_data
-        seed = dict(company_data)
-        seed.update(spec.driver_overrides)
-
-        # 4. Feed into P&L cascade — prefer LMS for subcategory detail
-        if company_id:
-            from app.services.liquidity_management_service import LiquidityManagementService
-            lms = LiquidityManagementService()
-            if trajectory:
-                seed["_revenue_trajectory"] = trajectory
-            lms_result = lms.build_liquidity_model(
-                company_id=company_id,
-                months=months,
-                start_period=start_period,
-                scenario_overrides=seed,
+        if has_event_chain:
+            forecast, applied_impacts = self._execute_from_event_chain(
+                spec, company_data, months, start_period, company_id,
             )
-            forecast = lms_result.get("monthly", [])
         else:
-            forecast = self._cfp.build_monthly_cash_flow_model(
-                company_data=seed,
-                months=months,
-                start_period=start_period,
-                revenue_trajectory=trajectory,
+            forecast, applied_impacts = self._execute_from_curves(
+                spec, company_data, months, start_period, company_id,
+                parent_result,
             )
 
-        # 5. Override non-revenue metrics if spec defines them.
-        # Map common LLM metric names to cascade keys.
-        _METRIC_ALIASES = {
-            "opex": "total_opex",
-            "operating_expenses": "total_opex",
-            "rd": "rd_spend",
-            "r_and_d": "rd_spend",
-            "sales_marketing": "sm_spend",
-            "s_and_m": "sm_spend",
-            "general_admin": "ga_spend",
-            "g_and_a": "ga_spend",
-            "fcf": "free_cash_flow",
-            "cash": "cash_balance",
-            "gp": "gross_profit",
-        }
-        for i, month in enumerate(forecast):
-            for metric, values_arr in context.items():
-                if metric == "revenue" or metric.startswith("_"):
-                    continue
-                # Resolve alias to cascade key
-                cascade_key = _METRIC_ALIASES.get(metric, metric)
-                if i < len(values_arr) and cascade_key in month:
-                    month[cascade_key] = float(values_arr[i])
-            # Recompute derived fields
-            _recompute_derived(month)
+        # Apply funding events (shared by both paths)
+        self._apply_funding_events(spec, forecast, start_period)
 
-        # 6. Apply funding events
-        for event in spec.funding_events:
-            month_idx = _period_diff(start_period, event.period)
-            if 0 <= month_idx < len(forecast):
-                forecast[month_idx]["cash_balance"] = (
-                    forecast[month_idx].get("cash_balance", 0) + event.amount
-                )
-                if event.type == "debt":
-                    rate = event.terms.get("interest_rate", 0.10)
-                    monthly_payment = event.amount * rate / 12
-                    for j in range(month_idx, len(forecast)):
-                        forecast[j]["debt_service"] = (
-                            forecast[j].get("debt_service", 0) + monthly_payment
-                        )
-                # Propagate cash_balance forward after injection
-                for j in range(month_idx + 1, len(forecast)):
-                    fcf = forecast[j].get("free_cash_flow", 0)
-                    prev_cash = forecast[j - 1].get("cash_balance", 0)
-                    forecast[j]["cash_balance"] = prev_cash + fcf
+        # Re-propagate cash_balance cumulatively after ALL modifications
+        _propagate_cash_balance(forecast)
 
-        # 7. Confidence bands from priors (Monte Carlo)
+        # Confidence bands from priors (Monte Carlo)
         bands = self._generate_confidence_bands(spec, company_data, months, start_period)
 
-        # 8. Check milestones
+        # Check milestones
         milestone_results = []
         for ms in spec.milestones:
             idx = _period_diff(start_period, ms.period)
@@ -386,27 +310,389 @@ class ModelSpecExecutor:
                     "gap": ms.target - actual_val,
                 })
 
-        # 9. Compute cascade ripple — how each curve propagates through P&L
+        # Compute cascade ripple
         cascade_ripple = self._compute_cascade_ripple(
-            spec, context, forecast, start_period
+            spec, {}, forecast, start_period
         )
 
-        # Convert context arrays to lists for serialization
-        curves_out = {
-            k: v.tolist() for k, v in context.items() if not k.startswith("_")
-        }
+        # Extract per-month metric values for charting (works for both paths)
+        curves_out: Dict[str, List[float]] = {}
+        if isinstance(applied_impacts, dict):
+            # Event chain path: extract modified metric values from forecast
+            impacted_metrics = set()
+            for k, v in applied_impacts.items():
+                if isinstance(v, list) and v and isinstance(v[0], dict):
+                    impacted_metrics.add(k)
+                else:
+                    curves_out[k] = v  # Already float lists (curve path)
+            for metric in impacted_metrics:
+                curves_out[metric] = [
+                    m.get(metric, 0) for m in forecast
+                ]
 
         return ExecutionResult(
             model_id=spec.model_id,
             narrative=spec.narrative,
-            event_chain=spec.event_chain,          # pass through for frontend
+            event_chain=spec.event_chain,
             forecast=forecast,
             confidence_bands=bands,
-            cascade_ripple=cascade_ripple,          # new: how changes ripple
+            cascade_ripple=cascade_ripple,
             milestones=milestone_results,
             curves=curves_out,
             spec=spec,
         )
+
+    # ------------------------------------------------------------------
+    # Event-chain-driven execution (primary path)
+    # ------------------------------------------------------------------
+
+    def _execute_from_event_chain(
+        self,
+        spec: ModelSpec,
+        company_data: Dict[str, Any],
+        months: int,
+        start_period: str,
+        company_id: str,
+    ) -> tuple:
+        """Execute using event chain: base LMS forecast + event-driven modifications.
+
+        Flow:
+        1. Resolve event chain → which events fire and when
+        2. Run LMS for base forecast (realistic shape from actual drivers)
+        3. Walk resolved events chronologically
+        4. Each causal link targeting a metric modifies the forecast
+        5. Recompute derived fields after each metric modification
+        6. Cash balance re-propagated separately after all modifications
+
+        Returns (forecast, applied_impacts_dict).
+        """
+        chain = spec.event_chain
+
+        # 1. Resolve event timing — account for triggers, blocks, shifts
+        resolved_events = self._resolve_event_chain(chain, start_period)
+
+        # 2. Build base forecast from LMS using actual company drivers
+        seed = dict(company_data)
+        seed.update(spec.driver_overrides)
+
+        from app.services.liquidity_management_service import LiquidityManagementService
+        lms = LiquidityManagementService()
+        lms_result = lms.build_liquidity_model(
+            company_id=company_id,
+            months=months,
+            start_period=start_period,
+            scenario_overrides=seed,
+        )
+        forecast = lms_result.get("monthly", [])
+
+        if not forecast:
+            return forecast, {}
+
+        # 3. Collect metric-targeting links with resolved timing
+        metric_impacts = self._collect_metric_impacts(
+            chain, resolved_events, start_period, months,
+        )
+
+        # 4. Apply impacts chronologically, recompute cascade after each
+        applied = {}  # metric → list of monthly values (for charting)
+        for impact in metric_impacts:
+            metric = impact["metric"]
+            month_idx = impact["month_idx"]
+            effect = impact["effect"]
+            magnitude = impact["magnitude"]
+            probability = impact["probability"]
+            duration = impact["duration"]
+
+            # Weight by event probability
+            effective_mag = magnitude * probability
+
+            if effect in ("amplifies", "dampens"):
+                # Percentage modification from month_idx onward (or for duration)
+                end_idx = min(month_idx + duration, len(forecast)) if duration else len(forecast)
+                for i in range(month_idx, end_idx):
+                    old_val = forecast[i].get(metric, 0)
+                    forecast[i][metric] = old_val * (1 + effective_mag)
+                    if metric == "cogs":
+                        forecast[i]["_cogs_override"] = True
+
+            elif effect == "scales":
+                # Direct multiplier from month_idx onward
+                end_idx = min(month_idx + duration, len(forecast)) if duration else len(forecast)
+                for i in range(month_idx, end_idx):
+                    old_val = forecast[i].get(metric, 0)
+                    forecast[i][metric] = old_val * effective_mag
+                    if metric == "cogs":
+                        forecast[i]["_cogs_override"] = True
+
+            elif effect == "sets_ceiling":
+                for i in range(month_idx, len(forecast)):
+                    old_val = forecast[i].get(metric, 0)
+                    forecast[i][metric] = min(old_val, magnitude)
+
+            elif effect == "sets_floor":
+                for i in range(month_idx, len(forecast)):
+                    old_val = forecast[i].get(metric, 0)
+                    forecast[i][metric] = max(old_val, magnitude)
+
+            # Recompute the full cascade for affected months
+            end = min(month_idx + (duration or months), len(forecast))
+            for i in range(month_idx, end):
+                _recompute_derived(forecast[i])
+
+            # Track what we applied for charting
+            applied.setdefault(metric, []).append({
+                "event_id": impact["event_id"],
+                "effect": effect,
+                "magnitude": effective_mag,
+                "month_idx": month_idx,
+                "reasoning": impact["reasoning"],
+            })
+
+        # Also apply macro shocks directly as event impacts
+        for shock in spec.macro_shocks:
+            for metric, imp in shock.impacts.items():
+                resolved_metric = self._METRIC_ALIASES.get(metric, metric)
+                start_month = imp.get("start_month", 0)
+                mag = imp.get("magnitude", 0) * shock.probability
+                dur = imp.get("duration_months", 6)
+                recovery = imp.get("recovery", "gradual")
+
+                for i in range(start_month, min(start_month + dur, len(forecast))):
+                    progress = (i - start_month) / max(dur, 1)
+                    if recovery == "gradual":
+                        factor = 1 + mag * (1 - progress)
+                    else:
+                        factor = 1 + mag
+
+                    old_val = forecast[i].get(resolved_metric, 0)
+                    forecast[i][resolved_metric] = old_val * factor
+                    _recompute_derived(forecast[i])
+
+        return forecast, applied
+
+    def _resolve_event_chain(
+        self,
+        chain,
+        start_period: str,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Resolve which events fire and their final timing.
+
+        Handles triggers (event A causes event B), blocks (A prevents B),
+        and shifts_timing (A delays B).
+
+        Returns: {event_id: {fired: bool, month_idx: int, probability: float}}
+        """
+        resolved = {}
+
+        # Initialize all events with base timing
+        for ev in chain.events:
+            month_idx = 0
+            if ev.timing:
+                try:
+                    month_idx = _period_diff(start_period, ev.timing)
+                except Exception:
+                    month_idx = 0
+            month_idx = max(0, month_idx)
+
+            resolved[ev.id] = {
+                "fired": True,  # assume fires unless blocked
+                "month_idx": month_idx,
+                "probability": ev.probability,
+                "duration_months": ev.duration_months,
+            }
+
+        # Walk event-to-event links to resolve triggers/blocks/shifts
+        for link in chain.links:
+            src = link.source
+            tgt = link.target
+
+            # Only process event→event links here
+            if src not in resolved or tgt not in resolved:
+                continue
+
+            src_info = resolved[src]
+            if not src_info["fired"]:
+                continue
+
+            if link.effect == "triggers":
+                # Source triggers target — target fires after delay
+                resolved[tgt]["fired"] = True
+                resolved[tgt]["month_idx"] = max(
+                    resolved[tgt]["month_idx"],
+                    src_info["month_idx"] + link.delay_months,
+                )
+
+            elif link.effect == "blocks":
+                # Source blocks target — target doesn't fire
+                resolved[tgt]["fired"] = False
+
+            elif link.effect == "shifts_timing":
+                # Source delays target by delay_months
+                resolved[tgt]["month_idx"] += link.delay_months
+
+        return resolved
+
+    def _collect_metric_impacts(
+        self,
+        chain,
+        resolved_events: Dict[str, Dict[str, Any]],
+        start_period: str,
+        months: int,
+    ) -> List[Dict[str, Any]]:
+        """Convert causal links into chronological metric modifications.
+
+        Filters to links where target is a known metric and source event fired.
+        Returns sorted list of impacts.
+        """
+        impacts = []
+
+        for link in chain.links:
+            # Resolve target metric
+            target_metric = self._METRIC_ALIASES.get(link.target, link.target)
+            if target_metric not in self._KNOWN_METRICS:
+                continue  # event→event link, handled in resolution
+
+            # Find source event
+            src_info = resolved_events.get(link.source)
+            if not src_info or not src_info["fired"]:
+                continue
+
+            impact_month = src_info["month_idx"] + link.delay_months
+            if impact_month < 0 or impact_month >= months:
+                continue
+
+            impacts.append({
+                "event_id": link.source,
+                "metric": target_metric,
+                "effect": link.effect,
+                "magnitude": link.magnitude or 0,
+                "probability": src_info["probability"],
+                "month_idx": impact_month,
+                "duration": src_info.get("duration_months") or 0,
+                "reasoning": link.reasoning,
+            })
+
+        # Sort chronologically so earlier impacts compound into later ones
+        impacts.sort(key=lambda x: x["month_idx"])
+        return impacts
+
+    # ------------------------------------------------------------------
+    # Legacy curve-based execution (fallback for specs without event chain)
+    # ------------------------------------------------------------------
+
+    def _execute_from_curves(
+        self,
+        spec: ModelSpec,
+        company_data: Dict[str, Any],
+        months: int,
+        start_period: str,
+        company_id: str,
+        parent_result: Optional[ExecutionResult] = None,
+    ) -> tuple:
+        """Legacy path: evaluate curves → override LMS forecast.
+
+        Kept for backward compatibility with existing ModelSpecs that
+        use curve definitions instead of event chain links.
+        """
+        x = np.arange(months, dtype=float)
+        context: Dict[str, np.ndarray] = {}
+
+        if parent_result and parent_result.curves:
+            context["_parent_curves"] = parent_result.curves
+
+        # Evaluate each metric's curve in dependency order
+        eval_order = _topo_sort(spec.curves)
+        for metric in eval_order:
+            curve = spec.curves[metric]
+            try:
+                values = evaluate_curve(curve, x, context)
+            except (KeyError, TypeError, ValueError) as e:
+                logger.warning(
+                    "Curve evaluation failed for '%s' (type=%s): %s — using zeros",
+                    metric, curve.type, e,
+                )
+                values = np.zeros_like(x, dtype=float)
+
+            # Apply macro shocks (probability-weighted)
+            for shock in spec.macro_shocks:
+                if metric in shock.impacts:
+                    imp = shock.impacts[metric]
+                    from app.services.model_spec_schema import ModifierSpec
+                    shock_mod = ModifierSpec(type="shock", params={
+                        "start_month": imp.get("start_month", 0),
+                        "magnitude": imp.get("magnitude", 0) * shock.probability,
+                        "duration_months": imp.get("duration_months", 6),
+                        "recovery": imp.get("recovery", "gradual"),
+                    })
+                    values = _apply_modifiers(values, x, [shock_mod])
+
+            context[metric] = values
+
+        # Build revenue trajectory
+        revenue = context.get("revenue")
+        trajectory = None
+        if revenue is not None:
+            trajectory = [
+                {"period": _period_add(start_period, i), "revenue": float(revenue[i])}
+                for i in range(months)
+            ]
+
+        # Run LMS
+        seed = dict(company_data)
+        seed.update(spec.driver_overrides)
+
+        from app.services.liquidity_management_service import LiquidityManagementService
+        lms = LiquidityManagementService()
+        if trajectory:
+            seed["_revenue_trajectory"] = trajectory
+        lms_result = lms.build_liquidity_model(
+            company_id=company_id,
+            months=months,
+            start_period=start_period,
+            scenario_overrides=seed,
+        )
+        forecast = lms_result.get("monthly", [])
+
+        # Override non-revenue metrics from curves
+        for i, month in enumerate(forecast):
+            for metric, values_arr in context.items():
+                if metric == "revenue" or metric.startswith("_"):
+                    continue
+                cascade_key = self._METRIC_ALIASES.get(metric, metric)
+                if i < len(values_arr) and cascade_key in month:
+                    month[cascade_key] = float(values_arr[i])
+            _recompute_derived(month)
+
+        curves_out = {
+            k: v.tolist() for k, v in context.items() if not k.startswith("_")
+        }
+        return forecast, curves_out
+
+    # ------------------------------------------------------------------
+    # Funding events (shared by both paths)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _apply_funding_events(
+        spec: ModelSpec,
+        forecast: List[Dict[str, Any]],
+        start_period: str,
+    ):
+        """Apply discrete funding events (equity/debt injections)."""
+        for event in spec.funding_events:
+            month_idx = _period_diff(start_period, event.period)
+            if 0 <= month_idx < len(forecast):
+                forecast[month_idx]["cash_balance"] = (
+                    forecast[month_idx].get("cash_balance", 0) + event.amount
+                )
+                if event.type == "debt":
+                    rate = event.terms.get("interest_rate", 0.10)
+                    monthly_payment = event.amount * rate / 12
+                    for j in range(month_idx, len(forecast)):
+                        forecast[j]["debt_service"] = (
+                            forecast[j].get("debt_service", 0) + monthly_payment
+                        )
+                        _recompute_derived(forecast[j])
 
     # ------------------------------------------------------------------
     # Cascade ripple — how each metric change propagates through P&L
@@ -559,9 +845,23 @@ class ModelSpecExecutor:
 # ---------------------------------------------------------------------------
 
 def _recompute_derived(month: Dict[str, Any]):
-    """Recompute gross_profit, ebitda, fcf after metric overrides."""
+    """Recompute the full P&L cascade after metric overrides.
+
+    Chain: revenue → COGS (via gross_margin) → gross_profit → EBITDA → FCF.
+    Does NOT touch cash_balance — that requires cumulative propagation
+    across months (see _propagate_cash_balance).
+    """
     rev = month.get("revenue", 0)
     cogs = month.get("cogs", 0)
+
+    # Re-derive COGS from gross_margin to maintain ratio consistency,
+    # but only if gross_margin looks like a stored ratio (not yet recomputed).
+    # Skip if _cogs_override flag is set (event directly targeted COGS).
+    gm = month.get("gross_margin")
+    if gm and isinstance(gm, (int, float)) and 0 < gm < 1 and not month.get("_cogs_override"):
+        cogs = rev * (1 - gm)
+        month["cogs"] = cogs
+
     month["gross_profit"] = rev - cogs
     month["gross_margin"] = (rev - cogs) / rev if rev else 0
 
@@ -573,6 +873,31 @@ def _recompute_derived(month: Dict[str, Any]):
     debt_svc = month.get("debt_service", 0)
     tax = month.get("tax_expense", 0)
     month["free_cash_flow"] = month["ebitda"] - capex - debt_svc - tax
+
+
+def _propagate_cash_balance(forecast: List[Dict[str, Any]]):
+    """Re-propagate cash_balance cumulatively across all months.
+
+    cash_balance[0] stays as-is (initial cash from LMS).
+    Each subsequent month: cash_balance[i] = cash_balance[i-1] + free_cash_flow[i].
+    Also recomputes runway_months.
+    """
+    if not forecast:
+        return
+
+    for i in range(1, len(forecast)):
+        prev_cash = forecast[i - 1].get("cash_balance", 0)
+        fcf = forecast[i].get("free_cash_flow", 0)
+        forecast[i]["cash_balance"] = prev_cash + fcf
+
+    # Recompute runway for each month
+    for month in forecast:
+        cash = month.get("cash_balance", 0)
+        fcf = month.get("free_cash_flow", 0)
+        if fcf < 0:
+            month["runway_months"] = round(cash / (-fcf), 1)
+        else:
+            month["runway_months"] = 999
 
 
 # ---------------------------------------------------------------------------

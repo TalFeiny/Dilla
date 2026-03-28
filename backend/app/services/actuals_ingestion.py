@@ -620,7 +620,7 @@ def get_subcategory_proportions(
     """Get latest subcategory proportions for a parent category.
 
     Returns: {subcategory: proportion} where proportions sum to ~1.0.
-    Used by cash_flow_planning_service to decompose forecasts.
+    Used by liquidity_management_service to decompose forecasts.
     """
     breakdown = get_subcategory_breakdown(company_id, parent_category, months=3)
     if not breakdown:

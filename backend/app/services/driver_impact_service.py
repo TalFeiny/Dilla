@@ -177,12 +177,14 @@ class DriverImpactService:
         today = date.today()
         start_period = f"{today.year}-{today.month:02d}"
 
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
-        cfp = CashFlowPlanningService()
+        from app.services.liquidity_management_service import LiquidityManagementService
+        lms = LiquidityManagementService()
 
-        base_forecast = cfp.build_monthly_cash_flow_model(
-            base_data, months=forecast_months, start_period=start_period,
+        base_result = lms.build_liquidity_model(
+            company_id=company_id, months=forecast_months,
+            start_period=start_period, scenario_overrides=base_data,
         )
+        base_forecast = base_result.get("monthly", [])
         if not base_forecast:
             return {"status": "no_forecast", "message": "Could not build base forecast."}
 
@@ -210,9 +212,11 @@ class DriverImpactService:
 
                 # Apply override and project
                 perturbed_data = self._sbs._apply_overrides({**base_data}, assumption)
-                perturbed_forecast = cfp.build_monthly_cash_flow_model(
-                    perturbed_data, months=forecast_months, start_period=start_period,
+                perturbed_result = lms.build_liquidity_model(
+                    company_id=company_id, months=forecast_months,
+                    start_period=start_period, scenario_overrides=perturbed_data,
                 )
+                perturbed_forecast = perturbed_result.get("monthly", [])
                 if not perturbed_forecast:
                     continue
 
@@ -274,7 +278,7 @@ class DriverImpactService:
                 "method": (
                     f"For each driver with '{target_metric}' in ripple chain, "
                     f"applied ±{perturbation*100:.0f}% to base value, "
-                    f"projected {forecast_months} months via CashFlowPlanningService, "
+                    f"projected {forecast_months} months via LiquidityManagementService, "
                     f"measured delta on final-month {target_metric}."
                 ),
                 "base_data_source": "seed_forecast_from_actuals",

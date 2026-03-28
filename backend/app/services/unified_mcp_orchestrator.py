@@ -10061,40 +10061,31 @@ Answer using specific company names and numbers from the portfolio grid above.""
         return {"chart_data": [chart_data], "branch_id": entry.get("bound_to_branch"), "_is_chart_update": True}
 
     async def _tool_cash_flow_model(self, inputs: dict) -> dict:
-        """Build full P&L / cash flow model for a company."""
+        """Build full P&L / cash flow model — delegates to LiquidityManagementService."""
         try:
-            from app.services.cash_flow_planning_service import CashFlowPlanningService
+            from app.services.liquidity_management_service import LiquidityManagementService
 
-            svc = CashFlowPlanningService()
-            company_name = inputs.get("company", "")
-            years = inputs.get("years", 5)
-            growth_overrides = inputs.get("growth_overrides")
+            company_id = self._resolve_company_id(inputs)
+            if not company_id:
+                return {"error": "company_id is required"}
 
-            # Resolve company from shared_data
-            company_data = None
-            for comp in self.shared_data.get("companies", []):
-                if comp.get("company_name", "").lower() == company_name.lower() or comp.get("name", "").lower() == company_name.lower():
-                    company_data = comp
-                    break
+            months = inputs.get("months", inputs.get("years", 5) * 12)
 
-            if not company_data:
-                company_data = {"company_name": company_name, "revenue": 1_000_000, "stage": "Series A"}
+            svc = LiquidityManagementService()
+            result = svc.build_liquidity_model(
+                company_id=company_id,
+                months=months,
+                scenario_overrides=inputs.get("growth_overrides"),
+            )
 
-            model = svc.build_cash_flow_model(company_data, years=years, growth_overrides=growth_overrides)
-            runway = svc.calculate_runway(model)
-            funding_gap = svc.calculate_funding_gap(model)
-            memo_sections = svc.to_memo_sections(company_name, model)
-
-            # Waterfall for most recent projected year
-            waterfall_chart = svc.to_waterfall_chart_data(model[-1]) if model else None
+            model = result.get("monthly", [])
+            summary = result.get("summary", {})
 
             return {
                 "cash_flow_model": model,
-                "runway": runway,
-                "funding_gap": funding_gap,
-                "waterfall_chart": waterfall_chart,
-                "memo_sections": memo_sections,
-                "company": company_name,
+                "summary": summary,
+                "risk_alerts": result.get("risk_alerts", []),
+                "company_id": company_id,
             }
         except Exception as e:
             logger.warning(f"[TOOL] cash_flow_model failed: {e}")
@@ -10292,28 +10283,26 @@ Answer using specific company names and numbers from the portfolio grid above.""
             return {"error": str(e)}
 
     async def _tool_three_scenario_cash_flow(self, inputs: dict) -> dict:
-        """Build bull/base/bear P&L models side by side."""
+        """Build bull/base/bear P&L models — delegates to LiquidityManagementService."""
         try:
-            from app.services.cash_flow_planning_service import CashFlowPlanningService
+            from app.services.liquidity_management_service import LiquidityManagementService
 
-            svc = CashFlowPlanningService()
-            company_name = inputs.get("company", "")
-            years = inputs.get("years", 5)
+            company_id = self._resolve_company_id(inputs)
+            if not company_id:
+                return {"error": "company_id is required"}
 
-            company_data = None
-            for comp in self.shared_data.get("companies", []):
-                if comp.get("company_name", "").lower() == company_name.lower() or comp.get("name", "").lower() == company_name.lower():
-                    company_data = comp
-                    break
-            if not company_data:
-                company_data = {"company_name": company_name, "revenue": 1_000_000, "stage": "Series A"}
+            months = inputs.get("months", inputs.get("years", 5) * 12)
 
-            models = svc.build_three_scenario_model(company_data, years=years)
-            memo_sections = []
-            for scenario_name, model in models.items():
-                memo_sections.extend(svc.to_memo_sections(f"{company_name} ({scenario_name.title()})", model))
+            svc = LiquidityManagementService()
+            result = svc.build_scenario_comparison(
+                company_id=company_id,
+                months=months,
+            )
 
-            return {"models": models, "memo_sections": memo_sections, "company": company_name}
+            return {
+                "models": result,
+                "company_id": company_id,
+            }
         except Exception as e:
             logger.warning(f"[TOOL] three_scenario_cash_flow failed: {e}")
             return {"error": str(e)}
@@ -12882,7 +12871,7 @@ Return JSON with ONLY these fields (use null if unknown):
             if not company_data or company_data.get("revenue", 0) <= 0:
                 return {"error": f"No actuals found for company {company_id} — upload actuals first"}
 
-            # Merge driver overrides into company_data for CashFlowPlanningService
+            # Merge driver overrides into company_data for LiquidityManagementService
             if drivers:
                 for key, value in drivers.items():
                     company_data[key] = value
@@ -13292,102 +13281,74 @@ Return JSON with ONLY these fields (use null if unknown):
             return {"error": str(e)}
 
     async def _tool_fpa_cash_flow(self, inputs: dict) -> dict:
-        """Monthly cash flow model from company data or actuals."""
+        """Monthly cash flow model — delegates to LiquidityManagementService."""
         try:
-            from app.services.cash_flow_planning_service import CashFlowPlanningService
-            from app.services.actuals_ingestion import seed_forecast_from_actuals
+            from app.services.liquidity_management_service import LiquidityManagementService
 
             company_id = self._resolve_company_id(inputs)
             if not company_id:
                 return {"error": "company_id is required — no valid UUID found in inputs or session context"}
 
             months = inputs.get("months", 24)
-            monthly_overrides = inputs.get("monthly_overrides")
 
-            company_data = seed_forecast_from_actuals(company_id)
-            if not company_data or company_data.get("revenue", 0) <= 0:
-                # Try from DB via pull_company_data
-                if pull_company_data:
-                    try:
-                        cd = pull_company_data(company_id)
-                        if cd and cd.latest.get("revenue", 0) > 0:
-                            company_data = cd.to_forecast_seed()
-                        else:
-                            return {"error": f"No data available for company {company_id}"}
-                    except Exception:
-                        return {"error": f"No data available for company {company_id}"}
-                else:
-                    return {"error": f"No data available for company {company_id}"}
-
-            svc = CashFlowPlanningService()
-            model = svc.build_monthly_cash_flow_model(
-                company_data,
+            svc = LiquidityManagementService()
+            liq_result = svc.build_liquidity_model(
+                company_id=company_id,
                 months=months,
-                monthly_overrides=monthly_overrides,
+                start_period=inputs.get("start_period"),
+                scenario_overrides=inputs.get("monthly_overrides") or inputs.get("scenario_overrides"),
+                events=inputs.get("events"),
             )
+
+            model = liq_result.get("monthly", [])
+            summary = liq_result.get("summary", {})
 
             result = {
                 "company_id": company_id,
                 "months": months,
                 "cash_flow_model": model,
-                "inputs": {k: v for k, v in company_data.items() if k in ("revenue", "burn_rate", "cash_balance", "growth_rate", "gross_margin")},
+                "summary": summary,
+                "risk_alerts": liq_result.get("risk_alerts", []),
             }
 
             async with self.shared_data_lock:
                 self.shared_data["fpa_cash_flow_result"] = result
 
-            # Grid suggestions from cash flow model with explanations
-            inputs_cf = result.get("inputs", {})
-            cf_gm = inputs_cf.get("gross_margin")
-            cf_rev = inputs_cf.get("revenue", 0)
-            cf_growth = inputs_cf.get("growth_rate", 0)
-            _cf_map = {
-                "revenue": ("revenue", f"Projected from ${cf_rev:,.0f} base at {cf_growth:.0%} annual growth"),
-                "cogs": ("cogs", f"Cost of sales at {(1 - (cf_gm or 0.65)):.0%} of revenue"),
-                "gross_profit": ("gross_profit", f"Revenue minus COGS ({(cf_gm or 0.65):.0%} gross margin)"),
-                "rd_spend": ("opex_rd", "R&D spend per stage-based OpEx benchmark with efficiency decay"),
-                "sm_spend": ("opex_sm", "S&M spend per stage-based OpEx benchmark with efficiency decay"),
-                "ga_spend": ("opex_ga", "G&A spend per stage-based OpEx benchmark with efficiency decay"),
-                "total_opex": ("total_opex", "Sum of R&D + S&M + G&A"),
-                "ebitda": ("ebitda", "Gross profit minus total operating expenses"),
-                "cash_balance": ("cash_balance", f"Prior cash plus net income; starting cash ${inputs_cf.get('cash_balance', 0):,.0f}"),
-            }
+            # Grid suggestions from monthly P&L rows
             grid_suggestions = []
             for month in model:
                 period = month.get("period")
                 if not period:
                     continue
-                for cf_key, (row_id, reasoning) in _cf_map.items():
-                    val = month.get(cf_key)
+                for key in ("revenue", "cogs", "gross_profit", "opex_rd", "opex_sm", "opex_ga", "ebitda", "net_cash_flow", "cash_balance"):
+                    val = month.get(key)
                     if val is not None:
                         grid_suggestions.append({
-                            "rowId": row_id, "columnId": period,
-                            "value": val, "reasoning": reasoning,
+                            "rowId": key, "columnId": period,
+                            "value": val, "reasoning": f"Liquidity model — {key}",
                         })
             result["grid_suggestions"] = grid_suggestions
 
-            # Charts: revenue, EBITDA, cash, runway, OpEx stacked bar
+            # Charts
             from app.services.scenario_branch_service import build_forecast_charts
             result["chart_data"] = build_forecast_charts(model)
 
-            # Memo: cash flow summary
-            last_month = model[-1] if model else {}
-            inputs_data = result.get("inputs", {})
+            # Memo
             result["memo_updates"] = {
                 "action": "append",
                 "sections": [
                     {"type": "heading2", "content": "Cash Flow Model"},
                     {"type": "paragraph", "content": (
-                        f"Starting cash: ${inputs_data.get('cash_balance', 0):,.0f}, "
-                        f"Gross margin: {inputs_data.get('gross_margin', 0):.0%}."
+                        f"Runway: {summary.get('ending_runway_months', 0):.1f} months. "
+                        f"Ending cash: ${summary.get('ending_cash', 0):,.0f}. "
+                        f"Cash conversion cycle: {summary.get('cash_conversion_cycle_days', 0):.0f} days."
                     )},
-                    {"type": "paragraph", "content": (
-                        f"Month {months} — Cash: ${last_month.get('cash_balance', 0):,.0f}, "
-                        f"Runway: {last_month.get('runway_months', 0):.1f} months, "
-                        f"EBITDA: ${last_month.get('ebitda', 0):,.0f}."
-                    ) if last_month else "No periods modeled."},
                 ],
             }
+            if liq_result.get("risk_alerts"):
+                result["memo_updates"]["sections"].append(
+                    {"type": "paragraph", "content": f"Risk alerts: {', '.join(a.get('message', str(a)) for a in liq_result['risk_alerts'][:5])}"}
+                )
 
             return result
         except Exception as e:
@@ -14881,7 +14842,7 @@ Return JSON with ONLY these fields (use null if unknown):
     ) -> dict:
         """Run legal cascade simulation for a trigger change."""
         try:
-            from app.services.cascade_engine import CascadeEngine
+            from app.services.cascade_engine import CascadeGraph
             from app.services.clause_parameter_registry import ResolvedParameterSet
 
             # Get extracted docs from shared_data or build empty set
@@ -14901,7 +14862,7 @@ Return JSON with ONLY these fields (use null if unknown):
             else:
                 params = ResolvedParameterSet(company_id=company_id)
 
-            engine = CascadeEngine()
+            engine = CascadeGraph()
             engine.build_from_clauses(params)
             result = engine.simulate(
                 trigger=trigger,

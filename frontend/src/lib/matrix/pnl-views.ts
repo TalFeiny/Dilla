@@ -5,7 +5,7 @@
  *   1. waterfall   — PnlBuilder hierarchical income statement
  *   2. forecast    — RollingForecastService actuals vs forecast
  *   3. budget      — BudgetVarianceService actuals vs budget w/ variance
- *   4. cashflow    — CashFlowPlanningService full cash flow projection
+ *   4. cashflow    — LiquidityManagementService full cash flow projection
  *
  * Each view has its own column builder and row transformer that maps service
  * output into MatrixData (columns + rows) for the grid.
@@ -389,7 +389,7 @@ function trendArrow(trend: string): string {
 }
 
 /**
- * Cash Flow: CashFlowPlanningService.build_projection output → rows.
+ * Cash Flow: LiquidityManagementService.build_liquidity_model output → rows.
  * Input shape: { forecast: [{ period, revenue, cogs, gross_profit, ..., free_cash_flow, cash_balance, runway_months }], granularity }
  */
 

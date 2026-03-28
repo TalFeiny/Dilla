@@ -126,7 +126,8 @@ class CapTableLedger:
             pps = Decimal(str(r.get("price_per_share", 0)))
             is_debt = r.get("is_debt_instrument", False)
             principal = Decimal(str(r.get("outstanding_principal") or 0))
-            inv_amount = Decimal(str(r.get("investment_amount") or 0))
+            # Equity value = shares × price_per_share (investment_amount not stored)
+            equity_val = shares * pps
 
             # Ownership %
             if total_shares > 0 and not is_debt:
@@ -137,13 +138,13 @@ class CapTableLedger:
             r["ownership_pct"] = round(own_pct, 4)
 
             if is_debt:
-                val = principal if principal > 0 else inv_amount
+                val = principal if principal > 0 else Decimal("0")
                 total_debt_value += val
                 total_raised += val
                 debt_instruments.append(r)
             else:
-                total_equity_value += inv_amount
-                total_raised += inv_amount
+                total_equity_value += equity_val
+                total_raised += equity_val
 
             name = r.get("shareholder_name", "Unknown")
             if not is_debt:

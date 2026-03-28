@@ -216,13 +216,13 @@ class FPAExecutor:
         base_forecast = result.get("base_forecast", [])
 
         if granularity != "monthly":
-            from app.services.cash_flow_planning_service import CashFlowPlanningService
+            from app.services.liquidity_management_service import LiquidityManagementService
             if granularity == "quarterly":
-                branch_forecast = CashFlowPlanningService._aggregate_to_quarterly(branch_forecast)
-                base_forecast = CashFlowPlanningService._aggregate_to_quarterly(base_forecast)
+                branch_forecast = LiquidityManagementService._aggregate_to_quarterly(branch_forecast)
+                base_forecast = LiquidityManagementService._aggregate_to_quarterly(base_forecast)
             elif granularity == "annual":
-                branch_forecast = CashFlowPlanningService._aggregate_to_annual(branch_forecast)
-                base_forecast = CashFlowPlanningService._aggregate_to_annual(base_forecast)
+                branch_forecast = LiquidityManagementService._aggregate_to_annual(branch_forecast)
+                base_forecast = LiquidityManagementService._aggregate_to_annual(base_forecast)
 
         # Build comparison summary
         b_last = branch_forecast[-1] if branch_forecast else {}

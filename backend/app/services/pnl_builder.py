@@ -553,7 +553,7 @@ class PnlBuilder:
         actuals: Dict[str, Dict[str, float]],
     ) -> Dict[str, float]:
         """
-        Take a single month from CashFlowPlanningService and split it
+        Take a single month from LiquidityManagementService and split it
         into the same category keys that exist in actuals.
 
         If actuals had "revenue:saas" and "revenue:services" at 80/20,

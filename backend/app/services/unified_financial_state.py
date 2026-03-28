@@ -270,9 +270,12 @@ async def _load_forecast(
         return []  # not enough data to forecast
 
     try:
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
-        cfp = CashFlowPlanningService()
-        return cfp.build_monthly_cash_flow_model(base_data, months=24)
+        from app.services.liquidity_management_service import LiquidityManagementService
+        lms = LiquidityManagementService()
+        result = lms.build_liquidity_model(
+            company_id=company_id, months=24, scenario_overrides=base_data,
+        )
+        return result.get("monthly", [])
     except Exception as e:
         logger.warning("Forecast build failed: %s", e)
         return []
@@ -385,7 +388,7 @@ async def _load_cap_table(company_id: str) -> Optional[CapTableSummary]:
 
         rows = (
             sb.table("companies")
-            .select("name, current_valuation_usd, latest_round_name, stage, sector")
+            .select("name, current_valuation_usd, stage, sector")
             .eq("id", company_id)
             .limit(1)
             .execute()
@@ -397,7 +400,7 @@ async def _load_cap_table(company_id: str) -> Optional[CapTableSummary]:
         co = rows[0]
         return CapTableSummary(
             total_raised=co.get("current_valuation_usd"),
-            latest_round=co.get("latest_round_name"),
+            latest_round=co.get("stage"),
             source="companies",
         )
     except Exception as e:

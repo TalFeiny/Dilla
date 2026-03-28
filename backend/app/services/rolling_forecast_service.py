@@ -226,7 +226,7 @@ class RollingForecastService:
                     continue
                 by_period.setdefault(period, {})[line["category"]] = float(line["amount"])
 
-            # Convert to P&L row format matching CashFlowPlanningService output
+            # Convert to P&L row format matching LiquidityManagementService output
             result = []
             for period in sorted(by_period.keys())[:months_needed]:
                 vals = by_period[period]
@@ -368,12 +368,12 @@ class RollingForecastService:
         granularity: str,
     ) -> tuple:
         """Aggregate combined rows and recompute boundary."""
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
+        from app.services.liquidity_management_service import LiquidityManagementService
 
         if granularity == "quarterly":
-            aggregated = CashFlowPlanningService._aggregate_to_quarterly(rows)
+            aggregated = LiquidityManagementService._aggregate_to_quarterly(rows)
         else:
-            aggregated = CashFlowPlanningService._aggregate_to_annual(rows)
+            aggregated = LiquidityManagementService._aggregate_to_annual(rows)
 
         # Determine source for each aggregated period: if ANY month in the
         # bucket is forecast, the bucket is "mixed" or "forecast"

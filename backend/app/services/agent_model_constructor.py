@@ -40,8 +40,11 @@ You receive TRACED CONTEXT from real analytical services — events parsed from 
 prompt, causal chains from macro/business analysis, detected signals from actual data,
 sensitivity rankings, and the driver ripple graph.
 
-Your job: synthesize ALL this traced context into ModelSpec JSON — custom mathematical
-forecast models where every parameter traces back to a specific event or data point.
+Your job: synthesize ALL this traced context into an EVENT-DRIVEN forecast model.
+The base forecast comes from the company's actual financial data and drivers (via
+LiquidityManagementService). Your job is to define EVENTS and their CAUSAL IMPACTS
+on specific metrics. The forecast shape emerges from events — NOT from mathematical
+curve functions like logistic or exponential.
 
 WHAT YOU RECEIVE:
 - EVENTS: Parsed from the user's prompt (funding, hiring, partnerships, competitive, etc.)
@@ -53,44 +56,41 @@ WHAT YOU RECEIVE:
 - ACTUALS: Structured summary of company financials
 
 WHAT YOU OUTPUT:
-1. EVENT CHAIN — events with probabilities, causal links, and param_origins
-   This IS the reasoning. Every parameter you set must trace to events in the chain.
+1. EVENT CHAIN — this IS the model. Events with probabilities, and causal links
+   that directly target metrics. The links define the forecast shape.
 
-2. MODEL SPEC — curves, priors, modifiers, macro shocks, funding events, milestones
-   Every param derived from the event chain.
+2. MODEL SPEC — the event chain + funding events + milestones + driver overrides.
+   Curves dict should be EMPTY — the event chain links drive everything.
 
-CURVE TYPES:
-- logistic: S-curve with ceiling (capacity, saturation, market share limits)
-- exponential: unconstrained growth (early stage, no ceiling yet)
-- gompertz: asymmetric S-curve (slow start, fast middle, slow ceiling)
-- linear: constant slope
-- composite: weighted sub-curves by subcategory
-- step_function: discrete jumps (pricing change, expansion, contract win)
-- ratio: fraction of another metric (COGS = 35% of revenue)
-- constant: flat value
+EVENT CHAIN LINKS — how events modify metrics:
+Each causal link has: source (event_id), target (event_id OR metric name), effect, magnitude, delay_months.
 
-METRIC KEYS (use these exact names as curve dict keys):
-- revenue: top-line monthly revenue
-- cogs: cost of goods sold
-- gross_profit: revenue - cogs
-- rd_spend: R&D expense
-- sm_spend: Sales & Marketing expense
-- ga_spend: General & Administrative expense
-- total_opex: rd_spend + sm_spend + ga_spend
-- ebitda: gross_profit - total_opex
-- capex: capital expenditure
-- free_cash_flow: ebitda - capex - debt_service - tax
-- cash_balance: cumulative cash position
-DO NOT use aliases like "opex", "fcf", "gp" — use the exact keys above.
+When target is a METRIC, the link directly modifies the forecast:
+- amplifies: percentage increase from that month. magnitude=0.15 means +15% of current value
+- dampens: percentage decrease. magnitude=-0.10 means -10%
+- scales: direct multiplier. magnitude=1.2 means multiply by 1.2
+- sets_ceiling: cap metric at magnitude value (e.g. revenue max $500K/mo)
+- sets_floor: floor metric at magnitude value
+
+When target is an EVENT, the link controls event resolution:
+- triggers: source causes target to fire (with delay_months)
+- blocks: source prevents target from firing
+- shifts_timing: source delays target by delay_months
+
+METRIC NAMES (use these as link targets):
+- revenue, cogs, gross_profit
+- rd_spend, sm_spend, ga_spend, total_opex
+- ebitda, capex, free_cash_flow, cash_balance
+- debt_service, tax_expense, headcount
 
 RULES:
-- EVERY parameter must trace to an event. No arbitrary numbers.
+- Every metric modification must come from a causal link with a source event.
 - Use the macro/business chains and sensitivity data — don't ignore what the services found.
-- Preserve subcategory structure from actuals when available.
-- Set priors based on data quality AND event probability.
+- Set event probabilities based on evidence quality and data signals.
 - Include milestones when the request implies targets.
-- The narrative must explain the model in business terms, referencing the event chain.
+- The narrative must explain the model in business terms, referencing events.
 - driver_overrides should use the existing driver assumption keys listed below.
+- Do NOT output curves — leave curves dict empty. The event chain IS the model.
 
 Output: JSON object with "event_chain" and "specs" (array of ModelSpec objects).
 The event_chain is shared across all specs. Each spec references events by id."""
@@ -449,36 +449,80 @@ Output a JSON object:
   "event_chain": {{
     "events": [
       {{
-        "id": "short-slug",
-        "event": "Human-readable description of what happens",
-        "category": "business | market | macro | funding | operational",
-        "probability": 0.8,
-        "timing": "2026-03",
+        "id": "enterprise-pipeline",
+        "event": "Enterprise deal pipeline closes 3 accounts",
+        "category": "business",
+        "probability": 0.7,
+        "timing": "2026-06",
+        "duration_months": 0,
+        "reasoning": "Pipeline has 3 qualified enterprise leads in late stage"
+      }},
+      {{
+        "id": "eng-hiring",
+        "event": "Hire 5 engineers to support enterprise product",
+        "category": "operational",
+        "probability": 0.9,
+        "timing": "2026-04",
+        "duration_months": 0,
+        "reasoning": "Already approved by board, recruiting underway"
+      }},
+      {{
+        "id": "market-saturation",
+        "event": "SMB segment approaches TAM ceiling",
+        "category": "market",
+        "probability": 0.6,
+        "timing": "2027-01",
         "duration_months": 12,
-        "reasoning": "Why this event matters"
+        "reasoning": "SMB penetration at 60% of addressable market"
       }}
     ],
     "links": [
       {{
-        "source": "event-id-or-metric",
-        "target": "event-id-or-metric",
-        "effect": "amplifies | dampens | triggers | blocks | shifts_timing | sets_ceiling | sets_floor | scales",
-        "magnitude": 0.3,
+        "source": "enterprise-pipeline",
+        "target": "revenue",
+        "effect": "amplifies",
+        "magnitude": 0.25,
+        "delay_months": 0,
+        "reasoning": "3 enterprise contracts at ~$40K/mo each adds ~25% to current revenue"
+      }},
+      {{
+        "source": "eng-hiring",
+        "target": "rd_spend",
+        "effect": "amplifies",
+        "magnitude": 0.30,
+        "delay_months": 0,
+        "reasoning": "5 engineers at $15K/mo fully loaded = $75K/mo, ~30% increase in R&D"
+      }},
+      {{
+        "source": "eng-hiring",
+        "target": "enterprise-pipeline",
+        "effect": "triggers",
+        "magnitude": null,
         "delay_months": 2,
-        "reasoning": "Why this causal connection exists"
+        "reasoning": "Engineering capacity enables enterprise features needed to close deals"
+      }},
+      {{
+        "source": "market-saturation",
+        "target": "revenue",
+        "effect": "sets_ceiling",
+        "magnitude": 500000,
+        "delay_months": 0,
+        "reasoning": "SMB TAM caps monthly revenue around $500K without enterprise expansion"
       }}
     ],
-    "param_origins": {{"metric.param": ["event-id", ...]}},
-    "summary": "..."
+    "param_origins": {{}},
+    "summary": "Enterprise expansion driven by hiring → pipeline closure, with SMB ceiling as backstop"
   }},
   "specs": [
     {{
-      "model_id": "short-slug",
-      "narrative": "...",
-      "curves": {{"revenue": ..., "cogs": ...}},
-      "macro_shocks": [...],
-      "funding_events": [...],
-      "milestones": [...],
+      "model_id": "enterprise-expansion",
+      "narrative": "Enterprise pivot model: hire engineers (month 2), close pipeline (month 4), hit SMB ceiling by Q1 2027. Revenue growth comes from enterprise deals, not SMB.",
+      "curves": {{}},
+      "macro_shocks": [],
+      "funding_events": [],
+      "milestones": [
+        {{"period": "2026-09", "metric": "revenue", "target": 300000, "label": "Enterprise revenue target"}}
+      ],
       "driver_overrides": {{}},
       "priors": {{}}
     }}

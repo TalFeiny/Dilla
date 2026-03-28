@@ -56,8 +56,24 @@ BRANCH_COLORS = [
 class ScenarioBranchService:
 
     def __init__(self):
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
-        self._cfp = CashFlowPlanningService()
+        from app.services.liquidity_management_service import LiquidityManagementService
+        self._lms = LiquidityManagementService()
+
+    def _build_forecast(
+        self,
+        company_id: str,
+        months: int,
+        start_period: str = None,
+        scenario_overrides: Dict[str, Any] = None,
+    ) -> List[Dict[str, Any]]:
+        """Build forecast via LiquidityManagementService."""
+        result = self._lms.build_liquidity_model(
+            company_id=company_id,
+            months=months,
+            start_period=start_period,
+            scenario_overrides=scenario_overrides,
+        )
+        return result.get("monthly", [])
 
     # ------------------------------------------------------------------
     # Active forecast loading
@@ -68,7 +84,7 @@ class ScenarioBranchService:
     ) -> Optional[List[Dict[str, Any]]]:
         """Try to load the active persisted forecast as a monthly dict list.
 
-        Returns the same shape as CashFlowPlanningService output so it can
+        Returns the same shape as LiquidityManagementService output so it can
         be used as a drop-in replacement for base_forecast.
         """
         try:
@@ -268,13 +284,13 @@ class ScenarioBranchService:
         fork_idx = self._period_to_index(fork_period, start_period) if fork_period else 0
         fork_idx = max(0, min(fork_idx, forecast_months - 1))
 
-        # Full base projection — prefer active persisted forecast, fall back to computing
+        # Full base projection — prefer active persisted forecast, fall back to liquidity model
         base_forecast = self._load_active_forecast_data(company_id)
         if base_forecast and len(base_forecast) >= forecast_months:
             base_forecast = base_forecast[:forecast_months]
         else:
-            base_forecast = self._cfp.build_monthly_cash_flow_model(
-                base_data, months=forecast_months, start_period=start_period,
+            base_forecast = self._build_forecast(
+                company_id, months=forecast_months, start_period=start_period,
             )
 
         # Pre-compute contract change params for P&L builder if applicable
@@ -283,18 +299,17 @@ class ScenarioBranchService:
             contract_changes, company_id
         ) if contract_changes else {}
 
+        # Build scenario overrides from merged assumptions
+        branch_overrides = dict(merged)
+        if contract_pnl_params:
+            branch_overrides.update(contract_pnl_params)
+
         if fork_idx == 0:
-            branch_data = self._apply_overrides(base_data, merged)
-            # If contract changes exist, re-seed from modified actuals
-            if contract_pnl_params:
-                branch_data = self._reseed_with_contract_changes(
-                    branch_data, company_id, contract_pnl_params
-                )
-            branch_forecast = self._cfp.build_monthly_cash_flow_model(
-                branch_data,
+            branch_forecast = self._build_forecast(
+                company_id,
                 months=forecast_months,
-                monthly_overrides=merged.get("growth_overrides_by_month"),
                 start_period=start_period,
+                scenario_overrides=branch_overrides,
             )
             branch_forecast = self._apply_opex_adjustments(
                 branch_forecast, merged.get("opex_adjustments")
@@ -306,20 +321,12 @@ class ScenarioBranchService:
         else:
             parent_segment = base_forecast[:fork_idx]
 
-            fork_state = base_forecast[fork_idx - 1]
-            branched_data = self._snapshot_to_data(fork_state, base_data)
-            branched_data = self._apply_overrides(branched_data, merged)
-            if contract_pnl_params:
-                branched_data = self._reseed_with_contract_changes(
-                    branched_data, company_id, contract_pnl_params
-                )
-
             branch_start = self._offset_period(start_period, fork_idx)
-            branch_segment = self._cfp.build_monthly_cash_flow_model(
-                branched_data,
+            branch_segment = self._build_forecast(
+                company_id,
                 months=forecast_months - fork_idx,
-                monthly_overrides=merged.get("growth_overrides_by_month"),
                 start_period=branch_start,
+                scenario_overrides=branch_overrides,
             )
             branch_segment = self._apply_opex_adjustments(
                 branch_segment, merged.get("opex_adjustments")
@@ -383,7 +390,12 @@ class ScenarioBranchService:
         from app.services.model_spec_schema import ModelSpec
         from app.services.model_spec_executor import ModelSpecExecutor
 
-        spec = ModelSpec(**model_spec_data)
+        try:
+            spec = ModelSpec(**model_spec_data)
+        except Exception as e:
+            logger.error("ModelSpec validation failed: %s", e)
+            return {"error": f"Invalid model spec: {e}"}
+
         executor = ModelSpecExecutor()
 
         # Resolve parent model if spec inherits from another branch's spec
@@ -392,28 +404,36 @@ class ScenarioBranchService:
             for ancestor in chain[:-1]:
                 ancestor_spec = (ancestor.get("assumptions") or {}).get("model_spec")
                 if ancestor_spec and ancestor_spec.get("model_id") == spec.parent_model:
-                    parent_spec = ModelSpec(**ancestor_spec)
-                    parent_result = executor.execute(
-                        parent_spec, base_data,
-                        months=forecast_months, start_period=start_period,
-                    )
+                    try:
+                        parent_spec = ModelSpec(**ancestor_spec)
+                        parent_result = executor.execute(
+                            parent_spec, base_data,
+                            months=forecast_months, start_period=start_period,
+                            company_id=company_id,
+                        )
+                    except Exception as e:
+                        logger.warning("Parent model execution failed: %s", e)
                     break
 
-        result = executor.execute(
-            spec, base_data,
-            months=forecast_months,
-            start_period=start_period,
-            parent_result=parent_result,
-            company_id=company_id,
-        )
+        try:
+            result = executor.execute(
+                spec, base_data,
+                months=forecast_months,
+                start_period=start_period,
+                parent_result=parent_result,
+                company_id=company_id,
+            )
+        except Exception as e:
+            logger.error("ModelSpec execution failed: %s", e)
+            return {"error": f"Model execution failed: {e}"}
 
         # Build base forecast for comparison (same as default path)
         base_forecast = self._load_active_forecast_data(company_id)
         if base_forecast and len(base_forecast) >= forecast_months:
             base_forecast = base_forecast[:forecast_months]
         else:
-            base_forecast = self._cfp.build_monthly_cash_flow_model(
-                base_data, months=forecast_months, start_period=start_period,
+            base_forecast = self._build_forecast(
+                company_id, months=forecast_months, start_period=start_period,
             )
 
         return {
@@ -465,8 +485,8 @@ class ScenarioBranchService:
         if base_forecast and len(base_forecast) >= forecast_months:
             base_forecast = base_forecast[:forecast_months]
         else:
-            base_forecast = self._cfp.build_monthly_cash_flow_model(
-                base_data, months=forecast_months, start_period=start_period,
+            base_forecast = self._build_forecast(
+                company_id, months=forecast_months, start_period=start_period,
             )
 
         comparisons: List[Dict[str, Any]] = [{

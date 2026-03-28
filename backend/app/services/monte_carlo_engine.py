@@ -114,10 +114,10 @@ class MonteCarloEngine:
         Returns percentile bands, VaR, runway distribution, driver sensitivity.
         """
         from app.services.company_data_pull import pull_company_data
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
+        from app.services.liquidity_management_service import LiquidityManagementService
         from app.services.scenario_branch_service import ScenarioBranchService
 
-        cfp = CashFlowPlanningService()
+        lms = LiquidityManagementService()
 
         # Get base company data from actuals (full time series)
         cd = pull_company_data(company_id)
@@ -174,9 +174,12 @@ class MonteCarloEngine:
 
             # Run forecast
             try:
-                forecast = cfp.build_monthly_cash_flow_model(
-                    sampled_data, months=months,
+                lms_result = lms.build_liquidity_model(
+                    company_id=company_id,
+                    months=months,
+                    scenario_overrides=sampled_data,
                 )
+                forecast = lms_result.get("monthly", [])
             except Exception:
                 continue
 

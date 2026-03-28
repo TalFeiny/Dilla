@@ -100,7 +100,7 @@ Fetch → Analyze → Write to memo. Chat is ONLY a 1-2 sentence pointer. NEVER 
 - \`fpa-scenario-delete\` — Cascade delete a branch and children. \`DELETE /fpa/scenarios/{id}\`
 
 **Cash Flow & Runway**
-- \`fpa-cash-flow\` — Build monthly/quarterly/annual cash flow model. Uses CashFlowPlanningService.
+- \`fpa-cash-flow\` — Build monthly/quarterly/annual cash flow model. Uses LiquidityManagementService.
   → Full P&L cascade: revenue → COGS → gross profit → OpEx (R&D, S&M, G&A) → EBITDA → FCF → cash → runway
   → Accepts monthly_overrides for per-month growth rates
 

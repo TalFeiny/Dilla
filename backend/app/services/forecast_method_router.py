@@ -6,7 +6,7 @@ and builds the projection using the appropriate engine.
 
 Methods:
   growth_rate    — Default. Extrapolates from trailing growth rate with decay.
-                   Uses CashFlowPlanningService.build_monthly_cash_flow_model().
+                   Uses LiquidityManagementService.build_liquidity_model().
                    Best when: 3+ months of revenue actuals, stable growth.
 
   regression     — Linear/exponential/time-series regression on actuals.
@@ -14,7 +14,7 @@ Methods:
                    Best when: 12+ months of actuals, clear trend, R² > 0.7.
 
   driver_based   — Customer-level model: ACV × customers × (1 - churn) × NRR.
-                   Uses CashFlowPlanningService customer model path.
+                   Uses LiquidityManagementService customer model path.
                    Best when: user provides ACV, churn, customer count.
 
   seasonal       — Growth-rate model + detected seasonal overlay.
@@ -154,6 +154,7 @@ class ForecastMethodRouter:
         provenance = {"method": method, "seed_data_keys": list(seed_data.keys())}
 
         if method == "growth_rate":
+            seed_data.setdefault("company_id", company_id)
             forecast = self._build_growth_rate(seed_data, months, assumptions)
         elif method == "advanced_regression":
             forecast = self._build_advanced_regression(
@@ -170,7 +171,7 @@ class ForecastMethodRouter:
         elif method == "budget_pct":
             forecast = self._build_budget_pct(company_id, seed_data, months, provenance, company_data)
         elif method == "manual":
-            forecast = self._build_manual(assumptions, months)
+            forecast = self._build_manual(assumptions, months, seed_data=seed_data, company_id=company_id)
         elif method == "model_construction":
             forecast = self._build_model_construction(
                 company_id, seed_data, months, start_period, provenance, company_data
@@ -204,15 +205,21 @@ class ForecastMethodRouter:
     def _build_growth_rate(
         self, seed_data: Dict, months: int, assumptions: Dict = None
     ) -> List[Dict]:
-        """Last-resort fallback only — basic growth-rate extrapolation.
-        auto_select_method() should never pick this when company_id is available;
-        it should pick 'liquidity' or better instead."""
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
+        """Fallback — uses LiquidityManagementService with growth rate overrides."""
+        from app.services.liquidity_management_service import LiquidityManagementService
 
-        svc = CashFlowPlanningService()
-        return svc.build_monthly_cash_flow_model(
-            seed_data, months=months, monthly_overrides=assumptions,
+        company_id = seed_data.get("company_id")
+        if not company_id:
+            logger.warning("[ForecastRouter] _build_growth_rate: no company_id in seed_data")
+            return []
+
+        svc = LiquidityManagementService()
+        result = svc.build_liquidity_model(
+            company_id=company_id,
+            months=months,
+            scenario_overrides=assumptions,
         )
+        return result.get("monthly", [])
 
     def _build_regression(
         self, company_id: str, seed_data: Dict, months: int,
@@ -481,13 +488,42 @@ class ForecastMethodRouter:
         forecast = lms_result.get("monthly", [])
         return forecast if forecast else self._build_growth_rate(seed_data, months)
 
-    def _build_manual(self, assumptions: Dict, months: int) -> List[Dict]:
-        """Manual forecast — just pass through whatever values were given."""
+    def _build_manual(self, assumptions: Dict, months: int, seed_data: Dict = None, company_id: str = None) -> List[Dict]:
+        """Manual/custom forecast — build from liquidity model with user overrides applied."""
         if not assumptions or not isinstance(assumptions, dict):
             return []
-        # Assumptions should contain per-period values
-        # Return them as-is in forecast format
-        return assumptions.get("forecast", [])
+
+        # If user passed pre-built forecast rows, use them directly
+        if "forecast" in assumptions and isinstance(assumptions["forecast"], list) and assumptions["forecast"]:
+            return assumptions["forecast"]
+
+        # Otherwise build a base forecast via liquidity service and apply overrides
+        if company_id:
+            from app.services.liquidity_management_service import LiquidityManagementService
+            svc = LiquidityManagementService()
+            liq_result = svc.build_liquidity_model(
+                company_id=company_id,
+                months=months,
+                scenario_overrides=assumptions,
+            )
+            forecast = liq_result.get("monthly", [])
+            if forecast:
+                return forecast
+
+        # Last resort: build from seed_data with growth_rate extrapolation
+        if seed_data:
+            from app.services.liquidity_management_service import LiquidityManagementService
+            svc = LiquidityManagementService()
+            cid = seed_data.get("company_id") or company_id
+            if cid:
+                liq_result = svc.build_liquidity_model(
+                    company_id=cid,
+                    months=months,
+                    scenario_overrides=assumptions,
+                )
+                return liq_result.get("monthly", [])
+
+        return []
 
     def _build_advanced_regression(
         self, company_id: str, seed_data: Dict, months: int,
@@ -584,7 +620,7 @@ class ForecastMethodRouter:
     ) -> List[Dict]:
         """LiquidityManagementService — granular subcategory-level cash flow
         modeling with proper growth drivers (headcount, usage, stepped, cac,
-        revenue_pct).  Replaces CashFlowPlanningService for production use."""
+        revenue_pct)."""
         from app.services.liquidity_management_service import LiquidityManagementService
 
         svc = LiquidityManagementService()

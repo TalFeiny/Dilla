@@ -533,10 +533,10 @@ RULES:
         # ── Standalone path: build new branches from actuals ───────────
         from app.services.scenario_branch_service import ScenarioBranchService
         from app.services.actuals_ingestion import seed_forecast_from_actuals
-        from app.services.cash_flow_planning_service import CashFlowPlanningService
+        from app.services.liquidity_management_service import LiquidityManagementService
 
         sbs = ScenarioBranchService()
-        cfp = CashFlowPlanningService()
+        lms = LiquidityManagementService()
 
         # Group adjustments by company
         by_company: Dict[str, List[DriverAdjustment]] = {}
@@ -604,11 +604,13 @@ RULES:
                 try:
                     # Apply overrides to base data
                     projected_data = sbs._apply_overrides({**base_data}, assumptions)
-                    forecast = cfp.build_monthly_cash_flow_model(
-                        projected_data,
+                    lms_result = lms.build_liquidity_model(
+                        company_id=company_id,
                         months=forecast_months,
                         start_period=start_period,
+                        scenario_overrides=projected_data,
                     )
+                    forecast = lms_result.get("monthly", [])
                 except Exception as e:
                     logger.warning(f"[MACRO] Projection failed for {company_name}: {e}")
                     forecast = None
