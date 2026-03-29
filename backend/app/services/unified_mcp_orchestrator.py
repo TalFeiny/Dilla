@@ -5882,7 +5882,7 @@ class UnifiedMCPOrchestrator:
 
         logger.info(
             f"[FIRST_TURN_TASK] intent={_intent} mode={_grid_mode} "
-            f"chain={_chain or 'none'}"
+            f"chain={_chain_str or 'none'}"
         )
 
         yield {

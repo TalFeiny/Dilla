@@ -413,6 +413,7 @@ export default function AgentChat({
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [suggestionsCollapsed, setSuggestionsCollapsed] = useState(false);
   const [documentViewerOpen, setDocumentViewerOpen] = useState(false);
   const [documentViewerMessage, setDocumentViewerMessage] = useState<Message | null>(null);
@@ -590,7 +591,8 @@ export default function AgentChat({
     const hasChipContent = chipInputRef.current?.hasContent() ?? false;
     const hasPlainContent = input.trim().length > 0;
 
-    if (!(hasChipContent || hasPlainContent) || isLoading) return;
+    const hasPendingFiles = pendingFiles.length > 0;
+    if (!(hasChipContent || hasPlainContent || hasPendingFiles) || isLoading) return;
 
     // Build the prompt: if chips are present, compose a workflow prompt
     let fullContent: string;
@@ -604,10 +606,24 @@ export default function AgentChat({
       fullContent = input;
     }
 
+    // Capture staged files and clear them from state
+    const filesToUpload = [...pendingFiles];
+    setPendingFiles([]);
+
+    // If files are attached but no text, generate a default prompt
+    if (filesToUpload.length > 0 && !fullContent.trim()) {
+      fullContent = `Analyze the uploaded file${filesToUpload.length > 1 ? 's' : ''}: ${filesToUpload.map(f => f.name).join(', ')}`;
+    }
+
+    // Show file names in the user message
+    const fileLabel = filesToUpload.length > 0
+      ? `[${filesToUpload.map(f => f.name).join(', ')}]\n`
+      : '';
+
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: fullContent,
+      content: fileLabel + fullContent,
       timestamp: new Date(),
     };
 
@@ -633,6 +649,38 @@ export default function AgentChat({
 
     try {
       let data: any;
+
+      // --- Upload staged files first (if any) ---
+      let uploadedDocIds: string[] = [];
+      let uploadedFileNames: string[] = [];
+      if (filesToUpload.length > 0 && onUploadDocument) {
+        setUploading(true);
+        try {
+          let companyId: string | undefined;
+          const rowsWithCompany = matrixData?.rows.filter((r) => r.companyId) ?? [];
+          if (rowsWithCompany.length >= 1) companyId = rowsWithCompany[0].companyId;
+
+          // Upload via the same batch endpoint
+          const formData = new FormData();
+          for (const file of filesToUpload) {
+            formData.append('file', file);
+            uploadedFileNames.push(file.name);
+          }
+          if (companyId) formData.append('company_id', companyId);
+          if (fundId) formData.append('fund_id', fundId);
+          formData.append('mode', mode);
+
+          const uploadRes = await fetch('/api/documents/batch', { method: 'POST', body: formData });
+          if (uploadRes.ok) {
+            const uploadData = await uploadRes.json();
+            uploadedDocIds = uploadData.documentIds || [];
+          }
+        } catch (uploadErr) {
+          console.error('File upload failed:', uploadErr);
+        } finally {
+          setUploading(false);
+        }
+      }
 
       // --- Context Management: prevent context rot ---
       const currentSessionId = activeTab?.sessionId || sessionId;
@@ -693,7 +741,7 @@ export default function AgentChat({
 
       const now = new Date();
       const requestBody = {
-        prompt: input,
+        prompt: fullContent,
         // Send as hint — backend determines final format from prompt + tool results
         output_format: outputFormat,
         output_format_hint: outputFormat,
@@ -723,6 +771,11 @@ export default function AgentChat({
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             quarter: `Q${Math.ceil((now.getMonth() + 1) / 3)} ${now.getFullYear()}`,
           },
+          // Uploaded documents attached with this message
+          ...(uploadedDocIds.length > 0 ? {
+            uploaded_document_ids: uploadedDocIds,
+            uploaded_file_names: uploadedFileNames,
+          } : {}),
         },
         agent_context: {
           recent_analyses: recentAssistantMessages,
@@ -1427,25 +1480,12 @@ export default function AgentChat({
     }
   };
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = '';
-    if (!files.length || !onUploadDocument) return;
-    setUploading(true);
-    try {
-      let companyId: string | undefined;
-      const rowsWithCompany = matrixData?.rows.filter((r) => r.companyId) ?? [];
-      if (rowsWithCompany.length === 1) {
-        companyId = rowsWithCompany[0].companyId;
-      } else if (rowsWithCompany.length > 1) {
-        companyId = rowsWithCompany[0].companyId;
-      }
-      await onUploadDocument(files, { companyId, fundId });
-    } catch (err) {
-      console.error('Upload failed:', err);
-    } finally {
-      setUploading(false);
-    }
+    if (!files.length) return;
+    // Stage files — they'll be uploaded when the user hits Send
+    setPendingFiles(prev => [...prev, ...files]);
   };
 
   const copyToClipboard = (text: string) => {
@@ -2422,6 +2462,31 @@ export default function AgentChat({
               <span className="text-[9px] text-indigo-500 dark:text-indigo-400">{memoArtifacts.length} context item{memoArtifacts.length !== 1 ? 's' : ''}</span>
             )}
           </div>
+          {/* Staged file attachments — shown as removable chips */}
+          {pendingFiles.length > 0 && (
+            <div className="flex flex-wrap gap-1 mb-1 mx-0.5">
+              {pendingFiles.map((file, i) => {
+                const isSpreadsheet = /\.(xlsx?|csv)$/i.test(file.name);
+                const Icon = isSpreadsheet ? FileSpreadsheet : FileTextIcon;
+                return (
+                  <span
+                    key={`${file.name}-${i}`}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-700 dark:text-emerald-300 max-w-[200px] group"
+                    title={file.name}
+                  >
+                    <Icon className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{file.name}</span>
+                    <button
+                      onClick={() => setPendingFiles(prev => prev.filter((_, j) => j !== i))}
+                      className="shrink-0 h-3 w-3 opacity-60 hover:opacity-100 hover:text-destructive transition-opacity"
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          )}
           {/* Input box — clean, full width. Supports inline chips + NL text. */}
           <div className="flex items-end gap-1.5 rounded-xl border border-input bg-muted/30 dark:bg-muted/20 px-2 py-1.5 focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background">
             <ChipInput
@@ -2445,7 +2510,7 @@ export default function AgentChat({
                 className="h-8 w-8 shrink-0 rounded-lg"
                 disabled={uploading || isLoading}
                 onClick={() => uploadFileInputRef.current?.click()}
-                title="Upload documents"
+                title="Attach files"
               >
                 {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               </Button>
@@ -2455,7 +2520,7 @@ export default function AgentChat({
               size="icon"
               className="h-8 w-8 shrink-0 rounded-lg"
               onClick={handleSend}
-              disabled={(!input.trim() && !chipInputRef.current?.hasContent()) || isLoading}
+              disabled={(!input.trim() && !chipInputRef.current?.hasContent() && pendingFiles.length === 0) || isLoading}
               title="Send (Enter)"
             >
               {isLoading ? (
