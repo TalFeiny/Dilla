@@ -13,7 +13,7 @@ const safeStr = (v: unknown): string => {
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   if (typeof v === 'object') {
     const obj = v as Record<string, unknown>;
-    return obj.description ?? obj.name ?? obj.label ?? obj.text ?? obj.value ?? JSON.stringify(v);
+    return String(obj.description ?? obj.name ?? obj.label ?? obj.text ?? obj.value ?? JSON.stringify(v));
   }
   return String(v);
 };
