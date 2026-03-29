@@ -373,6 +373,49 @@ DEFAULT_FUND_SIZE = 260_000_000  # $260M Series A-C fund
 DEFAULT_FUND_STRATEGY = "Series A-C"
 DEFAULT_FUND_YEAR = 4
 
+# Single source of truth — referenced by all prompt builders
+_DATA_ACCURACY_RULES = (
+    "## DATA ACCURACY\n"
+    "1. COUNT before you claim. Get exact numbers right.\n"
+    "2. NEVER dismiss available data. Work with what you have.\n"
+    "3. When data is missing, infer with benchmarks and state confidence.\n"
+    "4. Every quantitative claim must be traceable.\n"
+)
+
+# Mode-specific behavioral rules — used by agent loop route prompts
+_MODE_RULES = {
+    "pnl": (
+        "- READ the grid first (fpa_pnl or fpa_actuals) before acting.\n"
+        "- WRITE to grid, not to memo. The grid IS your workspace.\n"
+        "- Chat: key number + what it means. 1-3 sentences. Memo only if asked.\n"
+        "- ALWAYS chart trends, forecasts, comparisons.\n"
+        "- For scenarios: inspect_drivers → adjust_driver. User controls the levers, you show impact."
+    ),
+    "portfolio": (
+        "- READ the grid (query_portfolio) before enriching or analyzing.\n"
+        "- WRITE suggestions to grid (suggest_grid_edit / bulk_write_grid).\n"
+        "- Generate memo for deep analysis. Chat for quick answers.\n"
+        "- After sourcing/research, push results to the grid — don't just describe them."
+    ),
+    "lp": (
+        "- LP view is READ-ONLY. Read via query_portfolio + calculate_fund_metrics.\n"
+        "- To change LP metrics, update underlying company/fund data.\n"
+        "- Chat: answer with the metric. Memo for LP reports."
+    ),
+    "balance_sheet": (
+        "- READ balance sheet first (build_balance_sheet) before analyzing.\n"
+        "- Compare assets vs liabilities, check balance.\n"
+        "- Cross-reference with P&L (switch to pnl) for income linkage.\n"
+        "- ALWAYS check balance_check row — non-zero means error."
+    ),
+    "legal": (
+        "- Extract and analyze clauses, obligations, risks from uploaded documents.\n"
+        "- WRITE suggestions to grid (suggest_grid_edit / bulk_write_grid).\n"
+        "- Chat: summarize key terms, flag risks, answer questions. 1-3 sentences.\n"
+        "- Do NOT generate memos unless the user explicitly asks for one."
+    ),
+}
+
 ORCHESTRATOR_READINESS_STATE: Dict[str, Any] = {
     "ready": False,
     "error": "UnifiedMCPOrchestrator not initialized"
@@ -406,6 +449,34 @@ def _num(val: Any) -> float:
         return float(val)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _coerce_amount(value: Any, default: Optional[float] = None) -> Optional[float]:
+    """Coerce a string/numeric amount to float, handling $, commas, and M/MM/B suffixes."""
+    if value in (None, ""):
+        return default
+    try:
+        if isinstance(value, (int, float, Decimal)):
+            return float(value)
+        if isinstance(value, str):
+            cleaned = value.replace(",", "").replace("$", "").strip().lower()
+            multiplier = 1.0
+            if cleaned.endswith("mm"):
+                cleaned = cleaned[:-2]
+                multiplier = 1_000_000
+            elif cleaned.endswith("m"):
+                cleaned = cleaned[:-1]
+                multiplier = 1_000_000
+            elif cleaned.endswith("b"):
+                cleaned = cleaned[:-1]
+                multiplier = 1_000_000_000
+            cleaned = cleaned.strip()
+            if not cleaned:
+                return default
+            return float(cleaned) * multiplier
+    except (ValueError, TypeError):
+        return default
+    return default
 
 
 _STAGE_GROWTH: Dict[str, float] = {
@@ -3005,6 +3076,7 @@ INTENT_TOOLS: dict[str, list[str]] = {
     # --- Generation ---
     "memo": [
         "generate_memo",            # primary action (auto-resolves prereqs)
+        "ingest_pe_model",          # PE/LBO Excel → structured deal data (must run before generate_memo for PE uploads)
         "generate_chart",           # embed charts
         "write_to_memo",            # append to existing memo
         "query_portfolio",          # read company data
@@ -3345,6 +3417,22 @@ def get_tools_for_intent(intent: str) -> list[AgentTool]:
 
 # Tools always available regardless of response_mode (metatools)
 _ALWAYS_LOADED_TOOLS = {"find_tools"}
+
+# Tier 1: Core tools always shown with full schema in iteration 0.
+# These are the cross-domain "thinking" tools the agent needs regardless of intent.
+_CORE_TOOLS = {
+    "find_tools",           # discovers everything else
+    "strategic_analysis",   # cross-domain reasoning
+    "cross_domain_analysis",
+    "analyze_financials",
+    "query_portfolio",
+    "bulk_write_grid",
+    "suggest_action",
+    "emit_todo",
+}
+
+# Max intent-specific tools shown with full schema (beyond core)
+_MAX_INTENT_TOOLS_SHOWN = 6
 
 
 def filter_tools_by_response_mode(tools: list[AgentTool], response_mode: str) -> list[AgentTool]:
@@ -4259,12 +4347,8 @@ class UnifiedMCPOrchestrator:
             )
             return cls._ve_cached_module.ValuationEngineService()
 
-    def _build_system_prompt(self, task_instruction: str) -> str:
-        """Build a system prompt with dynamic fund context instead of hardcoded values.
-        If shared_data contains 'system_prompt_override', use that instead (CFO agent mode)."""
-        override = self.shared_data.get("system_prompt_override")
-        if override:
-            return f"{override}\n\nTask: {task_instruction}"
+    def _extract_fund_context(self) -> dict:
+        """Extract fund context once, reuse everywhere."""
         fund_ctx = self.shared_data.get("fund_context", {})
         fund_size = fund_ctx.get("fund_size", fund_ctx.get("fundSize", DEFAULT_FUND_SIZE))
         strategy = fund_ctx.get("strategy", DEFAULT_FUND_STRATEGY)
@@ -4277,9 +4361,32 @@ class UnifiedMCPOrchestrator:
         size_str = f"${fund_size / 1e6:.0f}M" if fund_size else f"${DEFAULT_FUND_SIZE / 1e6:.0f}M"
         fund_line = f"{size_str} {strategy} fund"
         if remaining:
-            fund_line += f", ${remaining / 1e6:.0f}M remaining to deploy"
+            fund_line += f", ${remaining / 1e6:.0f}M remaining"
         if fund_year:
             fund_line += f", Year {fund_year}"
+
+        return {
+            "fund_line": fund_line,
+            "check_min": check_min,
+            "check_max": check_max,
+            "target_ownership": target_ownership,
+            "fund_size": fund_size,
+            "remaining": remaining,
+            "strategy": strategy,
+            "fund_year": fund_year,
+        }
+
+    def _build_system_prompt(self, task_instruction: str) -> str:
+        """Build a system prompt with dynamic fund context instead of hardcoded values.
+        If shared_data contains 'system_prompt_override', use that instead (CFO agent mode)."""
+        override = self.shared_data.get("system_prompt_override")
+        if override:
+            return f"{override}\n\nTask: {task_instruction}"
+        fc = self._extract_fund_context()
+        fund_line = fc["fund_line"]
+        check_min = fc["check_min"]
+        check_max = fc["check_max"]
+        target_ownership = fc["target_ownership"]
 
         return (
             f"You are a senior investment analyst for a {fund_line} "
@@ -4310,17 +4417,7 @@ class UnifiedMCPOrchestrator:
 
             "## TOOLS\n"
             "MAX 3 tool calls per turn. Sequence, don't shotgun: fetch data → analyze → present. Share results between turns.\n"
-            "- Data: company-data-fetcher, market-sourcer, competitive-intelligence, search-extract-combo, sparse-grid-enricher\n"
-            "- Valuation: valuation-engine (DCF/comps/cost/milestone), pwerm-calculator, waterfall-calculator, cap-table-generator, exit-modeler, round-modeler, followon-strategy, debt-converter\n"
-            "- Analysis: scenario-generator, financial-analyzer, deal-comparer, team-comparison, monte-carlo-simulator, sensitivity-analyzer, time-series-forecaster, revenue-projector\n"
-            "- Portfolio: portfolio-analyzer, fund-metrics-calculator, bulk-valuation, fund-analyzer, followon-deep-dive\n"
-            "- Grid: bulk_write_grid (batch write cells), nl-matrix-controller (show/hide columns, filter, sort)\n"
-            "- Memos (memo-writer, memo_type=...): ic_memo, followon, followon_deep_dive, lp_report, lp_quarterly_enhanced, gp_strategy, "
-            "comparison, competitive_landscape, diligence_memo, market_dynamics, team_comparison, ownership_analysis, "
-            "portfolio_construction, pipeline_review, fund_analysis, bespoke_lp, comparable_analysis, company_list, citation_report\n"
-            "- Charts (chart-generator): probability_cloud, waterfall, bar_comparison, scatter_multiples, cap_table_sankey, revenue_forecast, "
-            "dpi_sankey, bull_bear_base, radar_comparison\n"
-            "- Deck: deck-storytelling (16–18 slide investment presentation)\n\n"
+            "Tools are provided per-turn via the tool definitions. Use find_tools() to discover available tools and their parameters.\n\n"
 
             "## OUTPUT SURFACES\n"
             "- **Chat**: conversation, query results, narration. Transient.\n"
@@ -4336,15 +4433,7 @@ class UnifiedMCPOrchestrator:
             "- Charts are analytical tools. State what the chart reveals before rendering it.\n"
             "- For sourcing: call generate_rubric first, then source_companies with discover_web=true.\n\n"
 
-            "## DATA ACCURACY — non-negotiable\n"
-            "1. COUNT before you claim. Get exact numbers right.\n"
-            "2. NEVER dismiss available data. 7 of 32 companies have sector data? Analyze those 7.\n"
-            "3. Work with what you have. Sparse data = analyze HARDER, not less.\n"
-            "4. No blanket disclaimers. Never write 'insufficient data' when data exists.\n"
-            "5. When data is missing, INFER AND EXPLAIN with stage benchmarks, comps, and confidence levels.\n"
-            "6. Mark inferred data: 'ARR ~$8M (inferred from headcount + stage, 70% confidence)'.\n"
-            "7. Every quantitative claim must be traceable. Verify before stating.\n"
-            "8. Maximize insight from every scrap of data.\n\n"
+            f"{_DATA_ACCURACY_RULES}\n"
             f"{task_instruction}"
         )
 
@@ -4613,11 +4702,9 @@ class UnifiedMCPOrchestrator:
         normal conversational path).
         """
         # Build the conversation transcript for the crystallizer
+        # (history summary is already injected into the LLM system prompt;
+        #  the crystallizer only needs the recent hot window)
         transcript_parts = []
-
-        # Include summary of older context if available
-        if self._history_summary:
-            transcript_parts.append(f"[Earlier context summary]\n{self._history_summary}")
 
         # Include hot window — the recent turns that have the actual decisions
         for msg in self._conversation_history[-_HISTORY_HOT_WINDOW:]:
@@ -4751,30 +4838,11 @@ class UnifiedMCPOrchestrator:
         - ITERATION → reuse context, vary the parameter
         - ANALYSIS/RETRIEVAL/SYNTHESIS → full prompt
         """
-        fund_ctx = self.shared_data.get("fund_context", {})
-        fund_size = fund_ctx.get("fund_size", fund_ctx.get("fundSize", DEFAULT_FUND_SIZE))
-        strategy = fund_ctx.get("strategy", DEFAULT_FUND_STRATEGY)
-        remaining = fund_ctx.get("remaining_capital", fund_ctx.get("remainingCapital"))
-        fund_year = fund_ctx.get("fund_year", fund_ctx.get("fundYear", DEFAULT_FUND_YEAR))
-        check_min = fund_ctx.get("check_size_min", 5_000_000)
-        check_max = fund_ctx.get("check_size_max", 20_000_000)
-        target_ownership = fund_ctx.get("target_ownership_pct", 10)
-
-        size_str = f"${fund_size / 1e6:.0f}M" if fund_size else f"${DEFAULT_FUND_SIZE / 1e6:.0f}M"
-        fund_line = f"{size_str} {strategy} fund"
-        if remaining:
-            fund_line += f", ${remaining / 1e6:.0f}M remaining"
-        if fund_year:
-            fund_line += f", Year {fund_year}"
-
-        # ── Helper: session fingerprint for lightweight prompts ──
-        def _fingerprint_block(header: str = "CURRENT DATA") -> str:
-            _ss = SessionState(self.shared_data) if SessionState else None
-            if _ss:
-                fp = _ss.fingerprint()
-                if fp:
-                    return f"\n\n## {header}\n{fp}"
-            return ""
+        fc = self._extract_fund_context()
+        fund_line = fc["fund_line"]
+        check_min = fc["check_min"]
+        check_max = fc["check_max"]
+        target_ownership = fc["target_ownership"]
 
         # ── PHATIC: minimal prompt, just be human ──
         if turn_type == TurnType.PHATIC:
@@ -4792,7 +4860,6 @@ class UnifiedMCPOrchestrator:
                 "Summarize what's been done, what's pending, and any blockers. "
                 "If they're asking about data, use tools to fetch from the database. "
                 "Keep it concise."
-                f"{_fingerprint_block('SESSION STATE')}"
             )
 
         # ── STEERING: adjust, don't restart ──
@@ -4804,7 +4871,6 @@ class UnifiedMCPOrchestrator:
                 "Don't restart from scratch — modify what exists. "
                 "If they want less detail, cut. If more, expand. "
                 "If redirecting, pivot without re-explaining."
-                f"{_fingerprint_block('CURRENT STATE')}"
             )
 
         # ── ITERATION: reuse context, vary the parameter ──
@@ -4815,10 +4881,7 @@ class UnifiedMCPOrchestrator:
                 "Reuse ALL existing context — don't re-fetch or restart. "
                 "Only vary the requested parameter. Show the delta: "
                 "what changed and why it matters.\n\n"
-                "## DATA ACCURACY\n"
-                "1. COUNT before you claim. Get exact numbers right.\n"
-                "2. Every quantitative claim must be traceable.\n"
-                f"{_fingerprint_block('CURRENT STATE')}"
+                f"{_DATA_ACCURACY_RULES}"
             )
 
         # ── FULL PATH: ANALYSIS, RETRIEVAL, SYNTHESIS ──
@@ -4855,11 +4918,7 @@ class UnifiedMCPOrchestrator:
             "- After tools complete, summarize findings in chat text: key numbers, what they mean, and what to do next.\n"
             "- Never finish a tool-use sequence silently. The user must always get a text response.\n\n"
 
-            "## DATA ACCURACY\n"
-            "1. COUNT before you claim. Get exact numbers right.\n"
-            "2. NEVER dismiss available data. Work with what you have.\n"
-            "3. When data is missing, infer with benchmarks and state confidence.\n"
-            "4. Every quantitative claim must be traceable.\n\n"
+            f"{_DATA_ACCURACY_RULES}\n"
         )
 
         # ── Domain module (based on grid mode) ──
@@ -4921,19 +4980,22 @@ class UnifiedMCPOrchestrator:
                 "and investment decision-making. Use pull_company_data for actuals — not grid snapshots.\n\n"
             )
 
-        # ── Dynamic context: SessionState fingerprint ──
-        _session_state = SessionState(self.shared_data) if SessionState else None
-        if _session_state:
-            fingerprint = _session_state.fingerprint()
-            if fingerprint:
-                prompt += f"## CURRENT SESSION STATE\n{fingerprint}\n\n"
-                logger.info(f"[FINGERPRINT] Injected {len(fingerprint)} chars into system prompt")
-            else:
-                logger.warning(f"[FINGERPRINT] Empty — shared_data keys: {list(self.shared_data.keys())}, "
-                             f"matrix_context={'present' if self.shared_data.get('matrix_context') else 'MISSING'}, "
-                             f"grid_mode={self.shared_data.get('grid_mode', 'unknown')}")
-        else:
-            logger.error(f"[FINGERPRINT] SessionState is None — import failed: {NON_CRITICAL_IMPORT_ERRORS.get('SessionState', 'no error')}")
+        # ── Uploaded file context — tell the agent what files are available ──
+        _uploaded_files = self.shared_data.get("uploaded_files", [])
+        if _uploaded_files:
+            _file_lines = []
+            for _uf in _uploaded_files:
+                _file_lines.append(f"- **{_uf['file_name']}** → `{_uf['file_path']}`")
+            prompt += (
+                "## UPLOADED FILES\n"
+                "The user uploaded the following file(s) with this request:\n"
+                + "\n".join(_file_lines) + "\n\n"
+                "For Excel/spreadsheet files (.xlsx, .xls, .csv):\n"
+                "- If this is a PE/LBO model, call `ingest_pe_model` with the file_path to extract deal data, "
+                "then `generate_memo` for the PE IC memo.\n"
+                "- Use the file_path values above when calling tools.\n"
+                "- Do NOT call query_portfolio, web_search, or run_valuation — use the uploaded data.\n\n"
+            )
 
         # ── Session corrections (user feedback) ──
         corrections = self.shared_data.get("session_corrections", [])
@@ -5514,6 +5576,22 @@ class UnifiedMCPOrchestrator:
         )
         tools = self._build_tool_definitions(intent=_intent, response_mode=_resp_mode)
 
+        # When files are uploaded, inject file-processing tools into the
+        # tool list so the agent can process them regardless of intent.
+        if self.shared_data.get("uploaded_files"):
+            _tool_names_in_list = {t["name"] for t in tools}
+            _upload_tool_names = ["ingest_pe_model", "generate_memo", "generate_chart"]
+            for _ut_name in _upload_tool_names:
+                if _ut_name not in _tool_names_in_list:
+                    _ut = AGENT_VISIBLE_TOOL_MAP.get(_ut_name)
+                    if _ut and ToolAdapter:
+                        tools.append({
+                            "name": _ut.name,
+                            "description": _ut.description,
+                            "input_schema": ToolAdapter.informal_to_json_schema(_ut.input_schema or {}),
+                        })
+                        logger.info(f"[CONV_LOOP] Injected {_ut_name} for uploaded files")
+
         # Inject the classified chain + mode-aware guidance so the agent
         # knows the exact tool sequence to follow.
         if _classification and _classification.get("chain"):
@@ -5661,10 +5739,6 @@ class UnifiedMCPOrchestrator:
                 *[_run_tool(tc) for tc in tool_calls],
                 return_exceptions=False,
             )
-
-            if SessionState:
-                _ss = SessionState(self.shared_data)
-                _ss.mark_dirty()
 
             # Process results: build tool_result_blocks + extract structured data
             tool_result_blocks: List[Dict[str, Any]] = []
@@ -8192,6 +8266,14 @@ Answer using specific company names and numbers from the portfolio grid above.""
 
         if _resolving is None:
             _resolving = set()
+
+        # PE model data is self-contained — skip VC enrichment prereqs.
+        # The PE ingestion service already provides everything generate_memo
+        # needs via shared_data["pe_model_data"]. Running run_valuation,
+        # cap_table_evolution, run_scenario would fetch wrong company data.
+        if tool_name == "generate_memo" and self.shared_data.get("pe_model_data"):
+            logger.info("[WIRING] pe_model_data present — skipping VC prereqs for generate_memo")
+            return
 
         # If "companies" is required but empty, try populating from grid context
         requires = wiring.get("requires", [])
@@ -11839,6 +11921,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
                     "name": t.name,
                     "description": t.description,
                     "cost_tier": t.cost_tier,
+                    "input_schema": t.input_schema,
                     "score": score,
                 })
 
@@ -17972,7 +18055,7 @@ Rules:
         plan_steps: List[dict] = []
         failed_tools: set = set()
 
-        # SessionState: read-only lens on shared_data (Phase 1)
+        # SessionState: for freshness detection + portfolio size (no fingerprint injection)
         state = SessionState(self.shared_data) if SessionState else None
 
         # SessionMemo: compressed findings for context between LLM calls
@@ -18010,7 +18093,10 @@ Rules:
         # agent has DB context from the first reasoning step (not only after
         # a tool happens to populate it).  Runs only when companies are not
         # already present (e.g. from an @-mention or a previous turn).
-        if not self.shared_data.get("companies"):
+        # Skip when files are uploaded — the request is about those files,
+        # not existing portfolio companies.  Prefetching would inject wrong data.
+        _has_uploads = bool(self.shared_data.get("uploaded_files"))
+        if not self.shared_data.get("companies") and not _has_uploads:
             try:
                 from app.services.sourcing_service import query_companies
                 _fund_id = (self.shared_data.get("fund_context") or {}).get("fundId") or getattr(self, "fund_id", None)
@@ -18022,6 +18108,8 @@ Rules:
                     logger.info(f"[AGENT_LOOP] Pre-fetched {len(_prefetch_companies)} companies into shared_data for context")
             except Exception as _pf_err:
                 logger.warning(f"[AGENT_LOOP] Sourcing pre-fetch failed (non-fatal): {_pf_err}")
+        elif _has_uploads:
+            logger.info("[AGENT_LOOP] Skipping company pre-fetch — uploaded files present")
 
         # Build intent-scoped tool catalog — only relevant categories
         _intent = classification.intent if classification else "general"
@@ -18029,6 +18117,17 @@ Rules:
         _scoped_tools = filter_tools_by_response_mode(
             get_tools_for_intent(_intent), _resp_mode
         )
+        # When files are uploaded, ensure file-processing tools are visible
+        # regardless of intent classification.
+        if self.shared_data.get("uploaded_files"):
+            _scoped_names = {t.name for t in _scoped_tools}
+            _upload_tools = ["ingest_pe_model", "generate_memo", "generate_chart"]
+            for _ut_name in _upload_tools:
+                if _ut_name not in _scoped_names:
+                    _ut = AGENT_VISIBLE_TOOL_MAP.get(_ut_name)
+                    if _ut:
+                        _scoped_tools.append(_ut)
+                        logger.info(f"[AGENT_LOOP] Injected {_ut_name} for uploaded files")
         logger.info(f"[AGENT_LOOP] Tool gating: intent={_intent}, response_mode={_resp_mode}, tools={len(_scoped_tools)}")
 
         # Tiered catalog by cost_tier: free+cheap get full description + params (primary),
@@ -18047,12 +18146,16 @@ Rules:
             desc = t.description.split(".")[0] if t.description else ""
             return f"  {t.name}: {desc}"
 
-        # Split by cost_tier: free+cheap = primary (full format), expensive = secondary (compact)
-        _primary = [t for t in _scoped_tools if t.cost_tier in ("free", "cheap") or t.name in _ALWAYS_LOADED_TOOLS]
-        _secondary = [t for t in _scoped_tools if t.cost_tier == "expensive" and t.name not in _ALWAYS_LOADED_TOOLS]
-        tool_catalog_full = "\n".join(_format_tool_full(t) for t in _primary)
-        if _secondary:
-            tool_catalog_full += "\nAlso available (callable by name):\n" + "\n".join(_format_tool_compact(t) for t in _secondary)
+        # Tiered tool display: core tools (always full schema) + top intent tools (full schema)
+        # + remaining tools as just a count with find_tools hint.
+        _core = [t for t in _scoped_tools if t.name in _CORE_TOOLS]
+        _intent_specific = [t for t in _scoped_tools if t.name not in _CORE_TOOLS]
+        _shown_intent = _intent_specific[:_MAX_INTENT_TOOLS_SHOWN]
+        _hidden_count = len(_intent_specific) - len(_shown_intent)
+
+        tool_catalog_full = "\n".join(_format_tool_full(t) for t in _core + _shown_intent)
+        if _hidden_count > 0:
+            tool_catalog_full += f"\n+{_hidden_count} more tools available via find_tools(query='...')"
         # Iteration 1+: just names — agent already knows what they do
         tool_catalog_names = "Tools: " + ", ".join(t.name for t in _scoped_tools)
 
@@ -18136,27 +18239,24 @@ Rules:
             # Exclude tools that previously failed in this loop
             if failed_tools:
                 _live_tools = [t for t in _scoped_tools if t.name not in failed_tools]
-                active_catalog_full = "\n".join(_format_tool_full(t) for t in _live_tools[:_PRIMARY_COUNT])
-                if len(_live_tools) > _PRIMARY_COUNT:
-                    active_catalog_full += "\nAlso available:\n" + "\n".join(_format_tool_compact(t) for t in _live_tools[_PRIMARY_COUNT:])
+                _live_core = [t for t in _live_tools if t.name in _CORE_TOOLS]
+                _live_intent = [t for t in _live_tools if t.name not in _CORE_TOOLS][:_MAX_INTENT_TOOLS_SHOWN]
+                _live_hidden = len(_live_tools) - len(_live_core) - len(_live_intent)
+                active_catalog_full = "\n".join(_format_tool_full(t) for t in _live_core + _live_intent)
+                if _live_hidden > 0:
+                    active_catalog_full += f"\n+{_live_hidden} more tools via find_tools(query='...')"
                 active_catalog_names = "Tools: " + ", ".join(t.name for t in _live_tools)
             else:
                 active_catalog_full = tool_catalog_full
                 active_catalog_names = tool_catalog_names
 
-            # Build dense portfolio state — per-company field checklist with
-            # jurisdiction map, sector concentrations, and analysis manifest.
-            # The fingerprint merges grid rows + enriched companies into one view
-            # so the agent can see its own progress and what's still missing.
-            if state:
-                sd_summary = state.fingerprint()
-                # Append stale analysis markers so agent knows what to re-fetch
-                stale_keys = [k.replace("_stale_", "") for k in self.shared_data if k.startswith("_stale_")]
-                if stale_keys:
-                    sd_summary += f"\nSTALE (from prior request, needs refresh): {', '.join(stale_keys)}"
-            else:
+            # Build portfolio context — only when in portfolio mode
+            grid_mode = self.shared_data.get('grid_mode', 'portfolio')
+            if grid_mode == "portfolio":
                 portfolio_intel = self._build_portfolio_intelligence()
-                sd_summary = portfolio_intel if portfolio_intel else "STATE: empty — no companies in grid or shared_data"
+                sd_summary = portfolio_intel if portfolio_intel else ""
+            else:
+                sd_summary = ""
 
             # Build mode-aware intent guidance from classification
             grid_mode = self.shared_data.get('grid_mode', 'portfolio')
@@ -18329,39 +18429,7 @@ Rules:
                     f"- Charts: {chart_count}\n"
                 )
 
-            _mode_rules = {
-                "pnl": (
-                    "- READ the grid first (fpa_pnl or fpa_actuals) before acting.\n"
-                    "- WRITE to grid, not to memo. The grid IS your workspace.\n"
-                    "- Chat: key number + what it means. 1-3 sentences. Memo only if asked.\n"
-                    "- ALWAYS chart trends, forecasts, comparisons.\n"
-                    "- For scenarios: inspect_drivers → adjust_driver. User controls the levers, you show impact."
-                ),
-                "portfolio": (
-                    "- READ the grid (query_portfolio) before enriching or analyzing.\n"
-                    "- WRITE suggestions to grid (suggest_grid_edit / bulk_write_grid).\n"
-                    "- Generate memo for deep analysis. Chat for quick answers.\n"
-                    "- After sourcing/research, push results to the grid — don't just describe them."
-                ),
-                "lp": (
-                    "- LP view is READ-ONLY. Read via query_portfolio + calculate_fund_metrics.\n"
-                    "- To change LP metrics, update underlying company/fund data.\n"
-                    "- Chat: answer with the metric. Memo for LP reports."
-                ),
-                "balance_sheet": (
-                    "- READ balance sheet first (build_balance_sheet) before analyzing.\n"
-                    "- Compare assets vs liabilities, check balance.\n"
-                    "- Cross-reference with P&L (switch to pnl) for income linkage.\n"
-                    "- ALWAYS check balance_check row — non-zero means error."
-                ),
-                "legal": (
-                    "- Extract and analyze clauses, obligations, risks from uploaded documents.\n"
-                    "- WRITE suggestions to grid (suggest_grid_edit / bulk_write_grid).\n"
-                    "- Chat: summarize key terms, flag risks, answer questions. 1-3 sentences.\n"
-                    "- Do NOT generate memos unless the user explicitly asks for one."
-                ),
-            }
-            _rules_text = _mode_rules.get(grid_mode, _mode_rules["portfolio"])
+            _rules_text = _MODE_RULES.get(grid_mode, _MODE_RULES["portfolio"])
 
             # ── Build route_prompt with iteration-aware compression ──
             _output_block = output_registry.prompt_block()
@@ -18642,10 +18710,6 @@ JSON — pick one:
                     "has_data": bool(_t_output) if _t_ok else False,
                 }
 
-            # Invalidate fingerprint cache after tool execution
-            if state:
-                state.mark_dirty()
-
             # Process results from all tool(s) in this iteration
             last_tool_name = ""
             last_result: Dict[str, Any] = {}
@@ -18911,9 +18975,12 @@ JSON — pick one:
 
         memo_context = f"\nWorking memo context:\n{memo_text[:2000]}\n" if memo_text else ""
 
-        # Inject portfolio intelligence context so synthesis sees actual portfolio data
-        portfolio_text = self._build_portfolio_intelligence()
-        portfolio_context = f"\n\nPortfolio Context:\n{portfolio_text}\n" if portfolio_text.strip() else ""
+        # Inject portfolio intelligence only when in portfolio mode
+        grid_mode = self.shared_data.get("grid_mode", "portfolio")
+        portfolio_context = ""
+        if grid_mode == "portfolio":
+            portfolio_text = self._build_portfolio_intelligence()
+            portfolio_context = f"\n\nPortfolio Context:\n{portfolio_text}\n" if portfolio_text.strip() else ""
 
         # ── Response mode gate: skip memo for reply/action modes ──
         _response_mode = classification.response_mode if classification else "reply"
@@ -19473,7 +19540,79 @@ ABSOLUTE RULES:
                     if fund_params:
                         self.shared_data['fund_context'].update(fund_params)
                         logger.info(f"[CONTEXT] Extracted fund params from prompt: {fund_params}")
-            
+
+            # ── UPLOADED FILE HANDLING ─────────────────────────────────────
+            # Frontend passes uploaded_document_ids + uploaded_file_names.
+            # Store in shared_data so the agent knows what was uploaded.
+            # For spreadsheet files (XLS/XLSX/CSV), download from storage
+            # to a temp file so tools like ingest_pe_model can read them.
+            if context:
+                _up_doc_ids = context.get('uploaded_document_ids') or []
+                _up_file_names = context.get('uploaded_file_names') or []
+                if _up_doc_ids or _up_file_names:
+                    self.shared_data['uploaded_document_ids'] = _up_doc_ids
+                    self.shared_data['uploaded_file_names'] = _up_file_names
+                    logger.info(f"[UPLOAD] {len(_up_file_names)} file(s): {_up_file_names}")
+                    # Download spreadsheets to temp files for tool access
+                    _spreadsheet_exts = ('.xlsx', '.xls', '.csv')
+                    _downloaded: list[dict] = []
+                    for _idx, _fname in enumerate(_up_file_names):
+                        if not isinstance(_fname, str) or not _fname.lower().endswith(_spreadsheet_exts):
+                            continue
+                        _doc_id = _up_doc_ids[_idx] if _idx < len(_up_doc_ids) else None
+                        if not _doc_id:
+                            continue
+                        try:
+                            from app.core.adapters import get_storage, get_document_repo
+                            import tempfile, os
+                            from pathlib import Path
+                            _storage = get_storage()
+                            _doc_repo = get_document_repo()
+                            if not _storage or not _doc_repo:
+                                continue
+                            _doc_record = _doc_repo.get(_doc_id)
+                            _storage_path = (
+                                (_doc_record.get('file_path') or _doc_record.get('storage_path'))
+                                if _doc_record else None
+                            )
+                            if not _storage_path:
+                                logger.warning(f"[UPLOAD] No storage_path for doc {_doc_id}")
+                                continue
+                            _content = _storage.download(_storage_path)
+                            if not _content:
+                                logger.warning(f"[UPLOAD] Empty content for {_fname}")
+                                continue
+                            _suffix = Path(_fname).suffix or '.xlsx'
+                            _fd, _tmp_path = tempfile.mkstemp(suffix=_suffix, prefix='upload_')
+                            try:
+                                os.write(_fd, _content)
+                            finally:
+                                os.close(_fd)
+                            _downloaded.append({
+                                'document_id': _doc_id,
+                                'file_name': _fname,
+                                'file_path': _tmp_path,
+                            })
+                            logger.info(f"[UPLOAD] Downloaded {_fname} → {_tmp_path}")
+                        except Exception as _dl_err:
+                            logger.warning(f"[UPLOAD] Download failed for {_fname}: {_dl_err}")
+                    if _downloaded:
+                        self.shared_data['uploaded_files'] = _downloaded
+
+            # ── FUND TYPE LOOKUP ──────────────────────────────────────────
+            # Resolve fund_type (private_equity, venture, growth, etc.) so
+            # downstream tool scoping and prereq resolution can adapt.
+            _fund_id = (context or {}).get('fundId') or (context or {}).get('fund_id')
+            if _fund_id and not self.shared_data.get('fund_type'):
+                try:
+                    from app.services.document_process_service import _get_fund_type
+                    _ft = _get_fund_type(_fund_id)
+                    if _ft:
+                        self.shared_data['fund_type'] = _ft
+                        logger.info(f"[FUND_TYPE] Resolved: {_ft} for fund {_fund_id}")
+                except Exception as _ft_err:
+                    logger.warning(f"[FUND_TYPE] Lookup failed: {_ft_err}")
+
             # ── chip_workflow fast-path (streaming, kind-aware) ─────────
             # Chips specify which tools to run — skip classification & tool
             # selection.  Kind-aware dispatch handles loops, conditionals,
@@ -26652,33 +26791,7 @@ Return a JSON with this structure:
                 fund_context.update(stored_fund_context)
             if incoming_fund_context:
                 fund_context.update(incoming_fund_context)
-            
-            def _coerce_amount(value: Any, default: Optional[float] = None) -> Optional[float]:
-                if value in (None, ""):
-                    return default
-                try:
-                    if isinstance(value, (int, float, Decimal)):
-                        return float(value)
-                    if isinstance(value, str):
-                        cleaned = value.replace(",", "").replace("$", "").strip().lower()
-                        multiplier = 1.0
-                        if cleaned.endswith("mm"):
-                            cleaned = cleaned[:-2]
-                            multiplier = 1_000_000
-                        elif cleaned.endswith("m"):
-                            cleaned = cleaned[:-1]
-                            multiplier = 1_000_000
-                        elif cleaned.endswith("b"):
-                            cleaned = cleaned[:-1]
-                            multiplier = 1_000_000_000
-                        cleaned = cleaned.strip()
-                        if not cleaned:
-                            return default
-                        return float(cleaned) * multiplier
-                except (ValueError, TypeError):
-                    return default
-                return default
-            
+
             baseline_fund_size = DEFAULT_FUND_SIZE
             baseline_deployed_ratio = 0.4
             baseline_remaining_ratio = 0.6
@@ -35445,29 +35558,6 @@ Return a JSON with this structure:
                 fund_context.update(stored_fund_context)
             if incoming_fund_context:
                 fund_context.update(incoming_fund_context)
-
-            def _coerce_amount(value: Any, default: Optional[float] = None) -> Optional[float]:
-                if value in (None, ""):
-                    return default
-                try:
-                    if isinstance(value, (int, float, Decimal)):
-                        return float(value)
-                    if isinstance(value, str):
-                        cleaned = value.replace(",", "").replace("$", "").strip().lower()
-                        multiplier = 1.0
-                        if cleaned.endswith("mm"):
-                            cleaned = cleaned[:-2]; multiplier = 1_000_000
-                        elif cleaned.endswith("m"):
-                            cleaned = cleaned[:-1]; multiplier = 1_000_000
-                        elif cleaned.endswith("b"):
-                            cleaned = cleaned[:-1]; multiplier = 1_000_000_000
-                        cleaned = cleaned.strip()
-                        if not cleaned:
-                            return default
-                        return float(cleaned) * multiplier
-                except (ValueError, TypeError):
-                    return default
-                return default
 
             fund_size = _coerce_amount(fund_context.get("fund_size")) or _coerce_amount(context.get("fund_size"))
             deployed_capital = _coerce_amount(fund_context.get("deployed_capital"))

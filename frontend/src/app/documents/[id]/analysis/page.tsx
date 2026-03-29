@@ -6,6 +6,18 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { formatCurrencyCompact, formatPercentage, formatNumber } from '@/utils/formatters';
 import { Skeleton, SkeletonCard, SkeletonText } from '@/components/ui/skeleton';
 
+// Safely render any value as a string (prevents "Objects are not valid as React child")
+const safeStr = (v: unknown): string => {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (typeof v === 'object') {
+    const obj = v as Record<string, unknown>;
+    return obj.description ?? obj.name ?? obj.label ?? obj.text ?? obj.value ?? JSON.stringify(v);
+  }
+  return String(v);
+};
+
 // Loading skeleton for analysis data
 const AnalysisSkeleton = () => (
   <div className="space-y-6">
@@ -738,7 +750,7 @@ export default function AnalysisPage() {
                             </svg>
                           </div>
                           <div>
-                            <p className="text-sm text-foreground">{achievement}</p>
+                            <p className="text-sm text-foreground">{safeStr(achievement)}</p>
                           </div>
                         </div>
                       ))}
@@ -759,7 +771,7 @@ export default function AnalysisPage() {
                             </svg>
                           </div>
                           <div>
-                            <p className="text-sm text-foreground">{challenge}</p>
+                            <p className="text-sm text-foreground">{safeStr(challenge)}</p>
                           </div>
                         </div>
                       ))}
@@ -774,7 +786,7 @@ export default function AnalysisPage() {
                     <div className="flex flex-wrap gap-2">
                       {analysisData.extracted_data.company_info.competitors.map((competitor: string, index: number) => (
                         <span key={index} className="px-3 py-1 bg-red-100 text-foreground rounded-full text-sm">
-                          {competitor}
+                          {safeStr(competitor)}
                         </span>
                       ))}
                     </div>
@@ -788,7 +800,7 @@ export default function AnalysisPage() {
                     <div className="flex flex-wrap gap-2">
                       {analysisData.extracted_data.company_info.industry_terms.map((term: string, index: number) => (
                         <span key={index} className="px-3 py-1 bg-blue-100 text-foreground rounded-full text-sm">
-                          {term}
+                          {safeStr(term)}
                         </span>
                       ))}
                     </div>
@@ -802,7 +814,7 @@ export default function AnalysisPage() {
                     <div className="flex flex-wrap gap-2">
                       {analysisData.extracted_data.company_info.partners_mentioned.map((partner: string, index: number) => (
                         <span key={index} className="px-3 py-1 bg-green-100 text-foreground rounded-full text-sm">
-                          {partner}
+                          {safeStr(partner)}
                         </span>
                       ))}
                     </div>
@@ -876,7 +888,7 @@ export default function AnalysisPage() {
                             </svg>
                           </div>
                           <div>
-                            <p className="text-sm text-foreground">{risk}</p>
+                            <p className="text-sm text-foreground">{safeStr(risk)}</p>
                           </div>
                         </div>
                       ))}
@@ -890,7 +902,7 @@ export default function AnalysisPage() {
                     <div className="flex flex-wrap gap-2">
                       {analysisData.issue_analysis.missing_metrics.map((metric: string, index: number) => (
                         <span key={index} className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm">
-                          {metric}
+                          {safeStr(metric)}
                         </span>
                       ))}
                     </div>
@@ -903,7 +915,7 @@ export default function AnalysisPage() {
                     <div className="flex flex-wrap gap-2">
                       {analysisData.issue_analysis.business_concerns.map((concern: string, index: number) => (
                         <span key={index} className="px-3 py-1 bg-red-100 text-foreground rounded-full text-sm">
-                          {concern}
+                          {safeStr(concern)}
                         </span>
                       ))}
                     </div>
@@ -916,7 +928,7 @@ export default function AnalysisPage() {
                     <div className="flex flex-wrap gap-2">
                       {analysisData.issue_analysis.language_concerns.map((concern: string, index: number) => (
                         <span key={index} className="px-3 py-1 bg-purple-100 text-purple-800 rounded-full text-sm">
-                          {concern}
+                          {safeStr(concern)}
                         </span>
                       ))}
                     </div>
@@ -934,7 +946,7 @@ export default function AnalysisPage() {
                               <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
                             </svg>
                           </div>
-                          <p className="text-sm text-foreground">{impl}</p>
+                          <p className="text-sm text-foreground">{safeStr(impl)}</p>
                         </div>
                       ))}
                     </div>
