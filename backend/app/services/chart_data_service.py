@@ -53,6 +53,10 @@ class ChartDataService:
         Returns chart config compatible with TableauLevelCharts.
         """
         try:
+            # PE companies don't use PWERM — probability cloud is a VC chart
+            if company_data.get("_source_pe") or company_data.get("pe_model_data"):
+                return None
+
             scenarios = company_data.get("pwerm_scenarios", [])
             if not scenarios:
                 stage_map = {
@@ -1097,6 +1101,9 @@ class ChartDataService:
         Returns grouped bar chart with three scenarios per company.
         """
         if not companies:
+            return None
+        # PE companies don't use PWERM scenarios — skip VC-style bull/bear/base
+        if any(c.get("_source_pe") or c.get("pe_model_data") for c in companies):
             return None
         try:
             labels = []

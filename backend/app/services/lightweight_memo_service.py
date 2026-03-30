@@ -59,16 +59,17 @@ class LightweightMemoService:
         if explicit_type and explicit_type in MEMO_TEMPLATES:
             return explicit_type
 
+        # PE model data is authoritative — if present, always use PE template
+        # regardless of generic keywords like "memo" or "ic memo" in the prompt.
+        if self.shared_data.get("pe_model_data"):
+            return "pe_ic_memo"
+
         prompt_lower = prompt.lower()
 
         # Check keyword map (longest match first to avoid "compare" matching before "comparison")
         for keyword in sorted(INTENT_TO_TEMPLATE, key=len, reverse=True):
             if keyword in prompt_lower:
                 return INTENT_TO_TEMPLATE[keyword]
-
-        # If PE model data exists, default to PE IC memo
-        if self.shared_data.get("pe_model_data"):
-            return "pe_ic_memo"
 
         # Fallback: if companies are mentioned, default to IC memo; else bespoke LP
         companies = self.shared_data.get("companies", [])

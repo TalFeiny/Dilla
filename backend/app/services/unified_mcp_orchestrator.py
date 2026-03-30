@@ -34929,7 +34929,12 @@ Return a JSON with this structure:
             _is_scoped = bool(_sourcing) or bool(_mentioned)
             _all_companies = self.shared_data.get("companies", [])
 
-            if _is_scoped:
+            # PE model data is self-contained — skip all VC enrichment/hydration
+            _is_pe = bool(self.shared_data.get("pe_model_data"))
+
+            if _is_pe:
+                logger.info("[MEMO] PE model data present — skipping VC enrichment/hydration")
+            elif _is_scoped:
                 logger.info("[MEMO] Scoped memo — skipping portfolio-wide enrichment/analysis")
             else:
                 # Step 0b: Enrich sparse DB companies with stage benchmarks (Tier 1, no network)
@@ -43275,12 +43280,14 @@ Return your analysis with inline citations for ALL factual claims.
 
         try:
             from app.services.lightweight_memo_service import LightweightMemoService
-            memo_svc = LightweightMemoService()
-            memo = await memo_svc.generate(
-                user_prompt=query,
-                shared_data=shared_data,
-                template_id='lp_quarterly_enhanced' if 'dpi' in query.lower() or 'quarterly' in query.lower() else 'bespoke_lp',
-            )
+            # Merge LP-specific data into the orchestrator's shared_data
+            for k, v in shared_data.items():
+                if v and not self.shared_data.get(k):
+                    self.shared_data[k] = v
+
+            memo_type = 'lp_report' if 'dpi' in query.lower() or 'quarterly' in query.lower() else 'bespoke_lp'
+            memo_svc = LightweightMemoService(self.model_router, self.shared_data)
+            memo = await memo_svc.generate(query, memo_type)
             return {"memo": memo, "fund_metrics": fund_metrics, "template": "lp_response"}
         except Exception as e:
             logger.error(f"[LP_QUERY] Error: {e}")
@@ -43466,6 +43473,11 @@ Return your analysis with inline citations for ALL factual claims.
         other coroutines (memo artifact storage, process_request_stream) are
         never blocked for more than a few microseconds.
         """
+        # PE model data is self-contained — don't synthesize VC artifacts
+        if self.shared_data.get("pe_model_data"):
+            logger.info("[HYDRATE] pe_model_data present — skipping VC hydration")
+            return
+
         # ── Step 1: snapshot inputs under a brief lock ──
         async with self.shared_data_lock:
             companies = list(self.shared_data.get("companies", []))
