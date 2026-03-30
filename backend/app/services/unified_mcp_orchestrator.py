@@ -3394,6 +3394,77 @@ def get_guidance_for_intent(intent: str, grid_mode: str = "portfolio") -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Module-level intent → tool-scope resolution
+# ---------------------------------------------------------------------------
+# Maps (raw_intent, grid_mode) → INTENT_TOOLS key.
+# Moved from _conversational_loop so both _first_turn_task and
+# _conversational_loop share the same resolution logic.
+_INTENT_MODE_SCOPE: dict[tuple[str, str], str] = {
+    # ── Portfolio mode ──
+    ("portfolio_overview", "portfolio"): "portfolio",
+    ("company_deep_dive", "portfolio"): "valuation",
+    ("comparable_tracking", "portfolio"): "portfolio",
+    ("fund_metrics", "portfolio"): "portfolio",
+    ("followon_decision", "portfolio"): "portfolio",
+    ("exit_analysis", "portfolio"): "portfolio",
+    ("scenario_stress", "portfolio"): "scenario",
+    ("round_modeling", "portfolio"): "portfolio",
+    ("portfolio_construction", "portfolio"): "portfolio",
+    ("portfolio_enrichment_valuation", "portfolio"): "valuation",
+    ("lp_query", "portfolio"): "portfolio",
+    ("team_comparison", "portfolio"): "portfolio",
+    ("followon_deep_dive", "portfolio"): "portfolio",
+    # ── PNL mode ──
+    ("scenario_stress", "pnl"): "scenario",
+    ("fund_metrics", "pnl"): "forecast",
+    ("portfolio_overview", "pnl"): "forecast",
+    ("lp_query", "pnl"): "forecast",
+    # ── Wildcards (any mode) ──
+    ("memo_writing", "*"): "memo",
+    ("deck_generation", "*"): "deck",
+    ("contract_drafting", "*"): "legal_analysis",
+    ("company_research", "*"): "company_lookup",
+    ("competitive_landscape", "*"): "company_lookup",
+    ("comparable_search", "*"): "company_lookup",
+    ("sourcing", "*"): "sourcing",
+    ("company_list_build", "*"): "sourcing",
+    ("bulk_enrichment", "*"): "enrichment",
+    ("transfer_pricing", "*"): "legal_analysis",
+}
+
+_MODE_FALLBACK: dict[str, str] = {
+    "pnl": "forecast",
+    "legal": "legal_analysis",
+    "portfolio": "general",
+}
+
+# Narrow intents where _CORE_TOOLS should be suppressed to avoid drowning
+# out intent-specific tools.  Only metatools (find_tools, emit_todo,
+# suggest_action) are kept for these intents.
+_NARROW_INTENTS: set[str] = {
+    "memo", "deck", "sourcing", "legal_analysis",
+    "company_lookup", "enrichment",
+}
+
+
+def resolve_intent_to_scope(raw_intent: str | None, grid_mode: str) -> str:
+    """Resolve a raw classifier intent to an INTENT_TOOLS key.
+
+    Tries (intent, mode) first, then (intent, "*") wildcard, then
+    falls back to the mode default.  Used by both _first_turn_task
+    and _conversational_loop.
+    """
+    if raw_intent:
+        scope = (
+            _INTENT_MODE_SCOPE.get((raw_intent, grid_mode))
+            or _INTENT_MODE_SCOPE.get((raw_intent, "*"))
+        )
+        if scope:
+            return scope
+    return _MODE_FALLBACK.get(grid_mode, "general")
+
+
 def get_tools_for_intent(intent: str) -> list[AgentTool]:
     """Return agent-visible tools for a classified intent.
 
@@ -3435,20 +3506,26 @@ _CORE_TOOLS = {
 _MAX_INTENT_TOOLS_SHOWN = 6
 
 
-def filter_tools_by_response_mode(tools: list[AgentTool], response_mode: str) -> list[AgentTool]:
+def filter_tools_by_response_mode(
+    tools: list[AgentTool], response_mode: str, intent: str = "general"
+) -> list[AgentTool]:
     """Gate tools by response_mode to reduce prompt noise and prevent over-action.
 
     - "reply": free-tier tools + metatools (quick lookups only)
     - "action" / "task": full tool set + metatools (iteration caps are the real cost guard)
     All tools remain callable via _execute_tool() and wiring regardless —
     this only controls what appears in the agent prompt.
+
+    Routing-level search is primary tool discovery. find_tools always injected
+    as escape hatch so the agent can self-correct when the classifier misses.
     """
     if response_mode == "reply":
         return [t for t in tools if t.cost_tier == "free" or t.name in _ALWAYS_LOADED_TOOLS]
     # "action" and "task" get full intent-scoped set + always-loaded metatools
+    _inject = _ALWAYS_LOADED_TOOLS
     tool_names = {t.name for t in tools}
     result = list(tools)
-    for meta_name in _ALWAYS_LOADED_TOOLS:
+    for meta_name in _inject:
         if meta_name not in tool_names:
             meta_tool = AGENT_VISIBLE_TOOL_MAP.get(meta_name)
             if meta_tool:
@@ -3546,6 +3623,7 @@ class QueryClassification:
     needs_external: bool = False  # Needs to fetch external (non-portfolio) company data
     confidence: float = 1.0
     response_mode: str = "reply"  # "reply" | "action" | "task" — reply until crystallised, then task
+    tool_order: Optional[List[str]] = None  # Haiku-ranked tool names, most relevant first
 
 
 @dataclass
@@ -5511,63 +5589,12 @@ class UnifiedMCPOrchestrator:
         # Falls back to mode-only mapping when no intent is classified.
         _grid_mode = self.shared_data.get("grid_mode", "portfolio")
 
-        # Step 1: Classify the user prompt into a specific intent
-        _classification = self._classify_query_intent(prompt)
+        # Step 1: Classify the user prompt into a specific intent (Haiku LLM)
+        _classification = await self._classify_query_intent(prompt)
         _classified_intent = _classification["intent"] if _classification else None
 
-        # Step 2: (intent, mode) → INTENT_TOOLS key.
-        # Keyed by (classified_intent, grid_mode) with (intent, "*") wildcard.
-        # This lets the same intent resolve differently per mode — e.g.
-        # "scenario_stress" in pnl mode uses "scenario" (fpa tools), but in
-        # portfolio mode uses "portfolio" (fund-level tools).
-        _INTENT_MODE_SCOPE: dict[tuple[str, str], str] = {
-            # ── Portfolio mode ──
-            ("portfolio_overview", "portfolio"): "portfolio",
-            ("company_deep_dive", "portfolio"): "valuation",
-            ("comparable_tracking", "portfolio"): "portfolio",
-            ("fund_metrics", "portfolio"): "portfolio",
-            ("followon_decision", "portfolio"): "portfolio",
-            ("exit_analysis", "portfolio"): "portfolio",
-            ("scenario_stress", "portfolio"): "scenario",
-            ("round_modeling", "portfolio"): "portfolio",
-            ("portfolio_construction", "portfolio"): "portfolio",
-            ("portfolio_enrichment_valuation", "portfolio"): "valuation",
-            ("lp_query", "portfolio"): "portfolio",
-            ("team_comparison", "portfolio"): "portfolio",
-            ("followon_deep_dive", "portfolio"): "portfolio",
-            # ── PNL mode ──
-            ("scenario_stress", "pnl"): "scenario",
-            ("fund_metrics", "pnl"): "forecast",
-            ("portfolio_overview", "pnl"): "forecast",
-            ("lp_query", "pnl"): "forecast",
-            # ── Wildcards (any mode) ──
-            ("memo_writing", "*"): "memo",
-            ("deck_generation", "*"): "deck",
-            ("contract_drafting", "*"): "legal_analysis",
-            ("company_research", "*"): "company_lookup",
-            ("competitive_landscape", "*"): "company_lookup",
-            ("comparable_search", "*"): "company_lookup",
-            ("sourcing", "*"): "sourcing",
-            ("company_list_build", "*"): "sourcing",
-            ("bulk_enrichment", "*"): "enrichment",
-            ("transfer_pricing", "*"): "legal_analysis",
-        }
-
-        _mode_fallback = {
-            "pnl": "forecast",
-            "legal": "legal_analysis",
-            "portfolio": "general",
-        }
-
-        _intent = None
-        if _classified_intent:
-            # Try (intent, mode) first, then (intent, "*") wildcard
-            _intent = (
-                _INTENT_MODE_SCOPE.get((_classified_intent, _grid_mode))
-                or _INTENT_MODE_SCOPE.get((_classified_intent, "*"))
-            )
-        if not _intent:
-            _intent = _mode_fallback.get(_grid_mode, "general")
+        # Step 2: Resolve raw intent → INTENT_TOOLS key via module-level mapping.
+        _intent = resolve_intent_to_scope(_classified_intent, _grid_mode)
 
         _resp_mode = (
             "reply" if turn_type == TurnType.PHATIC else
@@ -5940,11 +5967,73 @@ class UnifiedMCPOrchestrator:
         _grid_mode = self.shared_data.get("grid_mode", "portfolio")
 
         # Classify intent from the prompt
-        _qi = self._classify_query_intent(prompt)
-        _intent = _qi["intent"] if _qi else "general"
+        _qi = await self._classify_query_intent(prompt)
+        _raw_intent = _qi["intent"] if _qi else None
         _chain_str = _qi["chain"] if _qi else None
         # suggested_chain expects List[str] of tool names
         _chain_list = [s.strip() for s in _chain_str.split("→")] if _chain_str else None
+
+        # Resolve raw intent → INTENT_TOOLS key (shared logic with _conversational_loop)
+        _intent = resolve_intent_to_scope(_raw_intent, _grid_mode)
+        logger.info(f"[FIRST_TURN_TASK] raw_intent={_raw_intent} → resolved scope={_intent}")
+
+        # ── PE upload deterministic override ──────────────────────────
+        # When a user uploads an Excel file and asks for a memo, skip the
+        # agent loop guessing and run ingest_pe_model → generate_memo directly.
+        _uploaded = self.shared_data.get("uploaded_files") or []
+        _has_excel = any(
+            (f.get("name") or f.get("file_name", "")).lower().endswith((".xlsx", ".xls"))
+            for f in _uploaded
+            if isinstance(f, dict)
+        )
+        _lower_prompt = prompt.lower()
+        _wants_memo = any(kw in _lower_prompt for kw in [
+            "memo", "ic memo", "investment committee", "write a report",
+            "due diligence", "turn this into", "generate a report",
+        ])
+        _is_pe = (
+            self.shared_data.get("fund_type") == "private_equity"
+            or any(kw in _lower_prompt for kw in ["pe ", "lbo", "buyout", "private equity", "leveraged"])
+        )
+
+        if _has_excel and _wants_memo:
+            logger.info("[FIRST_TURN_TASK] PE upload override: running ingest_pe_model → generate_memo deterministically")
+            yield {"type": "progress", "stage": "planning", "message": "Ingesting uploaded model..."}
+
+            # Find the Excel file path
+            _excel_file = next(
+                (f.get("file_path") or f.get("path", "") for f in _uploaded
+                 if isinstance(f, dict) and (f.get("name") or f.get("file_name", "")).lower().endswith((".xlsx", ".xls"))),
+                ""
+            )
+
+            # Step 1: Ingest PE model
+            ingest_result = await self._execute_tool("ingest_pe_model", {"file_path": _excel_file})
+            if isinstance(ingest_result, dict) and "error" not in ingest_result:
+                yield {"type": "progress", "stage": "executing", "message": f"Ingested: {ingest_result.get('company_name', 'PE Target')}"}
+
+                # Step 2: Generate memo
+                yield {"type": "progress", "stage": "executing", "message": "Generating IC memo..."}
+                _memo_type = "ic_memo" if _is_pe else "ic_memo"
+                memo_result = await self._execute_tool("generate_memo", {"memo_type": _memo_type})
+
+                if isinstance(memo_result, dict) and "error" not in memo_result:
+                    content = memo_result.get("content") or memo_result.get("memo", "")
+                    if content:
+                        yield {"type": "token", "content": content}
+                    self._turn_result = {
+                        "full_text": content,
+                        "tool_calls_made": [
+                            {"tool": "ingest_pe_model", "input": {"file_path": _excel_file}},
+                            {"tool": "generate_memo", "input": {"memo_type": _memo_type}},
+                        ],
+                        "extra_result_fields": memo_result,
+                    }
+                    return
+                else:
+                    logger.warning(f"[FIRST_TURN_TASK] generate_memo failed: {memo_result} — falling through to agent loop")
+            else:
+                logger.warning(f"[FIRST_TURN_TASK] ingest_pe_model failed: {ingest_result} — falling through to agent loop")
 
         classification = QueryClassification(
             complexity="complex",
@@ -5952,6 +6041,7 @@ class UnifiedMCPOrchestrator:
             response_mode="task",
             needs_portfolio=_grid_mode == "portfolio",
             suggested_chain=_chain_list,
+            tool_order=_qi.get("tool_order") if _qi else None,
         )
 
         logger.info(
@@ -11906,32 +11996,93 @@ Answer using specific company names and numbers from the portfolio grid above.""
         return response
 
     async def _tool_find_tools(self, inputs: dict) -> dict:
-        """Search available tools by keyword. Returns matches with descriptions and cost tiers."""
+        """Search available tools using Haiku LLM for semantic matching.
+
+        Instead of keyword substring matching, sends the query + full tool
+        catalog to a cheap/fast LLM which returns the most relevant tools
+        ranked by semantic fit.  Falls back to keyword matching if LLM fails.
+        """
         query = (inputs.get("query") or "").lower().strip()
         if not query:
             return {"error": "Provide a search query", "matches": []}
 
-        keywords = query.split()
-        matches = []
+        # Build compact tool catalog for the LLM
+        _catalog_lines = []
+        _tool_by_name: dict[str, AgentTool] = {}
         for t in AGENT_TOOLS:
-            searchable = f"{t.name} {t.description}".lower()
-            score = sum(1 for kw in keywords if kw in searchable)
-            if score > 0:
-                matches.append({
-                    "name": t.name,
-                    "description": t.description,
-                    "cost_tier": t.cost_tier,
-                    "input_schema": t.input_schema,
-                    "score": score,
-                })
+            _catalog_lines.append(f"- {t.name}: {t.description} [cost={t.cost_tier}]")
+            _tool_by_name[t.name] = t
 
-        matches.sort(key=lambda m: m["score"], reverse=True)
-        top = matches[:10]
-        return {
-            "query": query,
-            "match_count": len(matches),
-            "matches": top,
-        }
+        _catalog = "\n".join(_catalog_lines)
+
+        _system = (
+            "You are a tool-selection assistant. Given a user's query about what they want to do, "
+            "pick the 5-10 most relevant tools from the catalog below.\n\n"
+            "Respond with ONLY a JSON array of tool names, ordered by relevance (most relevant first).\n"
+            "Example: [\"run_valuation\", \"analyze_financials\", \"generate_chart\"]\n\n"
+            "No explanation, no markdown, just the JSON array.\n\n"
+            f"Tool catalog:\n{_catalog}"
+        )
+
+        try:
+            result = await self.model_router.get_completion(
+                prompt=f"Find the best tools for: {query}",
+                system_prompt=_system,
+                capability=ModelCapability.FAST,
+                max_tokens=200,
+                temperature=0.0,
+                preferred_models=["claude-haiku-4-5", "gemini-2.5-flash"],
+                json_mode=True,
+                caller_context="find_tools",
+            )
+            import json as _json
+            raw = (result.get("response") or "").strip()
+            # Parse the JSON array
+            tool_names = _json.loads(raw) if raw else []
+            if not isinstance(tool_names, list):
+                tool_names = []
+
+            matches = []
+            for i, name in enumerate(tool_names[:10]):
+                name = str(name).strip()
+                t = _tool_by_name.get(name)
+                if t:
+                    matches.append({
+                        "name": t.name,
+                        "description": t.description,
+                        "cost_tier": t.cost_tier,
+                        "input_schema": t.input_schema,
+                        "score": 10 - i,  # higher score for earlier rank
+                    })
+
+            logger.info(f"[FIND_TOOLS] Haiku returned {len(matches)} matches for '{query}'")
+            return {
+                "query": query,
+                "match_count": len(matches),
+                "matches": matches,
+            }
+        except Exception as e:
+            logger.warning(f"[FIND_TOOLS] Haiku tool search failed ({e}), falling back to keyword matching")
+            # Fallback: keyword matching
+            keywords = query.split()
+            matches = []
+            for t in AGENT_TOOLS:
+                searchable = f"{t.name} {t.description}".lower()
+                score = sum(1 for kw in keywords if kw in searchable)
+                if score > 0:
+                    matches.append({
+                        "name": t.name,
+                        "description": t.description,
+                        "cost_tier": t.cost_tier,
+                        "input_schema": t.input_schema,
+                        "score": score,
+                    })
+            matches.sort(key=lambda m: m["score"], reverse=True)
+            return {
+                "query": query,
+                "match_count": len(matches),
+                "matches": matches[:10],
+            }
 
     # Mapping from fetched company data fields to grid column IDs
     _FIELD_TO_GRID_COLUMN: Dict[str, str] = {
@@ -17482,23 +17633,121 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             "Transfer pricing: overview → comparables → analysis → OECD report generation."),
     ]
 
-    def _classify_query_intent(self, prompt: str) -> Optional[Dict[str, Any]]:
-        """Classify the user's prompt into a known intent with a thinking chain.
+    async def _classify_query_intent(self, prompt: str) -> Optional[Dict[str, Any]]:
+        """Classify intent AND rank tools in a single Haiku call.
 
-        Returns None if no strong match — the agent loop will use generic reasoning.
-        When matched, returns {"intent", "chain", "description"} to guide routing.
+        Returns {"intent", "chain", "description", "tool_order": [...]} or None.
+        The tool_order is a ranked list of tool names from the resolved intent
+        scope, ordered by relevance to this specific prompt.
+
+        One LLM call replaces both intent classification and tool reranking.
+        Falls back to keyword matching if the LLM call fails.
         """
-        lower = prompt.lower()
-        for intent_name, triggers, chain, description in self.QUERY_INTENTS:
-            for trigger in triggers:
-                # Handle @-mention patterns
-                if "@" in trigger:
-                    pattern = trigger.replace("@", "")
-                    if pattern in lower and "@" in prompt:
+        # Build intent menu with their tool lists
+        _intent_lookup: dict[str, tuple[str, str]] = {}
+        _intent_lines = []
+        for intent_name, _triggers, chain, description in self.QUERY_INTENTS:
+            _intent_lookup[intent_name] = (chain, description)
+            # Resolve to INTENT_TOOLS key so we can show the actual tools
+            _grid_mode = self.shared_data.get("grid_mode", "portfolio")
+            _scope = resolve_intent_to_scope(intent_name, _grid_mode)
+            _tool_names = INTENT_TOOLS.get(_scope, [])
+            _tools_str = ", ".join(_tool_names[:8])
+            _intent_lines.append(f"- {intent_name}: {description} → tools: [{_tools_str}]")
+
+        _intent_list = "\n".join(_intent_lines)
+
+        # Context signals
+        _fund_type = self.shared_data.get("fund_type", "unknown")
+        _has_uploads = bool(self.shared_data.get("uploaded_files"))
+        _upload_names = ""
+        if _has_uploads:
+            _files = self.shared_data.get("uploaded_files", [])
+            _upload_names = ", ".join(
+                (f.get("name") or f.get("file_name", "?")) for f in _files if isinstance(f, dict)
+            )
+
+        # Add general tools so Haiku can rank them even for intent="none"
+        _general_tools_str = ", ".join(INTENT_TOOLS.get("general", [])[:12])
+        _intent_lines.append(f"- none: No specific intent match → general tools: [{_general_tools_str}]")
+        _intent_list = "\n".join(_intent_lines)
+
+        _system = (
+            "You are a routing classifier for a CFO/investment agent. "
+            "Given a user prompt, do TWO things:\n"
+            "1. Pick the best matching intent (or 'none')\n"
+            "2. Rank the most relevant tools for THIS specific request "
+            "(even if intent is 'none', return 5-8 tools from the general set ranked by relevance)\n\n"
+            "Respond with JSON: {\"intent\": \"intent_name\", \"tools\": [\"tool1\", \"tool2\", ...]}\n"
+            "Always return a tools array, even for intent='none'.\n\n"
+            "No explanation. Just the JSON object.\n\n"
+            f"Context: fund_type={_fund_type}, grid_mode={_grid_mode}, "
+            f"has_uploads={_has_uploads}"
+            + (f", uploaded_files=[{_upload_names}]" if _upload_names else "")
+            + f"\n\nAvailable intents:\n{_intent_list}"
+        )
+
+        try:
+            result = await self.model_router.get_completion(
+                prompt=f"Route this request:\n\n{prompt}",
+                system_prompt=_system,
+                capability=ModelCapability.FAST,
+                max_tokens=200,
+                temperature=0.0,
+                preferred_models=["claude-haiku-4-5", "gemini-2.5-flash"],
+                json_mode=True,
+                caller_context="classify_and_rank",
+            )
+            import json as _json_cr
+            raw = (result.get("response") or "").strip()
+            parsed = _json_cr.loads(raw) if raw else {}
+
+            intent_name = str(parsed.get("intent", "none")).strip().lower()
+            tool_order = parsed.get("tools", [])
+            if not isinstance(tool_order, list):
+                tool_order = []
+
+            if intent_name and intent_name != "none" and intent_name in _intent_lookup:
+                chain, description = _intent_lookup[intent_name]
+                logger.info(
+                    f"[INTENT_CLASSIFY] Haiku: intent={intent_name}, "
+                    f"top_tools={tool_order[:3]} for: {prompt[:80]}"
+                )
+                return {
+                    "intent": intent_name,
+                    "chain": chain,
+                    "description": description,
+                    "tool_order": [str(t).strip() for t in tool_order],
+                }
+
+            # Even for "none", preserve the tool ranking if Haiku returned one.
+            # This enables routing-level search for broad/general queries too.
+            if tool_order:
+                logger.info(
+                    f"[INTENT_CLASSIFY] Haiku: intent=none, "
+                    f"tool_order={tool_order[:3]} for: {prompt[:80]}"
+                )
+                return {
+                    "intent": "none",
+                    "chain": "",
+                    "description": "No specific intent matched",
+                    "tool_order": [str(t).strip() for t in tool_order],
+                }
+
+            logger.info(f"[INTENT_CLASSIFY] Haiku returned '{intent_name}' — no match, no tool_order for: {prompt[:80]}")
+            return None
+        except Exception as e:
+            logger.warning(f"[INTENT_CLASSIFY] Haiku failed ({e}), falling back to keyword matching")
+            lower = prompt.lower()
+            for intent_name, triggers, chain, description in self.QUERY_INTENTS:
+                for trigger in triggers:
+                    if "@" in trigger:
+                        pattern = trigger.replace("@", "")
+                        if pattern in lower and "@" in prompt:
+                            return {"intent": intent_name, "chain": chain, "description": description}
+                    elif trigger in lower:
                         return {"intent": intent_name, "chain": chain, "description": description}
-                elif trigger in lower:
-                    return {"intent": intent_name, "chain": chain, "description": description}
-        return None
+            return None
 
     # ------------------------------------------------------------------
     # Session plan lifecycle (Phase 7)
@@ -17729,7 +17978,7 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
                 f"Adapt this chain to the specific request.\n"
             )
         else:
-            intent = self._classify_query_intent(prompt)
+            intent = await self._classify_query_intent(prompt)
             if intent:
                 intent_hint = (
                     f"\nDetected intent: {intent['intent']}\n"
@@ -18115,7 +18364,7 @@ Rules:
         _intent = classification.intent if classification else "general"
         _resp_mode = classification.response_mode if classification else "reply"
         _scoped_tools = filter_tools_by_response_mode(
-            get_tools_for_intent(_intent), _resp_mode
+            get_tools_for_intent(_intent), _resp_mode, intent=_intent
         )
         # When files are uploaded, ensure file-processing tools are visible
         # regardless of intent classification.
@@ -18129,6 +18378,75 @@ Rules:
                         _scoped_tools.append(_ut)
                         logger.info(f"[AGENT_LOOP] Injected {_ut_name} for uploaded files")
         logger.info(f"[AGENT_LOOP] Tool gating: intent={_intent}, response_mode={_resp_mode}, tools={len(_scoped_tools)}")
+
+        # ── Apply tool ordering from classification (single Haiku call did both) ──
+        # classification.tool_order is set when _classify_query_intent returned a
+        # ranked tool list.  Reorder scoped_tools to match.
+        _tool_order = getattr(classification, "tool_order", None) or []
+        if _tool_order and len(_scoped_tools) > 2:
+            _tool_by_name = {t.name: t for t in _scoped_tools}
+            _reordered = []
+            for name in _tool_order:
+                if name in _tool_by_name:
+                    _reordered.append(_tool_by_name.pop(name))
+            # Append any tools not in the ranking (safety)
+            _reordered.extend(_tool_by_name.values())
+            _scoped_tools = _reordered
+            logger.info(f"[AGENT_LOOP] Tools reordered by classification: {[t.name for t in _scoped_tools[:5]]}")
+
+        # ── Context-aware tier 1 suppression ──────────────────────────
+        # Move comfort tools to tier 2 when their data source is irrelevant.
+        # They remain callable (tier 2 = name-only list) but don't appear
+        # in RECOMMENDED TOOLS with full schema.
+        _suppress_from_tier1: set[str] = set()
+
+        # Uploaded files present → data is in the file, not the portfolio DB
+        if self.shared_data.get("uploaded_files"):
+            _suppress_from_tier1.update({"query_portfolio", "pull_company_data"})
+
+        # PE model already ingested → don't re-ingest
+        if self.shared_data.get("pe_model_data"):
+            _suppress_from_tier1.add("ingest_pe_model")
+
+        # Companies already loaded in shared_data → no need to re-fetch
+        if self.shared_data.get("companies"):
+            _suppress_from_tier1.add("query_portfolio")
+
+        # PE fund → suppress VC-specific tools from tier 1
+        if self.shared_data.get("fund_type") == "private_equity":
+            _suppress_from_tier1.update({"cap_table_evolution", "enrich_sparse_grid"})
+
+        if _suppress_from_tier1:
+            logger.info(f"[AGENT_LOOP] Context-aware suppression from tier 1: {_suppress_from_tier1}")
+
+        # ── Build execution order directive from Haiku tool ranking ──────
+        # For narrow intents: numbered execution order as a strong directive.
+        # For broad intents: soft suggested priority.
+        _execution_order_text = ""
+        _tool_order = getattr(classification, "tool_order", None) or []
+        if _tool_order and _intent in _NARROW_INTENTS:
+            _order_lines = []
+            for idx, tool_name in enumerate(_tool_order[:6], 1):
+                _tool_obj = AGENT_VISIBLE_TOOL_MAP.get(tool_name)
+                _hint = _tool_obj.description.split(".")[0] if _tool_obj else tool_name
+                _order_lines.append(f"{idx}. {tool_name} — {_hint}")
+
+            _suppressed_names_str = ", ".join(sorted(_suppress_from_tier1)) if _suppress_from_tier1 else ""
+            _do_not_need = (
+                f"\nYou do NOT need to call {_suppressed_names_str}. "
+                "The data is already available in context or uploaded files."
+            ) if _suppressed_names_str else ""
+
+            _execution_order_text = (
+                "\nEXECUTION ORDER (follow unless you have a specific reason to deviate):\n"
+                + "\n".join(_order_lines)
+                + _do_not_need
+                + "\nIf you deviate from this order, explain why in your reasoning.\n"
+            )
+            logger.info(f"[AGENT_LOOP] Execution order injected: {_tool_order[:6]}")
+        elif _tool_order:
+            _top_tools = ", ".join(_tool_order[:5])
+            _execution_order_text = f"\nSUGGESTED PRIORITY: {_top_tools} (adapt as needed)\n"
 
         # Tiered catalog by cost_tier: free+cheap get full description + params (primary),
         # expensive get compact name:hint format (secondary). Cuts prompt tokens ~60%.
@@ -18146,18 +18464,44 @@ Rules:
             desc = t.description.split(".")[0] if t.description else ""
             return f"  {t.name}: {desc}"
 
-        # Tiered tool display: core tools (always full schema) + top intent tools (full schema)
-        # + remaining tools as just a count with find_tools hint.
-        _core = [t for t in _scoped_tools if t.name in _CORE_TOOLS]
-        _intent_specific = [t for t in _scoped_tools if t.name not in _CORE_TOOLS]
-        _shown_intent = _intent_specific[:_MAX_INTENT_TOOLS_SHOWN]
-        _hidden_count = len(_intent_specific) - len(_shown_intent)
+        # ── Two-tier tool display ──
+        # Tier 1 "RECOMMENDED": Haiku-ranked intent tools with full schema.
+        #   These are what the classifier thinks the agent should call first.
+        # Tier 2 "ALSO AVAILABLE": ALL other agent-visible tools as a compact
+        #   name list, so the agent can reach for them if it needs to.
+        #   This preserves curiosity without drowning the agent in schemas.
+        # Routing-level search is primary discovery; find_tools is the agent's
+        # escape hatch when the classifier misses a tool.
+        _METATOOLS = {"find_tools", "emit_todo", "suggest_action"}
+        _effective_core = _CORE_TOOLS if _intent not in _NARROW_INTENTS else _METATOOLS
 
-        tool_catalog_full = "\n".join(_format_tool_full(t) for t in _core + _shown_intent)
-        if _hidden_count > 0:
-            tool_catalog_full += f"\n+{_hidden_count} more tools available via find_tools(query='...')"
+        # Tier 1: core + intent-specific, full schema (excluding suppressed)
+        _core = [t for t in _scoped_tools if t.name in _effective_core and t.name not in _suppress_from_tier1]
+        _intent_specific = [t for t in _scoped_tools if t.name not in _effective_core and t.name not in _suppress_from_tier1]
+        _max_shown = _MAX_INTENT_TOOLS_SHOWN if _intent not in _NARROW_INTENTS else 12
+        _shown_intent = _intent_specific[:_max_shown]
+
+        _tier1_names = {t.name for t in _core + _shown_intent}
+        _tier1_text = "\n".join(_format_tool_full(t) for t in _core + _shown_intent)
+
+        # Tier 2: everything else the agent COULD call — just names so it knows they exist
+        # Includes tools suppressed from tier 1 by context-aware filtering
+        _tier2_tools = [t for t in AGENT_VISIBLE_TOOLS if t.name not in _tier1_names]
+        _tier2_names = [t.name for t in _tier2_tools]
+        # Ensure suppressed tools are in tier 2 (they may already be via AGENT_VISIBLE_TOOLS)
+        for _sname in _suppress_from_tier1:
+            if _sname not in _tier1_names and _sname not in set(_tier2_names):
+                _tier2_names.append(_sname)
+
+        if _tier2_names:
+            _tier2_text = f"\nAlso available (call by name, use find_tools for params): {', '.join(_tier2_names)}"
+        else:
+            _tier2_text = ""
+
+        tool_catalog_full = f"RECOMMENDED TOOLS:\n{_tier1_text}{_tier2_text}"
         # Iteration 1+: just names — agent already knows what they do
-        tool_catalog_names = "Tools: " + ", ".join(t.name for t in _scoped_tools)
+        _all_names = [t.name for t in _core + _shown_intent] + _tier2_names
+        tool_catalog_names = "Tools: " + ", ".join(t.name for t in _scoped_tools) + _tier2_text
 
         ROUTE_MAX_TOKENS = 600
         SYNTH_MAX_TOKENS = 6000
@@ -18210,7 +18554,21 @@ Rules:
             ledger = TaskLedger.from_plan_tasks(_deterministic_plan)
             logger.info(f"[AGENT_LOOP] TaskLedger from plan: {ledger.pending_summary()}")
 
+        # ── Per-task tool budget: hard cap on total tool calls across all iterations ──
+        # Narrow intents get a smaller budget to stay focused, but not so small
+        # that the agent can't explore tier-2 tools when it genuinely needs them.
+        _TASK_TOOL_BUDGET = 12 if _intent in _NARROW_INTENTS else 20
+        _total_tool_calls = 0
+
         for i in range(max_iterations):
+            # Hard cap on total tool calls for this task
+            if _total_tool_calls >= _TASK_TOOL_BUDGET:
+                logger.warning(
+                    f"[AGENT_LOOP] Task tool budget exhausted: {_total_tool_calls}/{_TASK_TOOL_BUDGET} "
+                    f"calls used across {i} iterations (intent={_intent})"
+                )
+                break
+
             # Check for new corrections (chat interruptions) since loop started
             current_corrections = self.shared_data.get("session_corrections", [])
             if len(current_corrections) > _correction_count_at_start:
@@ -18239,13 +18597,14 @@ Rules:
             # Exclude tools that previously failed in this loop
             if failed_tools:
                 _live_tools = [t for t in _scoped_tools if t.name not in failed_tools]
-                _live_core = [t for t in _live_tools if t.name in _CORE_TOOLS]
-                _live_intent = [t for t in _live_tools if t.name not in _CORE_TOOLS][:_MAX_INTENT_TOOLS_SHOWN]
-                _live_hidden = len(_live_tools) - len(_live_core) - len(_live_intent)
-                active_catalog_full = "\n".join(_format_tool_full(t) for t in _live_core + _live_intent)
-                if _live_hidden > 0:
-                    active_catalog_full += f"\n+{_live_hidden} more tools via find_tools(query='...')"
-                active_catalog_names = "Tools: " + ", ".join(t.name for t in _live_tools)
+                _live_core = [t for t in _live_tools if t.name in _effective_core]
+                _live_intent = [t for t in _live_tools if t.name not in _effective_core][:_max_shown]
+                _live_tier1 = "\n".join(_format_tool_full(t) for t in _live_core + _live_intent)
+                _live_tier1_names = {t.name for t in _live_core + _live_intent}
+                _live_tier2 = [t.name for t in AGENT_VISIBLE_TOOLS if t.name not in _live_tier1_names and t.name not in failed_tools]
+                _live_tier2_text = f"\nAlso available: {', '.join(_live_tier2)}" if _live_tier2 else ""
+                active_catalog_full = f"RECOMMENDED TOOLS:\n{_live_tier1}{_live_tier2_text}"
+                active_catalog_names = "Tools: " + ", ".join(t.name for t in _live_tools) + _live_tier2_text
             else:
                 active_catalog_full = tool_catalog_full
                 active_catalog_names = tool_catalog_names
@@ -18434,32 +18793,57 @@ Rules:
             # ── Build route_prompt with iteration-aware compression ──
             _output_block = output_registry.prompt_block()
 
+            # Budget awareness — tell the LLM how many calls remain
+            _remaining_budget = _TASK_TOOL_BUDGET - _total_tool_calls
+            _budget_line = f"TOOL BUDGET: {_remaining_budget} calls remaining (used {_total_tool_calls}/{_TASK_TOOL_BUDGET}). Plan accordingly — prioritize the most impactful tools."
+
+            # ── Bifurcated reasoning block: outcome-anchored for narrow, exploratory for broad ──
+            if _intent in _NARROW_INTENTS:
+                _reasoning_block = (
+                    "GOAL: Produce the required output via the SHORTEST path.\n"
+                    "Do NOT gather data you already have. Do NOT orient — act.\n"
+                    "If data is in uploaded files or shared state, use it directly.\n"
+                    "If you deviate from the EXECUTION ORDER above, explain why.\n\n"
+                    "RULES:\n"
+                    "- Ambiguous request → clarify with ONE focused question.\n"
+                    "- Don't re-fetch existing data. Don't repeat tool calls.\n"
+                    "- Independent calls → call_tools (parallel).\n"
+                    f"{_rules_text}\n"
+                    "- Done = user's request answered AND persisted (memo/grid/chart).\n"
+                    "- Checkpoint = you produced something worth reviewing before continuing."
+                )
+            else:
+                _reasoning_block = (
+                    "Think step by step:\n"
+                    "1. What did the user ask for? Clear or ambiguous?\n"
+                    "2. If ambiguous, clarify. Don't guess.\n"
+                    "3. What's already done? (TOOLS CALLED + SCOREBOARD)\n"
+                    "4. What's missing? What sequence of tools gets there?\n"
+                    "5. If complete and persisted, done.\n\n"
+                    "RULES:\n"
+                    "- Ambiguous → clarify with ONE focused question.\n"
+                    "- Don't re-fetch existing data. Don't repeat tool calls.\n"
+                    "- Independent calls → call_tools (parallel).\n"
+                    f"{_rules_text}\n"
+                    "- Work with incomplete data. Don't loop chasing every field.\n"
+                    "- Done = user's request answered AND persisted (memo/grid/chart).\n"
+                    "- Checkpoint = you produced something worth reviewing before continuing."
+                )
+
             if i == 0:
                 # Full context on first iteration — tiered tool catalog
                 route_prompt = f"""Task: {prompt}
 
 {active_catalog_full}
+{_execution_order_text}
+{_budget_line}
 
 State:
 {sd_summary}{auto_enrich_guidance}{skip_guidance}
 {_task_state}{_memo_canvas_state}
 {_results_display}
 {_goals_status}{intent_guidance}{plan_guidance}{correction_guidance}{_tool_history}{_scoreboard_text}
-{_output_block}Think step by step:
-1. What did the user ask for? Clear or ambiguous?
-2. If ambiguous, clarify. Don't guess.
-3. What's already done? (TOOLS CALLED + SCOREBOARD)
-4. What's missing? What sequence of tools gets there?
-5. If complete and persisted, done.
-
-RULES:
-- Ambiguous → clarify with ONE focused question.
-- Don't re-fetch existing data. Don't repeat tool calls.
-- Independent calls → call_tools (parallel).
-{_rules_text}
-- Work with incomplete data. Don't loop chasing every field.
-- Done = user's request answered AND persisted (memo/grid/chart).
-- Checkpoint = you produced something worth reviewing before continuing.
+{_output_block}{_reasoning_block}
 
 JSON — pick one:
 {{"action":"clarify","question":"...","options":["A","B"],"reasoning":"why"}}
@@ -18468,10 +18852,27 @@ JSON — pick one:
 {{"action":"checkpoint","summary":"what you produced so far","next_steps":["what you'd do next"],"reasoning":"why pause here"}}
 {{"action":"done","reasoning":"why complete"}}"""
             else:
+                # Iterations 1+: condensed remaining-steps reminder for narrow intents
+                _iter_order_reminder = ""
+                if _tool_order and _intent in _NARROW_INTENTS and tool_results:
+                    _completed_tools = {r["tool"] for r in tool_results}
+                    _remaining = [t for t in _tool_order[:6] if t not in _completed_tools]
+                    if _remaining:
+                        _iter_order_reminder = f"\nREMAINING STEPS: {' → '.join(_remaining)}\n"
+
+                # Narrow intents: action-oriented directive. Broad: open exploration.
+                _iter_directive = (
+                    f"Continue executing. What is the next step toward the output?\n{_rules_text}"
+                    if _intent in _NARROW_INTENTS
+                    else f"What's next? Don't repeat tools. Don't re-fetch existing data.\n{_rules_text}"
+                )
+
                 # Iterations 1+: names only — agent already knows tool details
                 route_prompt = f"""Task: {prompt}
 
 {active_catalog_names}
+{_iter_order_reminder}
+{_budget_line}
 
 Delta since last iteration:
 {_results_display}
@@ -18480,8 +18881,7 @@ Delta since last iteration:
 {sd_summary}{correction_guidance}
 {_goals_status}
 
-What's next? Don't repeat tools. Don't re-fetch existing data.
-{_rules_text}
+{_iter_directive}
 
 JSON — pick one:
 {{"action":"call_tool","tool":"name","input":{{...}},"reasoning":"why"}}
@@ -18491,15 +18891,25 @@ JSON — pick one:
 
             # ── REASON system prompt: rotated by iteration phase ──
             # iter 0: full strategic context. iter 1+: compressed delta-only.
+            # Narrow intents get action-oriented framing; broad get exploratory.
             if i == 0:
-                _reason_system = (
-                    "You are a senior CFO agent that thinks in multi-step sequences. "
-                    "Decompose complex requests into a chain of tool calls. "
-                    "Review each result critically — if incomplete or wrong, adjust before moving on. "
-                    "When you've produced something the user should review before you continue, use checkpoint. "
-                    "Proactively suggest next steps when analysis reveals signals. "
-                    "Return exactly one JSON object."
-                )
+                if _intent in _NARROW_INTENTS:
+                    _reason_system = (
+                        "You are a senior CFO agent executing a focused task. "
+                        "Follow the execution order unless you have a specific, stated reason to deviate. "
+                        "Prefer action over orientation. Use data already available in context. "
+                        "When you've produced something the user should review, use checkpoint. "
+                        "Return exactly one JSON object."
+                    )
+                else:
+                    _reason_system = (
+                        "You are a senior CFO agent that thinks in multi-step sequences. "
+                        "Decompose complex requests into a chain of tool calls. "
+                        "Review each result critically — if incomplete or wrong, adjust before moving on. "
+                        "When you've produced something the user should review before you continue, use checkpoint. "
+                        "Proactively suggest next steps when analysis reveals signals. "
+                        "Return exactly one JSON object."
+                    )
             else:
                 # Iterations 1+: the agent already knows who it is. Just the delta.
                 _reason_system = (
@@ -18607,19 +19017,43 @@ JSON — pick one:
                 # anything, force a read so the agent orients first.
                 if i == 0 and not tool_results:
                     if action.get("action") == "done" or not action.get("action"):
-                        # Agent tried to quit without looking. Force a read
-                        # appropriate to the current mode.
-                        _orient_tool = {
-                            "pnl": "pull_company_data",
-                            "legal": "query_documents",
-                        }.get(grid_mode, "query_portfolio")
-                        action = {
-                            "action": "call_tool",
-                            "tool": _orient_tool,
-                            "input": {"query": prompt},
-                            "reasoning": "Must orient before acting — reading data first",
-                        }
-                        logger.info(f"[AGENT_LOOP] Iter 0 orient override: {_orient_tool}")
+                        if _intent in _NARROW_INTENTS and _tool_order:
+                            # Use the first tool from execution order, not default orient
+                            _orient_tool_name = _tool_order[0]
+                            _orient_input: dict = {"query": prompt}
+                            # Special case: if first tool is ingest_pe_model, wire the file path
+                            if _orient_tool_name == "ingest_pe_model":
+                                _uploaded = self.shared_data.get("uploaded_files") or []
+                                _excel = next(
+                                    (
+                                        f.get("file_path") or f.get("path", "")
+                                        for f in _uploaded
+                                        if isinstance(f, dict)
+                                        and (f.get("name") or f.get("file_name", "")).lower().endswith((".xlsx", ".xls"))
+                                    ),
+                                    "",
+                                )
+                                if _excel:
+                                    _orient_input = {"file_path": _excel}
+                            action = {
+                                "action": "call_tool",
+                                "tool": _orient_tool_name,
+                                "input": _orient_input,
+                                "reasoning": f"Following execution order — starting with {_orient_tool_name}",
+                            }
+                        else:
+                            # Broad intent: force a read appropriate to the current mode
+                            _orient_tool_name = {
+                                "pnl": "pull_company_data",
+                                "legal": "query_documents",
+                            }.get(grid_mode, "query_portfolio")
+                            action = {
+                                "action": "call_tool",
+                                "tool": _orient_tool_name,
+                                "input": {"query": prompt},
+                                "reasoning": "Must orient before acting — reading data first",
+                            }
+                        logger.info(f"[AGENT_LOOP] Iter 0 orient override: {_orient_tool_name}")
                     else:
                         # REASON picked a real tool — let it run.
                         logger.info(f"[AGENT_LOOP] Iter 0 REASON chose: {action.get('tool', action.get('action'))}")
@@ -18630,13 +19064,20 @@ JSON — pick one:
             reasoning = action.get("reasoning", "")
 
             # Support both single tool and parallel tools
+            # Enforce per-turn tool call limit: max 3 for narrow intents, max 5 for broad
+            _MAX_TOOLS_PER_TURN = 3 if _intent in _NARROW_INTENTS else 5
             if action.get("action") == "call_tools" and action.get("tools"):
-                # Parallel: multiple independent tools
+                # Parallel: multiple independent tools — cap to limit
                 raw_tools = action["tools"]
                 tool_calls = [
                     {"tool": t.get("tool", ""), "input": t.get("input", {})}
                     for t in raw_tools if t.get("tool")
-                ]
+                ][:_MAX_TOOLS_PER_TURN]
+                if len(raw_tools) > _MAX_TOOLS_PER_TURN:
+                    logger.warning(
+                        f"[AGENT_LOOP] Capped tool calls from {len(raw_tools)} to {_MAX_TOOLS_PER_TURN} "
+                        f"(intent={_intent}, narrow={_intent in _NARROW_INTENTS})"
+                    )
             else:
                 # Single tool (existing behavior)
                 tool_calls = [{"tool": action.get("tool", ""), "input": action.get("input", {})}]
@@ -18689,6 +19130,9 @@ JSON — pick one:
                         session_plan.mark_done(single_step.id, result)
                 iter_results = [{"tool": single_step.tool, "input": single_step.inputs,
                                  "output": result, "step_id": single_step.id}]
+
+            # Track total tool calls for task budget enforcement
+            _total_tool_calls += len(iter_results)
 
             # --- Drain any intermediate streaming events (e.g. doc progress) ---
             if self._streaming_event_queue:

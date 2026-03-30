@@ -2567,6 +2567,35 @@ def run_document_process(
     doc_repo = document_repo
     tmp_path: Optional[str] = None
 
+    # ── PE model spreadsheet bypass ──────────────────────────────────
+    # PE/LBO model spreadsheets (.xlsx/.xls) are handled by
+    # ingest_pe_model in the agent pipeline, not the document processor.
+    # Skip extraction + suggestion emission — just mark as completed
+    # so the file stays in storage for the agent to download.
+    _ext = Path(storage_path).suffix.lower().lstrip(".") if storage_path else ""
+    if _ext in ("xlsx", "xls") and fund_id:
+        _ft = _get_fund_type(fund_id)
+        if _ft == "private_equity":
+            logger.info(
+                "[DOC_PROCESS] PE spreadsheet detected (fund_type=%s, ext=%s) — "
+                "skipping doc processor, will be handled by ingest_pe_model",
+                _ft, _ext,
+            )
+            doc_repo.update(document_id, {
+                "status": "completed",
+                "processed_at": _iso_now(),
+                "processing_summary": {
+                    "step": "pe_bypass",
+                    "message": "PE model spreadsheet — handled by ingest_pe_model via agent pipeline",
+                    "updated_at": _iso_now(),
+                },
+            })
+            return {
+                "success": True,
+                "document_id": document_id,
+                "result": {"pe_bypass": True},
+            }
+
     # ── Idempotency guard: atomic claim prevents duplicate processing ──
     try:
         current_doc = doc_repo.get(document_id)
