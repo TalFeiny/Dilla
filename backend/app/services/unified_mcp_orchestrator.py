@@ -849,7 +849,7 @@ AGENT_TOOLS: list[AgentTool] = [
         handler="_tool_generate_memo",
         input_schema={"company": "str?", "memo_type": "str?", "focus": "str?"},
         cost_tier="expensive",
-        timeout_ms=90_000,
+        timeout_ms=300_000,  # 5min — PE memos need long LLM calls with large prompts
     ),
     AgentTool(
         name="ingest_pe_model",

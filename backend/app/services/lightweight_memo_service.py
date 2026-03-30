@@ -206,7 +206,9 @@ class LightweightMemoService:
         sections = template["sections"]
 
         # Build the data context (truncated to fit in one call)
+        logger.info("[MEMO] generate_narratives: building data summary...")
         data_summary = self._summarize_data(available_data)
+        logger.info(f"[MEMO] generate_narratives: data summary built ({len(data_summary)} chars)")
 
         # Build section prompts — include "clause" type for contract templates
         section_prompts = []
@@ -414,6 +416,7 @@ class LightweightMemoService:
             # Import here to avoid circular import at module level
             from app.services.model_router import ModelCapability
 
+            logger.info(f"[MEMO] generate_narratives: calling LLM ({len(user_prompt)} char prompt, {len(system_prompt)} char system)...")
             response = await asyncio.wait_for(
                 self.model_router.get_completion(
                     prompt=user_prompt,
@@ -844,10 +847,13 @@ class LightweightMemoService:
         # LLM writes narrative only; charts built from Python service data (no LLM)
         _t0 = datetime.now()
         try:
+            logger.info("[MEMO] Creating narratives task...")
             narratives_task = asyncio.create_task(
                 self.generate_narratives(template_id, prompt, available_data)
             )
+            logger.info("[MEMO] Running _prebuild_charts...")
             prebuilt_charts = self._prebuild_charts(template_id, available_data)
+            logger.info(f"[MEMO] Charts done ({len(prebuilt_charts)}), awaiting narratives (120s timeout)...")
             narratives = await asyncio.wait_for(narratives_task, timeout=120)
         except asyncio.TimeoutError:
             logger.error("[MEMO] Narrative generation timed out after 120s")
@@ -1537,7 +1543,7 @@ class LightweightMemoService:
         return "\n".join(lines)
 
     @staticmethod
-    def _summarize_pe_model(pe_data: Dict[str, Any], max_chars: int = 50000) -> str:
+    def _summarize_pe_model(pe_data: Dict[str, Any], max_chars: int = 20000) -> str:
         """Create a compact text summary of PE model data for LLM context.
 
         Reads from the flexible EXTRACTION_SCHEMA — works for any deal type.
