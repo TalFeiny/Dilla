@@ -1,14 +1,14 @@
-"""PE Model Ingestion Service — reads multi-sheet Excel LBO models and extracts structured data.
+"""PE Model Ingestion Service — reads multi-sheet Excel models and extracts structured data.
 
 One LLM call: sends all sheets as markdown tables → gets back structured JSON matching
-the PE extraction schema.  No regex heuristics — every PE fund formats differently,
-the LLM reads financial grids natively.
+a flexible extraction schema that adapts to ANY deal type (LBO, structured equity,
+growth equity, real asset, venture debt, infrastructure, credit, distressed, etc.).
 
 Usage:
     svc = PEModelIngestionService(model_router)
     pe_data = await svc.ingest(file_path)
-    # pe_data is a dict with: transaction, sources_uses, operating_model,
-    # debt_structure, debt_schedule, returns
+    # pe_data is a dict with: deal_profile, instruments, sources_uses,
+    # operating_model, returns, debt_schedule
 """
 
 import json
@@ -25,90 +25,66 @@ logger = logging.getLogger(__name__)
 # Extraction schema — sent to the LLM as the target JSON structure
 # ---------------------------------------------------------------------------
 
-PE_EXTRACTION_SCHEMA = {
-    "transaction": {
-        "company_name": "str — target company name",
-        "entry_ev": "float — enterprise value at entry ($)",
-        "entry_ebitda": "float — LTM or projected EBITDA at entry ($)",
-        "entry_multiple": "float — EV / EBITDA at entry",
-        "equity_check": "float — total equity invested by sponsor ($)",
-        "management_rollover": "float — management/founder equity rollover amount ($), null if none",
-        "rollover_pct": "float — management rollover as % of total equity (e.g. 0.25 = 25%), null if none",
-        "hold_period": "int — expected hold period in years",
-        "sponsor": "str — PE firm / sponsor name if found",
+EXTRACTION_SCHEMA = {
+    "deal_profile": {
+        "deal_type": "str — lbo, growth_equity, structured_equity, real_asset, venture_debt, credit, infrastructure, distressed, etc.",
+        "strategy": "str — 1-2 sentence description of the investment strategy",
+        "target_name": "str — company or asset name",
+        "sponsor": "str or null — fund / sponsor name",
+        "hold_period": "int — years",
+        "total_investment": "float ($)",
+        "primary_metric": "str — must match a key in operating_model.metrics (e.g. 'EBITDA', 'NOI', 'Revenue')",
     },
+    "instruments": [
+        {
+            "type": "str — senior_debt, second_lien, mezzanine, preferred_equity, common_equity, warrant, convertible_note, revolver, unitranche, pik_note, earnout, seller_note, etc.",
+            "name": "str — descriptive name",
+            "amount": "float ($) or null",
+            "pct_of_total": "float (decimal) or null",
+            "terms": {"<term_name>": "<term_value> — all relevant terms as key-value pairs"},
+        }
+    ],
     "sources_uses": {
-        "sources": [{"name": "str", "amount": "float", "pct": "float"}],
-        "uses": [{"name": "str", "amount": "float", "pct": "float"}],
-        "total": "float — total transaction value",
+        "sources": [{"name": "str", "amount": "float ($)"}],
+        "uses": [{"name": "str", "amount": "float ($)"}],
     },
     "operating_model": {
-        "periods": ["str — year labels: 2024, 2025, ..."],
-        "revenue": ["float — revenue per period"],
-        "ebitda": ["float — EBITDA per period"],
-        "ebitda_margin": ["float — EBITDA margin % per period"],
-        "capex": ["float — capital expenditure per period"],
-        "fcf": ["float — free cash flow per period"],
-        "revenue_growth": ["float — YoY revenue growth % per period"],
-    },
-    "debt_structure": {
-        "tranches": [{
-            "name": "str — e.g. Senior Secured, Second Lien, Mezzanine",
-            "amount": "float — initial principal ($)",
-            "rate": "str — interest rate (e.g. 'SOFR+400', '8.5%', 'L+350')",
-            "maturity": "str — maturity date or years",
-            "amort": "str — amortization schedule (e.g. '1% quarterly', 'bullet')",
-            "covenants": "str — key covenants if shown",
-        }],
-        "total_debt": "float — sum of all tranches",
-        "entry_leverage": "float — total debt / entry EBITDA",
-    },
-    "debt_schedule": {
-        "periods": ["str — year labels matching operating_model"],
-        "beginning_balance": ["float — total debt at start of each period"],
-        "mandatory_amort": ["float — scheduled repayments"],
-        "optional_prepayment": ["float — cash sweep / voluntary paydown"],
-        "ending_balance": ["float — total debt at end of each period"],
-        "interest_expense": ["float — total interest per period"],
-        "leverage_ratio": ["float — net debt / EBITDA per period"],
-        "per_tranche": [{
-            "name": "str — tranche name matching debt_structure.tranches",
-            "ending_balance": ["float — per-period ending balance for this tranche"],
-        }],
+        "periods": ["str — period labels"],
+        "metrics": {
+            "<MetricName>": {
+                "values": ["float — one per period"],
+                "format": "dollar | pct | multiple | number",
+            }
+        },
     },
     "returns": {
-        "base": {
-            "exit_year": "int",
-            "exit_ebitda": "float",
-            "exit_multiple": "float",
-            "exit_ev": "float",
-            "equity_value": "float",
-            "irr": "float — as decimal (0.25 = 25%)",
-            "moic": "float",
-        },
-        "bull": {
-            "exit_year": "int", "exit_ebitda": "float", "exit_multiple": "float",
-            "exit_ev": "float", "equity_value": "float", "irr": "float", "moic": "float",
-        },
-        "bear": {
-            "exit_year": "int", "exit_ebitda": "float", "exit_multiple": "float",
-            "exit_ev": "float", "equity_value": "float", "irr": "float", "moic": "float",
+        "scenarios": {
+            "<scenario_name>": {
+                "<metric_name>": "float"
+            }
         },
         "sensitivity_matrix": {
-            "row_label": "str — e.g. 'Exit Multiple'",
-            "col_label": "str — e.g. 'EBITDA Growth'",
-            "row_values": ["float — exit multiples"],
-            "col_values": ["float — growth rates"],
-            "irr_grid": [["float — IRR for each (row, col) pair"]],
-            "moic_grid": [["float — MOIC for each (row, col) pair"]],
+            "row_label": "str",
+            "col_label": "str",
+            "row_values": ["float"],
+            "col_values": ["float"],
+            "irr_grid": [["float"]],
+            "moic_grid": [["float"]],
         },
+    },
+    "debt_schedule": {
+        "periods": ["str"],
+        "total_balance": ["float ($)"],
+        "per_instrument": [{"name": "str", "ending_balance": ["float ($)"]}],
+        "interest_expense": ["float ($)"],
+        "leverage_ratio": ["float or null"],
     },
 }
 
 
 def _schema_as_text() -> str:
     """Render extraction schema as compact JSON for the system prompt."""
-    return json.dumps(PE_EXTRACTION_SCHEMA, indent=2)
+    return json.dumps(EXTRACTION_SCHEMA, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +145,7 @@ def _df_to_markdown(df, sheet_name: str, max_rows: int = 2000) -> str:
 # ---------------------------------------------------------------------------
 
 class PEModelIngestionService:
-    """Ingest a PE/LBO model Excel file → structured JSON for memo generation."""
+    """Ingest any investment model Excel file → structured JSON for memo generation."""
 
     def __init__(self, model_router):
         self.model_router = model_router
@@ -177,7 +153,7 @@ class PEModelIngestionService:
     async def ingest(self, file_path: str) -> Dict[str, Any]:
         """Read Excel file, send to LLM for extraction, validate and normalize.
 
-        Returns structured dict matching PE_EXTRACTION_SCHEMA.
+        Returns structured dict matching EXTRACTION_SCHEMA.
         """
         import asyncio
 
@@ -198,27 +174,31 @@ class PEModelIngestionService:
             sheets_text = sheets_text[:80_000]
 
         system_prompt = (
-            "You are a senior PE associate extracting structured data from an LBO model. "
+            "You are a senior investment analyst extracting structured data from a financial model. "
+            "This could be ANY type of investment — LBO, growth equity, structured equity, "
+            "real asset, venture debt, infrastructure, credit, distressed, etc. "
+            "Do NOT assume the deal type. Read the model and determine what it is.\n\n"
             "Read ALL sheets carefully — data is spread across multiple tabs. "
             "Cross-reference numbers between sheets to ensure consistency.\n\n"
             "EXTRACTION RULES:\n"
-            "- Extract EVERY number you can find that maps to the schema below.\n"
-            "- Dollar amounts in millions: if the model says '500' and context suggests millions, output 500000000.\n"
-            "- Percentages: output as decimals (25% → 0.25) UNLESS the field says 'margin %' — then output 25.0.\n"
-            "- For ebitda_margin, revenue_growth fields: output as percentage numbers (25.0 means 25%).\n"
-            "- If a field isn't in the model, use null.\n"
-            "- For the sensitivity matrix: map the 2D grid exactly as shown. Row/col labels should be the axis values.\n"
-            "- For debt tranches: capture EVERY tranche (senior, second lien, mezz, sub notes, revolver, etc.).\n"
-            "- For management rollover: look in sources & uses or equity section for founder/management rollover equity.\n"
-            "- For per-tranche debt schedules: if the model shows each tranche's balance over time, extract per_tranche.\n"
-            "- If bull/bear cases aren't explicit, use null for those scenarios.\n\n"
-            "OUTPUT: Return ONLY valid JSON matching this schema:\n"
-            f"{_schema_as_text()}\n\n"
+            "1. DEAL TYPE: Identify the investment type from the model structure and terminology.\n"
+            "2. INSTRUMENTS: Extract EVERY financial instrument (debt tranches, equity layers, "
+            "warrants, convertibles, mezz, preferred, etc.). Include all terms shown for each.\n"
+            "3. OPERATING METRICS: Extract ALL projected metrics. Use the EXACT metric names "
+            "from the model. Each metric needs values[] and format (dollar|pct|multiple|number).\n"
+            "4. RETURNS: Extract all scenario returns. Include every return metric shown.\n"
+            "5. primary_metric in deal_profile MUST match a key in operating_model.metrics.\n\n"
+            "NUMBER FORMAT:\n"
+            "- Dollar amounts: if model says '500' in millions context, output 500000000.\n"
+            "- Percentages in returns (IRR, yields): decimals (25% -> 0.25).\n"
+            "- Percentages in operating metrics with format='pct': numbers (25.0 = 25%).\n"
+            "- If a field doesn't exist, use null.\n\n"
+            f"OUTPUT: Return ONLY valid JSON matching this schema:\n{_schema_as_text()}\n\n"
             "NO markdown fences, NO commentary — just the JSON object."
         )
 
         user_prompt = (
-            "Extract structured PE/LBO model data from these Excel sheets:\n\n"
+            "Extract structured investment model data from these Excel sheets:\n\n"
             f"{sheets_text}"
         )
 
@@ -249,10 +229,10 @@ class PEModelIngestionService:
         pe_data["_validation"] = validation
 
         logger.info(
-            "[PE_INGEST] Extraction complete — company=%s, entry_ev=%s, tranches=%d, periods=%d, valid=%s, warnings=%d, errors=%d",
-            pe_data.get("transaction", {}).get("company_name", "?"),
-            pe_data.get("transaction", {}).get("entry_ev", "?"),
-            len(pe_data.get("debt_structure", {}).get("tranches", [])),
+            "[PE_INGEST] Extraction complete — target=%s, deal_type=%s, instruments=%d, periods=%d, valid=%s, warnings=%d, errors=%d",
+            pe_data.get("deal_profile", {}).get("target_name", "?"),
+            pe_data.get("deal_profile", {}).get("deal_type", "?"),
+            len(pe_data.get("instruments") or []),
             len(pe_data.get("operating_model", {}).get("periods", [])),
             validation["valid"],
             len(validation["warnings"]),
@@ -290,24 +270,24 @@ class PEModelIngestionService:
 
     @staticmethod
     def _normalize(data: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate and normalize extracted PE data — ensure numeric types, fill defaults."""
+        """Validate and normalize extracted data — ensure numeric types, fill defaults."""
 
-        # Transaction
-        txn = data.get("transaction") or {}
-        for key in ("entry_ev", "entry_ebitda", "equity_check", "management_rollover"):
-            txn[key] = ensure_numeric(txn.get(key), 0)
-        txn["rollover_pct"] = ensure_numeric(txn.get("rollover_pct"), 0)
-        txn["entry_multiple"] = ensure_numeric(txn.get("entry_multiple"), 0)
-        txn["hold_period"] = int(ensure_numeric(txn.get("hold_period"), 5))
-        # Derive entry_multiple if not extracted
-        if not txn["entry_multiple"] and txn["entry_ev"] and txn["entry_ebitda"]:
-            txn["entry_multiple"] = round(txn["entry_ev"] / txn["entry_ebitda"], 1)
-        # Derive rollover_pct from amounts if not extracted directly
-        if not txn["rollover_pct"] and txn["management_rollover"] and txn["equity_check"]:
-            total_equity = txn["equity_check"] + txn["management_rollover"]
-            if total_equity > 0:
-                txn["rollover_pct"] = round(txn["management_rollover"] / total_equity, 4)
-        data["transaction"] = txn
+        # Deal profile
+        dp = data.get("deal_profile") or {}
+        dp["hold_period"] = int(ensure_numeric(dp.get("hold_period"), 5))
+        dp["total_investment"] = ensure_numeric(dp.get("total_investment"), 0)
+        dp.setdefault("deal_type", "unknown")
+        dp.setdefault("target_name", "Unknown Target")
+        dp.setdefault("primary_metric", "")
+        data["deal_profile"] = dp
+
+        # Instruments
+        instruments = data.get("instruments") or []
+        for inst in instruments:
+            inst["amount"] = ensure_numeric(inst.get("amount"), 0)
+            inst["pct_of_total"] = ensure_numeric(inst.get("pct_of_total"), 0)
+            # Leave terms as-is (mixed types — rates are strings)
+        data["instruments"] = instruments
 
         # Sources & Uses
         su = data.get("sources_uses") or {}
@@ -315,49 +295,51 @@ class PEModelIngestionService:
             items = su.get(side) or []
             for item in items:
                 item["amount"] = ensure_numeric(item.get("amount"), 0)
-                item["pct"] = ensure_numeric(item.get("pct"), 0)
             su[side] = items
-        su["total"] = ensure_numeric(su.get("total"), 0)
         data["sources_uses"] = su
 
-        # Operating model — ensure all arrays are numeric
+        # Operating model — flexible metrics dict
         om = data.get("operating_model") or {}
-        for key in ("revenue", "ebitda", "ebitda_margin", "capex", "fcf", "revenue_growth"):
-            arr = om.get(key) or []
-            om[key] = [ensure_numeric(v, 0) for v in arr]
         om["periods"] = om.get("periods") or []
+        metrics = om.get("metrics") or {}
+        clean_metrics = {}
+        for metric_name, metric_data in metrics.items():
+            if metric_name.startswith("_"):
+                continue
+            # Handle LLM returning plain arrays instead of {values, format} dicts
+            if isinstance(metric_data, list):
+                metric_data = {"values": metric_data, "format": "number"}
+            if not isinstance(metric_data, dict):
+                continue
+            metric_data["values"] = [ensure_numeric(v, 0) for v in (metric_data.get("values") or [])]
+            metric_data.setdefault("format", "number")
+            clean_metrics[metric_name] = metric_data
+        om["metrics"] = clean_metrics
         data["operating_model"] = om
 
-        # Debt structure
-        ds = data.get("debt_structure") or {}
-        for tranche in (ds.get("tranches") or []):
-            tranche["amount"] = ensure_numeric(tranche.get("amount"), 0)
-        ds["total_debt"] = ensure_numeric(ds.get("total_debt"), 0)
-        ds["entry_leverage"] = ensure_numeric(ds.get("entry_leverage"), 0)
-        data["debt_structure"] = ds
+        # Auto-detect primary_metric if not set
+        if not dp["primary_metric"] and clean_metrics:
+            # Prefer EBITDA > NOI > Revenue > first metric
+            for candidate in ("EBITDA", "ebitda", "NOI", "noi", "Revenue", "revenue"):
+                if candidate in clean_metrics:
+                    dp["primary_metric"] = candidate
+                    break
+            if not dp["primary_metric"]:
+                dp["primary_metric"] = next(iter(clean_metrics))
 
-        # Debt schedule
-        sched = data.get("debt_schedule") or {}
-        for key in ("beginning_balance", "mandatory_amort", "optional_prepayment",
-                     "ending_balance", "interest_expense", "leverage_ratio"):
-            arr = sched.get(key) or []
-            sched[key] = [ensure_numeric(v, 0) for v in arr]
-        sched["periods"] = sched.get("periods") or []
-        # Per-tranche schedules (if model has them)
-        per_tranche = sched.get("per_tranche") or []
-        for pt in per_tranche:
-            pt["ending_balance"] = [ensure_numeric(v, 0) for v in (pt.get("ending_balance") or [])]
-        sched["per_tranche"] = per_tranche
-        data["debt_schedule"] = sched
-
-        # Returns
+        # Returns — flexible scenarios dict
         returns = data.get("returns") or {}
-        for case in ("base", "bull", "bear"):
-            r = returns.get(case)
-            if r and isinstance(r, dict):
-                for key in ("exit_ebitda", "exit_ev", "equity_value", "irr", "moic", "exit_multiple"):
-                    r[key] = ensure_numeric(r.get(key), 0)
-                r["exit_year"] = int(ensure_numeric(r.get("exit_year"), 0))
+        scenarios = returns.get("scenarios") or {}
+        clean_scenarios = {}
+        for sc_name, sc_data in scenarios.items():
+            if sc_name.startswith("_") or not isinstance(sc_data, dict):
+                continue
+            clean_sc = {}
+            for k, v in sc_data.items():
+                clean_sc[k] = ensure_numeric(v, 0)
+            clean_scenarios[sc_name] = clean_sc
+        returns["scenarios"] = clean_scenarios
+
         # Sensitivity matrix
         sm = returns.get("sensitivity_matrix")
         if sm and isinstance(sm, dict):
@@ -368,5 +350,17 @@ class PEModelIngestionService:
             moic_grid = sm.get("moic_grid") or []
             sm["moic_grid"] = [[ensure_numeric(v, 0) for v in row] for row in moic_grid]
         data["returns"] = returns
+
+        # Debt schedule
+        sched = data.get("debt_schedule") or {}
+        for key in ("total_balance", "interest_expense", "leverage_ratio"):
+            arr = sched.get(key) or []
+            sched[key] = [ensure_numeric(v, 0) for v in arr]
+        sched["periods"] = sched.get("periods") or []
+        per_instrument = sched.get("per_instrument") or []
+        for pi in per_instrument:
+            pi["ending_balance"] = [ensure_numeric(v, 0) for v in (pi.get("ending_balance") or [])]
+        sched["per_instrument"] = per_instrument
+        data["debt_schedule"] = sched
 
         return data

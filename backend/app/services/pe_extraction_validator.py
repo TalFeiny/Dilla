@@ -1,8 +1,11 @@
-"""PE Extraction Validator — checks LLM-extracted PE model data for sanity.
+"""PE Extraction Validator — checks LLM-extracted model data for sanity.
 
 Called after _normalize() in PEModelIngestionService.ingest(). Returns a dict
 with warnings (non-blocking) and errors (blocking) so the memo can surface
 data quality issues instead of silently passing bad numbers to the IC.
+
+Works with the flexible EXTRACTION_SCHEMA — validates universal invariants
+that apply to ANY deal type (LBO, structured equity, real asset, etc.).
 
 Usage:
     from app.services.pe_extraction_validator import validate_pe_extraction
@@ -17,34 +20,75 @@ logger = logging.getLogger(__name__)
 
 
 def validate_pe_extraction(pe_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate extracted PE model data. Returns {valid, warnings, errors}."""
+    """Validate extracted model data. Returns {valid, warnings, errors}."""
     warnings: List[str] = []
     errors: List[str] = []
 
-    txn = pe_data.get("transaction") or {}
+    dp = pe_data.get("deal_profile") or {}
+    instruments = pe_data.get("instruments") or []
     su = pe_data.get("sources_uses") or {}
     om = pe_data.get("operating_model") or {}
-    ds = pe_data.get("debt_structure") or {}
-    sched = pe_data.get("debt_schedule") or {}
     returns = pe_data.get("returns") or {}
+    sched = pe_data.get("debt_schedule") or {}
 
-    # ── Missing critical fields ──────────────────────────────────────
-    if not txn.get("entry_ev"):
-        errors.append("Missing entry enterprise value (entry_ev)")
-    if not txn.get("entry_ebitda"):
-        errors.append("Missing entry EBITDA (entry_ebitda)")
-    if not txn.get("equity_check"):
-        warnings.append("Missing equity check amount")
+    # ── Deal profile — critical fields ──────────────────────────────
+    if not dp.get("target_name") or dp.get("target_name") == "Unknown Target":
+        errors.append("Missing target name (deal_profile.target_name)")
+    if not dp.get("deal_type") or dp.get("deal_type") == "unknown":
+        warnings.append("Deal type not identified — LLM could not determine investment type")
+    if dp.get("total_investment") and dp["total_investment"] < 0:
+        errors.append(f"Negative total_investment: {dp['total_investment']}")
 
-    tranches = ds.get("tranches") or []
-    if not tranches:
-        warnings.append("No debt tranches extracted — capital structure incomplete")
+    # ── Instruments ──────────────────────────────────────────────────
+    if not instruments:
+        warnings.append("No instruments extracted — capital structure incomplete")
+    for i, inst in enumerate(instruments):
+        amt = inst.get("amount", 0)
+        if amt and amt < 0:
+            errors.append(f"Instrument '{inst.get('name', i)}' has negative amount: {amt}")
 
+    # ── Instrument amounts sum ≈ total_investment ────────────────────
+    total_inv = dp.get("total_investment", 0)
+    if instruments and total_inv > 0:
+        inst_sum = sum(inst.get("amount", 0) for inst in instruments if inst.get("amount"))
+        if inst_sum > 0:
+            diff_pct = abs(inst_sum - total_inv) / max(inst_sum, total_inv)
+            if diff_pct > 0.10:
+                warnings.append(
+                    f"Instruments sum (${inst_sum / 1e6:,.1f}M) differs from "
+                    f"total_investment (${total_inv / 1e6:,.1f}M) by {diff_pct * 100:.0f}%"
+                )
+
+    # ── Operating model ──────────────────────────────────────────────
     periods = om.get("periods") or []
+    metrics = om.get("metrics") or {}
     if len(periods) < 2:
         errors.append(f"Only {len(periods)} operating periods extracted — need at least 2 for projections")
+    if not metrics:
+        warnings.append("No operating metrics extracted")
 
-    # ── Sources = Uses ────────────────────────────────────────────────
+    # Check metric array lengths match period count
+    if periods and metrics:
+        n_periods = len(periods)
+        for metric_name, metric_data in metrics.items():
+            if not isinstance(metric_data, dict):
+                continue
+            values = metric_data.get("values") or []
+            if values and len(values) != n_periods:
+                warnings.append(
+                    f"operating_model.metrics.{metric_name} has {len(values)} values "
+                    f"but {n_periods} periods"
+                )
+
+    # ── primary_metric exists in metrics ─────────────────────────────
+    primary = dp.get("primary_metric", "")
+    if primary and metrics and primary not in metrics:
+        warnings.append(
+            f"primary_metric '{primary}' not found in operating_model.metrics "
+            f"(available: {list(metrics.keys())[:5]})"
+        )
+
+    # ── Sources ≈ Uses ───────────────────────────────────────────────
     sources = su.get("sources") or []
     uses = su.get("uses") or []
     if sources and uses:
@@ -58,111 +102,27 @@ def validate_pe_extraction(pe_data: Dict[str, Any]) -> Dict[str, Any]:
                     f"{diff_pct * 100:.1f}% gap"
                 )
 
-    # ── Debt tranches sum ≈ total_debt ────────────────────────────────
-    if tranches:
-        tranche_sum = sum(t.get("amount", 0) for t in tranches)
-        total_debt = ds.get("total_debt", 0)
-        if total_debt > 0 and tranche_sum > 0:
-            diff_pct = abs(tranche_sum - total_debt) / max(tranche_sum, total_debt)
-            if diff_pct > 0.01:
-                warnings.append(
-                    f"Debt tranches sum (${tranche_sum / 1e6:,.1f}M) ≠ total_debt "
-                    f"(${total_debt / 1e6:,.1f}M) — {diff_pct * 100:.1f}% gap"
-                )
-
-    # ── Leverage sanity ───────────────────────────────────────────────
-    entry_lev = ds.get("entry_leverage", 0)
-    if entry_lev > 15:
-        errors.append(f"Entry leverage {entry_lev:.1f}x is unrealistic (>15x)")
-    elif entry_lev > 8:
-        warnings.append(f"Entry leverage {entry_lev:.1f}x is high (>8x)")
-    elif entry_lev < 0:
-        errors.append(f"Entry leverage {entry_lev:.1f}x is negative")
-
-    # ── Entry multiple sanity ─────────────────────────────────────────
-    entry_mult = txn.get("entry_multiple", 0)
-    if entry_mult > 30:
-        errors.append(f"Entry multiple {entry_mult:.1f}x is unrealistic (>30x)")
-    elif entry_mult > 15:
-        warnings.append(f"Entry multiple {entry_mult:.1f}x is high (>15x)")
-
-    # ── Operating model array lengths ─────────────────────────────────
-    if periods:
-        n_periods = len(periods)
-        for key in ("revenue", "ebitda", "ebitda_margin", "capex", "fcf", "revenue_growth"):
-            arr = om.get(key) or []
-            if arr and len(arr) != n_periods:
-                warnings.append(
-                    f"operating_model.{key} has {len(arr)} values but {n_periods} periods"
-                )
-
-    # ── EBITDA margin coherence ───────────────────────────────────────
-    revenues = om.get("revenue") or []
-    ebitdas = om.get("ebitda") or []
-    if len(revenues) >= 2 and len(ebitdas) >= 2 and len(revenues) == len(ebitdas):
-        for i in range(len(revenues) - 1):
-            if revenues[i] > 0 and revenues[i + 1] > 0 and ebitdas[i] > 0:
-                rev_change = (revenues[i + 1] - revenues[i]) / revenues[i]
-                ebitda_change = (ebitdas[i + 1] - ebitdas[i]) / ebitdas[i]
-                if rev_change < -0.20 and ebitda_change > 0.05:
-                    period_label = periods[i + 1] if i + 1 < len(periods) else f"Period {i + 1}"
-                    warnings.append(
-                        f"{period_label}: Revenue down {rev_change * 100:.0f}% but "
-                        f"EBITDA up {ebitda_change * 100:.0f}% — verify margin assumptions"
-                    )
-
-    # ── Debt schedule math ────────────────────────────────────────────
-    begin = sched.get("beginning_balance") or []
-    amort = sched.get("mandatory_amort") or []
-    prepay = sched.get("optional_prepayment") or []
-    end = sched.get("ending_balance") or []
-    if begin and end and len(begin) == len(end):
-        for i in range(len(begin)):
-            expected_end = begin[i] - (amort[i] if i < len(amort) else 0) - (prepay[i] if i < len(prepay) else 0)
-            if expected_end > 0 and end[i] > 0:
-                diff_pct = abs(expected_end - end[i]) / max(expected_end, end[i])
-                if diff_pct > 0.05:
-                    period_label = sched.get("periods", [])[i] if i < len(sched.get("periods", [])) else f"Period {i}"
-                    warnings.append(
-                        f"Debt schedule {period_label}: begin(${begin[i] / 1e6:,.1f}M) - "
-                        f"amort - prepay ≠ end(${end[i] / 1e6:,.1f}M) — {diff_pct * 100:.0f}% gap"
-                    )
-
-    # ── Interest coverage ─────────────────────────────────────────────
-    interest = sched.get("interest_expense") or []
-    if interest and ebitdas and len(interest) == len(ebitdas):
-        for i in range(len(interest)):
-            if interest[i] > 0 and ebitdas[i] > 0:
-                coverage = ebitdas[i] / interest[i]
-                if coverage < 1.0:
-                    period_label = periods[i] if i < len(periods) else f"Period {i}"
-                    warnings.append(
-                        f"{period_label}: Interest coverage {coverage:.1f}x < 1.0x — "
-                        f"EBITDA doesn't cover interest"
-                    )
-
-    # ── Returns bounds ────────────────────────────────────────────────
-    for case_name in ("base", "bull", "bear"):
-        case = returns.get(case_name)
-        if not case or not isinstance(case, dict):
+    # ── Returns bounds ───────────────────────────────────────────────
+    scenarios = returns.get("scenarios") or {}
+    for sc_name, sc_data in scenarios.items():
+        if not isinstance(sc_data, dict):
             continue
-        irr = case.get("irr", 0)
-        moic = case.get("moic", 0)
+        # Check IRR bounds
+        for k, v in sc_data.items():
+            k_lower = k.lower()
+            if "irr" in k_lower and v != 0:
+                irr_pct = v * 100 if abs(v) < 1 else v
+                if irr_pct < -100:
+                    errors.append(f"{sc_name} {k} {irr_pct:.0f}% < -100% — likely hallucinated")
+                elif irr_pct > 200:
+                    warnings.append(f"{sc_name} {k} {irr_pct:.0f}% > 200% — verify")
+            if "moic" in k_lower or "multiple" in k_lower:
+                if v and v < 0:
+                    errors.append(f"{sc_name} {k} {v:.1f}x is negative — impossible")
+                elif v and v > 20:
+                    warnings.append(f"{sc_name} {k} {v:.1f}x > 20x — verify")
 
-        if irr != 0:
-            irr_pct = irr * 100 if abs(irr) < 1 else irr
-            if irr_pct < -100:
-                errors.append(f"{case_name} IRR {irr_pct:.0f}% < -100% — likely hallucinated")
-            elif irr_pct > 200:
-                warnings.append(f"{case_name} IRR {irr_pct:.0f}% > 200% — verify")
-
-        if moic != 0:
-            if moic < 0:
-                errors.append(f"{case_name} MOIC {moic:.1f}x is negative — impossible")
-            elif moic > 20:
-                warnings.append(f"{case_name} MOIC {moic:.1f}x > 20x — verify")
-
-    # ── Sensitivity matrix dimensions ─────────────────────────────────
+    # ── Sensitivity matrix dimensions ────────────────────────────────
     sm = returns.get("sensitivity_matrix")
     if sm and isinstance(sm, dict):
         row_vals = sm.get("row_values") or []
@@ -180,7 +140,15 @@ def validate_pe_extraction(pe_data: Dict[str, Any]) -> Dict[str, Any]:
                         f"Sensitivity matrix row {i}: {len(row)} values but "
                         f"{len(col_vals)} col_values"
                     )
-                    break  # one warning is enough
+                    break
+
+    # ── Debt schedule consistency ────────────────────────────────────
+    total_balance = sched.get("total_balance") or []
+    if total_balance:
+        for i, bal in enumerate(total_balance):
+            if bal < 0:
+                period_label = (sched.get("periods") or [])[i] if i < len(sched.get("periods", [])) else f"Period {i}"
+                warnings.append(f"Debt schedule {period_label}: negative balance ${bal / 1e6:,.1f}M")
 
     valid = len(errors) == 0
     result = {"valid": valid, "warnings": warnings, "errors": errors}

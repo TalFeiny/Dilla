@@ -1,7 +1,11 @@
-"""PE chart generators — 4 functions wrapping existing chart formatters for PE IC memos.
+"""PE chart generators — adaptive chart functions for any deal type IC memos.
 
 Each function takes pe_model_data (from PEModelIngestionService) and returns
 a chart config dict ready for the frontend TableauLevelCharts renderer.
+
+Charts self-select based on what data exists: LBO deals get debt paydown and
+EBITDA bridges; structured equity gets capital stack and instrument mix;
+all deal types get sources/uses and sensitivity when the data is present.
 """
 
 import logging
@@ -18,64 +22,85 @@ from app.services.data_validator import ensure_numeric
 logger = logging.getLogger(__name__)
 
 
-def format_ebitda_bridge(pe_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """EBITDA bridge waterfall: entry EBITDA → value creation drivers → exit EBITDA.
+def _get_metric_values(om: Dict[str, Any], metric_name: str) -> List[float]:
+    """Extract values array for a named metric from flexible operating_model."""
+    metrics = om.get("metrics") or {}
+    md = metrics.get(metric_name)
+    if isinstance(md, dict):
+        return md.get("values") or []
+    return []
 
-    Decomposes into revenue growth contribution vs margin expansion when data allows.
-    Falls back to year-over-year deltas if revenue/margin data insufficient.
+
+def format_primary_metric_bridge(pe_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Primary metric bridge waterfall: entry → value creation drivers → exit.
+
+    Adapts to deal type: uses deal_profile.primary_metric (EBITDA, NOI, Revenue, etc.).
+    Decomposes into revenue growth vs margin expansion when EBITDA is primary and
+    Revenue + margin metrics exist. Otherwise: year-over-year deltas.
     """
     om = pe_data.get("operating_model") or {}
-    txn = pe_data.get("transaction") or {}
-    returns = pe_data.get("returns", {}).get("base") or {}
+    dp = pe_data.get("deal_profile") or {}
+    metrics = om.get("metrics") or {}
 
-    ebitda_series = om.get("ebitda") or []
-    if len(ebitda_series) < 2:
+    primary = dp.get("primary_metric", "")
+    if not primary or primary not in metrics:
+        # Fall back to first dollar-format metric
+        for name, md in metrics.items():
+            if isinstance(md, dict) and md.get("format") == "dollar":
+                primary = name
+                break
+    if not primary:
         return None
 
-    entry_ebitda = ebitda_series[0] or ensure_numeric(txn.get("entry_ebitda"), 0)
-    exit_ebitda = ebitda_series[-1] or ensure_numeric(returns.get("exit_ebitda"), 0)
+    series = _get_metric_values(om, primary)
+    if len(series) < 2:
+        return None
 
-    if not entry_ebitda:
+    entry_val = series[0]
+    exit_val = series[-1]
+    if not entry_val:
         return None
 
     items: List[Dict[str, Any]] = [
-        {"name": "Entry EBITDA", "value": entry_ebitda, "isSubtotal": True},
+        {"name": f"Entry {primary}", "value": entry_val, "isSubtotal": True},
     ]
 
-    # Try value creation driver decomposition: revenue growth vs margin expansion
-    revenues = om.get("revenue") or []
-    margins = om.get("ebitda_margin") or []
-    if (len(revenues) >= 2 and len(margins) >= 2
-            and revenues[0] > 0 and revenues[-1] > 0):
-        entry_rev = revenues[0]
-        exit_rev = revenues[-1]
-        entry_margin = margins[0] / 100 if margins[0] > 1 else margins[0]
-        exit_margin = margins[-1] / 100 if margins[-1] > 1 else margins[-1]
+    # Revenue/margin decomposition only when EBITDA-type is primary and both Revenue + margin exist
+    revenue_values = _get_metric_values(om, "Revenue") or _get_metric_values(om, "revenue")
+    margin_key = None
+    for candidate in ("EBITDA Margin", "ebitda_margin", "EBITDA_Margin", "Margin"):
+        if candidate in metrics:
+            margin_key = candidate
+            break
+    margin_values = _get_metric_values(om, margin_key) if margin_key else []
 
-        # Revenue growth contribution = Δrevenue × entry margin
+    if (primary.lower() in ("ebitda",) and len(revenue_values) >= 2
+            and len(margin_values) >= 2 and revenue_values[0] > 0 and revenue_values[-1] > 0):
+        entry_rev = revenue_values[0]
+        exit_rev = revenue_values[-1]
+        entry_margin = margin_values[0] / 100 if margin_values[0] > 1 else margin_values[0]
+        exit_margin = margin_values[-1] / 100 if margin_values[-1] > 1 else margin_values[-1]
+
         rev_growth_contribution = (exit_rev - entry_rev) * entry_margin
-        # Margin expansion contribution = exit revenue × Δmargin
         margin_expansion_contribution = exit_rev * (exit_margin - entry_margin)
-        # Residual (cross-term)
-        computed_exit = entry_ebitda + rev_growth_contribution + margin_expansion_contribution
-        residual = exit_ebitda - computed_exit
+        computed_exit = entry_val + rev_growth_contribution + margin_expansion_contribution
+        residual = exit_val - computed_exit
 
         items.append({"name": "Revenue Growth", "value": rev_growth_contribution})
         items.append({"name": "Margin Expansion", "value": margin_expansion_contribution})
-        if abs(residual) > abs(entry_ebitda) * 0.01:
+        if abs(residual) > abs(entry_val) * 0.01:
             items.append({"name": "Other / Rounding", "value": residual})
-    elif len(ebitda_series) > 2:
-        # Fallback: year-over-year increments
-        for i in range(1, len(ebitda_series)):
+    elif len(series) > 2:
+        for i in range(1, len(series)):
             period_label = (om.get("periods") or [])[i] if i < len(om.get("periods", [])) else f"Year {i}"
-            increment = ebitda_series[i] - ebitda_series[i - 1]
+            increment = series[i] - series[i - 1]
             items.append({"name": f"Δ {period_label}", "value": increment})
     else:
-        items.append({"name": "EBITDA Growth", "value": exit_ebitda - entry_ebitda})
+        items.append({"name": f"{primary} Growth", "value": exit_val - entry_val})
 
-    items.append({"name": "Exit EBITDA", "value": exit_ebitda, "isSubtotal": True})
+    items.append({"name": f"Exit {primary}", "value": exit_val, "isSubtotal": True})
 
-    return format_waterfall_chart(items, title="EBITDA Bridge: Entry → Exit")
+    return format_waterfall_chart(items, title=f"{primary} Bridge: Entry → Exit")
 
 
 def format_irr_moic_sensitivity(pe_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -127,63 +152,66 @@ def format_irr_moic_sensitivity(pe_data: Dict[str, Any]) -> Optional[Dict[str, A
 
 
 def format_debt_paydown(pe_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Debt paydown schedule — stacked bar by tranche over time.
+    """Debt paydown schedule — stacked bar by instrument over time.
 
-    Uses actual per-tranche schedules when extracted from the model.
-    Falls back to proportional estimate from total balance if per-tranche not available.
+    Uses actual per-instrument schedules when extracted from the model.
+    Falls back to proportional estimate from total balance if per-instrument not available.
     """
     sched = pe_data.get("debt_schedule") or {}
-    ds = pe_data.get("debt_structure") or {}
+    instruments = pe_data.get("instruments") or []
 
     periods = sched.get("periods") or []
-    ending_balance = sched.get("ending_balance") or []
+    total_balance = sched.get("total_balance") or []
 
-    if not periods or not ending_balance:
+    if not periods or not total_balance:
         return None
 
-    tranches = ds.get("tranches") or []
-    per_tranche = sched.get("per_tranche") or []
+    # Filter instruments to debt-type only for fallback proportional estimate
+    debt_types = {"senior_debt", "second_lien", "mezzanine", "unitranche", "revolver",
+                  "pik_note", "seller_note", "convertible_note"}
+    debt_instruments = [i for i in instruments if i.get("type", "").lower() in debt_types]
+
+    per_instrument = sched.get("per_instrument") or []
     colors = ["#4A90D9", "#D97B4A", "#7ED97B", "#D94A90", "#9B59B6"]
 
-    # Prefer actual per-tranche schedules from the model
-    if per_tranche and any(pt.get("ending_balance") for pt in per_tranche):
+    # Prefer actual per-instrument schedules from the model
+    if per_instrument and any(pi.get("ending_balance") for pi in per_instrument):
         datasets = []
-        for i, pt in enumerate(per_tranche):
-            pt_balances = pt.get("ending_balance") or []
-            if pt_balances:
+        for i, pi in enumerate(per_instrument):
+            pi_balances = pi.get("ending_balance") or []
+            if pi_balances:
                 datasets.append({
-                    "label": pt.get("name", f"Tranche {i + 1}"),
-                    "data": [ensure_numeric(v, 0) for v in pt_balances],
+                    "label": pi.get("name", f"Instrument {i + 1}"),
+                    "data": [ensure_numeric(v, 0) for v in pi_balances],
                     "backgroundColor": colors[i % len(colors)],
                 })
         if datasets:
-            chart = format_stacked_bar_chart(
+            return format_stacked_bar_chart(
                 labels=[str(p) for p in periods],
                 datasets=datasets,
                 title="Debt Paydown Schedule",
             )
-            return chart
 
-    # Fallback: estimate per-tranche proportionally from total
-    if len(tranches) > 1 and len(ending_balance) == len(periods):
-        total_debt = ds.get("total_debt") or sum(t.get("amount", 0) for t in tranches)
+    # Fallback: estimate per-instrument proportionally from total
+    if len(debt_instruments) > 1 and len(total_balance) == len(periods):
+        total_debt = sum(inst.get("amount", 0) for inst in debt_instruments)
         if not total_debt:
-            total_debt = ending_balance[0] if ending_balance else 1
+            total_debt = total_balance[0] if total_balance else 1
 
         datasets = []
-        for i, tranche in enumerate(tranches):
-            tranche_pct = (tranche.get("amount", 0) / total_debt) if total_debt else 0
-            tranche_data = [round(bal * tranche_pct) for bal in ending_balance]
+        for i, inst in enumerate(debt_instruments):
+            inst_pct = (inst.get("amount", 0) / total_debt) if total_debt else 0
+            inst_data = [round(bal * inst_pct) for bal in total_balance]
             datasets.append({
-                "label": tranche.get("name", f"Tranche {i + 1}"),
-                "data": tranche_data,
+                "label": inst.get("name", f"Instrument {i + 1}"),
+                "data": inst_data,
                 "backgroundColor": colors[i % len(colors)],
             })
 
         chart = format_stacked_bar_chart(
             labels=[str(p) for p in periods],
             datasets=datasets,
-            title="Debt Paydown Schedule (estimated per-tranche)",
+            title="Debt Paydown Schedule (estimated per-instrument)",
         )
         if chart:
             chart["_estimated"] = True
@@ -192,7 +220,7 @@ def format_debt_paydown(pe_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # Single dataset — total debt
     datasets = [{
         "label": "Total Debt",
-        "data": [ensure_numeric(v, 0) for v in ending_balance],
+        "data": [ensure_numeric(v, 0) for v in total_balance],
         "backgroundColor": "#4A90D9",
     }]
 
@@ -250,14 +278,76 @@ def format_sources_uses(pe_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Deal-type-adaptive charts — fire when instruments/data support them
+# ---------------------------------------------------------------------------
+
+_EQUITY_TYPES = {"preferred_equity", "common_equity", "warrant", "convertible_note", "earnout"}
+_DEBT_TYPES = {"senior_debt", "second_lien", "mezzanine", "unitranche", "revolver",
+               "pik_note", "seller_note", "convertible_note"}
+
+
+def format_capital_stack(pe_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Capital stack waterfall — visualizes the full capital structure as layers.
+
+    Shows each instrument as a building block from equity (bottom) up through
+    debt seniority. Works for ANY deal type — LBOs show debt-heavy stacks,
+    structured equity shows preferred/common/warrant layers.
+    Returns None if fewer than 2 instruments.
+    """
+    instruments = pe_data.get("instruments") or []
+    if len(instruments) < 2:
+        return None
+
+    # Sort: equity at bottom (rendered first in waterfall), senior debt at top
+    seniority_order = {
+        "common_equity": 0, "warrant": 1, "earnout": 2, "convertible_note": 3,
+        "preferred_equity": 4, "mezzanine": 5, "pik_note": 6, "second_lien": 7,
+        "seller_note": 8, "unitranche": 9, "senior_debt": 10, "revolver": 11,
+    }
+    sorted_instruments = sorted(
+        instruments,
+        key=lambda i: seniority_order.get(i.get("type", "").lower(), 5),
+    )
+
+    items: List[Dict[str, Any]] = []
+    for inst in sorted_instruments:
+        amt = ensure_numeric(inst.get("amount"), 0)
+        if not amt:
+            continue
+        inst_type = inst.get("type", "").lower()
+        # Color code by category
+        if inst_type in _EQUITY_TYPES:
+            color = "#22C55E"  # green for equity
+        elif inst_type in ("mezzanine", "pik_note", "second_lien"):
+            color = "#F59E0B"  # amber for junior debt
+        else:
+            color = "#3B82F6"  # blue for senior debt
+        items.append({
+            "name": inst.get("name", inst.get("type", "?")),
+            "value": amt,
+            "color": color,
+        })
+
+    if len(items) < 2:
+        return None
+
+    # Add total as subtotal
+    total = sum(i["value"] for i in items)
+    items.append({"name": "Total Capital", "value": total, "isSubtotal": True})
+
+    return format_waterfall_chart(items, title="Capital Stack")
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher — called by _prebuild_charts in the memo service
 # ---------------------------------------------------------------------------
 
 PE_CHART_BUILDERS = {
-    "ebitda_bridge": format_ebitda_bridge,
+    "ebitda_bridge": format_primary_metric_bridge,
     "sources_uses_chart": format_sources_uses,
     "debt_paydown": format_debt_paydown,
     "returns_sensitivity": format_irr_moic_sensitivity,
+    "capital_stack": format_capital_stack,
 }
 
 

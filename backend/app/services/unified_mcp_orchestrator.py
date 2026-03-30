@@ -853,7 +853,7 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="ingest_pe_model",
-        description="Ingest a PE/LBO model Excel file (.xlsx/.xls) and extract structured deal data (transaction, S&U, operating model, debt, returns).",
+        description="Ingest an investment model Excel file (.xlsx/.xls) and extract structured deal data (deal profile, instruments, S&U, operating model, returns, debt schedule). Works for any deal type: LBO, growth equity, structured equity, real asset, infrastructure, etc.",
         handler="_tool_ingest_pe_model",
         input_schema={"file_path": "str"},
         cost_tier="expensive",
@@ -6014,7 +6014,7 @@ class UnifiedMCPOrchestrator:
 
                 # Step 2: Generate memo
                 yield {"type": "progress", "stage": "executing", "message": "Generating IC memo..."}
-                _memo_type = "ic_memo" if _is_pe else "ic_memo"
+                _memo_type = "pe_ic_memo" if self.shared_data.get("pe_model_data") else "ic_memo"
                 memo_result = await self._execute_tool("generate_memo", {"memo_type": _memo_type})
 
                 if isinstance(memo_result, dict) and "error" not in memo_result:
@@ -16255,7 +16255,7 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             return {"error": str(e), "format": "deck", "slides": []}
 
     async def _tool_ingest_pe_model(self, inputs: dict) -> dict:
-        """Ingest a PE/LBO model Excel file and extract structured deal data.
+        """Ingest an investment model Excel file and extract structured deal data.
 
         Reads all sheets, sends to LLM for extraction, stores structured JSON
         in shared_data["pe_model_data"]. Also creates a minimal company entry
@@ -16278,46 +16278,57 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             validation = pe_data.get("_validation", {})
             self.shared_data["pe_validation"] = validation
 
-            # Create a minimal company entry from the transaction data
-            txn = pe_data.get("transaction", {})
-            company_name = txn.get("company_name", "PE Target")
+            # Create a minimal company entry from the deal profile
+            dp = pe_data.get("deal_profile", {})
+            company_name = dp.get("target_name", "Investment Target")
+            deal_type = dp.get("deal_type", "unknown").replace("_", " ").title()
+
+            # Get first revenue-like metric for the company entry
+            om = pe_data.get("operating_model") or {}
+            metrics = om.get("metrics") or {}
+            first_revenue = None
+            for name in ("Revenue", "revenue", "NOI", "noi"):
+                md = metrics.get(name)
+                if isinstance(md, dict) and md.get("values"):
+                    first_revenue = md["values"][0]
+                    break
+
             company_entry = {
                 "company": company_name,
                 "name": company_name,
-                "stage": "PE / Buyout",
+                "stage": f"PE / {deal_type}",
                 "sector": "Private Equity",
-                "revenue": (pe_data.get("operating_model") or {}).get("revenue", [None])[0],
-                "valuation": txn.get("entry_ev", 0),
-                "total_funding": txn.get("equity_check", 0),
+                "revenue": first_revenue,
+                "valuation": dp.get("total_investment", 0),
                 "_source": "pe_model",
+                "_source_pe": True,
             }
 
             # Add to companies list (don't overwrite existing)
             companies = self.shared_data.get("companies", [])
-            # Check if already present
             existing_names = {(c.get("company") or "").lower() for c in companies}
             if company_name.lower() not in existing_names:
                 companies.append(company_entry)
                 self.shared_data["companies"] = companies
 
             logger.info(
-                "[PE_INGEST] Stored pe_model_data: company=%s, entry_ev=%s, tranches=%d, valid=%s",
-                company_name, txn.get("entry_ev"),
-                len((pe_data.get("debt_structure") or {}).get("tranches", [])),
+                "[PE_INGEST] Stored pe_model_data: target=%s, deal_type=%s, instruments=%d, valid=%s",
+                company_name, dp.get("deal_type"),
+                len(pe_data.get("instruments") or []),
                 validation.get("valid", "?"),
             )
 
             result = {
                 "status": "success",
-                "company_name": company_name,
-                "entry_ev": txn.get("entry_ev"),
-                "entry_multiple": txn.get("entry_multiple"),
-                "equity_check": txn.get("equity_check"),
-                "management_rollover": txn.get("management_rollover"),
-                "debt_tranches": len((pe_data.get("debt_structure") or {}).get("tranches", [])),
-                "projection_periods": len((pe_data.get("operating_model") or {}).get("periods", [])),
+                "target_name": company_name,
+                "deal_type": dp.get("deal_type"),
+                "total_investment": dp.get("total_investment"),
+                "instruments": len(pe_data.get("instruments") or []),
+                "projection_periods": len(om.get("periods", [])),
+                "operating_metrics": list(metrics.keys()),
+                "return_scenarios": list((pe_data.get("returns", {}).get("scenarios") or {}).keys()),
                 "has_sensitivity": bool((pe_data.get("returns") or {}).get("sensitivity_matrix")),
-                "has_per_tranche_schedule": bool(pe_data.get("debt_schedule", {}).get("per_tranche")),
+                "has_debt_schedule": bool(pe_data.get("debt_schedule", {}).get("total_balance")),
                 "validation": validation,
             }
             if not validation.get("valid"):

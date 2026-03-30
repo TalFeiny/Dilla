@@ -54,7 +54,9 @@ class ChartDataService:
         """
         try:
             # PE companies don't use PWERM — probability cloud is a VC chart
-            if company_data.get("_source_pe") or company_data.get("pe_model_data"):
+            if (company_data.get("_source_pe")
+                    or company_data.get("pe_model_data")
+                    or company_data.get("_source") == "pe_model"):
                 return None
 
             scenarios = company_data.get("pwerm_scenarios", [])
