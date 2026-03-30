@@ -622,6 +622,7 @@ export function MemoEditor({ sections, onChange, readOnly = false, compact = fal
               return hasData ? (
                 <div
                   className="chart-container w-full my-3 bg-card rounded-lg overflow-hidden border border-border/40"
+                  data-section-index={idx}
                   style={{ height: chartHeight }}
                 >
                   <div className="w-full h-full p-3">

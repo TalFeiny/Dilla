@@ -2086,8 +2086,11 @@ def format_heatmap_chart(
 def format_waterfall_chart(
     items: List[Dict[str, Any]], title: str = None
 ) -> Dict[str, Any]:
-    """Format waterfall chart data consistently."""
-    return {"type": "waterfall", "data": {"items": items}, "title": title, "renderType": "tableau"}
+    """Format waterfall chart data consistently.
+
+    Data is a flat array of {name, value} — frontend expects this directly.
+    """
+    return {"type": "waterfall", "data": items, "title": title, "renderType": "tableau"}
 
 
 def format_bar_chart(

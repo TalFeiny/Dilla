@@ -452,19 +452,62 @@ export default function TableauLevelCharts({
           };
           
         case 'waterfall':
-          // Accept both array format and object with data array
-          const waterfallData = Array.isArray(normalizedData) ? normalizedData : 
-                                (normalizedData.data || normalizedData);
-          if (!Array.isArray(waterfallData)) {
+        case 'cash_flow_waterfall':
+        case 'cap_table_waterfall': {
+          // Accept many shapes LLMs produce:
+          // 1. Array of {name, value}
+          // 2. Object with items/data/steps/entries array
+          // 3. Parallel arrays: {labels:[], values:[]} or {categories:[], values:[]}
+          // 4. Flat key-value object: {"Revenue": 5000000, "COGS": -2000000}
+          let waterfallData: any[] | null = null;
+
+          if (Array.isArray(normalizedData)) {
+            waterfallData = normalizedData;
+          } else if (typeof normalizedData === 'object' && normalizedData !== null) {
+            // Named array properties
+            const arrProp = normalizedData.items || normalizedData.data || normalizedData.steps
+              || normalizedData.entries || normalizedData.bars || normalizedData.segments;
+            if (Array.isArray(arrProp)) {
+              waterfallData = arrProp;
+            }
+            // Parallel arrays: {labels/categories/names: [], values/amounts: []}
+            else {
+              const names: string[] | undefined = normalizedData.labels || normalizedData.categories
+                || normalizedData.names || normalizedData.keys;
+              const values: number[] | undefined = normalizedData.values || normalizedData.amounts
+                || normalizedData.data;
+              if (Array.isArray(names) && Array.isArray(values) && names.length === values.length) {
+                waterfallData = names.map((n: string, i: number) => ({ name: n, value: values[i] }));
+              }
+              // Flat key-value: {"Revenue": 5000000, "COGS": -2000000}
+              else {
+                const keys = Object.keys(normalizedData).filter(
+                  k => typeof normalizedData[k] === 'number' || (typeof normalizedData[k] === 'string' && !isNaN(Number(normalizedData[k])))
+                );
+                if (keys.length >= 2) {
+                  waterfallData = keys.map(k => ({ name: k, value: Number(normalizedData[k]) }));
+                }
+              }
+            }
+          }
+
+          if (!waterfallData || waterfallData.length === 0) {
             return { valid: false, data: null, error: 'Waterfall data must be an array of {name, value}' };
           }
-          // Normalize values to numbers
-          const normalizedWaterfall = waterfallData.map((item: any) => ({
-            name: item.name || item.label || String(item),
-            value: typeof item.value === 'number' ? item.value : parseFloat(item.value) || 0,
-            ...item
-          }));
+          // Normalize each item to {name, value}
+          const normalizedWaterfall = waterfallData.map((item: any) => {
+            if (typeof item !== 'object' || item === null) {
+              return { name: String(item), value: 0 };
+            }
+            const val = item.value ?? item.amount ?? item.total ?? item.change ?? 0;
+            return {
+              ...item,
+              name: item.name || item.label || item.category || item.step || String(item),
+              value: typeof val === 'number' ? val : parseFloat(val) || 0,
+            };
+          });
           return { valid: true, data: normalizedWaterfall };
+        }
           
         case 'heatmap':
           // Handle backend format: {dimensions: [], companies: [], scores: [[]]}
@@ -596,18 +639,7 @@ export default function TableauLevelCharts({
           }
           return { valid: false, data: null, error: `${chartType} data must have labels and datasets` };
 
-        case 'cash_flow_waterfall':
-          const cfwData = Array.isArray(normalizedData) ? normalizedData : (normalizedData.data || normalizedData);
-          if (!Array.isArray(cfwData)) {
-            return { valid: false, data: null, error: 'Cash flow waterfall data must be an array of {name, value}' };
-          }
-          const normalizedCFW = cfwData.map((item: any) => ({
-            name: item.name || item.label || String(item),
-            value: typeof item.value === 'number' ? item.value : parseFloat(item.value) || 0,
-            isSubtotal: item.isSubtotal || false,
-            ...item
-          }));
-          return { valid: true, data: normalizedCFW };
+        // cash_flow_waterfall + cap_table_waterfall handled above with 'waterfall' case
 
         case 'monte_carlo_fan':
           if (!normalizedData || typeof normalizedData !== 'object') {

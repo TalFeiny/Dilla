@@ -417,16 +417,16 @@ class LightweightMemoService:
             from app.services.model_router import ModelCapability
 
             logger.info(f"[MEMO] generate_narratives: calling LLM ({len(user_prompt)} char prompt, {len(system_prompt)} char system)...")
-            response = await asyncio.wait_for(
-                self.model_router.get_completion(
-                    prompt=user_prompt,
-                    system_prompt=system_prompt,
-                    capability=ModelCapability.ANALYSIS,
-                    max_tokens=12000,
-                    temperature=0.25,
-                    caller_context="lightweight_memo_narratives",
-                ),
-                timeout=90,  # 90s per LLM call — leaves headroom within the 120s outer timeout
+            # No wrapper timeout here — model_router already calculates a
+            # per-call timeout based on max_tokens + prompt size (~260s for 12K tokens).
+            # The old 90s timeout was killing the call before Sonnet could finish.
+            response = await self.model_router.get_completion(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                capability=ModelCapability.ANALYSIS,
+                max_tokens=12000,
+                temperature=0.25,
+                caller_context="lightweight_memo_narratives",
             )
 
             raw_text = response.get("response", "") if isinstance(response, dict) else str(response)
@@ -845,24 +845,16 @@ class LightweightMemoService:
 
         # Shot 2 + chart pre-build in parallel
         # LLM writes narrative only; charts built from Python service data (no LLM)
+        # Charts are sync (no LLM) so build first — they must survive even if narratives fail.
         _t0 = datetime.now()
+        logger.info("[MEMO] Running _prebuild_charts...")
+        prebuilt_charts = self._prebuild_charts(template_id, available_data)
+        logger.info(f"[MEMO] Charts done ({len(prebuilt_charts)}), starting narratives...")
         try:
-            logger.info("[MEMO] Creating narratives task...")
-            narratives_task = asyncio.create_task(
-                self.generate_narratives(template_id, prompt, available_data)
-            )
-            logger.info("[MEMO] Running _prebuild_charts...")
-            prebuilt_charts = self._prebuild_charts(template_id, available_data)
-            logger.info(f"[MEMO] Charts done ({len(prebuilt_charts)}), awaiting narratives (120s timeout)...")
-            narratives = await asyncio.wait_for(narratives_task, timeout=120)
-        except asyncio.TimeoutError:
-            logger.error("[MEMO] Narrative generation timed out after 120s")
-            narratives = {}
-            prebuilt_charts = {}
+            narratives = await self.generate_narratives(template_id, prompt, available_data)
         except Exception as e:
             logger.error(f"[MEMO] Narrative generation failed: {e}", exc_info=True)
             narratives = {}
-            prebuilt_charts = self._prebuild_charts(template_id, available_data)
 
         _elapsed = (datetime.now() - _t0).total_seconds()
         logger.info(f"[MEMO] Template pipeline took {_elapsed:.1f}s — narratives={len(narratives)}, charts={len(prebuilt_charts)}")

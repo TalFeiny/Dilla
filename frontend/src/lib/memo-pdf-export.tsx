@@ -1,9 +1,65 @@
 /**
- * Memo PDF Export — uses jsPDF + html2canvas (already in package.json).
+ * Memo PDF Export — uses jsPDF + native SVG-to-canvas for charts.
  * Works on Vercel (pure JS, no Playwright/Puppeteer).
  */
 
 import type { DocumentSection } from '@/components/memo/MemoEditor';
+
+/** Serialize an SVG element to a PNG data URL via the browser's native renderer. */
+async function svgToImage(svgEl: SVGSVGElement, scale = 2): Promise<string> {
+  const clone = svgEl.cloneNode(true) as SVGSVGElement;
+
+  // Inline computed styles from the original tree so the clone renders correctly detached from DOM
+  const origEls = svgEl.querySelectorAll('*');
+  const cloneEls = clone.querySelectorAll('*');
+  origEls.forEach((orig, i) => {
+    if (orig instanceof SVGElement && cloneEls[i] instanceof SVGElement) {
+      const computed = getComputedStyle(orig);
+      const dominated = ['fill', 'stroke', 'stroke-width', 'font-size', 'font-family',
+        'font-weight', 'opacity', 'text-anchor', 'dominant-baseline'];
+      for (const prop of dominated) {
+        const val = computed.getPropertyValue(prop);
+        if (val) (cloneEls[i] as SVGElement).style.setProperty(prop, val);
+      }
+    }
+  });
+
+  // Ensure viewBox and dimensions
+  const bbox = svgEl.getBoundingClientRect();
+  const w = bbox.width || svgEl.clientWidth || 500;
+  const h = bbox.height || svgEl.clientHeight || 300;
+  if (!clone.getAttribute('viewBox')) {
+    clone.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  }
+  clone.setAttribute('width', String(w));
+  clone.setAttribute('height', String(h));
+
+  const serializer = new XMLSerializer();
+  const svgStr = serializer.serializeToString(clone);
+  const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+
+  return new Promise<string>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = w * scale;
+      canvas.height = h * scale;
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('SVG image load failed'));
+    };
+    img.src = url;
+  });
+}
 
 export async function exportMemoPdf(
   sections: DocumentSection[],
@@ -11,10 +67,7 @@ export async function exportMemoPdf(
   /** Pass the memo editor container element to enable chart capture */
   containerEl?: HTMLElement | null,
 ): Promise<void> {
-  const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
-    import('jspdf'),
-    import('html2canvas'),
-  ]);
+  const { default: jsPDF } = await import('jspdf');
 
   const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
   const pageW = doc.internal.pageSize.getWidth();
@@ -147,48 +200,58 @@ export async function exportMemoPdf(
         break;
 
       case 'chart': {
-        // Capture rendered chart from DOM via html2canvas
+        // Capture rendered chart from DOM via data-section-index attribute
         const chartTitle = section.chart?.title;
         const sectionIndex = sections.indexOf(section);
-        const chartEl = containerEl?.querySelectorAll('.chart-container')?.[
-          // Map section index to chart-container index (only chart sections have .chart-container)
-          sections.slice(0, sectionIndex).filter(s => s.type === 'chart' && s.chart).length
-        ] as HTMLElement | undefined;
+        const chartEl = containerEl?.querySelector(
+          `.chart-container[data-section-index="${sectionIndex}"]`
+        ) as HTMLElement | undefined;
 
         if (chartEl) {
-          try {
-            const canvas = await html2canvas(chartEl, {
-              scale: 2,
-              backgroundColor: '#ffffff',
-              logging: false,
-              useCORS: true,
-            });
-            const imgData = canvas.toDataURL('image/png');
-            const imgAspect = canvas.width / canvas.height;
-            const imgW = contentW;
-            const imgH = imgW / imgAspect;
-            ensureSpace(imgH + 24);
-            if (chartTitle) {
-              doc.setFontSize(9);
-              doc.setFont('helvetica', 'bold');
-              doc.setTextColor(60, 60, 60);
-              doc.text(chartTitle, margin, y);
-              y += 14;
-              doc.setTextColor(0, 0, 0);
+          // Find the actual SVG rendered by Recharts / D3 inside the container
+          const svgEl = chartEl.querySelector('.recharts-wrapper svg') as SVGSVGElement
+            ?? chartEl.querySelector('svg') as SVGSVGElement;
+
+          if (svgEl) {
+            try {
+              const imgData = await svgToImage(svgEl);
+              const bbox = svgEl.getBoundingClientRect();
+              const svgW = bbox.width || 500;
+              const svgH = bbox.height || 300;
+              const imgW = contentW;
+              const imgH = imgW * (svgH / svgW);
+              ensureSpace(imgH + 24);
+              if (chartTitle) {
+                doc.setFontSize(9);
+                doc.setFont('helvetica', 'bold');
+                doc.setTextColor(60, 60, 60);
+                doc.text(chartTitle, margin, y);
+                y += 14;
+                doc.setTextColor(0, 0, 0);
+              }
+              doc.addImage(imgData, 'PNG', margin, y, imgW, imgH);
+              y += imgH + 10;
+            } catch {
+              // SVG capture failed — text placeholder
+              if (chartTitle) {
+                ensureSpace(30);
+                doc.setFontSize(9);
+                doc.setFont('helvetica', 'italic');
+                doc.setTextColor(100, 100, 100);
+                doc.text(`[Chart: ${chartTitle}]`, margin, y);
+                y += 16;
+                doc.setTextColor(0, 0, 0);
+              }
             }
-            doc.addImage(imgData, 'PNG', margin, y, imgW, imgH);
-            y += imgH + 10;
-          } catch {
-            // Fallback to text placeholder on capture failure
-            if (chartTitle) {
-              ensureSpace(30);
-              doc.setFontSize(9);
-              doc.setFont('helvetica', 'italic');
-              doc.setTextColor(100, 100, 100);
-              doc.text(`[Chart: ${chartTitle}]`, margin, y);
-              y += 16;
-              doc.setTextColor(0, 0, 0);
-            }
+          } else if (chartTitle) {
+            // No SVG found (error chart or canvas-only) — text placeholder
+            ensureSpace(30);
+            doc.setFontSize(9);
+            doc.setFont('helvetica', 'italic');
+            doc.setTextColor(100, 100, 100);
+            doc.text(`[Chart: ${chartTitle}]`, margin, y);
+            y += 16;
+            doc.setTextColor(0, 0, 0);
           }
         } else if (chartTitle) {
           ensureSpace(30);
