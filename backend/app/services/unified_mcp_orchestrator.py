@@ -35022,9 +35022,9 @@ Return a JSON with this structure:
 
                 return result
 
-            # --- Legacy fallback (original monolithic generation) ---
-            logger.warning("[MEMO] LightweightMemoService unavailable, using legacy generation")
-            return await self._execute_memo_generation_legacy(inputs)
+            # LightweightMemoService is required — no legacy fallback
+            logger.error("[MEMO] LightweightMemoService is None — cannot generate memo")
+            return {"error": "Memo service unavailable", "format": "docs", "sections": [], "title": "Memo Generation Failed"}
 
         except Exception as e:
             logger.error(f"Memo generation error: {e}", exc_info=True)
@@ -37746,85 +37746,8 @@ Return a JSON with this structure:
             companies_list = final_data["companies"]
             logger.info(f"Using {len(companies_list)} companies from final_data")
             
-        # Add exit scenarios (bull/base/bear) for each company
-        # SKIP if upstream already computed PWERM (valuation-engine skill or _populate_memo_service_data)
-        _pwerm_skip_count = 0
-        _pwerm_run_count = 0
-        for company in companies_list:
-            if company.get("pwerm_valuation") and company.get("exit_scenarios"):
-                _pwerm_skip_count += 1
-                continue  # Already computed upstream — no duplicate work
-            if company.get("valuation") or company.get("inferred_valuation"):
-                try:
-                    stage_map = {
-                        "Pre-Seed": Stage.PRE_SEED,
-                        "Pre Seed": Stage.PRE_SEED,
-                        "Seed": Stage.SEED,
-                        "Series A": Stage.SERIES_A,
-                        "Series B": Stage.SERIES_B,
-                        "Series C": Stage.SERIES_C,
-                        "Series D+": Stage.LATE,
-                        "Growth": Stage.GROWTH,
-                        "Late": Stage.LATE,
-                        "Late Stage Private": Stage.LATE,
-                        "Late Stage": Stage.LATE
-                    }
-                    company_stage = stage_map.get(company.get("stage", "Series A"), Stage.SERIES_A)
-
-                    revenue = ensure_numeric(company.get("revenue"), 0)
-                    if revenue == 0:
-                        revenue = ensure_numeric(company.get("inferred_revenue"), 0)
-                        if revenue == 0:
-                            revenue = ensure_numeric(company.get("arr"), 0)
-                            if revenue == 0:
-                                revenue = ensure_numeric(company.get("inferred_arr"), 1_000_000)
-
-                    growth_rate = ensure_numeric(company.get("growth_rate"), 0)
-                    if growth_rate == 0:
-                        growth_rate = ensure_numeric(company.get("inferred_growth_rate"), 1.5)
-
-                    valuation = ensure_numeric(company.get("valuation"), 0)
-                    if valuation == 0:
-                        valuation = ensure_numeric(company.get("inferred_valuation"), 0)
-                        if valuation == 0:
-                            valuation = ensure_numeric(company.get("total_funding"), 0) * 3
-
-                    inferred_val = ensure_numeric(company.get("inferred_valuation"), None) if company.get("inferred_valuation") is not None else None
-                    val_request = ValuationRequest(
-                        company_name=company.get("company", "Unknown"),
-                        stage=company_stage,
-                        revenue=revenue,
-                        growth_rate=growth_rate,
-                        last_round_valuation=valuation if valuation and valuation > 0 else None,
-                        inferred_valuation=inferred_val,
-                        total_raised=self._get_field_safe(company, "total_funding")
-                    )
-
-                    pwerm_result = await self.valuation_engine._calculate_pwerm(val_request)
-                    full_scenarios = pwerm_result.scenarios
-                    simple_scenarios = self.valuation_engine.generate_simple_scenarios(val_request)
-
-                    company["exit_scenarios"] = simple_scenarios
-                    company["full_exit_distribution"] = [
-                        {
-                            "scenario": s.scenario,
-                            "probability": s.probability,
-                            "exit_value": s.exit_value,
-                            "time_to_exit": s.time_to_exit,
-                            "moic": s.moic
-                        } for s in full_scenarios
-                    ]
-                    company["pwerm_valuation"] = pwerm_result.fair_value
-                    company["pwerm_scenarios"] = full_scenarios
-                    _pwerm_run_count += 1
-
-                    logger.info(f"Added PWERM scenarios for {company.get('company', 'Unknown')}: {len(full_scenarios)} scenarios, PWERM value: ${pwerm_result.fair_value:,.0f}")
-
-                except Exception as e:
-                    logger.error(f"Failed to generate exit scenarios for {company.get('company', 'Unknown')}: {e}")
-        if _pwerm_skip_count:
-            logger.info(f"[FORMAT_OUTPUT] Skipped PWERM for {_pwerm_skip_count} companies (already computed upstream), ran for {_pwerm_run_count}")
-            
+        # PWERM removed from format_output — it should only run when explicitly
+        # requested via the valuation-engine skill, never as a side-effect.
         # Update final data with companies list (should already be there but ensure it)
         final_data["companies"] = companies_list
         

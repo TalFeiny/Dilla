@@ -793,6 +793,12 @@ class LightweightMemoService:
         """
         # Shot 1: Detect type → pick template → audit data
         template_id = self.detect_memo_type(prompt, memo_type)
+
+        # Bulletproof: if pe_model_data exists, force pe_ic_memo
+        if template_id != "pe_ic_memo" and self.shared_data.get("pe_model_data"):
+            logger.warning("[MEMO] detect_memo_type returned %s but pe_model_data exists — forcing pe_ic_memo", template_id)
+            template_id = "pe_ic_memo"
+
         available_data, missing_req, missing_opt = self.audit_data(template_id)
 
         # Auto-fill template variables for contract templates
@@ -1948,6 +1954,10 @@ class LightweightMemoService:
         and ``companies``.  Designed to always return *something* useful even
         when fund-level data is incomplete or estimated.
         """
+        # PE deals have their own chart set — never suggest VC charts
+        if data.get("pe_model_data"):
+            return None
+
         fund_metrics = data.get("fund_metrics") or {}
         fund_ctx = data.get("fund_context") or {}
         heading = (section_def.get("heading") or "").lower()
