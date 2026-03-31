@@ -1741,17 +1741,30 @@ class ModelRouter:
             else:
                 result = base
                 logger.debug(f"[_get_model_order] No affinity, default order: {result}")
-            return result
-        
-        # Preferred models (from caller_context task routing) always go first,
-        # even if they don't match the capability filter — task routing wins.
-        preferred_in_config = [m for m in preferred if m in self.model_configs]
-        other_models = [m for m in capable_models if m not in preferred]
-        result = preferred_in_config + other_models
-        if set(preferred_in_config) != set(m for m in preferred if m in capable_models):
-            skipped = [m for m in preferred_in_config if m not in capable_models]
-            logger.debug(f"[_get_model_order] Preferred models {skipped} lack capability={capability} but included anyway (task routing wins)")
-        logger.debug(f"[_get_model_order] Preferred={preferred}, Result={result}")
+        else:
+            # Preferred models (from caller_context task routing) always go first,
+            # even if they don't match the capability filter — task routing wins.
+            preferred_in_config = [m for m in preferred if m in self.model_configs]
+            other_models = [m for m in capable_models if m not in preferred]
+            result = preferred_in_config + other_models
+            if set(preferred_in_config) != set(m for m in preferred if m in capable_models):
+                skipped = [m for m in preferred_in_config if m not in capable_models]
+                logger.debug(f"[_get_model_order] Preferred models {skipped} lack capability={capability} but included anyway (task routing wins)")
+            logger.debug(f"[_get_model_order] Preferred={preferred}, Result={result}")
+
+        # Provider spreading: if the last call in this request used provider X,
+        # deprioritize provider X so sequential calls hit different providers.
+        # This avoids rate-limit stacking (e.g. ingestion + narratives both hitting Anthropic).
+        if self._active_budget and self._active_budget.calls:
+            last_model = self._active_budget.calls[-1].get("model", "")
+            if last_model in self.model_configs:
+                last_provider = self.model_configs[last_model]["provider"]
+                diff = [m for m in result if self.model_configs.get(m, {}).get("provider") != last_provider]
+                same = [m for m in result if self.model_configs.get(m, {}).get("provider") == last_provider]
+                if diff:
+                    result = diff + same
+                    logger.debug(f"[PROVIDER_SPREAD] Last used {last_provider.value}, reordered: {result[:3]}")
+
         return result
     
     def _get_request_cache_key(self, prompt: str, system_prompt: Optional[str], model_name: str, max_tokens: int, temperature: float) -> str:
