@@ -1090,11 +1090,11 @@ PE_IC_MEMO = {
                  data_keys=["pe_model_data"],
                  prompt_hint="Top 5-7 risks with severity (High/Medium/Low) and specific mitigants. "
                             "Present as a table: Risk | Severity | Mitigant | Residual Exposure."),
-        _section("recommendation", "IC Recommendation",
+        _section("recommendation", "Recommendation",
                  data_keys=["pe_model_data"],
-                 prompt_hint="Approve or decline. Compare base case returns to hurdle rate. "
-                            "State conviction level. Recommended investment size. "
-                            "Key conditions for approval (if conditional)."),
+                 prompt_hint="Clear invest or pass decision. Compare base case returns to hurdle rate. "
+                            "State conviction level (High/Medium/Low). Recommended investment size. "
+                            "Key conditions or next steps."),
     ],
 }
 

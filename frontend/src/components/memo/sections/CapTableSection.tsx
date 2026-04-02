@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { MemoSectionWrapper } from '../MemoSectionWrapper';
 import { useMemoContext, type NarrativeCard } from '../MemoContext';
@@ -32,6 +32,45 @@ interface CapTableRow {
 export interface CapTableSectionProps {
   onDelete?: () => void;
   readOnly?: boolean;
+}
+
+function EditableCell({ value, align, className, readOnly, onCommit }: {
+  value: string; align: 'left' | 'right'; className?: string; readOnly?: boolean;
+  onCommit: (v: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { if (editing) { setDraft(value); inputRef.current?.select(); } }, [editing, value]);
+
+  if (editing && !readOnly) {
+    return (
+      <td className={`px-2 py-0.5 ${align === 'right' ? 'text-right' : 'text-left'}`}>
+        <input
+          ref={inputRef}
+          autoFocus
+          className={`w-full bg-transparent outline-none border-b border-primary text-[11px] tabular-nums ${align === 'right' ? 'text-right' : 'text-left'} ${className ?? ''}`}
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { onCommit(draft); setEditing(false); }
+            if (e.key === 'Escape') setEditing(false);
+          }}
+          onBlur={() => { onCommit(draft); setEditing(false); }}
+        />
+      </td>
+    );
+  }
+
+  return (
+    <td
+      className={`px-2 py-1 whitespace-nowrap tabular-nums ${align === 'right' ? 'text-right' : 'text-left'} ${className ?? ''} ${readOnly ? '' : 'cursor-text hover:bg-muted/40'}`}
+      onDoubleClick={() => { if (!readOnly) setEditing(true); }}
+    >
+      {value}
+    </td>
+  );
 }
 
 export function CapTableSection({ onDelete, readOnly = false }: CapTableSectionProps) {
@@ -119,6 +158,15 @@ export function CapTableSection({ onDelete, readOnly = false }: CapTableSectionP
     }));
   }, [capTableData, chartMode, exitValuation]);
 
+  const updateRow = useCallback((index: number, field: keyof CapTableRow, raw: string) => {
+    setCapTableData(prev => prev.map((r, i) => {
+      if (i !== index) return r;
+      if (field === 'stakeholder' || field === 'share_class') return { ...r, [field]: raw };
+      const n = parseFloat(raw.replace(/[^0-9.-]/g, ''));
+      return { ...r, [field]: isNaN(n) ? r[field] : n };
+    }));
+  }, []);
+
   const totalOwnership = capTableData.reduce((sum, r) => sum + r.ownership_pct, 0);
   const collapsedSummary = capTableData.length > 0
     ? `${capTableData.length} stakeholders | ${fmtPct(totalOwnership, 1)} allocated`
@@ -179,17 +227,13 @@ export function CapTableSection({ onDelete, readOnly = false }: CapTableSectionP
         <tbody>
           {capTableData.map((row, i) => (
             <tr key={i} className="border-b border-border/50">
-              <td className="px-2 py-1 whitespace-nowrap font-medium">{row.stakeholder}</td>
-              <td className="px-2 py-1 whitespace-nowrap">
-                <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted">{row.share_class}</span>
-              </td>
-              <td className="px-2 py-1 tabular-nums text-right">{row.shares.toLocaleString()}</td>
-              <td className="px-2 py-1 tabular-nums text-right">{fmtPct(row.ownership_pct, 1)}</td>
-              <td className="px-2 py-1 tabular-nums text-right">{row.liquidation_pref != null ? `${row.liquidation_pref}x` : '—'}</td>
-              <td className="px-2 py-1 tabular-nums text-right">{row.invested ? fmtCurrency(row.invested) : '—'}</td>
-              <td className="px-2 py-1 tabular-nums text-right font-medium">
-                {fmtCurrency(row.value_at_exit || row.ownership_pct * (parseFloat(exitValuation) || 50000000))}
-              </td>
+              <EditableCell value={row.stakeholder} align="left" className="font-medium" readOnly={readOnly} onCommit={v => updateRow(i, 'stakeholder', v)} />
+              <EditableCell value={row.share_class} align="left" readOnly={readOnly} onCommit={v => updateRow(i, 'share_class', v)} />
+              <EditableCell value={row.shares.toLocaleString()} align="right" readOnly={readOnly} onCommit={v => updateRow(i, 'shares', v)} />
+              <EditableCell value={fmtPct(row.ownership_pct, 1)} align="right" readOnly={readOnly} onCommit={v => updateRow(i, 'ownership_pct', v)} />
+              <EditableCell value={row.liquidation_pref != null ? `${row.liquidation_pref}x` : '—'} align="right" readOnly={readOnly} onCommit={v => updateRow(i, 'liquidation_pref', v)} />
+              <EditableCell value={row.invested ? fmtCurrency(row.invested) : '—'} align="right" readOnly={readOnly} onCommit={v => updateRow(i, 'invested', v)} />
+              <EditableCell value={fmtCurrency(row.value_at_exit || row.ownership_pct * (parseFloat(exitValuation) || 50000000))} align="right" className="font-medium" readOnly={readOnly} onCommit={v => updateRow(i, 'value_at_exit', v)} />
             </tr>
           ))}
         </tbody>

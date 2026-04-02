@@ -811,6 +811,20 @@ export function AGGridMatrix({
     propsRef.current.onCellEdit?.(rowId, columnId, params.newValue);
   }, []);
 
+  // Explicitly start AG Grid inline editing on double-click.
+  // CellDropdownRenderer covers the cell area and can prevent AG Grid's default
+  // double-click-to-edit detection.
+  const handleCellDoubleClicked = useCallback((params: any) => {
+    if (!params.colDef?.editable) return;
+    if (typeof params.colDef.editable === 'function' && !params.colDef.editable(params)) return;
+    try {
+      params.api.startEditingCell({
+        rowIndex: params.rowIndex,
+        colKey: params.column.getColId(),
+      });
+    } catch (_) {}
+  }, []);
+
   // Grid ready callback
   const onGridReady = useCallback((params: any) => {
     if (!params?.api || params.api.isDestroyed()) return;
@@ -1166,6 +1180,7 @@ export function AGGridMatrix({
                 }
               }}
               onGridPreDestroyed={onGridPreDestroyed}
+              onCellDoubleClicked={handleCellDoubleClicked}
               onCellValueChanged={handleCellValueChanged}
               onSelectionChanged={handleSelectionChanged}
               rowSelection={onSelectionChange ? 'multiple' : undefined}

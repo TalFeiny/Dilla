@@ -88,6 +88,61 @@ def validate_pe_extraction(pe_data: Dict[str, Any]) -> Dict[str, Any]:
             f"(available: {list(metrics.keys())[:5]})"
         )
 
+    # ── Cross-metric sanity: EBITDA < Revenue, margins in bounds ─────
+    if metrics:
+        def _vals(name):
+            md = metrics.get(name)
+            if isinstance(md, dict):
+                return [v for v in (md.get("values") or []) if isinstance(v, (int, float)) and v != 0]
+            return []
+
+        rev_vals = _vals("Revenue") or _vals("revenue")
+        ebitda_vals = _vals("EBITDA") or _vals("ebitda")
+
+        # EBITDA should be less than Revenue (margin < 100%)
+        if rev_vals and ebitda_vals and len(rev_vals) == len(ebitda_vals):
+            for i, (r, e) in enumerate(zip(rev_vals, ebitda_vals)):
+                if r > 0 and e > r:
+                    period_label = periods[i] if i < len(periods) else f"Period {i}"
+                    errors.append(
+                        f"{period_label}: EBITDA (${e/1e6:,.1f}M) > Revenue (${r/1e6:,.1f}M) — "
+                        f"likely extraction error"
+                    )
+                    break  # one error is enough
+
+        # YoY growth sanity on primary metric (>5x or <-80% YoY is suspicious)
+        primary_vals = _vals(primary) if primary else ebitda_vals or rev_vals
+        if len(primary_vals) >= 2:
+            for i in range(1, len(primary_vals)):
+                prev = primary_vals[i - 1]
+                curr = primary_vals[i]
+                if prev > 0:
+                    yoy = (curr - prev) / prev
+                    period_label = periods[i] if i < len(periods) else f"Period {i}"
+                    if yoy > 4.0:
+                        warnings.append(
+                            f"{period_label}: {primary or 'primary metric'} grew {yoy*100:.0f}% YoY "
+                            f"(${prev/1e6:,.1f}M → ${curr/1e6:,.1f}M) — verify extraction"
+                        )
+                    elif yoy < -0.8:
+                        warnings.append(
+                            f"{period_label}: {primary or 'primary metric'} fell {abs(yoy)*100:.0f}% YoY "
+                            f"(${prev/1e6:,.1f}M → ${curr/1e6:,.1f}M) — verify extraction"
+                        )
+
+        # Margin values should be 0-100 (pct format) or 0-1 (decimal)
+        for margin_key in ("EBITDA Margin", "ebitda_margin", "EBITDA_Margin", "Margin"):
+            margin_vals = _vals(margin_key)
+            if margin_vals:
+                for v in margin_vals:
+                    if v > 100 or v < -100:
+                        errors.append(
+                            f"{margin_key} value {v} is outside [-100, 100] — "
+                            f"likely wrong metric or scale error"
+                        )
+                        break
+                break  # only check first matching margin key
+
     # ── Sources ≈ Uses ───────────────────────────────────────────────
     sources = su.get("sources") or []
     uses = su.get("uses") or []

@@ -798,6 +798,7 @@ class ModelRouter:
                     self.anthropic_client = AsyncAnthropic(
                         api_key=self.anthropic_key,
                         timeout=300.0,  # 5min per-request timeout (SDK default is 600s)
+                        max_retries=0,  # Surface 429s instantly so model_router fallback handles them
                     )
                     logger.debug("[_init_clients] Anthropic client initialized")
                 except ImportError as exc:
@@ -819,7 +820,7 @@ class ModelRouter:
                 try:
                     openai_module = importlib.import_module("openai")
                     AsyncOpenAI = getattr(openai_module, "AsyncOpenAI")
-                    self.openai_client = AsyncOpenAI(api_key=self.openai_key)
+                    self.openai_client = AsyncOpenAI(api_key=self.openai_key, max_retries=0)
                     if not self.openai_client:
                         raise ValueError("Failed to create OpenAI client - client is None")
                     logger.debug("[_init_clients] OpenAI client initialized")
@@ -957,8 +958,9 @@ class ModelRouter:
                 logger.error(f"[MODEL_ROUTER] {name}: capabilities={config['capabilities']}")
             raise Exception(f"No models available for capability={capability.value}")
         
-        logger.debug(f"[MODEL_ROUTER] Models to try: {models} | capability={capability.value}")
-        
+        caller = caller_context or "unknown"
+        logger.info(f"[MODEL_ROUTER] 🎯 {caller} | models={models[:4]} | capability={capability.value}")
+
         # Check if all models are blocked by circuit breakers - if so, reset them all
         ready_models = [m for m in models if self._is_model_ready(m)]
         blocked_models = [m for m in ready_models if self._is_circuit_broken(m)]
@@ -971,7 +973,7 @@ class ModelRouter:
             model_config = self.model_configs[model_name]
             
             # Check circuit breaker
-            logger.debug(f"[MODEL_ROUTER] Attempting model: {model_name}")
+            logger.info(f"[MODEL_ROUTER] 🔄 Trying {model_name} ({idx+1}/{len(models)}){context_info}")
 
             if not self._is_model_ready(model_name):
                 logger.warning(f"[MODEL_ROUTER] ⚠️  Skipping {model_name} - client not initialized or API key missing")

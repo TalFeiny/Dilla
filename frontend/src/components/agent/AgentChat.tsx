@@ -1530,8 +1530,9 @@ export default function AgentChat({
       a.download = `${title.replace(/[^a-zA-Z0-9 ]/g, '').replace(/\s+/g, '_').substring(0, 50)}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error('PDF export failed:', err);
+    } catch (err: any) {
+      console.error('PDF export failed:', err?.message || err);
+      alert(`PDF export failed: ${err?.message || 'Unknown error'}`);
     } finally {
       setExportingPdf(false);
     }
