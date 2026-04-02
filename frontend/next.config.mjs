@@ -28,7 +28,7 @@ const nextConfig = {
 
   // Keep heavy server-only packages out of function bundles
   experimental: {
-    serverComponentsExternalPackages: ['@react-pdf/renderer'],
+    serverComponentsExternalPackages: ['@react-pdf/renderer', '@resvg/resvg-js'],
   },
   
   // Enable type checking in build for production safety
