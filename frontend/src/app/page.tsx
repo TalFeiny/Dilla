@@ -103,41 +103,13 @@ const integrations = [
   { name: 'BambooHR', logo: '/logos/bamboohr.png' },
 ];
 
-const packages = [
-  {
-    id: 'starter',
-    label: 'Starter',
-    price: 'From $500 / mo',
-    summary: 'Full FP&A, contract extraction, and cap table management.',
-    bullets: [
-      'P&L, cash flow, balance sheet, and forecasting',
-      'Up to 25 contracts with clause extraction',
-      'Cap table and basic scenario modeling',
-    ],
-  },
-  {
-    id: 'growth',
-    label: 'Growth',
-    price: 'From $2,000 / mo',
-    summary: 'Unlimited contracts, advanced scenarios, and capital strategy.',
-    bullets: [
-      'Unlimited contract processing and covenant monitoring',
-      'Monte Carlo forecasting and scenario branching',
-      'Waterfall analysis, valuation, and stakeholder mapping',
-    ],
-    badge: 'Most Popular',
-  },
-  {
-    id: 'enterprise',
-    label: 'Enterprise',
-    price: 'Custom',
-    summary: 'Multi-entity consolidation, custom integrations, and dedicated support.',
-    bullets: [
-      'Group structure with transfer pricing',
-      'Custom ERP integrations and data pipelines',
-      'Dedicated implementation team',
-    ],
-  },
+const planBullets = [
+  'Unlimited financial analysis',
+  'P&L, balance sheet, cash flow intelligence',
+  'Cap table & legal document parsing',
+  'Scenario modeling & forecasting',
+  'Investor deck generation',
+  'ERP integrations (Xero, QuickBooks, NetSuite)',
 ];
 
 // ---------------------------------------------------------------------------
@@ -562,49 +534,68 @@ function Pricing() {
         <div className="max-w-2xl">
           <p className="text-xs uppercase tracking-[0.4em] text-muted-foreground">Pricing</p>
           <h2 className="mt-3 text-3xl font-semibold text-foreground sm:text-4xl">
-            Pick the tier that matches your complexity.
+            Simple pricing. Start immediately.
           </h2>
         </div>
-        <div className="grid gap-6 lg:grid-cols-3">
-          {packages.map(pkg => (
-            <div
-              key={pkg.id}
-              className={[
-                'flex flex-col rounded-2xl border bg-white p-7',
-                pkg.badge ? 'border-2 border-primary/80 shadow-xl' : 'border-border/60',
-              ].join(' ')}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <p className="text-sm uppercase tracking-[0.3em] text-muted-foreground">{pkg.label}</p>
-                  <h3 className="mt-3 text-2xl font-semibold text-foreground">{pkg.price}</h3>
-                </div>
-                {pkg.badge && (
-                  <span className="rounded-full border border-border bg-secondary px-3 py-1 text-xs font-medium text-muted-foreground">
-                    {pkg.badge}
-                  </span>
-                )}
-              </div>
-              <p className="mt-3 text-sm text-muted-foreground">{pkg.summary}</p>
-              <ul className="mt-5 space-y-2.5 text-sm text-muted-foreground">
-                {pkg.bullets.map(b => (
-                  <li key={b} className="flex items-start gap-2.5">
-                    <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary flex-shrink-0" />
-                    <span>{b}</span>
-                  </li>
-                ))}
-              </ul>
-              <div className="mt-auto pt-6">
-                <a
-                  href="#get-started"
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                >
-                  Get Started
-                  <ArrowRight className="h-4 w-4" />
-                </a>
-              </div>
+        <div className="grid gap-8 lg:grid-cols-2 max-w-4xl">
+          {/* Main plan */}
+          <div className="flex flex-col rounded-2xl border-2 border-primary/80 bg-white p-8 shadow-xl">
+            <p className="text-sm uppercase tracking-[0.3em] text-muted-foreground">Pro</p>
+            <div className="mt-3 flex items-baseline gap-1">
+              <span className="text-4xl font-bold text-foreground">&pound;100</span>
+              <span className="text-muted-foreground">/month</span>
             </div>
-          ))}
+            <p className="mt-3 text-sm text-muted-foreground">
+              Full access to Dilla&apos;s CFO agent. Cancel anytime.
+            </p>
+            <ul className="mt-6 space-y-2.5 text-sm text-muted-foreground">
+              {planBullets.map(b => (
+                <li key={b} className="flex items-start gap-2.5">
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary flex-shrink-0" />
+                  <span>{b}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-auto pt-8">
+              <Link
+                href="/pricing"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              >
+                Subscribe
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
+          </div>
+
+          {/* Enterprise */}
+          <div className="flex flex-col rounded-2xl border border-border/60 bg-white p-8">
+            <p className="text-sm uppercase tracking-[0.3em] text-muted-foreground">Enterprise</p>
+            <h3 className="mt-3 text-2xl font-semibold text-foreground">Custom</h3>
+            <p className="mt-3 text-sm text-muted-foreground">
+              Multi-entity consolidation, custom integrations, dedicated support, and SLA.
+            </p>
+            <ul className="mt-6 space-y-2.5 text-sm text-muted-foreground">
+              <li className="flex items-start gap-2.5">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary flex-shrink-0" />
+                <span>Everything in Pro</span>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary flex-shrink-0" />
+                <span>Group structure with transfer pricing</span>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary flex-shrink-0" />
+                <span>Custom ERP integrations</span>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 text-primary flex-shrink-0" />
+                <span>Dedicated implementation team</span>
+              </li>
+            </ul>
+            <div className="mt-auto pt-8">
+              <ScrollButton target="get-started" label="Get in Touch" />
+            </div>
+          </div>
         </div>
       </div>
     </section>

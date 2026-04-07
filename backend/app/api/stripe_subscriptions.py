@@ -1,15 +1,12 @@
 """
 Stripe Subscription API Endpoints
 """
-from fastapi import APIRouter, HTTPException, Request, Header, Depends, BackgroundTasks
-from typing import Dict, List, Optional, Any
+from fastapi import APIRouter, HTTPException, Request, Header, BackgroundTasks
+from typing import Dict, Optional, Any
 from pydantic import BaseModel, Field
 import logging
-from datetime import datetime
-import stripe
 
 from app.services.stripe_service import stripe_service
-from app.core.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/stripe", tags=["stripe"])
@@ -317,36 +314,69 @@ async def handle_webhook(
         logger.error(f"Webhook error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
+def _get_supabase_admin():
+    """Get Supabase client with service role key for admin operations."""
+    from app.core.database import get_supabase_service
+    svc = get_supabase_service()
+    return svc.get_client()
+
+
+def _update_user_subscription(user_id: str, **fields):
+    """Update a Supabase auth user's raw_user_meta_data with subscription fields."""
+    client = _get_supabase_admin()
+    if not client:
+        logger.error("Supabase client not available — cannot update user subscription")
+        return
+    try:
+        client.auth.admin.update_user_by_id(user_id, {"user_metadata": fields})
+        logger.info(f"Updated user {user_id} metadata: {fields}")
+    except Exception as e:
+        logger.error(f"Failed to update user {user_id} metadata: {e}")
+
+
 async def process_webhook_event(event_type: str, event_data: Dict):
     """Process webhook events asynchronously"""
     try:
-        if event_type == "customer.subscription.created":
-            logger.info(f"Subscription created: {event_data['id']}")
-            # Handle new subscription
-            
+        if event_type == "checkout.session.completed":
+            # User just completed checkout — activate their subscription
+            user_id = (event_data.get("metadata") or {}).get("user_id")
+            customer_id = event_data.get("customer")
+            subscription_id = event_data.get("subscription")
+            logger.info(f"Checkout completed: session={event_data['id']} user={user_id}")
+            if user_id:
+                _update_user_subscription(
+                    user_id,
+                    stripe_customer_id=customer_id,
+                    stripe_subscription_id=subscription_id,
+                    subscription_status="active",
+                )
+
         elif event_type == "customer.subscription.updated":
-            logger.info(f"Subscription updated: {event_data['id']}")
-            # Handle subscription update
-            
+            # Subscription changed (upgrade, downgrade, renewal)
+            sub_status = event_data.get("status")  # active, past_due, canceled, etc.
+            metadata = event_data.get("metadata") or {}
+            user_id = metadata.get("user_id")
+            logger.info(f"Subscription updated: {event_data['id']} status={sub_status}")
+            if user_id:
+                _update_user_subscription(user_id, subscription_status=sub_status)
+
         elif event_type == "customer.subscription.deleted":
+            metadata = event_data.get("metadata") or {}
+            user_id = metadata.get("user_id")
             logger.info(f"Subscription cancelled: {event_data['id']}")
-            # Handle subscription cancellation
-            
-        elif event_type == "invoice.payment_succeeded":
-            logger.info(f"Payment succeeded: {event_data['id']}")
-            # Handle successful payment
-            
+            if user_id:
+                _update_user_subscription(user_id, subscription_status="canceled")
+
         elif event_type == "invoice.payment_failed":
             logger.info(f"Payment failed: {event_data['id']}")
-            # Handle failed payment
-            
-        elif event_type == "checkout.session.completed":
-            logger.info(f"Checkout completed: {event_data['id']}")
-            # Handle checkout completion
-            
+            # Stripe auto-retries — subscription status will update via subscription.updated
+
+        elif event_type == "invoice.payment_succeeded":
+            logger.info(f"Payment succeeded: {event_data['id']}")
+
         else:
             logger.info(f"Unhandled event type: {event_type}")
-            
+
     except Exception as e:
         logger.error(f"Error processing webhook event: {e}")
 

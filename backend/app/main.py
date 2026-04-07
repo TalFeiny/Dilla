@@ -20,7 +20,7 @@ load_dotenv('.env.local', override=True)  # Then override with .env.local if it 
 from app.api.router_fixed import api_router
 from app.routers.deck_storage import router as deck_storage_router
 # from app.api.websocket import manager, websocket_service
-# from app.api.stripe_subscriptions import router as stripe_router
+from app.api.stripe_subscriptions import router as stripe_router
 # from app.routers.deal_sourcing import router as deal_sourcing_router
 # from app.api.endpoints.grpo import router as grpo_router
 # from app.api.intelligent_orchestration import router as orchestration_router
@@ -128,7 +128,7 @@ class BackendGateMiddleware(BaseHTTPMiddleware):
     """Reject requests without the correct X-Backend-Secret header in production."""
 
     # Paths that must remain open (health checks, CORS preflight)
-    OPEN_PATHS = ("/health", "/api/health", "/api/email/inbound", "/api/debug-gate")
+    OPEN_PATHS = ("/health", "/api/health", "/api/email/inbound", "/api/debug-gate", "/api/stripe/webhooks")
 
     async def dispatch(self, request: Request, call_next):
         # Always allow in development, OPTIONS preflight, and health checks
@@ -168,7 +168,7 @@ app.add_middleware(
 # Include API routes
 app.include_router(api_router, prefix="/api")
 app.include_router(deck_storage_router)
-# app.include_router(stripe_router)
+app.include_router(stripe_router)
 # app.include_router(deal_sourcing_router)
 # app.include_router(grpo_router, prefix="/api")
 # app.include_router(orchestration_router)

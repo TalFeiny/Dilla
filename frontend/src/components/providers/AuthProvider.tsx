@@ -19,6 +19,9 @@ interface UserProfile {
     seats_used: number;
   };
   role?: string;
+  // Stripe subscription fields (stored in user_metadata)
+  stripe_customer_id?: string;
+  subscription_status?: string;
 }
 
 interface AuthContext {
@@ -50,6 +53,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       email: u.email!,
       name: u.user_metadata?.full_name || u.user_metadata?.name || u.email!,
       avatar_url: u.user_metadata?.avatar_url,
+      stripe_customer_id: u.user_metadata?.stripe_customer_id,
+      subscription_status: u.user_metadata?.subscription_status,
     };
   }
 
