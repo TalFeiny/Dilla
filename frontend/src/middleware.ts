@@ -3,7 +3,7 @@ import type { NextRequest } from 'next/server'
 import { updateSession } from '@/lib/supabase/middleware'
 
 // Single source of truth: same resolution as getBackendUrl() so proxy and API routes use same host
-const BACKEND_URL = (process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || process.env.FASTAPI_URL || 'http://localhost:8000').replace(/\/+$/, '')
+const BACKEND_URL = (process.env.BACKEND_URL || process.env.FASTAPI_URL || 'http://localhost:8000').replace(/\/+$/, '')
 
 // Security headers configuration - relaxed for development
 const isDevelopment = process.env.NODE_ENV !== 'production'
@@ -21,11 +21,11 @@ const SECURITY_HEADERS = isDevelopment ? {
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload',
   'Content-Security-Policy': [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",
-    "style-src 'self' 'unsafe-inline' data: http://localhost:* https://fonts.googleapis.com https://api.fontshare.com https://cdn.fontshare.com",
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+    "style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com https://api.fontshare.com https://cdn.fontshare.com",
     "img-src 'self' data: https: blob:",
     "font-src 'self' data: https://fonts.gstatic.com https://api.fontshare.com https://cdn.fontshare.com",
-    "connect-src 'self' https://api.anthropic.com https://api.tavily.com https://api.firecrawl.dev https://*.supabase.co wss://*.supabase.co http://localhost:8000 https://dilla-production.up.railway.app https://dilla-copy-production.up.railway.app https://dilla-ai.com https://www.dilla-ai.com",
+    "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://dilla-ai.com https://www.dilla-ai.com",
     "frame-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",
@@ -133,7 +133,7 @@ export async function middleware(request: NextRequest) {
 
     for (const pattern of suspiciousPatterns) {
       if (pattern.test(url)) {
-        console.warn(`Array.from(urity) Suspicious request blocked: ${url} from ${clientId}`)
+        console.warn(`[Security] Suspicious request blocked: ${url} from ${clientId}`)
         return NextResponse.json(
           { error: 'Invalid request' },
           { status: 400, headers: SECURITY_HEADERS }
@@ -238,7 +238,7 @@ export async function middleware(request: NextRequest) {
 
       if (proxyRes.status === 403) {
         const body = await proxyRes.clone().text()
-        console.error(`[Middleware] Backend returned 403 for ${pathname} — secret prefix: ${(backendSecret || '').slice(0, 8)}... body: ${body}`)
+        console.error(`[Middleware] Backend returned 403 for ${pathname} — body: ${body}`)
       }
 
       return new Response(proxyRes.body, {

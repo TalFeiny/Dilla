@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /dashboard
+Disallow: /documents
+Disallow: /settings/
+Disallow: /matrix-control-panel
+Disallow: /audit
+Disallow: /subscription
+
+Sitemap: https://dilla-ai.com/sitemap.xml

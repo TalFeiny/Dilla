@@ -14,6 +14,10 @@ export const metadata: Metadata = {
     shortcut: '/dilla-logo.svg',
     apple: '/dilla-logo.svg',
   },
+  robots: {
+    index: true,
+    follow: true,
+  },
 };
 
 interface RootLayoutProps {
