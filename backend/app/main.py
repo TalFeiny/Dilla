@@ -76,6 +76,18 @@ async def lifespan(app: FastAPI):
         logger.info("Cell action registry initialized")
     except Exception as e:
         logger.error(f"Failed to initialize cell action registry: {e}")
+
+    # Pre-warm the unified orchestrator so the first user request doesn't
+    # pay the init cost (valuation engine reload, ParallelDocProcessor,
+    # MatrixQueryOrchestrator, Tavily client, ModelRouter). Each gunicorn
+    # worker runs this once at container boot instead of lazily on the
+    # first inbound request.
+    try:
+        from app.services.unified_mcp_orchestrator import get_unified_orchestrator
+        get_unified_orchestrator()
+        logger.info("Unified orchestrator pre-warmed")
+    except Exception as e:
+        logger.error(f"Failed to pre-warm unified orchestrator: {e}")
     yield
     logger.info("Shutting down Dilla AI Backend...")
 

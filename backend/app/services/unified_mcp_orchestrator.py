@@ -4474,7 +4474,7 @@ class UnifiedMCPOrchestrator:
             "You're direct, sharp, and genuinely helpful. Not formal. Not corporate. Not a report generator.\n"
             "- Lead with the number or fact that changes the decision. No preamble, no throat-clearing.\n"
             "- Match depth to the question. 'What's our burn?' gets one sentence. 'Model 3 exit scenarios' gets the full treatment.\n"
-            "- If a request is ambiguous or could go multiple ways, ask ONE clarifying question before executing. Don't guess and dump.\n"
+            "- Default to the most likely interpretation. Only ask a clarifying question if you literally cannot proceed (missing a required parameter with no reasonable default and no signal in conversation history, portfolio data, or uploaded files). Never ask a question you can answer yourself from context.\n"
             "- Share findings as you go. After each tool call, give the headline. Don't go silent then deliver a wall of text.\n"
             "- If you discover something unexpected mid-analysis, flag it: 'COGS jumped 35% in Q4 — want me to dig into that or keep going?'\n"
             "- When the user steers you ('dig into costs', 'now forecast that'), follow their lead. Don't restart from scratch.\n"
@@ -4971,7 +4971,7 @@ class UnifiedMCPOrchestrator:
             "## HOW YOU TALK\n"
             "You're direct, sharp, and genuinely helpful. Not formal. Not a report generator.\n"
             "- Match depth to the question. 'Hey' gets 'hey'. 'Model 3 scenarios' gets the full treatment.\n"
-            "- If something is ambiguous, ask ONE clarifying question. Don't guess and dump.\n"
+            "- Default to the most likely interpretation using conversation history and available data. Only clarify if you literally cannot proceed.\n"
             "- Share findings as you go. After each tool call, give the headline.\n"
             "- When iterating ('what about 50M'), reuse context. Don't restart.\n"
             "- Cite sources inline when available.\n"
@@ -5573,14 +5573,13 @@ class UnifiedMCPOrchestrator:
         decide whether to call tools.  Loops up to ``max_tool_rounds``
         times, feeding tool results back until the model stops.
         """
+        # Stable prefix — cached. Rotates only on (turn_type, phase, grid_mode)
+        # and on stable shared_data (fund context, uploaded files). Everything
+        # that changes turn-to-turn goes into `system_suffix` below so the
+        # cache breakpoint stays stable across a conversational phase.
         system_prompt = self._build_conversational_prompt(
             context, turn_type=turn_type, phase=self._conversation_phase,
         )
-        if self._history_summary:
-            system_prompt += (
-                f"\n\n## EARLIER IN THIS CONVERSATION\n"
-                f"{self._history_summary}\n"
-            )
 
         # Scope tools by (classified_intent, grid_mode) so the agent sees
         # only the 5-15 tools it needs.  Two-layer resolution:
@@ -5619,23 +5618,30 @@ class UnifiedMCPOrchestrator:
                         })
                         logger.info(f"[CONV_LOOP] Injected {_ut_name} for uploaded files")
 
-        # Inject the classified chain + mode-aware guidance so the agent
-        # knows the exact tool sequence to follow.
+        # Dynamic suffix — sits AFTER the cache breakpoint. Contains the bits
+        # that change turn-to-turn: rolling history summary, classified chain
+        # nudge, intent-specific guidance. Appending here does NOT bust the
+        # cached stable prefix or the cached tool block.
+        _suffix_parts: List[str] = []
+        if self._history_summary:
+            _suffix_parts.append(
+                f"## EARLIER IN THIS CONVERSATION\n{self._history_summary}"
+            )
         if _classification and _classification.get("chain"):
-            system_prompt += (
-                f"\n\n## RECOMMENDED WORKFLOW\n"
+            _suffix_parts.append(
+                f"## RECOMMENDED WORKFLOW\n"
                 f"Intent: {_classified_intent} | Mode: {_grid_mode}\n"
                 f"Tool chain: {_classification['chain']}\n"
                 f"Description: {_classification.get('description', '')}\n"
-                f"Follow this chain. Do NOT deviate unless data is unavailable.\n"
+                f"Follow this chain. Do NOT deviate unless data is unavailable."
             )
-        # Also inject mode-specific guidance from INTENT_GUIDANCE if available
         _guidance = (
             INTENT_GUIDANCE.get((_intent, _grid_mode))
             or INTENT_GUIDANCE.get((_intent, "*"))
         )
         if _guidance:
-            system_prompt += f"\n\n## MODE GUIDANCE\n{_guidance}\n"
+            _suffix_parts.append(f"## MODE GUIDANCE\n{_guidance}")
+        system_suffix = "\n\n".join(_suffix_parts) if _suffix_parts else None
 
         logger.info(
             f"[CONV_LOOP] Tool scoping: grid_mode={_grid_mode} "
@@ -5663,7 +5669,17 @@ class UnifiedMCPOrchestrator:
         _suggestions: List[Dict[str, Any]] = []
         _todo_items: List[Dict[str, Any]] = []
         _pnl_refresh = False
+        # Output surfaces (memo/grid/chart) are selected by the model via
+        # the shape of each tool's return payload — see the OUTPUT SURFACES
+        # block in _build_conversational_prompt. Those are append-only
+        # artifact emissions that the loop collects and flushes to the
+        # frontend; they don't race.
+        #
+        # The only tools that actually race are the FPA mutators, which hit
+        # a server-side store keyed on (company, period, field). Those run
+        # serially as barriers. Everything else fans out in parallel.
         _fpa_write_tools = {"fpa_cell_edit", "fpa_upload_actuals", "fpa_apply_forecast", "fpa_forecast"}
+        _write_tools = _fpa_write_tools
 
         for round_num in range(max_tool_rounds):
             yield {
@@ -5691,6 +5707,7 @@ class UnifiedMCPOrchestrator:
                     max_tokens=max_tokens,
                     temperature=0.3,
                     caller_context=caller_context,
+                    system_suffix=system_suffix,
                 ):
                     if event["type"] == "text_delta":
                         text_delta_buffer.append(event["text"])
@@ -5750,11 +5767,17 @@ class UnifiedMCPOrchestrator:
                     "tool_call_id": tc["id"],
                 }
 
-            _tool_semaphore = asyncio.Semaphore(3)  # max 3 concurrent tool calls
+            # Read/write partitioning: reads fan out in parallel (bounded by
+            # a generous semaphore), writes run serially as barriers. This
+            # preserves the per-round ordering the model issued — a write
+            # barrier waits for any prior reads in the same round to complete
+            # before running, and subsequent reads wait for the write to
+            # finish before starting.
+            _read_semaphore = asyncio.Semaphore(8)
 
             async def _run_tool(tc: Dict[str, Any]) -> Dict[str, Any]:
                 """Execute a single tool, returning result dict."""
-                async with _tool_semaphore:
+                async with _read_semaphore:
                     try:
                         output = await self._execute_tool(tc["name"], tc["input"])
                         return {"tool": tc["name"], "input": tc["input"], "id": tc["id"], "output": output, "error": None}
@@ -5762,10 +5785,25 @@ class UnifiedMCPOrchestrator:
                         logger.error(f"[CONV_LOOP] Tool {tc['name']} failed: {e}")
                         return {"tool": tc["name"], "input": tc["input"], "id": tc["id"], "output": None, "error": str(e)}
 
-            gather_results = await asyncio.gather(
-                *[_run_tool(tc) for tc in tool_calls],
-                return_exceptions=False,
-            )
+            # Walk tool_calls once; batch consecutive reads, barrier on writes.
+            gather_results: List[Dict[str, Any]] = []
+            _i = 0
+            while _i < len(tool_calls):
+                _batch: List[Dict[str, Any]] = []
+                while _i < len(tool_calls) and tool_calls[_i]["name"] not in _write_tools:
+                    _batch.append(tool_calls[_i])
+                    _i += 1
+                if _batch:
+                    gather_results.extend(
+                        await asyncio.gather(
+                            *[_run_tool(tc) for tc in _batch],
+                            return_exceptions=False,
+                        )
+                    )
+                if _i < len(tool_calls):
+                    # Write barrier: one at a time, wait for completion.
+                    gather_results.append(await _run_tool(tool_calls[_i]))
+                    _i += 1
 
             # Process results: build tool_result_blocks + extract structured data
             tool_result_blocks: List[Dict[str, Any]] = []
@@ -17711,7 +17749,32 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             )
             import json as _json_cr
             raw = (result.get("response") or "").strip()
-            parsed = _json_cr.loads(raw) if raw else {}
+            # Robust JSON extraction: strip markdown fences and preamble.
+            # Haiku sometimes returns ```json ... ``` or leading prose despite
+            # json_mode=True, which breaks json.loads on char 0.
+            if raw.startswith("```"):
+                # Drop opening fence (```json or just ```)
+                _nl = raw.find("\n")
+                if _nl != -1:
+                    raw = raw[_nl + 1:]
+                # Drop trailing fence
+                if raw.endswith("```"):
+                    raw = raw[:-3]
+                raw = raw.strip()
+            # If there's still preamble/postamble, slice to the outer {...}
+            if raw and not raw.startswith("{"):
+                _start = raw.find("{")
+                _end = raw.rfind("}")
+                if _start != -1 and _end != -1 and _end > _start:
+                    raw = raw[_start:_end + 1]
+            try:
+                parsed = _json_cr.loads(raw) if raw else {}
+            except _json_cr.JSONDecodeError as _je:
+                logger.warning(
+                    f"[INTENT_CLASSIFY] JSON parse failed after cleanup "
+                    f"({_je}); raw[:120]={raw[:120]!r}"
+                )
+                parsed = {}
 
             intent_name = str(parsed.get("intent", "none")).strip().lower()
             tool_order = parsed.get("tools", [])
@@ -17750,14 +17813,32 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
         except Exception as e:
             logger.warning(f"[INTENT_CLASSIFY] Haiku failed ({e}), falling back to keyword matching")
             lower = prompt.lower()
+            _grid_mode_fb = self.shared_data.get("grid_mode", "portfolio")
             for intent_name, triggers, chain, description in self.QUERY_INTENTS:
                 for trigger in triggers:
+                    _matched = False
                     if "@" in trigger:
                         pattern = trigger.replace("@", "")
                         if pattern in lower and "@" in prompt:
-                            return {"intent": intent_name, "chain": chain, "description": description}
+                            _matched = True
                     elif trigger in lower:
-                        return {"intent": intent_name, "chain": chain, "description": description}
+                        _matched = True
+                    if _matched:
+                        # Populate tool_order so downstream narrow-intent
+                        # priming (_tool_order checks) still fires when the
+                        # Haiku classifier is unavailable.
+                        _scope_fb = resolve_intent_to_scope(intent_name, _grid_mode_fb)
+                        _tools_fb = INTENT_TOOLS.get(_scope_fb, [])[:8]
+                        logger.info(
+                            f"[INTENT_CLASSIFY] Keyword fallback: intent={intent_name}, "
+                            f"scope={_scope_fb}, tools={_tools_fb[:3]}"
+                        )
+                        return {
+                            "intent": intent_name,
+                            "chain": chain,
+                            "description": description,
+                            "tool_order": _tools_fb,
+                        }
             return None
 
     # ------------------------------------------------------------------
@@ -18281,6 +18362,22 @@ Rules:
             max_iterations = _max_iters
         elif _resp_mode_entry == "action":
             max_iterations = min(max_iterations, 4)
+
+        # ── Clarification stitching: if the previous turn asked a clarifying question,
+        # fuse the user's answer back onto the original prompt so the reason loop
+        # sees the full context, not just a 2-word fragment like "company level".
+        _pending_clarification_prev = self.shared_data.pop("pending_clarification", None)
+        _clarify_resolved_this_turn = False
+        if _pending_clarification_prev and _pending_clarification_prev.get("original_prompt"):
+            _original = _pending_clarification_prev["original_prompt"]
+            _asked = _pending_clarification_prev.get("question", "")
+            prompt = (
+                f"{_original}\n"
+                f"[Previously asked: {_asked}]\n"
+                f"[User clarification: {prompt}]"
+            )
+            _clarify_resolved_this_turn = True
+            logger.info(f"[AGENT_LOOP] Stitched clarification answer onto original prompt: {prompt[:200]}")
 
         # Plan mode: opt-in only. User must explicitly request a plan (e.g. "plan: ...")
         # before we gate execution behind approval. Never auto-trigger on keywords.
@@ -18808,44 +18905,103 @@ Rules:
             _remaining_budget = _TASK_TOOL_BUDGET - _total_tool_calls
             _budget_line = f"TOOL BUDGET: {_remaining_budget} calls remaining (used {_total_tool_calls}/{_TASK_TOOL_BUDGET}). Plan accordingly — prioritize the most impactful tools."
 
-            # ── Bifurcated reasoning block: outcome-anchored for narrow, exploratory for broad ──
+            # ── Reason block: trust the upstream classifier ──
+            # The Haiku classifier at _classify_query_intent already decided
+            # intent + tool_order before this loop runs. The reason loop's
+            # job is to EXECUTE that decision, not re-interpret the prompt.
+            _classifier_routed = bool(_tool_order) or (_intent and _intent != "none")
+
             if _intent in _NARROW_INTENTS:
                 _reasoning_block = (
-                    "GOAL: Produce the required output via the SHORTEST path.\n"
-                    "Do NOT gather data you already have. Do NOT orient — act.\n"
-                    "If data is in uploaded files or shared state, use it directly.\n"
-                    "If you deviate from the EXECUTION ORDER above, explain why.\n\n"
+                    "GOAL: Execute the classified chain. Produce the required output.\n"
+                    "Do NOT re-classify. Do NOT gather data you already have.\n"
+                    "The upstream classifier has already routed this request — follow the EXECUTION ORDER above.\n"
+                    "If data is in uploaded files or shared state, use it directly.\n\n"
                     "RULES:\n"
-                    "- Ambiguous request → clarify with ONE focused question.\n"
+                    "- The classifier decided this is not ambiguous. Execute.\n"
                     "- Don't re-fetch existing data. Don't repeat tool calls.\n"
                     "- Independent calls → call_tools (parallel).\n"
                     f"{_rules_text}\n"
-                    "- Done = user's request answered AND persisted (memo/grid/chart).\n"
+                    "- Done = user's request answered AND persisted where appropriate (memo/grid/chart).\n"
                     "- Checkpoint = you produced something worth reviewing before continuing."
                 )
-            else:
+            elif _classifier_routed:
                 _reasoning_block = (
+                    f"The classifier routed this to intent='{_intent}'"
+                    + (f" with priority tools: {', '.join(_tool_order[:5])}" if _tool_order else "")
+                    + ".\n"
                     "Think step by step:\n"
-                    "1. What did the user ask for? Clear or ambiguous?\n"
-                    "2. If ambiguous, clarify. Don't guess.\n"
-                    "3. What's already done? (TOOLS CALLED + SCOREBOARD)\n"
-                    "4. What's missing? What sequence of tools gets there?\n"
-                    "5. If complete and persisted, done.\n\n"
+                    "1. What did the user ask for? Use conversation history to resolve pronouns and follow-ups.\n"
+                    "2. What's already done? (TOOLS CALLED + SCOREBOARD)\n"
+                    "3. What's the right response shape — chat reply, tool call, or checkpoint? Match the request.\n"
+                    "4. If complete and persisted, done.\n\n"
                     "RULES:\n"
-                    "- Ambiguous → clarify with ONE focused question.\n"
+                    "- Trust the classifier. It already decided the prompt is interpretable. Don't re-ask.\n"
+                    "- Conversational questions don't need tools — a short chat reply is fine.\n"
                     "- Don't re-fetch existing data. Don't repeat tool calls.\n"
                     "- Independent calls → call_tools (parallel).\n"
                     f"{_rules_text}\n"
                     "- Work with incomplete data. Don't loop chasing every field.\n"
-                    "- Done = user's request answered AND persisted (memo/grid/chart).\n"
+                    "- Done = user's request answered AND persisted where appropriate.\n"
                     "- Checkpoint = you produced something worth reviewing before continuing."
                 )
+            else:
+                # Classifier returned intent=none AND no tool_order. This is the
+                # only case where a clarification is legitimately appropriate.
+                _reasoning_block = (
+                    "The classifier could not match this request to a known intent.\n"
+                    "Think step by step:\n"
+                    "1. What did the user ask for? Use conversation history to resolve pronouns and follow-ups.\n"
+                    "2. Can you answer in chat from existing context? Do that.\n"
+                    "3. Is a tool genuinely needed? Which one? What inputs do you have?\n"
+                    "4. Is a required tool input genuinely missing with no default and no signal from history/portfolio/uploads? Only then, clarify.\n\n"
+                    "RULES:\n"
+                    "- Prefer a direct chat answer when one is available.\n"
+                    "- Clarify is a last resort — only when execution is literally impossible.\n"
+                    "- Don't re-fetch existing data. Don't repeat tool calls.\n"
+                    f"{_rules_text}\n"
+                    "- Done = user's request answered."
+                )
+
+            # ── Build recent conversation history block so the reason loop
+            # can see context across turns (prevents clarify-amnesia on
+            # follow-ups like "company level" that drop the subject name).
+            _history_block = ""
+            if self._conversation_history:
+                _recent = self._conversation_history[-6:]  # last ~3 exchanges
+                _history_lines = []
+                for _m in _recent:
+                    _role = _m.get("role", "?")
+                    _content = str(_m.get("content", ""))[:400]
+                    _history_lines.append(f"{_role}: {_content}")
+                if _history_lines:
+                    _history_block = "Recent conversation:\n" + "\n".join(_history_lines) + "\n\n"
+
+            # ── Anti-loop guard: ban clarify when the classifier already
+            # routed the request, OR when recent history exists (follow-ups
+            # like "company level" carry context from the prior turn and
+            # should never trigger a re-clarify).  Clarify is only legitimate
+            # on a cold start with no intent, no tool_order, no history.
+            _ban_clarify = (
+                _clarify_resolved_this_turn
+                or (_intent in _NARROW_INTENTS)
+                or bool(_tool_order)
+                or (_intent and _intent != "none")
+                or bool(self._conversation_history)
+            )
+            _clarify_json_line = "" if _ban_clarify else (
+                '{"action":"clarify","question":"...","options":["A","B"],"reasoning":"why"}\n'
+            )
+            _clarify_guard_note = (
+                "\nIMPORTANT: The classifier has routed this request. Clarify is NOT available — execute the chain.\n"
+                if _ban_clarify else ""
+            )
 
             if i == 0:
                 # Full context on first iteration — tiered tool catalog
                 route_prompt = f"""Task: {prompt}
 
-{active_catalog_full}
+{_history_block}{active_catalog_full}
 {_execution_order_text}
 {_budget_line}
 
@@ -18854,14 +19010,14 @@ State:
 {_task_state}{_memo_canvas_state}
 {_results_display}
 {_goals_status}{intent_guidance}{plan_guidance}{correction_guidance}{_tool_history}{_scoreboard_text}
-{_output_block}{_reasoning_block}
+{_output_block}{_reasoning_block}{_clarify_guard_note}
 
 JSON — pick one:
-{{"action":"clarify","question":"...","options":["A","B"],"reasoning":"why"}}
 {{"action":"call_tool","tool":"name","input":{{...}},"reasoning":"why"}}
 {{"action":"call_tools","tools":[{{"tool":"name","input":{{...}}}}],"reasoning":"why"}}
 {{"action":"checkpoint","summary":"what you produced so far","next_steps":["what you'd do next"],"reasoning":"why pause here"}}
-{{"action":"done","reasoning":"why complete"}}"""
+{{"action":"done","reasoning":"why complete"}}
+{_clarify_json_line}""".rstrip() + "\n"
             else:
                 # Iterations 1+: condensed remaining-steps reminder for narrow intents
                 _iter_order_reminder = ""
@@ -18881,7 +19037,7 @@ JSON — pick one:
                 # Iterations 1+: names only — agent already knows tool details
                 route_prompt = f"""Task: {prompt}
 
-{active_catalog_names}
+{_history_block}{active_catalog_names}
 {_iter_order_reminder}
 {_budget_line}
 
@@ -18935,7 +19091,11 @@ JSON — pick one:
                 system_prompt=_reason_system,
                 capability=ModelCapability.ANALYSIS,
                 max_tokens=ROUTE_MAX_TOKENS,
-                temperature=0.0,
+                # Non-zero temperature in the reason loop: temp=0 was locking the
+                # model into the same (wrong) action every iteration when the
+                # prompt had any bias. A little variance lets it explore alternate
+                # actions across turns without hurting JSON-mode determinism much.
+                temperature=0.3,
                 json_mode=True,
                 caller_context="agent_loop_reason",
             )
@@ -18968,6 +19128,15 @@ JSON — pick one:
 
             # ── CLARIFY: Agent wants to ask the user a question before proceeding ──
             if action.get("action") == "clarify":
+                # Anti-loop guard: if clarify was banned this turn, treat as bug and force action.
+                if _ban_clarify:
+                    logger.warning(
+                        f"[AGENT] Model emitted clarify despite ban (iter {i}). "
+                        f"Forcing continuation. reasoning={action.get('reasoning','')[:200]}"
+                    )
+                    # Fall through: next iteration will re-prompt; if the model keeps emitting
+                    # clarify we'll end up doing `done` via the JSON parse-fail safety net.
+                    continue
                 clarify_question = action.get("question", "Could you clarify what you need?")
                 clarify_options = action.get("options", [])
                 clarify_reasoning = action.get("reasoning", "")
@@ -18978,12 +19147,15 @@ JSON — pick one:
                     "options": clarify_options,
                     "reasoning": clarify_reasoning,
                 }
-                # Store in shared_data so the next request can see what was asked
+                # Store in shared_data so the next request can see what was asked.
+                # CRITICAL: store original_prompt so the next turn can stitch
+                # the user's answer back onto it (otherwise we lose context).
                 self.shared_data["pending_clarification"] = {
                     "question": clarify_question,
                     "options": clarify_options,
                     "iteration": i,
                     "tool_results_so_far": len(tool_results),
+                    "original_prompt": prompt,
                 }
                 # Break the loop — frontend will re-send with the user's answer
                 break

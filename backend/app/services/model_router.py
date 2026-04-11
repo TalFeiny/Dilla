@@ -159,6 +159,21 @@ class RequestBudget:
 # Each provider adapter converts definitions AND parses responses.
 
 
+def _with_tool_cache_breakpoint(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return a shallow copy of ``tools`` with cache_control on the last one.
+
+    Anthropic caches everything BEFORE the breakpoint, so tagging the last
+    tool caches the entire tool block — the biggest input-token item on a
+    typical turn. The tool array is stable within a conversational phase
+    (same intent + grid_mode + response_mode), so cache hits compound.
+    """
+    if not tools:
+        return tools
+    out = [dict(t) for t in tools]
+    out[-1]["cache_control"] = {"type": "ephemeral"}
+    return out
+
+
 class ToolAdapter:
     """Convert tool definitions + responses between providers."""
 
@@ -2119,6 +2134,7 @@ class ModelRouter:
         temperature: float = 0.7,
         caller_context: Optional[str] = None,
         preferred_models: Optional[List[str]] = None,
+        system_suffix: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Provider-agnostic LLM call with tool-use support.
 
@@ -2194,15 +2210,33 @@ class ModelRouter:
                 await self._apply_rate_limit(model_name)
 
                 caller_fn = _PROVIDER_CALLERS[provider]
+                # Only the Anthropic caller knows how to split stable/dynamic
+                # system text across a cache breakpoint. For everyone else we
+                # concat so the suffix still reaches the model.
+                if provider == ModelProvider.ANTHROPIC:
+                    caller_kwargs = {
+                        "model": model_config["model"],
+                        "messages": messages,
+                        "system_prompt": system_prompt,
+                        "tools": tools,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                        "system_suffix": system_suffix,
+                    }
+                else:
+                    merged_system = (
+                        f"{system_prompt}\n\n{system_suffix}" if system_suffix else system_prompt
+                    )
+                    caller_kwargs = {
+                        "model": model_config["model"],
+                        "messages": messages,
+                        "system_prompt": merged_system,
+                        "tools": tools,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                    }
                 result = await asyncio.wait_for(
-                    caller_fn(
-                        model=model_config["model"],
-                        messages=messages,
-                        system_prompt=system_prompt,
-                        tools=tools,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                    ),
+                    caller_fn(**caller_kwargs),
                     timeout=120,
                 )
 
@@ -2250,6 +2284,7 @@ class ModelRouter:
         temperature: float = 0.3,
         caller_context: Optional[str] = None,
         preferred_models: Optional[List[str]] = None,
+        system_suffix: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Streaming variant of get_completion_with_tools.
 
@@ -2298,7 +2333,8 @@ class ModelRouter:
                 await self._apply_rate_limit(model_name)
 
                 if provider == ModelProvider.ANTHROPIC and self.anthropic_client:
-                    # True streaming path for Anthropic
+                    # True streaming path for Anthropic — pass system_suffix
+                    # so the cached prefix stays stable across turns.
                     async for event in self._stream_anthropic_with_tools(
                         model=model_config["model"],
                         messages=messages,
@@ -2306,6 +2342,7 @@ class ModelRouter:
                         tools=tools,
                         max_tokens=max_tokens,
                         temperature=temperature,
+                        system_suffix=system_suffix,
                     ):
                         if event["type"] == "done":
                             # Enrich final event with cost/latency
@@ -2330,7 +2367,8 @@ class ModelRouter:
                     return  # Success — don't try next model
 
                 else:
-                    # Non-streaming fallback for other providers
+                    # Non-streaming fallback for other providers. No prompt
+                    # caching on these, so just concat the dynamic suffix.
                     caller_fn = {
                         ModelProvider.OPENAI: self._call_openai_with_tools,
                         ModelProvider.GOOGLE: self._call_google_with_tools,
@@ -2340,11 +2378,14 @@ class ModelRouter:
                     }.get(provider)
                     if not caller_fn:
                         continue
+                    merged_system = (
+                        f"{system_prompt}\n\n{system_suffix}" if system_suffix else system_prompt
+                    )
                     result = await asyncio.wait_for(
                         caller_fn(
                             model=model_config["model"],
                             messages=messages,
-                            system_prompt=system_prompt,
+                            system_prompt=merged_system,
                             tools=tools,
                             max_tokens=max_tokens,
                             temperature=temperature,
@@ -2394,22 +2435,36 @@ class ModelRouter:
         tools: List[Dict[str, Any]],
         max_tokens: int,
         temperature: float,
+        system_suffix: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Stream from Anthropic Messages API. Yields text deltas and tool calls."""
+        """Stream from Anthropic Messages API. Yields text deltas and tool calls.
+
+        Cache strategy:
+        - ``system_prompt`` is the stable prefix: cached with cache_control.
+        - ``system_suffix`` (optional) is dynamic per-turn content that sits
+          AFTER the cache breakpoint, so appending to it doesn't bust the
+          cached prefix.
+        - The last tool definition carries cache_control, so the entire tool
+          block caches as long as the (intent, mode) scoping is stable.
+        """
         if not self.anthropic_client:
             raise ValueError("Anthropic client not initialized")
 
-        cacheable_system = [
+        system_blocks: List[Dict[str, Any]] = [
             {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
         ]
+        if system_suffix:
+            system_blocks.append({"type": "text", "text": system_suffix})
+
+        anthropic_tools = _with_tool_cache_breakpoint(ToolAdapter.to_anthropic(tools))
 
         async with self.anthropic_client.messages.stream(
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
-            system=cacheable_system,
+            system=system_blocks,
             messages=messages,
-            tools=ToolAdapter.to_anthropic(tools),
+            tools=anthropic_tools,
         ) as stream:
             # Track tool_use blocks being built
             current_tool_id = None
@@ -2476,23 +2531,30 @@ class ModelRouter:
         tools: List[Dict[str, Any]],
         max_tokens: int,
         temperature: float,
+        system_suffix: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Call Anthropic Messages API with tool-use definitions."""
+        """Call Anthropic Messages API with tool-use definitions.
+
+        ``system_prompt`` is the stable cached prefix; ``system_suffix`` is
+        optional dynamic content that sits after the cache breakpoint.
+        Tools carry their own cache_control on the last entry.
+        """
         if not self.anthropic_client:
             raise ValueError("Anthropic client not initialized")
 
-        # Cacheable system prompt — same prefix gets 90% input discount
-        cacheable_system = [
+        system_blocks: List[Dict[str, Any]] = [
             {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
         ]
+        if system_suffix:
+            system_blocks.append({"type": "text", "text": system_suffix})
 
         response = await self.anthropic_client.messages.create(
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
-            system=cacheable_system,
+            system=system_blocks,
             messages=messages,
-            tools=ToolAdapter.to_anthropic(tools),
+            tools=_with_tool_cache_breakpoint(ToolAdapter.to_anthropic(tools)),
         )
 
         return ToolAdapter.parse_anthropic_response(response)
