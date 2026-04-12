@@ -4563,8 +4563,8 @@ class UnifiedMCPOrchestrator:
     async def _classify_turn(self, prompt: str) -> TurnType:
         """Classify what kind of conversational turn this is.
 
-        Keyword-only: deterministic keyword matching handles all 7 turn types.
-        No LLM call needed — saves ~300-500ms latency per message.
+        First turn: Haiku LLM call for accurate classification.
+        Subsequent turns: keyword matching (fast, sufficient for steering/iteration).
         """
         lower = prompt.lower().strip()
         words = lower.split()
@@ -4574,7 +4574,54 @@ class UnifiedMCPOrchestrator:
         if msg_len <= 5 and self._RE_PHATIC.match(lower):
             return TurnType.PHATIC
 
-        # ── Keyword classification (deterministic, no LLM) ──
+        # ── First turn: use Haiku for accurate turn classification ──
+        is_first_turn = not self._prev_tool_calls and len(self._conversation_history) <= 2
+        if is_first_turn:
+            try:
+                turn_type_names = [t.value for t in TurnType]
+                result = await self.model_router.get_completion(
+                    prompt=f"Classify this request:\n\n{prompt}",
+                    system_prompt=(
+                        "You are a turn classifier for a CFO agent. "
+                        "Classify the user request into exactly one of these turn types:\n"
+                        "- synthesis: user wants a deliverable created (memo, deck, report, investor update, summary document)\n"
+                        "- analysis: user wants analysis, comparison, error-checking, cross-referencing, evaluation, or explanation\n"
+                        "- retrieval: user wants data fetched or shown\n"
+                        "- status: user asking about system/agent status\n"
+                        "- steering: user redirecting or refining\n"
+                        "- iteration: user tweaking a previous result\n"
+                        "- phatic: social/greeting\n\n"
+                        "IMPORTANT: 'analysis' covers questions like 'find errors', 'compare X to Y', 'are there discrepancies', 'cross-check'. "
+                        "Only use 'synthesis' if the user explicitly wants a document/memo/deck produced.\n\n"
+                        "Respond with JSON only: {\"turn_type\": \"<type>\"}"
+                    ),
+                    capability=ModelCapability.FAST,
+                    max_tokens=50,
+                    temperature=0.0,
+                    preferred_models=["claude-haiku-4-5", "gemini-2.5-flash"],
+                    json_mode=True,
+                    caller_context="classify_turn",
+                )
+                import json as _json_ct
+                raw = (result.get("response") or "").strip()
+                if raw.startswith("```"):
+                    _nl = raw.find("\n")
+                    raw = raw[_nl + 1:] if _nl != -1 else raw[3:]
+                    raw = raw.rstrip("`").strip()
+                if not raw.startswith("{"):
+                    _s, _e = raw.find("{"), raw.rfind("}")
+                    if _s != -1 and _e > _s:
+                        raw = raw[_s:_e + 1]
+                parsed = _json_ct.loads(raw) if raw else {}
+                tt_val = str(parsed.get("turn_type", "")).strip().lower()
+                for tt in TurnType:
+                    if tt.value == tt_val:
+                        logger.info(f"[TURN_CLASSIFY] Haiku: {tt_val} for: {prompt[:80]}")
+                        return tt
+            except Exception as e:
+                logger.warning(f"[TURN_CLASSIFY] Haiku failed ({e}), falling back to keyword")
+
+        # ── Keyword classification (fallback / subsequent turns) ──
         return self._keyword_classify_turn(prompt)
 
     def _keyword_classify_turn(self, prompt: str) -> TurnType:
@@ -9108,6 +9155,25 @@ Answer using specific company names and numbers from the portfolio grid above.""
             fund_id = self.shared_data.get("fund_context", {}).get("fundId")
             company_id = inputs.get("company_id")
             query_text = inputs.get("query", "")
+
+            # Resolve company name → UUID if LLM passed a name instead of UUID
+            def _is_uuid(v: str) -> bool:
+                return bool(v) and len(v) == 36 and v.count("-") == 4
+
+            if company_id and not _is_uuid(company_id):
+                _companies = self.shared_data.get("companies", [])
+                _name_lower = company_id.lower().strip()
+                resolved = None
+                for _c in _companies:
+                    _c_name = (_c.get("name") or "").lower().strip()
+                    if _c_name == _name_lower or _name_lower in _c_name or _c_name in _name_lower:
+                        resolved = _c.get("id") or _c.get("company_id")
+                        break
+                if resolved:
+                    logger.info(f"[TOOL] query_documents: resolved '{company_id}' → {resolved}")
+                    company_id = resolved
+                else:
+                    company_id = self._resolve_company_id(inputs)
 
             # Route via detect_query_type for best method
             query_type = dqs.detect_query_type(query_text)
