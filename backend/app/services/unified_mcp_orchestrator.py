@@ -5707,12 +5707,6 @@ class UnifiedMCPOrchestrator:
         )
         _tool_order = _classification.get("tool_order") if _classification else None
 
-        # Lock model affinity for the entire turn — provider spreading fires
-        # between turns, not between rounds within a turn. Locking here
-        # prevents tool schema mismatches when the router would otherwise
-        # rotate providers mid-turn.
-        _turn_preferred = self.model_router._get_model_order(ModelCapability.ANALYSIS, None)[:1]
-
         # Dynamic suffix — sits AFTER the cache breakpoint. Contains the bits
         # that change turn-to-turn: rolling history summary, classified chain
         # nudge, intent-specific guidance. Appending here does NOT bust the
@@ -5819,7 +5813,6 @@ class UnifiedMCPOrchestrator:
                     temperature=0.3,
                     caller_context=caller_context,
                     system_suffix=system_suffix,
-                    preferred_models=_turn_preferred,
                 ):
                     if event["type"] == "text_delta":
                         text_delta_buffer.append(event["text"])

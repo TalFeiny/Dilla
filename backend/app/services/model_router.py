@@ -1771,9 +1771,7 @@ class ModelRouter:
         # Provider spreading: if the last call in this request used provider X,
         # deprioritize provider X so sequential calls hit different providers.
         # This avoids rate-limit stacking (e.g. ingestion + narratives both hitting Anthropic).
-        # SKIP spreading when caller specified explicit preferred_models — they mean it.
-        # (Classification calls always pin to Haiku and must not be rerouted to deepseek.)
-        if not preferred and self._active_budget and self._active_budget.calls:
+        if self._active_budget and self._active_budget.calls:
             last_model = self._active_budget.calls[-1].get("model", "")
             if last_model in self.model_configs:
                 last_provider = self.model_configs[last_model]["provider"]
