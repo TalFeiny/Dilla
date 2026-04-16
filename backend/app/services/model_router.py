@@ -192,7 +192,7 @@ class ToolAdapter:
         "dict": {"type": "object"},
         "object": {"type": "object"},
         "any": {},
-        "list": {"type": "array"},
+        "list": {"type": "array", "items": {}},
     }
 
     @classmethod
@@ -240,7 +240,7 @@ class ToolAdapter:
             return {"type": "array", "items": inner_schema}
         # Handle list without inner type
         if hint == "list":
-            return {"type": "array"}
+            return {"type": "array", "items": {}}
         # Handle complex dict/object descriptions (just map to object)
         if hint.startswith("{") or hint.startswith("list[{"):
             return {"type": "array", "items": {"type": "object"}}
@@ -524,8 +524,7 @@ class ModelRouter:
             "claude-haiku-4-5": 8,
             "gpt-5-mini": 5,
             "gpt-5.2": 2,
-            "gemini-2.5-flash": 10,
-            "gemini-2.5-pro": 5,
+            # gemini removed — no API key
             "mixtral-8x7b": 10,
             "llama2-70b": 10,
         }
@@ -1743,7 +1742,7 @@ class ModelRouter:
         # If no preference specified, rotate default order by user affinity
         # so concurrent users hit different providers first.
         if not preferred:
-            default_order = ["claude-sonnet-4-6", "claude-haiku-4-5", "gpt-5-mini", "gpt-5.2", "gemini-2.5-flash", "gemini-2.5-pro", "deepseek-v3.2", "deepseek-r1", "qwen3.5-plus", "qwen3.5-flash", "kimi-k2.5"]
+            default_order = ["claude-sonnet-4-6", "claude-haiku-4-5", "gpt-5-mini", "gpt-5.2", "deepseek-v3.2", "deepseek-r1", "qwen3.5-plus", "qwen3.5-flash", "kimi-k2.5"]
             preferred_available = [m for m in default_order if m in capable_models]
             other_models = [m for m in capable_models if m not in default_order]
             base = preferred_available + other_models
@@ -1772,7 +1771,9 @@ class ModelRouter:
         # Provider spreading: if the last call in this request used provider X,
         # deprioritize provider X so sequential calls hit different providers.
         # This avoids rate-limit stacking (e.g. ingestion + narratives both hitting Anthropic).
-        if self._active_budget and self._active_budget.calls:
+        # SKIP spreading when caller specified explicit preferred_models — they mean it.
+        # (Classification calls always pin to Haiku and must not be rerouted to deepseek.)
+        if not preferred and self._active_budget and self._active_budget.calls:
             last_model = self._active_budget.calls[-1].get("model", "")
             if last_model in self.model_configs:
                 last_provider = self.model_configs[last_model]["provider"]
@@ -2044,10 +2045,10 @@ class ModelRouter:
 
     # Preferred model fallback chains per tier
     _TIER_MODEL_CHAINS: Dict["ModelTier", List[str]] = {
-        ModelTier.TRIVIAL: ["claude-haiku-4-5", "gpt-5-mini", "gemini-2.5-flash", "qwen3.5-flash", "mixtral-8x7b"],
-        ModelTier.CHEAP:   ["claude-haiku-4-5", "gpt-5-mini", "gemini-2.5-flash", "qwen3.5-plus", "deepseek-v3.2"],
-        ModelTier.QUALITY: ["claude-sonnet-4-6", "gpt-5.2", "gemini-2.5-pro", "kimi-k2.5", "deepseek-r1"],
-        ModelTier.PREMIUM: ["claude-sonnet-4-6", "gpt-5.2", "gemini-2.5-pro", "deepseek-r1", "qwen3-max-thinking"],
+        ModelTier.TRIVIAL: ["claude-haiku-4-5", "gpt-5-mini", "qwen3.5-flash", "mixtral-8x7b"],
+        ModelTier.CHEAP:   ["claude-haiku-4-5", "gpt-5-mini", "qwen3.5-plus", "deepseek-v3.2"],
+        ModelTier.QUALITY: ["claude-sonnet-4-6", "gpt-5.2", "kimi-k2.5", "deepseek-r1"],
+        ModelTier.PREMIUM: ["claude-sonnet-4-6", "gpt-5.2", "deepseek-r1", "qwen3-max-thinking"],
     }
 
     def preferred_models_for_task(self, caller_context: Optional[str] = None) -> Optional[List[str]]:

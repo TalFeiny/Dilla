@@ -4598,7 +4598,7 @@ class UnifiedMCPOrchestrator:
                     capability=ModelCapability.FAST,
                     max_tokens=50,
                     temperature=0.0,
-                    preferred_models=["claude-haiku-4-5", "gemini-2.5-flash"],
+                    preferred_models=["gpt-5-mini", "claude-haiku-4-5"],
                     json_mode=True,
                     caller_context="classify_turn",
                 )
@@ -4912,6 +4912,8 @@ class UnifiedMCPOrchestrator:
         self,
         intent: Optional[str] = None,
         response_mode: Optional[str] = None,
+        tool_order: Optional[List[str]] = None,
+        max_tools: int = 15,
     ) -> List[Dict[str, Any]]:
         """Convert AGENT_VISIBLE_TOOLS to canonical tool-use definitions.
 
@@ -4919,12 +4921,12 @@ class UnifiedMCPOrchestrator:
         {"name": str, "description": str, "input_schema": {JSON Schema}}
 
         When *intent* and/or *response_mode* are supplied, the tool list is
-        scoped via get_tools_for_intent + filter_tools_by_response_mode so the
-        model receives a focused set (typically 15-40 tools) instead of the
-        full 150+ catalog.
+        scoped via get_tools_for_intent + filter_tools_by_response_mode.
 
-        Note: _run_agent_loop applies its own two-tier formatting (primary=full,
-        secondary=compact) using cost_tier. This method just scopes the list.
+        When *tool_order* is supplied (Haiku-ranked list from _classify_query_intent),
+        tools are reordered so ranked tools appear first, then the list is capped
+        at *max_tools*. This keeps the model focused on the relevant tools instead
+        of seeing the full 50-tool intent scope.
 
         ToolAdapter converts from here to OpenAI/Google/etc as needed.
         """
@@ -4938,6 +4940,20 @@ class UnifiedMCPOrchestrator:
         else:
             scoped = AGENT_VISIBLE_TOOLS
 
+        # Reorder by Haiku-ranked tool_order, then cap at max_tools.
+        if tool_order:
+            ranked_names = [t.strip() for t in tool_order if t.strip()]
+            scoped_map = {t.name: t for t in scoped}
+            # Ranked tools first (in ranked order), then remaining tools
+            ordered: List[Any] = []
+            for name in ranked_names:
+                if name in scoped_map:
+                    ordered.append(scoped_map[name])
+            for tool in scoped:
+                if tool.name not in {t.name for t in ordered}:
+                    ordered.append(tool)
+            scoped = ordered[:max_tools]
+
         defs = []
         for tool in scoped:
             schema = ToolAdapter.informal_to_json_schema(tool.input_schema or {})
@@ -4947,6 +4963,48 @@ class UnifiedMCPOrchestrator:
                 "input_schema": schema,
             })
         return defs
+
+    # Tools that load raw data into context — calling any one of them
+    # satisfies Phase 0 and unlocks the full analysis tool set.
+    _HYDRATION_TOOLS = frozenset({
+        "pull_company_data", "pull_fund_companies", "query_portfolio",
+    })
+
+    def _get_phase_tools(
+        self,
+        intent: str,
+        resp_mode: str,
+        tool_order: Optional[List[str]],
+        tool_calls_made: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """State-driven tool scoping for _conversational_loop rounds.
+
+        Phase 0 — no data in context yet: only hydration tools visible.
+        The model is forced to fetch before it can do anything else.
+
+        Phase 1 — a hydration tool ran this turn OR data is already cached:
+        intent-scoped analysis tools, max 5.
+        """
+        has_data = bool(
+            self.shared_data.get("company_fpa_data")
+            or self.shared_data.get("companies")
+            or (tool_calls_made and any(
+                tc.get("tool") in self._HYDRATION_TOOLS
+                for tc in tool_calls_made
+            ))
+        )
+
+        if not has_data:
+            return self._build_tool_definitions(
+                tool_order=["pull_company_data", "pull_fund_companies"],
+                max_tools=2,
+            )
+        return self._build_tool_definitions(
+            intent=intent,
+            response_mode=resp_mode,
+            tool_order=tool_order,
+            max_tools=5,
+        )
 
     def _build_conversational_prompt(
         self,
@@ -5647,23 +5705,13 @@ class UnifiedMCPOrchestrator:
             "action" if turn_type in (TurnType.RETRIEVAL, TurnType.ITERATION, TurnType.STEERING, TurnType.ANALYSIS) else
             "task"
         )
-        tools = self._build_tool_definitions(intent=_intent, response_mode=_resp_mode)
+        _tool_order = _classification.get("tool_order") if _classification else None
 
-        # When files are uploaded, inject file-processing tools into the
-        # tool list so the agent can process them regardless of intent.
-        if self.shared_data.get("uploaded_files"):
-            _tool_names_in_list = {t["name"] for t in tools}
-            _upload_tool_names = ["ingest_pe_model", "generate_memo", "generate_chart"]
-            for _ut_name in _upload_tool_names:
-                if _ut_name not in _tool_names_in_list:
-                    _ut = AGENT_VISIBLE_TOOL_MAP.get(_ut_name)
-                    if _ut and ToolAdapter:
-                        tools.append({
-                            "name": _ut.name,
-                            "description": _ut.description,
-                            "input_schema": ToolAdapter.informal_to_json_schema(_ut.input_schema or {}),
-                        })
-                        logger.info(f"[CONV_LOOP] Injected {_ut_name} for uploaded files")
+        # Lock model affinity for the entire turn — provider spreading fires
+        # between turns, not between rounds within a turn. Locking here
+        # prevents tool schema mismatches when the router would otherwise
+        # rotate providers mid-turn.
+        _turn_preferred = self.model_router._get_model_order(ModelCapability.ANALYSIS, None)[:1]
 
         # Dynamic suffix — sits AFTER the cache breakpoint. Contains the bits
         # that change turn-to-turn: rolling history summary, classified chain
@@ -5694,6 +5742,7 @@ class UnifiedMCPOrchestrator:
             f"[CONV_LOOP] Tool scoping: grid_mode={_grid_mode} "
             f"classified_intent={_classified_intent} scope={_intent} "
             f"response_mode={_resp_mode} tools={len(tools)}"
+            + (f" ranked_from={_tool_order[:3]}" if _tool_order else "")
         )
         max_tokens = TURN_BUDGETS[turn_type] or self._prev_turn_budget or 2048
         caller_context = f"conversational_{turn_type.value}"
@@ -5746,6 +5795,21 @@ class UnifiedMCPOrchestrator:
             tool_calls: List[Dict[str, Any]] = []
             stop_reason = "end_turn"
 
+            # Re-scope tools each round based on what's loaded in context.
+            tools = self._get_phase_tools(_intent, _resp_mode, _tool_order, tool_calls_made)
+            # When files are uploaded, inject file-processing tools regardless of phase.
+            if self.shared_data.get("uploaded_files"):
+                _tool_names_in_list = {t["name"] for t in tools}
+                for _ut_name in ["ingest_pe_model", "generate_memo", "generate_chart"]:
+                    if _ut_name not in _tool_names_in_list:
+                        _ut = AGENT_VISIBLE_TOOL_MAP.get(_ut_name)
+                        if _ut and ToolAdapter:
+                            tools.append({
+                                "name": _ut.name,
+                                "description": _ut.description,
+                                "input_schema": ToolAdapter.informal_to_json_schema(_ut.input_schema or {}),
+                            })
+
             try:
                 async for event in self.model_router.stream_completion_with_tools(
                     messages=messages,
@@ -5755,6 +5819,7 @@ class UnifiedMCPOrchestrator:
                     temperature=0.3,
                     caller_context=caller_context,
                     system_suffix=system_suffix,
+                    preferred_models=_turn_preferred,
                 ):
                     if event["type"] == "text_delta":
                         text_delta_buffer.append(event["text"])
@@ -12135,7 +12200,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
                 capability=ModelCapability.FAST,
                 max_tokens=200,
                 temperature=0.0,
-                preferred_models=["claude-haiku-4-5", "gemini-2.5-flash"],
+                preferred_models=["claude-haiku-4-5", "gpt-5-mini"],
                 json_mode=True,
                 caller_context="find_tools",
             )
@@ -17809,7 +17874,7 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
                 capability=ModelCapability.FAST,
                 max_tokens=200,
                 temperature=0.0,
-                preferred_models=["claude-haiku-4-5", "gemini-2.5-flash"],
+                preferred_models=["claude-haiku-4-5", "gpt-5-mini"],
                 json_mode=True,
                 caller_context="classify_and_rank",
             )
@@ -18589,6 +18654,20 @@ Rules:
         # PE fund → suppress VC-specific tools from tier 1
         if self.shared_data.get("fund_type") == "private_equity":
             _suppress_from_tier1.update({"cap_table_evolution", "enrich_sparse_grid"})
+
+        # Phase 0: no company data in context and no deterministic plan →
+        # push all non-hydration tools to tier 2 so the model is forced to
+        # fetch before it can do anything else. When a plan exists, the plan
+        # already commits pull_company_data as step 0 — skip this.
+        _fetch_tools = {"pull_company_data", "pull_fund_companies"}
+        _has_data = bool(
+            self.shared_data.get("company_fpa_data") or self.shared_data.get("companies")
+        )
+        if not _deterministic_plan and not _has_data:
+            _suppress_from_tier1.update(
+                t.name for t in _scoped_tools if t.name not in _fetch_tools
+            )
+            logger.info("[AGENT_LOOP] Phase 0: no data in context — suppressing analysis tools to tier 2")
 
         if _suppress_from_tier1:
             logger.info(f"[AGENT_LOOP] Context-aware suppression from tier 1: {_suppress_from_tier1}")
