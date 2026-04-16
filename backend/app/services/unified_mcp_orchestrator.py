@@ -5735,7 +5735,7 @@ class UnifiedMCPOrchestrator:
         logger.info(
             f"[CONV_LOOP] Tool scoping: grid_mode={_grid_mode} "
             f"classified_intent={_classified_intent} scope={_intent} "
-            f"response_mode={_resp_mode} tools={len(tools)}"
+            f"response_mode={_resp_mode}"
             + (f" ranked_from={_tool_order[:3]}" if _tool_order else "")
         )
         max_tokens = TURN_BUDGETS[turn_type] or self._prev_turn_budget or 2048
