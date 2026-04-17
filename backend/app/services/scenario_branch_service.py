@@ -12,11 +12,33 @@ Handles:
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Module-level cache: branch trees don't change between agent tool calls.
+# Key: company_id → (monotonic_time, {branch_id: branch_dict})
+_BRANCH_TREE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_BRANCH_CACHE_TTL: float = 60.0
+
+
+def _get_cached_branch_tree(company_id: str) -> Optional[Dict[str, Any]]:
+    entry = _BRANCH_TREE_CACHE.get(company_id)
+    if entry and (time.monotonic() - entry[0]) < _BRANCH_CACHE_TTL:
+        return entry[1]
+    return None
+
+
+def _set_branch_tree_cache(company_id: str, by_id: Dict[str, Any]) -> None:
+    _BRANCH_TREE_CACHE[company_id] = (time.monotonic(), by_id)
+
+
+def invalidate_branch_cache(company_id: str) -> None:
+    """Call after creating/updating/deleting a branch."""
+    _BRANCH_TREE_CACHE.pop(company_id, None)
 
 
 @dataclass
@@ -137,6 +159,7 @@ class ScenarioBranchService:
         Walk from branch_id up to root via parent_branch_id.
         Returns list ordered root-first: [root, ..., parent, self].
         Loads all branches for the company in one query to avoid N+1.
+        Results are cached for 60s — branch trees don't change mid-turn.
         """
         if not sb:
             from app.core.supabase_client import get_supabase_client
@@ -144,13 +167,28 @@ class ScenarioBranchService:
         if not sb:
             return []
 
-        result = sb.table("scenario_branches").select("*").eq("id", branch_id).execute()
-        if not result.data:
-            return []
+        # Check if we have a cached tree that contains this branch
+        # We need the company_id first — check all cached trees
+        for cid, (_, by_id) in list(_BRANCH_TREE_CACHE.items()):
+            if branch_id in by_id:
+                by_id_cached = _get_cached_branch_tree(cid)
+                if by_id_cached is not None:
+                    by_id = by_id_cached
+                    break
+        else:
+            # Not in any cache — fetch branch to get company_id
+            result = sb.table("scenario_branches").select("*").eq("id", branch_id).execute()
+            if not result.data:
+                return []
+            branch_row = result.data[0]
+            company_id = branch_row["company_id"]
 
-        company_id = result.data[0]["company_id"]
-        all_result = sb.table("scenario_branches").select("*").eq("company_id", company_id).execute()
-        by_id = {b["id"]: b for b in (all_result.data or [])}
+            by_id = _get_cached_branch_tree(company_id)
+            if by_id is None:
+                all_result = sb.table("scenario_branches").select("*").eq("company_id", company_id).execute()
+                by_id = {b["id"]: b for b in (all_result.data or [])}
+                _set_branch_tree_cache(company_id, by_id)
+                logger.debug("[BRANCH_CACHE] loaded %d branches for %s", len(by_id), company_id)
 
         chain = []
         current = by_id.get(branch_id)

@@ -283,6 +283,12 @@ async def process_cfo_request(request: CFORequest, raw_request: Request):
             company_ctx["company_id"] = merged_context.get("company_id") or merged_context.get("companyId")
         merged_context["system_prompt_override"] = _build_cfo_system_prompt(company_ctx)
 
+        # Force grid_mode=pnl so the orchestrator routes to FP&A/forecast tools
+        # instead of investor-portfolio tools.  _MODE_FALLBACK["pnl"] → "forecast"
+        # means even unrecognised intents get the right tool scope.
+        if not merged_context.get("grid_mode"):
+            merged_context["grid_mode"] = "pnl"
+
         # Process through the same orchestrator
         result = await orchestrator.process_request(
             prompt=request.prompt,

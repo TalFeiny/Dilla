@@ -2,10 +2,25 @@
 
 import json
 import logging
+import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Module-level TTL caches — forecast data doesn't change between uploads.
+# Parallel tool calls in the agent loop each instantiate a fresh
+# ForecastPersistenceService, so instance-level caching is worthless.
+# ---------------------------------------------------------------------------
+_ACTIVE_FORECAST_CACHE: Dict[str, Tuple[float, Optional[Dict]]] = {}
+_FORECAST_LINES_CACHE: Dict[str, Tuple[float, Optional[Dict]]] = {}
+_FORECAST_CACHE_TTL: float = 60.0
+
+
+def invalidate_forecast_cache(company_id: str) -> None:
+    """Call after saving/activating a new forecast."""
+    _ACTIVE_FORECAST_CACHE.pop(company_id, None)
 
 
 # Map from LiquidityManagementService output keys to fpa_forecast_lines categories
@@ -74,6 +89,7 @@ class ForecastPersistenceService:
         # Deactivate existing active forecast if activating this one
         if activate:
             self._deactivate_all(company_id)
+            invalidate_forecast_cache(company_id)
 
         # Insert forecast header
         header = {
@@ -127,6 +143,11 @@ class ForecastPersistenceService:
         if not self._sb:
             return None
 
+        now = time.monotonic()
+        cached = _FORECAST_LINES_CACHE.get(forecast_id)
+        if cached and (now - cached[0]) < _FORECAST_CACHE_TTL:
+            return cached[1]
+
         header = (
             self._sb.table("fpa_forecasts")
             .select("*")
@@ -134,6 +155,7 @@ class ForecastPersistenceService:
             .execute()
         )
         if not header.data:
+            _FORECAST_LINES_CACHE[forecast_id] = (now, None)
             return None
 
         lines = (
@@ -146,12 +168,18 @@ class ForecastPersistenceService:
 
         result = header.data[0]
         result["lines"] = lines.data or []
+        _FORECAST_LINES_CACHE[forecast_id] = (now, result)
         return result
 
     def get_active_forecast(self, company_id: str) -> Optional[Dict]:
         """Get the currently active forecast for a company."""
         if not self._sb:
             return None
+
+        now = time.monotonic()
+        cached = _ACTIVE_FORECAST_CACHE.get(company_id)
+        if cached and (now - cached[0]) < _FORECAST_CACHE_TTL:
+            return cached[1]
 
         result = (
             self._sb.table("fpa_forecasts")
@@ -161,9 +189,9 @@ class ForecastPersistenceService:
             .limit(1)
             .execute()
         )
-        if not result.data:
-            return None
-        return result.data[0]
+        data = result.data[0] if result.data else None
+        _ACTIVE_FORECAST_CACHE[company_id] = (now, data)
+        return data
 
     def list_forecasts(self, company_id: str) -> List[Dict]:
         """List all forecasts for a company, most recent first."""
@@ -210,6 +238,7 @@ class ForecastPersistenceService:
             "updated_at": datetime.utcnow().isoformat(),
         }).eq("id", forecast_id).execute()
 
+        invalidate_forecast_cache(company_id)
         self._log_audit(company_id, forecast_id, "activated", {})
         return {"success": True, "forecast_id": forecast_id}
 

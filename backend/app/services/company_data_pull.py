@@ -10,10 +10,36 @@ Each service takes what it needs from the result.
 
 import json
 import logging
+import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# In-process TTL cache — avoids redundant DB pulls within the same agent turn.
+# The agent loop calls pull_company_data on every iteration (once per tool call),
+# but the data doesn't change mid-turn.  60s TTL is safe: actuals are updated
+# by uploads, not in real-time.
+# ---------------------------------------------------------------------------
+_COMPANY_DATA_CACHE: Dict[str, Tuple[float, "CompanyData"]] = {}
+_CACHE_TTL_SECONDS: float = 60.0
+
+
+def _cache_get(company_id: str) -> Optional["CompanyData"]:
+    entry = _COMPANY_DATA_CACHE.get(company_id)
+    if entry and (time.monotonic() - entry[0]) < _CACHE_TTL_SECONDS:
+        return entry[1]
+    return None
+
+
+def _cache_set(company_id: str, data: "CompanyData") -> None:
+    _COMPANY_DATA_CACHE[company_id] = (time.monotonic(), data)
+
+
+def invalidate_company_cache(company_id: str) -> None:
+    """Call after actuals upload/mutation to force a fresh pull."""
+    _COMPANY_DATA_CACHE.pop(company_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -221,15 +247,24 @@ class CompanyData:
             if val is not None:
                 result[key] = val
 
-        # Subcategory proportions — enables decomposition of parent
-        # OpEx/COGS into individually adjustable line items.
+        # Subcategory proportions — computed from already-loaded time_series.
+        # Keys like "opex_rd:engineering_salaries" are stored in time_series
+        # by pull_company_data, so we never need extra DB queries here.
         try:
-            from app.services.actuals_ingestion import get_subcategory_proportions
             subcat_props: Dict[str, Dict[str, float]] = {}
             for parent in ("opex_rd", "opex_sm", "opex_ga", "cogs"):
-                props = get_subcategory_proportions(self.company_id, parent)
-                if props:
-                    subcat_props[parent] = props
+                prefix = f"{parent}:"
+                sub_latest: Dict[str, float] = {}
+                for key, series in self.time_series.items():
+                    if key.startswith(prefix):
+                        sub_name = key[len(prefix):]
+                        if series:
+                            last_period = max(series.keys())
+                            sub_latest[sub_name] = series[last_period]
+                if sub_latest:
+                    total = sum(sub_latest.values())
+                    if total:
+                        subcat_props[parent] = {k: v / total for k, v in sub_latest.items()}
             if subcat_props:
                 result["_subcategory_proportions"] = subcat_props
         except Exception:
@@ -447,7 +482,14 @@ def pull_company_data(company_id: str) -> CompanyData:
 
     This is the ONLY function that should query fpa_actuals for service
     consumption.  No limit — pulls everything so callers get full history.
+    Results are cached for 60 seconds to avoid redundant DB round-trips
+    within a single agent turn.
     """
+    cached = _cache_get(company_id)
+    if cached is not None:
+        logger.debug("[DATA_PULL] cache HIT for %s", company_id)
+        return cached
+
     from app.core.supabase_client import get_supabase_client
 
     sb = get_supabase_client()
@@ -540,7 +582,7 @@ def pull_company_data(company_id: str) -> CompanyData:
         len(time_series),
     )
 
-    return CompanyData(
+    result = CompanyData(
         company_id=company_id,
         time_series=time_series,
         latest=latest,
@@ -548,6 +590,8 @@ def pull_company_data(company_id: str) -> CompanyData:
         metadata=metadata,
         analytics=analytics,
     )
+    _cache_set(company_id, result)
+    return result
 
 
 # ---------------------------------------------------------------------------

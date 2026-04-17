@@ -7208,7 +7208,8 @@ JUST THE JSON:"""
                 if _task_cid and isinstance(_task_cid, str) and len(_task_cid) == 36 and _task_cid.count('-') == 4:
                     async with self.shared_data_lock:
                         self.shared_data["company_id"] = _task_cid
-                    if pull_company_data:
+                        _already_loaded = bool(self.shared_data.get("company_fpa_data"))
+                    if pull_company_data and not _already_loaded:
                         try:
                             _cd = pull_company_data(_task_cid)
                             if _cd and _cd.periods:
@@ -7382,8 +7383,9 @@ JUST THE JSON:"""
             if _cid:
                 async with self.shared_data_lock:
                     self.shared_data["company_id"] = _cid
-                # Pre-pull company data for tools that need it
-                if pull_company_data:
+                    _already_loaded = bool(self.shared_data.get("company_fpa_data"))
+                # Pre-pull company data for tools that need it (skip if already cached)
+                if pull_company_data and not _already_loaded:
                     try:
                         _cd = pull_company_data(_cid)
                         if _cd and _cd.periods:
@@ -7425,7 +7427,8 @@ JUST THE JSON:"""
             if _cid:
                 async with self.shared_data_lock:
                     self.shared_data["company_id"] = _cid
-                if pull_company_data:
+                    _already_loaded = bool(self.shared_data.get("company_fpa_data"))
+                if pull_company_data and not _already_loaded:
                     try:
                         _cd = pull_company_data(_cid)
                         if _cd and _cd.periods:
@@ -20212,8 +20215,10 @@ ABSOLUTE RULES:
                         logger.info(f"[CONTEXT] Stored company_id: {_cid}")
                     # ── Pull company financials from DB (single source of truth) ──
                     # Replaces grid-reading: agent gets real actuals, not stale grid snapshots.
+                    # Skip if already loaded — pull_company_data has a 60s TTL cache so even
+                    # if called again it won't hit the DB, but we avoid even the function call.
                     _resolved_cid = self.shared_data.get('company_id')
-                    if _resolved_cid and pull_company_data:
+                    if _resolved_cid and pull_company_data and not self.shared_data.get('company_fpa_data'):
                         try:
                             _cd = pull_company_data(_resolved_cid)
                             if _cd and _cd.periods:
