@@ -794,11 +794,11 @@ Rules:
 - Max 4 recommendations, ranked by impact
 - If data is insufficient, say so in open_questions"""
 
-        response = await self.model_router.get_completion(
+        result = await self.model_router.get_completion(
             prompt=prompt,
             capability=ModelCapability.ANALYSIS,
-            response_format="json",
         )
+        response = result.get("response", "") if isinstance(result, dict) else result
 
         try:
             return json.loads(response)
@@ -829,10 +829,11 @@ Burn rate: ${state.burn_rate or 'unknown'}/mo
 Write 1-3 sentences of strategic context. Be specific with numbers.
 Do not use any numbers that aren't provided above."""
 
-        response = await self.model_router.get_completion(
+        result = await self.model_router.get_completion(
             prompt=prompt,
             capability=ModelCapability.FAST,
         )
+        response = result.get("response", "") if isinstance(result, dict) else result
         return response.strip() if response else " | ".join(signal_descriptions)
 
 

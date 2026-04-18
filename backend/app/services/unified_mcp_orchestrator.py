@@ -5809,6 +5809,8 @@ class UnifiedMCPOrchestrator:
                     system_suffix=system_suffix,
                 ):
                     if event["type"] == "text_delta":
+                        # Yield immediately for real-time streaming
+                        yield {"type": "token", "content": event["text"]}
                         text_delta_buffer.append(event["text"])
                     elif event["type"] == "done":
                         text_parts = event.get("text_parts", [])
@@ -5823,20 +5825,6 @@ class UnifiedMCPOrchestrator:
                 }
                 return
 
-            # ── Detect truncation: stop_reason == "max_tokens" ──
-            if stop_reason == "max_tokens" and max_tokens_retries < MAX_TOKENS_RETRY_LIMIT:
-                max_tokens_retries += 1
-                max_tokens = min(max_tokens * 2, 16384)
-                logger.warning(
-                    f"[CONV_LOOP] Response truncated (max_tokens). "
-                    f"Retry {max_tokens_retries}/{MAX_TOKENS_RETRY_LIMIT} with budget={max_tokens}"
-                )
-                # Discard buffered text, retry the same round
-                continue
-
-            # Flush buffered text deltas to frontend
-            for delta_text in text_delta_buffer:
-                yield {"type": "token", "content": delta_text}
             if text_parts:
                 all_text_parts.extend(text_parts)
 
@@ -8823,9 +8811,13 @@ Answer using specific company names and numbers from the portfolio grid above.""
         if isinstance(result, dict) and "error" not in result:
             self._persist_outputs(tool_name, result)
 
-        # Step 5: proactive strategic context hook
+        # Step 5: proactive strategic context hook — fire-and-forget so it
+        # never blocks the main streaming response.
         if isinstance(result, dict) and "error" not in result:
-            result = await self._strategic_post_hook(tool_name, tool_input, result)
+            import asyncio
+            asyncio.create_task(
+                self._strategic_post_hook(tool_name, tool_input, dict(result))
+            )
 
         return result
 
