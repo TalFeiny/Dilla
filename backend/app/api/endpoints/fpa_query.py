@@ -3645,7 +3645,14 @@ async def generate_forecast(request: FPAForecastRequest):
                 from app.services.scenario_branch_service import ScenarioBranchService
                 sbs = ScenarioBranchService()
 
-                # Use explicit branch_ids, or auto-discover all for this company
+                # Use explicit branch_ids, or auto-discover user-created scenario branches.
+                # Exclude analytics artifact branches (health_score, monte_carlo, sensitivity,
+                # valuation, forecast_projection, etc.) — they clog comparison with noise.
+                _ANALYTICS_SOURCES = {
+                    "health_score", "monte_carlo", "sensitivity", "valuation",
+                    "forecast_projection", "advanced_analytics", "analysis",
+                    "actuals_vs_budget", "rolling_forecast_applied",
+                }
                 branch_ids_to_use = request.branch_ids
                 if not branch_ids_to_use and request.company_id:
                     from app.core.supabase_client import get_supabase_client
@@ -3653,11 +3660,14 @@ async def generate_forecast(request: FPAForecastRequest):
                     if sb:
                         rows = (
                             sb.table("scenario_branches")
-                            .select("id")
+                            .select("id,source")
                             .eq("company_id", request.company_id)
                             .execute()
                         )
-                        branch_ids_to_use = [r["id"] for r in (rows.data or [])]
+                        branch_ids_to_use = [
+                            r["id"] for r in (rows.data or [])
+                            if (r.get("source") or "user") not in _ANALYTICS_SOURCES
+                        ]
 
                 if branch_ids_to_use:
                     comparison = sbs.execute_comparison(

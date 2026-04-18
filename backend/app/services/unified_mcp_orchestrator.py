@@ -4940,19 +4940,13 @@ class UnifiedMCPOrchestrator:
         else:
             scoped = AGENT_VISIBLE_TOOLS
 
-        # Reorder by Haiku-ranked tool_order, then cap at max_tools.
+        # Haiku ranked the relevant tools — use exactly those, in order.
+        # Do NOT pad with unranked extras from the scope; that's what causes
+        # the model to call tools it wasn't asked to use.
         if tool_order:
             ranked_names = [t.strip() for t in tool_order if t.strip()]
             scoped_map = {t.name: t for t in scoped}
-            # Ranked tools first (in ranked order), then remaining tools
-            ordered: List[Any] = []
-            for name in ranked_names:
-                if name in scoped_map:
-                    ordered.append(scoped_map[name])
-            for tool in scoped:
-                if tool.name not in {t.name for t in ordered}:
-                    ordered.append(tool)
-            scoped = ordered[:max_tools]
+            scoped = [scoped_map[name] for name in ranked_names if name in scoped_map]
 
         defs = []
         for tool in scoped:
@@ -10857,7 +10851,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
                 # ── Fund-level & advanced charts ──
                 "heatmap": lambda: cds.generate_heatmap(companies),
                 "cap_table_evolution": lambda: cds.generate_cap_table_evolution(companies),
-                "stacked_bar": lambda: cds.generate_stacked_bar(companies),
+                "stacked_bar": lambda: self._build_fpa_stacked_bar_chart() or cds.generate_stacked_bar(companies),
                 "market_map": lambda: cds.generate_market_map(companies),
                 "nav_live": lambda: cds.generate_nav_live(companies),
                 "fpa_stress_test": lambda: cds.generate_fpa_stress_test(companies),
@@ -10866,8 +10860,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
                     self.shared_data.get("pnl_chart_data", {})),
                 "pnl_waterfall": lambda: cds.generate_waterfall(
                     self.shared_data.get("pnl_chart_data", {}).get("rows", companies)),
-                "pnl_stacked_bar": lambda: cds.generate_stacked_bar(
-                    self.shared_data.get("pnl_chart_data", {}).get("rows", companies)),
+                "pnl_stacked_bar": lambda: self._build_fpa_stacked_bar_chart() or cds.generate_stacked_bar(companies),
                 # ── Analytics-bridge charts (use stored results from shared_data) ──
                 "sensitivity_tornado": lambda: cds.generate_sensitivity_tornado(
                     self.shared_data.get("fpa_result", {})),
@@ -10891,6 +10884,87 @@ Answer using specific company names and numbers from the portfolio grid above.""
         except Exception as e:
             logger.warning(f"[TOOL] chart failed: {e}")
             return {"error": str(e)}
+
+    def _build_fpa_stacked_bar_chart(self) -> Optional[dict]:
+        """Build a stacked bar chart from LMS forecast subcategory data in shared_data.
+
+        Returns None if no FPA forecast data is available, so the caller can fall back
+        to the portfolio funding-by-round chart.
+        """
+        # Try all known forecast result keys in shared_data
+        forecast_rows: list = []
+        for key in ("fpa_result", "fpa_forecast_result"):
+            fpa = self.shared_data.get(key) or {}
+            forecast_rows = fpa.get("forecast") or fpa.get("monthly") or []
+            if forecast_rows:
+                break
+
+        # Fallback: pnl_chart_data
+        if not forecast_rows:
+            pnl = self.shared_data.get("pnl_chart_data", {})
+            forecast_rows = pnl.get("rows", [])
+
+        if not forecast_rows:
+            return None
+
+        periods = [r.get("period", "") for r in forecast_rows if isinstance(r, dict)]
+        if not periods:
+            return None
+
+        # Build datasets from LMS subcategory breakdown
+        datasets: list = []
+        _SUBCAT_COLORS = [
+            "#4e79a7", "#f28e2c", "#e15759", "#76b7b2", "#59a14f",
+            "#edc949", "#af7aa1", "#ff9da7", "#9c755f", "#8b5cf6",
+        ]
+        ci = 0
+
+        first = forecast_rows[0] if forecast_rows else {}
+        subs = first.get("subcategories") or {}
+
+        if subs:
+            # LMS rows: subcategories = {cogs: {hosting, ...}, opex_rd: {salaries, ...}, ...}
+            for parent, parent_label in [
+                ("cogs",    "COGS"),
+                ("opex_rd", "R&D"),
+                ("opex_sm", "S&M"),
+                ("opex_ga", "G&A"),
+            ]:
+                sub_keys = sorted((subs.get(parent) or {}).keys())
+                for sk in sub_keys:
+                    vals = [
+                        (r.get("subcategories") or {}).get(parent, {}).get(sk, 0)
+                        for r in forecast_rows if isinstance(r, dict)
+                    ]
+                    if any(v for v in vals):
+                        datasets.append({
+                            "label": f"{parent_label}: {sk.replace('_', ' ').title()}",
+                            "data": [round(v, 2) for v in vals],
+                            "color": _SUBCAT_COLORS[ci % len(_SUBCAT_COLORS)],
+                        })
+                        ci += 1
+        else:
+            # Fallback: top-level P&L metrics
+            for key, label, color in [
+                ("revenue",      "Revenue",      "#4e79a7"),
+                ("cogs",         "COGS",         "#e15759"),
+                ("gross_profit", "Gross Profit", "#59a14f"),
+                ("total_opex",   "OpEx",         "#f28e2c"),
+                ("ebitda",       "EBITDA",       "#76b7b2"),
+            ]:
+                vals = [r.get(key, 0) for r in forecast_rows if isinstance(r, dict)]
+                if any(v for v in vals):
+                    datasets.append({"label": label, "data": [round(v, 2) for v in vals], "color": color})
+
+        if not datasets:
+            return None
+
+        return {
+            "type": "stacked_bar",
+            "title": "Cost Breakdown (LMS Subcategories)",
+            "renderType": "tableau",
+            "data": {"labels": periods, "datasets": datasets},
+        }
 
     def _build_pnl_line_chart(self, pnl_data: dict) -> Optional[dict]:
         """Build a line chart config from pre-computed pnl_chart_data."""

@@ -74,55 +74,10 @@ class ForecastMethodRouter:
         if has_drivers:
             return ("driver_based", "Customer/ACV data detected — using driver-based model")
 
-        # 2. Seasonal if enough data and pattern detected
-        if rev_months >= 12:
-            try:
-                from app.services.seasonality_engine import SeasonalityEngine
-                engine = SeasonalityEngine()
-                pattern = engine.detect_pattern(company_id, "revenue", min_periods=12, company_data=company_data)
-                if pattern and pattern.strength > 0.2:
-                    return (
-                        "seasonal",
-                        f"Seasonal pattern detected (strength={pattern.strength:.2f}, "
-                        f"confidence={pattern.confidence:.2f}) from {rev_months} months"
-                    )
-            except Exception as e:
-                logger.debug(f"Seasonal detection failed: {e}")
-
-        # 3. Advanced regression if enough data
-        if rev_months >= 6:
-            try:
-                best_model = self._quick_advanced_regression_check(company_data)
-                if best_model:
-                    model_name = best_model.get("model_name", "unknown")
-                    adj_r2 = best_model.get("adjusted_r_squared", 0)
-                    if adj_r2 > 0.7:
-                        return (
-                            "advanced_regression",
-                            f"Best fit: {model_name} (adj R²={adj_r2:.2f}) from {rev_months} months — "
-                            f"{best_model.get('qualitative_assessment', '')}"
-                        )
-            except Exception as e:
-                logger.debug(f"Advanced regression check failed: {e}")
-
-        # 3b. Fallback to basic linear regression
-        if rev_months >= 12:
-            try:
-                r2 = self._quick_regression_check(company_data)
-                if r2 and r2 > 0.7:
-                    return (
-                        "regression",
-                        f"Strong linear trend (R²={r2:.2f}) from {rev_months} months"
-                    )
-            except Exception as e:
-                logger.debug(f"Regression check failed: {e}")
-
-        # 4. Budget if available
-        if self._has_approved_budget(company_id):
-            return ("budget_pct", "Approved budget found — projecting from budget × achievement rate")
-
-        # 5. Default — use LiquidityManagementService for full subcategory-level
-        # modeling with dynamic driver interactions (headcount, usage, stepped, etc.)
+        # 2. Default — LiquidityManagementService with full subcategory-level P&L.
+        # Seasonal/regression overlays are available as explicit method choices but
+        # should not be auto-selected — they add latency and change revenue numbers
+        # in ways that are hard to reason about without explicit user intent.
         reason = (
             f"Liquidity model with subcategory-level decomposition from "
             f"{rev_months or '?'} months of actuals"

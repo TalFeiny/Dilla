@@ -225,11 +225,40 @@ class LiquidityManagementService:
                 if p and r:
                     _revenue_trajectory[p] = float(r)
 
-        base_revenue = seed.get("revenue") or seed.get("arr") or 0
-        monthly_revenue = base_revenue / 12 if base_revenue > 12000 else base_revenue
-        # If base_revenue looks annual (>12k), convert to monthly
-        if base_revenue > 0 and monthly_revenue > base_revenue:
-            monthly_revenue = base_revenue
+        # Derive starting monthly revenue from the historical trend, not just the last point.
+        # This extrapolates where revenue *should* be at the start of the forecast based
+        # on the actual slope — avoiding both the /12 misinterpretation and snap-from-noise.
+        monthly_revenue = 0.0
+        try:
+            hist = cd.historical_values("revenue") if cd else []
+            if len(hist) >= 3:
+                # OLS through the last N monthly values (up to 12)
+                window = hist[-12:]
+                n = len(window)
+                xs = list(range(n))
+                ys = [v for _, v in window]
+                x_mean = sum(xs) / n
+                y_mean = sum(ys) / n
+                cov = sum((xs[i] - x_mean) * (ys[i] - y_mean) for i in range(n))
+                var = sum((xs[i] - x_mean) ** 2 for i in range(n)) or 1
+                slope = cov / var
+                # Project one step beyond the last actual (= first forecast month)
+                monthly_revenue = max(0.0, y_mean + slope * (n - x_mean))
+            elif hist:
+                monthly_revenue = hist[-1][1]
+        except Exception:
+            pass
+
+        if not monthly_revenue:
+            # Fallback to seed value; revenue from to_forecast_seed is monthly so use directly
+            base_revenue = seed.get("revenue") or seed.get("arr") or 0
+            # Only divide by 12 when caller explicitly passes annual ARR (no _monthly_revenue tag)
+            if seed.get("_monthly_revenue") is not None:
+                monthly_revenue = float(seed["_monthly_revenue"])
+            elif base_revenue > 12000 and not seed.get("revenue"):
+                monthly_revenue = base_revenue / 12
+            else:
+                monthly_revenue = float(base_revenue)
 
         growth_rate = seed.get("growth_rate", 0.30)
         growth_rate = max(-0.5, min(growth_rate, 3.0))

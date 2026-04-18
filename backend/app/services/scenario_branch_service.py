@@ -282,6 +282,7 @@ class ScenarioBranchService:
         company_id: str,
         forecast_months: int = 24,
         start_period: Optional[str] = None,
+        _prefetched_base: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Execute a single branch with full parent chain inheritance and
@@ -316,14 +317,15 @@ class ScenarioBranchService:
             return self._execute_model_spec_branch(
                 branch_id, leaf, chain, merged, model_spec_data,
                 base_data, forecast_months, start_period, company_id,
+                _prefetched_base=_prefetched_base,
             )
 
         fork_period = leaf.get("fork_period")
         fork_idx = self._period_to_index(fork_period, start_period) if fork_period else 0
         fork_idx = max(0, min(fork_idx, forecast_months - 1))
 
-        # Full base projection — prefer active persisted forecast, fall back to liquidity model
-        base_forecast = self._load_active_forecast_data(company_id)
+        # Full base projection — prefer prefetched/active persisted forecast, fall back to liquidity model
+        base_forecast = _prefetched_base or self._load_active_forecast_data(company_id)
         if base_forecast and len(base_forecast) >= forecast_months:
             base_forecast = base_forecast[:forecast_months]
         else:
@@ -418,6 +420,7 @@ class ScenarioBranchService:
         forecast_months: int,
         start_period: str,
         company_id: str,
+        _prefetched_base: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Execute a branch that carries a ModelSpec instead of simple overrides.
 
@@ -465,8 +468,8 @@ class ScenarioBranchService:
             logger.error("ModelSpec execution failed: %s", e)
             return {"error": f"Model execution failed: {e}"}
 
-        # Build base forecast for comparison (same as default path)
-        base_forecast = self._load_active_forecast_data(company_id)
+        # Build base forecast for comparison (reuse prefetched if available)
+        base_forecast = _prefetched_base or self._load_active_forecast_data(company_id)
         if base_forecast and len(base_forecast) >= forecast_months:
             base_forecast = base_forecast[:forecast_months]
         else:
@@ -537,7 +540,7 @@ class ScenarioBranchService:
         }]
 
         for bid in branch_ids:
-            result = self.execute_branch(bid, company_id, forecast_months, start_period)
+            result = self.execute_branch(bid, company_id, forecast_months, start_period, _prefetched_base=base_forecast)
             if "error" in result:
                 logger.warning("Skipping branch %s: %s", bid, result["error"])
                 continue
