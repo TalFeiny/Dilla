@@ -525,37 +525,49 @@ class ForecastMethodRouter:
             provenance["implied_annual_growth"] = implied_annual_growth
             provenance["regression_model_name"] = result["model"]["model_name"]
 
-            # Build full P&L using LiquidityManagementService (proper subcategory growth drivers)
-            # with regression-derived growth, then overlay the regression revenue curve
+            # Build _revenue_trajectory so LMS uses the fitted curve shape (not scalar growth)
+            revenue_trajectory = []
+            try:
+                from datetime import date as _dt
+                from dateutil.relativedelta import relativedelta as _rd
+                from app.core.date_utils import parse_period_to_date as _ppd
+                # Resolve the actual start period LMS will use (mirrors LMS fallback logic)
+                traj_start = start_period
+                if not traj_start:
+                    _today = _dt.today()
+                    _m = _today.month + 1
+                    _y = _today.year + (1 if _m > 12 else 0)
+                    _m = _m if _m <= 12 else _m - 12
+                    traj_start = f"{_y}-{_m:02d}"
+                _start_dt = _ppd(traj_start)
+                for _i, _rev in enumerate(projected_revenue):
+                    _p = (_start_dt + _rd(months=_i)).strftime("%Y-%m")
+                    if _rev > 0:
+                        revenue_trajectory.append({"period": _p, "revenue": float(_rev)})
+            except Exception as _e:
+                logger.debug(f"Could not build revenue trajectory for LMS: {_e}")
+
+            # Build full P&L using LiquidityManagementService with the regression curve baked in
             lms = LiquidityManagementService()
             lms_result = lms.build_liquidity_model(
                 company_id=company_id,
                 months=months,
                 start_period=start_period,
-                scenario_overrides={"growth_rate": implied_annual_growth},
+                scenario_overrides={
+                    "growth_rate": implied_annual_growth,
+                    "_revenue_trajectory": revenue_trajectory,
+                },
             )
             forecast = lms_result.get("monthly", [])
 
             if not forecast:
                 forecast = self._build_growth_rate(seed_data, months)
 
-            # Override revenue with actual regression projections (more accurate)
+            # Attach confidence intervals (LMS handles revenue via trajectory now)
             for i, month_data in enumerate(forecast):
-                if i < len(projected_revenue):
-                    new_rev = projected_revenue[i]
-                    if new_rev > 0:
-                        month_data["revenue"] = round(new_rev, 2)
-                        gm = month_data.get("gross_margin") or seed_data.get("gross_margin", 0.65)
-                        month_data["cogs"] = round(new_rev * (1 - gm), 2)
-                        month_data["gross_profit"] = round(new_rev * gm, 2)
-                        total_opex = month_data.get("total_opex", 0) or 0
-                        month_data["ebitda"] = round(month_data["gross_profit"] - total_opex, 2)
-                        capex = month_data.get("capex", 0) or 0
-                        month_data["free_cash_flow"] = round(month_data["ebitda"] - capex, 2)
-
-                    if i < len(confidence_intervals):
-                        month_data["_revenue_ci_lower"] = confidence_intervals[i]["lower"]
-                        month_data["_revenue_ci_upper"] = confidence_intervals[i]["upper"]
+                if i < len(confidence_intervals):
+                    month_data["_revenue_ci_lower"] = confidence_intervals[i]["lower"]
+                    month_data["_revenue_ci_upper"] = confidence_intervals[i]["upper"]
 
             # Recalculate cumulative cash balance
             for i in range(1, len(forecast)):

@@ -3176,6 +3176,7 @@ async def run_regression(request: FPARegressionRequest):
                     lms_result = lms.build_liquidity_model(
                         company_id=company_id,
                         months=len(forecast_vals),
+                        start_period=forecast_labels[0] if forecast_labels else None,
                         scenario_overrides=seed,
                     )
                     cascaded_forecast = lms_result.get("monthly", [])
