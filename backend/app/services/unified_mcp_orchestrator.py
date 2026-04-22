@@ -7189,6 +7189,8 @@ JUST THE JSON:"""
                 )
                 if _task_cid and isinstance(_task_cid, str) and len(_task_cid) == 36 and _task_cid.count('-') == 4:
                     async with self.shared_data_lock:
+                        if self.shared_data.get("company_id") != _task_cid:
+                            self.shared_data.pop("company_fpa_data", None)
                         self.shared_data["company_id"] = _task_cid
                         _already_loaded = bool(self.shared_data.get("company_fpa_data"))
                     if pull_company_data and not _already_loaded:
@@ -7364,6 +7366,8 @@ JUST THE JSON:"""
             )
             if _cid:
                 async with self.shared_data_lock:
+                    if self.shared_data.get("company_id") != _cid:
+                        self.shared_data.pop("company_fpa_data", None)
                     self.shared_data["company_id"] = _cid
                     _already_loaded = bool(self.shared_data.get("company_fpa_data"))
                 # Pre-pull company data for tools that need it (skip if already cached)
@@ -7408,6 +7412,8 @@ JUST THE JSON:"""
             _cid = context.get("company_id")
             if _cid:
                 async with self.shared_data_lock:
+                    if self.shared_data.get("company_id") != _cid:
+                        self.shared_data.pop("company_fpa_data", None)
                     self.shared_data["company_id"] = _cid
                     _already_loaded = bool(self.shared_data.get("company_fpa_data"))
                 if pull_company_data and not _already_loaded:

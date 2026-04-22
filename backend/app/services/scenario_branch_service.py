@@ -644,10 +644,15 @@ class ScenarioBranchService:
         result = sb.table("scenario_branches").select("*").eq("company_id", company_id).order("created_at").execute()
         branches = result.data or []
 
+        # Pre-fetch the active forecast ONCE — execute_branch calls _load_active_forecast_data
+        # per branch which causes N redundant DB queries. Pass it as _prefetched_base instead.
+        _shared_base = self._load_active_forecast_data(company_id)
+
         enriched = {}
         for b in branches:
             exec_result = self.execute_branch(
                 b["id"], company_id, forecast_months, start_period,
+                _prefetched_base=_shared_base,
             )
             forecast = exec_result.get("forecast", [])
             last = forecast[-1] if forecast else {}

@@ -1599,7 +1599,12 @@ async def upload_actuals_csv(
 
         content = await file.read()
         text = content.decode("utf-8-sig")  # handle BOM
-        reader = csv.reader(io.StringIO(text))
+        # Auto-detect delimiter — handles Swedish/European (;) and tab-separated files
+        try:
+            _dialect = csv.Sniffer().sniff(text[:4096], delimiters=',;\t|')
+            reader = csv.reader(io.StringIO(text), dialect=_dialect)
+        except csv.Error:
+            reader = csv.reader(io.StringIO(text))
         all_rows = [row for row in reader if any(cell.strip() for cell in row)]
 
         if len(all_rows) < 2:
@@ -1610,6 +1615,34 @@ async def upload_actuals_csv(
                 "completed_at": datetime.utcnow().isoformat(),
             })
             raise HTTPException(status_code=400, detail="CSV needs at least a header row and one data row")
+
+        # --- Strip ERP metadata rows (company name, report title, date range) ---
+        # QuickBooks, Xero, Sage and similar ERP exports prepend 3-4 metadata
+        # rows before the actual column header row. Identify the real header as
+        # the first row where at least one non-first column parses as a period.
+        # Rows where only the first cell is non-empty (company name, report
+        # title, date range) are skipped unconditionally.
+        header_row_idx = 0
+        for _idx, _row in enumerate(all_rows):
+            _non_empty_after_first = [c.strip() for c in _row[1:] if c.strip()]
+            if not _non_empty_after_first:
+                # Only first cell (or nothing) is populated — metadata row, keep scanning
+                header_row_idx = _idx + 1
+                continue
+            # Check whether any non-first column looks like a period header
+            if any(_parse_period_header(c) for c in _non_empty_after_first):
+                header_row_idx = _idx
+                break
+            # Multiple non-empty cols but no period detected yet — could still be
+            # a category-oriented header (transposed layout); stop here.
+            header_row_idx = _idx
+            break
+        if header_row_idx:
+            logger.info(
+                "[upload-actuals] Skipped %d ERP metadata row(s) before header",
+                header_row_idx,
+            )
+            all_rows = all_rows[header_row_idx:]
 
         headers = [h.strip() for h in all_rows[0]]
         data_rows = all_rows[1:]
@@ -2319,7 +2352,11 @@ async def upload_budget_csv(
 
     content = await file.read()
     text = content.decode("utf-8-sig")
-    reader = csv.reader(io.StringIO(text))
+    try:
+        _dialect = csv.Sniffer().sniff(text[:4096], delimiters=',;\t|')
+        reader = csv.reader(io.StringIO(text), dialect=_dialect)
+    except csv.Error:
+        reader = csv.reader(io.StringIO(text))
     all_rows = [row for row in reader if any(cell.strip() for cell in row)]
 
     if len(all_rows) < 2:
