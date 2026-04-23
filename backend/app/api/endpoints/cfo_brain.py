@@ -372,7 +372,14 @@ async def process_cfo_stream(request: CFORequest, raw_request: Request):
         merged_context["output_format_hint"] = request.output_format_hint
 
     company_ctx = merged_context.get("company_fpa_context") or merged_context.get("companyContext") or {}
+    # Mirror non-stream: inject company_id so system prompt can pull real P&L data
+    if not company_ctx.get("company_id"):
+        company_ctx["company_id"] = merged_context.get("company_id") or merged_context.get("companyId")
     merged_context["system_prompt_override"] = _build_cfo_system_prompt(company_ctx)
+
+    # Force grid_mode=pnl so orchestrator routes to FP&A/forecast tools
+    if not merged_context.get("grid_mode"):
+        merged_context["grid_mode"] = "pnl"
 
     async def event_generator():
         try:

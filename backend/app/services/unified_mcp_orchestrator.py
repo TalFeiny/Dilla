@@ -2039,10 +2039,11 @@ AGENT_TOOLS: list[AgentTool] = [
         description=(
             "Run FAR analysis on ALL entities under a portfolio company. "
             "Profiles each entity's functions, assets, risks, DEMPE involvement, "
-            "and position in the group value chain."
+            "and position in the group value chain. "
+            "company_id is optional — omit to use the company currently in session context."
         ),
         handler="_tool_tp_far_group",
-        input_schema={"company_id": "str"},
+        input_schema={"company_id": "str?"},
         cost_tier="expensive",
         timeout_ms=180_000,
     ),
@@ -2087,9 +2088,15 @@ AGENT_TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="tp_group_overview",
-        description="Get a transfer pricing overview for a portfolio company group: entities, IC transactions, benchmark status, existing analyses and reports.",
+        description=(
+            "Get a transfer pricing overview for a portfolio company group: entities, IC transactions, "
+            "benchmark status, existing analyses and reports. "
+            "IMPORTANT: fund_id and company_id are OPTIONAL — if omitted, the tool automatically uses "
+            "the active fund/company from the current session context. Call with no args to scan everything "
+            "the user is currently viewing."
+        ),
         handler="_tool_tp_group_overview",
-        input_schema={"company_id": "str"},
+        input_schema={"company_id": "str?", "fund_id": "str?"},
         cost_tier="cheap",
         timeout_ms=30_000,
     ),
@@ -3430,7 +3437,7 @@ _INTENT_MODE_SCOPE: dict[tuple[str, str], str] = {
     ("sourcing", "*"): "sourcing",
     ("company_list_build", "*"): "sourcing",
     ("bulk_enrichment", "*"): "enrichment",
-    ("transfer_pricing", "*"): "legal_analysis",
+    ("transfer_pricing", "*"): "transfer_pricing",
 }
 
 _MODE_FALLBACK: dict[str, str] = {
@@ -5021,6 +5028,31 @@ class UnifiedMCPOrchestrator:
         check_max = fc["check_max"]
         target_ownership = fc["target_ownership"]
 
+        # ── Build current view context block (reused across all paths) ──
+        _fund_ctx_early = self.shared_data.get("fund_context") or {}
+        _early_fund_id = (
+            _fund_ctx_early.get("fundId") or _fund_ctx_early.get("fund_id")
+            or (self.shared_data.get("agent_context") or {}).get("fund_id")
+        )
+        _early_company_id = self.shared_data.get("company_id")
+        _early_fund_name = _fund_ctx_early.get("name") or _fund_ctx_early.get("fundName") or _fund_ctx_early.get("fund_name")
+        _early_company_name = (
+            (self.shared_data.get("company_fpa_context") or {}).get("name")
+            or (self.shared_data.get("company_fpa_context") or {}).get("company_name")
+        )
+        _view_lines_early: list[str] = []
+        if _early_fund_id:
+            _fl = f'"{_early_fund_name}" ' if _early_fund_name else ""
+            _view_lines_early.append(f"- Fund in view: {_fl}fund_id=`{_early_fund_id}`")
+        if _early_company_id:
+            _cl = f'"{_early_company_name}" ' if _early_company_name else ""
+            _view_lines_early.append(f"- Company in view: {_cl}company_id=`{_early_company_id}`")
+        _view_ctx_block = (
+            "\n\n## CURRENT VIEW CONTEXT\n"
+            + "\n".join(_view_lines_early) + "\n"
+            "Use these IDs directly — never do name-based matching for the current entity.\n"
+        ) if _view_lines_early else ""
+
         # ── PHATIC: minimal prompt, just be human ──
         if turn_type == TurnType.PHATIC:
             return (
@@ -5036,7 +5068,7 @@ class UnifiedMCPOrchestrator:
                 "The user is asking about the status or progress of something in this session. "
                 "Summarize what's been done, what's pending, and any blockers. "
                 "If they're asking about data, use tools to fetch from the database. "
-                "Keep it concise."
+                f"Keep it concise.{_view_ctx_block}"
             )
 
         # ── STEERING: adjust, don't restart ──
@@ -5047,7 +5079,7 @@ class UnifiedMCPOrchestrator:
                 "Apply their change to what you produced. Be concise. "
                 "Don't restart from scratch — modify what exists. "
                 "If they want less detail, cut. If more, expand. "
-                "If redirecting, pivot without re-explaining."
+                f"If redirecting, pivot without re-explaining.{_view_ctx_block}"
             )
 
         # ── ITERATION: reuse context, vary the parameter ──
@@ -5059,6 +5091,7 @@ class UnifiedMCPOrchestrator:
                 "Only vary the requested parameter. Show the delta: "
                 "what changed and why it matters.\n\n"
                 f"{_DATA_ACCURACY_RULES}"
+                f"{_view_ctx_block}"
             )
 
         # ── FULL PATH: ANALYSIS, RETRIEVAL, SYNTHESIS ──
@@ -5097,6 +5130,17 @@ class UnifiedMCPOrchestrator:
 
             f"{_DATA_ACCURACY_RULES}\n"
         )
+
+        # ── Current view context — reuse block computed above ──
+        if _view_ctx_block:
+            prompt += (
+                "## CURRENT VIEW CONTEXT\n"
+                + "\n".join(_view_lines_early) + "\n"
+                "CRITICAL: Use the fund_id / company_id above directly in ALL tool calls and SQL queries. "
+                "NEVER attempt name-based matching for the currently-viewed entity — you already have the exact ID. "
+                "All tools that accept fund_id or company_id will auto-resolve from session context if omitted, "
+                "but always prefer explicit IDs when available.\n\n"
+            )
 
         # ── Domain module (based on grid mode) ──
         grid_mode = self.shared_data.get("grid_mode", "portfolio")
@@ -13174,6 +13218,27 @@ Return JSON with ONLY these fields (use null if unknown):
                 logger.warning(f"[LEGAL_RESOLVE] Failed to resolve company_id from documents: {e}")
         return None
 
+    def _resolve_fund_id(self, inputs: dict) -> str | None:
+        """Resolve fund_id from inputs → shared_data fund_context.
+
+        Same cascade as _resolve_company_id but for fund_id.
+        Tools should call this instead of inputs.get('fund_id') so they always
+        work with whatever fund the user is currently viewing.
+        """
+        fid = inputs.get("fund_id") or ""
+        if fid and len(fid) == 36 and fid.count("-") == 4:
+            return fid
+        fund_ctx = self.shared_data.get("fund_context", {})
+        for key in ("fundId", "fund_id", "id"):
+            fid = fund_ctx.get(key) or ""
+            if fid and len(fid) == 36 and fid.count("-") == 4:
+                return fid
+        agent_ctx = self.shared_data.get("agent_context", {})
+        fid = agent_ctx.get("fund_id") or ""
+        if fid and len(fid) == 36 and fid.count("-") == 4:
+            return fid
+        return None
+
     async def _tool_fpa_pnl(self, inputs: dict) -> dict:
         """Full P&L waterfall (actuals + forecast) via PnlBuilder."""
         try:
@@ -16339,70 +16404,108 @@ Return JSON with ONLY these fields (use null if unknown):
             return {"error": f"Report generation failed: {e}"}
 
     async def _tool_tp_group_overview(self, inputs: dict) -> dict:
-        """Get TP overview for a portfolio company group."""
+        """Get TP overview for a portfolio company group.
+
+        If fund_id is provided (or available in session context), returns an overview
+        for ALL companies in the fund. If only company_id is provided, returns the
+        overview for that single company.
+        """
         try:
             from app.core.database import supabase_service
 
-            company_id = self._resolve_company_id(inputs)
-            if not company_id:
-                return {"error": "company_id is required — no valid UUID found in inputs or session context"}
-
             client = supabase_service.get_client()
 
-            # Company
-            company = client.from_("companies").select("id, name").eq("id", company_id).single().execute().data or {}
+            # Resolve fund_id — uses _resolve_fund_id which checks inputs then session context
+            fund_id = self._resolve_fund_id(inputs)
 
-            # Entities
-            entities = client.from_("company_entities") \
-                .select("id, name, jurisdiction, entity_type, functional_role, is_tested_party, local_currency") \
-                .eq("company_id", company_id).order("name").execute().data or []
+            # Collect company_ids to process
+            company_ids: list[str] = []
 
-            # IC transactions
-            transactions = client.from_("intercompany_transactions") \
-                .select("id, transaction_type, description, annual_value, currency, benchmark_status, from_entity_id, to_entity_id") \
-                .eq("company_id", company_id).execute().data or []
+            if fund_id:
+                # Pull all companies in the fund — no name resolution needed
+                rows = client.from_("portfolio_companies") \
+                    .select("company_id, name") \
+                    .eq("fund_id", fund_id).execute().data or []
+                company_ids = [r["company_id"] for r in rows if r.get("company_id")]
+                if not company_ids:
+                    # Fallback: check companies table directly
+                    rows = client.from_("companies") \
+                        .select("id, name") \
+                        .eq("fund_id", fund_id).execute().data or []
+                    company_ids = [r["id"] for r in rows if r.get("id")]
+            else:
+                company_id = self._resolve_company_id(inputs)
+                if not company_id:
+                    return {"error": "Provide fund_id or company_id. fund_id returns all companies in the fund at once."}
+                company_ids = [company_id]
 
-            # Entity name map for display
-            name_map = {e["id"]: e.get("name", "") for e in entities}
-            for t in transactions:
-                t["from_entity"] = name_map.get(t.get("from_entity_id", ""), "")
-                t["to_entity"] = name_map.get(t.get("to_entity_id", ""), "")
+            def _overview_for_company(cid: str) -> dict:
+                company = client.from_("companies").select("id, name").eq("id", cid).single().execute().data or {}
 
-            # Latest analyses
-            txn_ids = [t["id"] for t in transactions]
-            analyses = []
-            if txn_ids:
-                analyses = client.from_("tp_analyses") \
-                    .select("id, transaction_id, method, profit_level_indicator, in_range, adjustment_needed, created_at") \
-                    .in_("transaction_id", txn_ids) \
-                    .order("created_at", desc=True).execute().data or []
+                entities = client.from_("company_entities") \
+                    .select("id, name, jurisdiction, entity_type, functional_role, is_tested_party, local_currency") \
+                    .eq("company_id", cid).order("name").execute().data or []
 
-            # Existing reports
-            reports = client.from_("tp_reports") \
-                .select("id, report_type, fiscal_year, title, status, created_at") \
-                .eq("company_id", company_id) \
-                .order("created_at", desc=True).limit(20).execute().data or []
+                transactions = client.from_("intercompany_transactions") \
+                    .select("id, transaction_type, description, annual_value, currency, benchmark_status, from_entity_id, to_entity_id") \
+                    .eq("company_id", cid).execute().data or []
 
-            # Summary stats
-            benchmarked = sum(1 for t in transactions if t.get("benchmark_status") in ("in_range", "out_of_range"))
-            in_range = sum(1 for t in transactions if t.get("benchmark_status") == "in_range")
-            out_of_range = sum(1 for t in transactions if t.get("benchmark_status") == "out_of_range")
+                name_map = {e["id"]: e.get("name", "") for e in entities}
+                for t in transactions:
+                    t["from_entity"] = name_map.get(t.get("from_entity_id", ""), "")
+                    t["to_entity"] = name_map.get(t.get("to_entity_id", ""), "")
+
+                txn_ids = [t["id"] for t in transactions]
+                analyses = []
+                if txn_ids:
+                    analyses = client.from_("tp_analyses") \
+                        .select("id, transaction_id, method, profit_level_indicator, in_range, adjustment_needed, created_at") \
+                        .in_("transaction_id", txn_ids) \
+                        .order("created_at", desc=True).execute().data or []
+
+                reports = client.from_("tp_reports") \
+                    .select("id, report_type, fiscal_year, title, status, created_at") \
+                    .eq("company_id", cid) \
+                    .order("created_at", desc=True).limit(10).execute().data or []
+
+                benchmarked = sum(1 for t in transactions if t.get("benchmark_status") in ("in_range", "out_of_range"))
+                in_range_count = sum(1 for t in transactions if t.get("benchmark_status") == "in_range")
+                out_of_range_count = sum(1 for t in transactions if t.get("benchmark_status") == "out_of_range")
+
+                return {
+                    "company_id": cid,
+                    "company": company,
+                    "entity_count": len(entities),
+                    "entities": entities,
+                    "transaction_count": len(transactions),
+                    "transactions": transactions,
+                    "benchmark_summary": {
+                        "total": len(transactions),
+                        "benchmarked": benchmarked,
+                        "in_range": in_range_count,
+                        "out_of_range": out_of_range_count,
+                        "not_assessed": len(transactions) - benchmarked,
+                    },
+                    "analyses": analyses[:10],
+                    "reports": reports,
+                }
+
+            overviews = [_overview_for_company(cid) for cid in company_ids]
+
+            if len(overviews) == 1:
+                return overviews[0]
 
             return {
-                "company": company,
-                "entity_count": len(entities),
-                "entities": entities,
-                "transaction_count": len(transactions),
-                "transactions": transactions,
-                "benchmark_summary": {
-                    "total": len(transactions),
-                    "benchmarked": benchmarked,
-                    "in_range": in_range,
-                    "out_of_range": out_of_range,
-                    "not_assessed": len(transactions) - benchmarked,
+                "fund_id": fund_id,
+                "company_count": len(overviews),
+                "companies": overviews,
+                "fund_summary": {
+                    "total_entities": sum(o["entity_count"] for o in overviews),
+                    "total_transactions": sum(o["transaction_count"] for o in overviews),
+                    "total_in_range": sum(o["benchmark_summary"]["in_range"] for o in overviews),
+                    "total_out_of_range": sum(o["benchmark_summary"]["out_of_range"] for o in overviews),
+                    "total_not_assessed": sum(o["benchmark_summary"]["not_assessed"] for o in overviews),
                 },
-                "analyses": analyses[:10],  # latest 10
-                "reports": reports,
             }
         except Exception as e:
             logger.error(f"[TOOL] tp_group_overview failed: {e}")
@@ -20285,6 +20388,32 @@ ABSOLUTE RULES:
                     if _cid and isinstance(_cid, str) and len(_cid) == 36 and _cid.count('-') == 4:
                         self.shared_data['company_id'] = _cid
                         logger.info(f"[CONTEXT] Stored company_id: {_cid}")
+                    # ── Lookup entity names (fund + company) for system prompt context ──
+                    # These names appear in ## CURRENT VIEW CONTEXT so the agent says
+                    # "Lovable Holdings" not "fund_id: abc-123". Lightweight: SELECT name only.
+                    _resolved_fid = (
+                        _fund_ctx_ref.get("fundId") or _fund_ctx_ref.get("fund_id")
+                        if (_fund_ctx_ref := self.shared_data.get("fund_context", {})) else None
+                    )
+                    _resolved_cid_for_name = self.shared_data.get('company_id')
+                    try:
+                        from app.core.database import supabase_service as _svc
+                        _name_client = _svc.get_client()
+                        if _name_client:
+                            if _resolved_fid and not (self.shared_data.get("fund_context") or {}).get("name"):
+                                _fname_row = _name_client.from_("funds").select("name").eq("id", _resolved_fid).maybe_single().execute()
+                                if _fname_row and _fname_row.data:
+                                    self.shared_data.setdefault("fund_context", {})["name"] = _fname_row.data.get("name", "")
+                            if _resolved_cid_for_name:
+                                _fpa_ctx = self.shared_data.get("company_fpa_context") or {}
+                                if not _fpa_ctx.get("name") and not _fpa_ctx.get("company_name"):
+                                    _cname_row = _name_client.from_("companies").select("name").eq("id", _resolved_cid_for_name).maybe_single().execute()
+                                    if _cname_row and _cname_row.data:
+                                        _cname = _cname_row.data.get("name", "")
+                                        self.shared_data.setdefault("company_fpa_context", {})["name"] = _cname
+                    except Exception as _name_err:
+                        logger.debug(f"[NAME_LOOKUP] Skipped: {_name_err}")
+
                     # ── Pull company financials from DB (single source of truth) ──
                     # Replaces grid-reading: agent gets real actuals, not stale grid snapshots.
                     # Skip if already loaded — pull_company_data has a 60s TTL cache so even
