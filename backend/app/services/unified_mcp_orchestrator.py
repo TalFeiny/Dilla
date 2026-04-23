@@ -16424,7 +16424,7 @@ Return JSON with ONLY these fields (use null if unknown):
             if fund_id:
                 # Pull all companies in the fund — no name resolution needed
                 rows = client.from_("portfolio_companies") \
-                    .select("company_id, name") \
+                    .select("company_id") \
                     .eq("fund_id", fund_id).execute().data or []
                 company_ids = [r["company_id"] for r in rows if r.get("company_id")]
                 if not company_ids:
