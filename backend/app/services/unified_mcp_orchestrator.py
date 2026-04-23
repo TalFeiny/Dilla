@@ -2089,11 +2089,13 @@ AGENT_TOOLS: list[AgentTool] = [
     AgentTool(
         name="tp_group_overview",
         description=(
-            "Get a transfer pricing overview for a portfolio company group: entities, IC transactions, "
-            "benchmark status, existing analyses and reports. "
-            "IMPORTANT: fund_id and company_id are OPTIONAL — if omitted, the tool automatically uses "
-            "the active fund/company from the current session context. Call with no args to scan everything "
-            "the user is currently viewing."
+            "Scan P&L actuals for transfer pricing risks AND get a TP overview for a portfolio company group. "
+            "Reads each company's fpa_actuals (management fees, royalties, intercompany flows, cost recharges, "
+            "IC loan interest, etc.) to surface TP risks directly from the P&L — no pre-existing TP "
+            "documentation required. Also returns any pre-existing entities, IC transactions, benchmark "
+            "status, analyses and reports from the TP database. "
+            "fund_id and company_id are OPTIONAL — omit to use session context. "
+            "Call with no args to scan everything the user is currently viewing."
         ),
         handler="_tool_tp_group_overview",
         input_schema={"company_id": "str?", "fund_id": "str?"},
@@ -3181,7 +3183,9 @@ INTENT_TOOLS: dict[str, list[str]] = {
 
     # --- Transfer Pricing ---
     "transfer_pricing": [
-        "tp_group_overview",            # start with group overview
+        "tp_group_overview",            # start here — scans P&L + returns TP overview
+        "pull_company_data",            # fetch single company P&L if not already in cache
+        "tp_far_group",                 # FAR profiling for all entities
         "tp_search_comparables",        # find comparables
         "tp_analyze_transaction",       # run analysis
         "tp_generate_report",           # generate report
@@ -16406,9 +16410,12 @@ Return JSON with ONLY these fields (use null if unknown):
     async def _tool_tp_group_overview(self, inputs: dict) -> dict:
         """Get TP overview for a portfolio company group.
 
-        If fund_id is provided (or available in session context), returns an overview
-        for ALL companies in the fund. If only company_id is provided, returns the
-        overview for that single company.
+        Scans each company's fpa_actuals P&L for TP-relevant line items (management fees,
+        royalties, intercompany flows, cost recharges, IC loan interest) and also returns
+        any pre-existing TP database records (entities, IC transactions, analyses, reports).
+
+        If fund_id is provided (or available in session context), processes ALL companies
+        in the fund. If only company_id is provided, processes that single company.
         """
         try:
             from app.core.database import supabase_service
@@ -16439,6 +16446,66 @@ Return JSON with ONLY these fields (use null if unknown):
                     return {"error": "Provide fund_id or company_id. fund_id returns all companies in the fund at once."}
                 company_ids = [company_id]
 
+            # ── P&L TP signal scanner ─────────────────────────────────────────
+            _TP_KEYWORDS = (
+                "management_fee", "royalt", "intercompany", "recharge",
+                "licens", "shared_service", "ic_revenue", "ic_cost",
+                "interest_income", "interest_expense",
+            )
+
+            def _scan_pnl_for_tp(cid: str) -> list:
+                """Return TP-relevant line items from fpa_actuals for a company."""
+                time_series: dict = {}
+                latest: dict = {}
+                periods: list = []
+
+                # 1. Fund companies cache has full CompanyData for all companies
+                fc = self._get_fund_companies()
+                cd = fc.company_data.get(cid) if fc else None
+                if cd and cd.time_series:
+                    time_series = cd.time_series
+                    latest = cd.latest
+                    periods = cd.periods
+                # 2. Single-company shared_data cache
+                elif (self.shared_data.get("company_id") == cid
+                      and self.shared_data.get("company_fpa_data")):
+                    fpa = self.shared_data["company_fpa_data"]
+                    time_series = fpa.get("time_series", {})
+                    latest = fpa.get("latest", {})
+                    periods = fpa.get("periods", [])
+                # 3. Fresh pull — pull_company_data caches at service level so this is cheap
+                elif pull_company_data:
+                    try:
+                        _cd = pull_company_data(cid)
+                        if _cd and _cd.time_series:
+                            time_series = _cd.time_series
+                            latest = _cd.latest
+                            periods = _cd.periods
+                    except Exception:
+                        pass
+
+                if not time_series:
+                    return []
+
+                latest_period = periods[-1] if periods else None
+                signals = []
+                for key, period_data in time_series.items():
+                    key_lower = key.lower()
+                    if not any(kw in key_lower for kw in _TP_KEYWORDS):
+                        continue
+                    amount = latest.get(key, 0) or 0
+                    if latest_period and isinstance(period_data, dict):
+                        amount = period_data.get(latest_period, amount) or 0
+                    if abs(amount) < 1:
+                        continue
+                    signals.append({
+                        "pnl_key": key,
+                        "latest_amount": round(amount, 2),
+                        "period": latest_period,
+                    })
+                return signals
+
+            # ── Per-company overview ──────────────────────────────────────────
             def _overview_for_company(cid: str) -> dict:
                 company = client.from_("companies").select("id, name").eq("id", cid).single().execute().data or {}
 
@@ -16472,9 +16539,13 @@ Return JSON with ONLY these fields (use null if unknown):
                 in_range_count = sum(1 for t in transactions if t.get("benchmark_status") == "in_range")
                 out_of_range_count = sum(1 for t in transactions if t.get("benchmark_status") == "out_of_range")
 
+                pnl_tp_signals = _scan_pnl_for_tp(cid)
+
                 return {
                     "company_id": cid,
                     "company": company,
+                    "pnl_tp_signals": pnl_tp_signals,
+                    "pnl_tp_signal_count": len(pnl_tp_signals),
                     "entity_count": len(entities),
                     "entities": entities,
                     "transaction_count": len(transactions),
@@ -16502,6 +16573,7 @@ Return JSON with ONLY these fields (use null if unknown):
                 "fund_summary": {
                     "total_entities": sum(o["entity_count"] for o in overviews),
                     "total_transactions": sum(o["transaction_count"] for o in overviews),
+                    "total_pnl_tp_signals": sum(o["pnl_tp_signal_count"] for o in overviews),
                     "total_in_range": sum(o["benchmark_summary"]["in_range"] for o in overviews),
                     "total_out_of_range": sum(o["benchmark_summary"]["out_of_range"] for o in overviews),
                     "total_not_assessed": sum(o["benchmark_summary"]["not_assessed"] for o in overviews),
