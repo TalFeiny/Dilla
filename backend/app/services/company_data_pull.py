@@ -477,13 +477,16 @@ def _compute_analytics(
     return analytics
 
 
-def pull_company_data(company_id: str) -> CompanyData:
+def pull_company_data(company_id: str, fund_id: Optional[str] = None) -> CompanyData:
     """Pull all fpa_actuals rows for a company and build a CompanyData object.
 
     This is the ONLY function that should query fpa_actuals for service
     consumption.  No limit — pulls everything so callers get full history.
     Results are cached for 60 seconds to avoid redundant DB round-trips
     within a single agent turn.
+
+    fund_id is optional — when provided it is stored in metadata so callers
+    have the full context without a separate lookup.
     """
     cached = _cache_get(company_id)
     if cached is not None:
@@ -513,6 +516,17 @@ def pull_company_data(company_id: str) -> CompanyData:
     )
     if not rows:
         return empty
+
+    # Fetch company name from companies table
+    _company_name = ""
+    try:
+        q = sb.table("companies").select("name").eq("id", company_id)
+        if fund_id:
+            q = q.eq("fund_id", fund_id)
+        _cname_row = q.maybe_single().execute()
+        _company_name = (_cname_row.data or {}).get("name", "") if _cname_row else ""
+    except Exception:
+        pass
 
     # -- Build time_series: {category: {period: summed_amount}} --
     time_series: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -572,6 +586,8 @@ def pull_company_data(company_id: str) -> CompanyData:
         "categories": all_keys,
         "has_subcategories": bool(subcategory_keys),
         "subcategory_keys": subcategory_keys,
+        "company_name": _company_name,
+        "fund_id": fund_id or "",
     }
 
     logger.info(

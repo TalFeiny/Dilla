@@ -20388,40 +20388,15 @@ ABSOLUTE RULES:
                     if _cid and isinstance(_cid, str) and len(_cid) == 36 and _cid.count('-') == 4:
                         self.shared_data['company_id'] = _cid
                         logger.info(f"[CONTEXT] Stored company_id: {_cid}")
-                    # ── Lookup entity names (fund + company) for system prompt context ──
-                    # These names appear in ## CURRENT VIEW CONTEXT so the agent says
-                    # "Lovable Holdings" not "fund_id: abc-123". Lightweight: SELECT name only.
-                    _resolved_fid = (
-                        _fund_ctx_ref.get("fundId") or _fund_ctx_ref.get("fund_id")
-                        if (_fund_ctx_ref := self.shared_data.get("fund_context", {})) else None
-                    )
-                    _resolved_cid_for_name = self.shared_data.get('company_id')
-                    try:
-                        from app.core.database import supabase_service as _svc
-                        _name_client = _svc.get_client()
-                        if _name_client:
-                            if _resolved_fid and not (self.shared_data.get("fund_context") or {}).get("name"):
-                                _fname_row = _name_client.from_("funds").select("name").eq("id", _resolved_fid).maybe_single().execute()
-                                if _fname_row and _fname_row.data:
-                                    self.shared_data.setdefault("fund_context", {})["name"] = _fname_row.data.get("name", "")
-                            if _resolved_cid_for_name:
-                                _fpa_ctx = self.shared_data.get("company_fpa_context") or {}
-                                if not _fpa_ctx.get("name") and not _fpa_ctx.get("company_name"):
-                                    _cname_row = _name_client.from_("companies").select("name").eq("id", _resolved_cid_for_name).maybe_single().execute()
-                                    if _cname_row and _cname_row.data:
-                                        _cname = _cname_row.data.get("name", "")
-                                        self.shared_data.setdefault("company_fpa_context", {})["name"] = _cname
-                    except Exception as _name_err:
-                        logger.debug(f"[NAME_LOOKUP] Skipped: {_name_err}")
-
                     # ── Pull company financials from DB (single source of truth) ──
-                    # Replaces grid-reading: agent gets real actuals, not stale grid snapshots.
-                    # Skip if already loaded — pull_company_data has a 60s TTL cache so even
-                    # if called again it won't hit the DB, but we avoid even the function call.
+                    # Pass fund_id alongside company_id so pull_company_data can also
+                    # fetch the company name in the same query (stored in metadata).
                     _resolved_cid = self.shared_data.get('company_id')
+                    _pull_fund_id = (self.shared_data.get("fund_context") or {}).get("fundId") or \
+                                    (self.shared_data.get("fund_context") or {}).get("fund_id")
                     if _resolved_cid and pull_company_data and not self.shared_data.get('company_fpa_data'):
                         try:
-                            _cd = pull_company_data(_resolved_cid)
+                            _cd = pull_company_data(_resolved_cid, fund_id=_pull_fund_id)
                             if _cd and _cd.periods:
                                 self.shared_data['company_fpa_data'] = {
                                     'latest': _cd.latest,
@@ -20429,9 +20404,14 @@ ABSOLUTE RULES:
                                     'periods': _cd.periods,
                                     'metadata': _cd.metadata,
                                 }
+                                # Store company name so system prompt can show it
+                                _cname = _cd.metadata.get("company_name", "")
+                                if _cname:
+                                    self.shared_data.setdefault("company_fpa_context", {})["name"] = _cname
                                 logger.info(
                                     f"[DATA_PULL] Loaded {_cd.metadata.get('row_count', 0)} rows, "
                                     f"{len(_cd.periods)} periods for company {_resolved_cid}"
+                                    + (f" ({_cname})" if _cname else "")
                                 )
                             else:
                                 logger.info(f"[DATA_PULL] No actuals found for company {_resolved_cid}")
