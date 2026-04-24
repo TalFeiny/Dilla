@@ -20393,7 +20393,7 @@ ABSOLUTE RULES:
                 "fund_context", "agent_context", "grid_mode",
                 "system_prompt_override", "classification",
                 "_conversation_history", "session_corrections",
-                "memo_artifacts", "company_id",
+                "memo_artifacts", "company_id", "fund_id",
                 "company_fpa_data",  # Cached actuals — persist across turns so follow-ups don't re-fetch
                 "matrix_context",  # Grid data — persist so fingerprint survives across turns
             }
@@ -20447,6 +20447,10 @@ ABSOLUTE RULES:
             if context:
                 async with self.shared_data_lock:
                     self.shared_data['fund_context'] = dict(context)
+                    # Hoist fund_id to top-level so tools can read it directly
+                    _fid = context.get('fundId') or context.get('fund_id')
+                    if _fid:
+                        self.shared_data['fund_id'] = _fid
                     # Control centre: matrix context for grid-aware skills (rowIds, companyNames, columns)
                     matrix_ctx = context.get('matrix_context') or context.get('matrixContext')
                     if matrix_ctx:
