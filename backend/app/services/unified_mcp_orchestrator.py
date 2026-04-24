@@ -5157,36 +5157,6 @@ class UnifiedMCPOrchestrator:
                 "You're acting as an opinionated CFO. Focus on P&L drivers, burn rate, "
                 "runway, unit economics, and financial health. Use FPA tools for forecasting.\n\n"
             )
-            # ── Inject DB-sourced actuals so the agent knows the numbers ──
-            _fpa = self.shared_data.get("company_fpa_data")
-            if _fpa and isinstance(_fpa, dict) and _fpa.get("latest"):
-                _latest = _fpa["latest"]
-                _meta = _fpa.get("metadata", {})
-                _pr = _meta.get("period_range", [])
-                prompt += "## COMPANY ACTUALS (from database)\n"
-                if _pr:
-                    prompt += f"Data range: {_pr[0]} to {_pr[-1]} ({_meta.get('period_count', '?')} periods)\n"
-                # Show key P&L metrics
-                _key_fields = [
-                    ("revenue", "Revenue"), ("cogs", "COGS"),
-                    ("gross_profit", "Gross Profit"),
-                    ("opex_rd", "R&D"), ("opex_sm", "S&M"), ("opex_ga", "G&A"),
-                    ("opex_total", "Total OpEx"), ("ebitda", "EBITDA"),
-                ]
-                for _field, _label in _key_fields:
-                    _val = _latest.get(_field)
-                    if _val:
-                        prompt += f"- {_label}: ${_val:,.0f}\n"
-                # Show any extra categories not in the standard set
-                _standard = {f for f, _ in _key_fields}
-                _extras = [(k, v) for k, v in sorted(_latest.items()) if k not in _standard and v]
-                if _extras:
-                    for _k, _v in _extras[:10]:
-                        try:
-                            prompt += f"- {_k}: ${float(_v):,.0f}\n"
-                        except (TypeError, ValueError):
-                            prompt += f"- {_k}: {_v}\n"
-                prompt += "\nYou have full time_series data in context — use it directly for analysis. No need to call fpa_actuals first.\n\n"
         elif grid_mode == "legal":
             prompt += (
                 "## DOMAIN: General Counsel\n"
@@ -5202,7 +5172,40 @@ class UnifiedMCPOrchestrator:
                 "- Traditional: revenue growth, net income, working capital, asset efficiency\n\n"
                 "Adapt your analysis to the business type. Don't force venture metrics on a PE company.\n"
                 "Focus on: operating performance, capital structure, returns analysis, portfolio construction, "
-                "and investment decision-making. Use pull_company_data for actuals — not grid snapshots.\n\n"
+                "and investment decision-making.\n\n"
+            )
+
+        # ── Inject DB-sourced actuals for ANY mode when cached — always answer from data ──
+        _fpa = self.shared_data.get("company_fpa_data")
+        if _fpa and isinstance(_fpa, dict) and _fpa.get("latest"):
+            _latest = _fpa["latest"]
+            _meta = _fpa.get("metadata", {})
+            _pr = _meta.get("period_range", [])
+            prompt += "## COMPANY ACTUALS (from database)\n"
+            if _pr:
+                prompt += f"Data range: {_pr[0]} to {_pr[-1]} ({_meta.get('period_count', '?')} periods)\n"
+            _key_fields = [
+                ("revenue", "Revenue"), ("cogs", "COGS"),
+                ("gross_profit", "Gross Profit"),
+                ("opex_rd", "R&D"), ("opex_sm", "S&M"), ("opex_ga", "G&A"),
+                ("opex_total", "Total OpEx"), ("ebitda", "EBITDA"),
+            ]
+            for _field, _label in _key_fields:
+                _val = _latest.get(_field)
+                if _val:
+                    prompt += f"- {_label}: ${_val:,.0f}\n"
+            _standard = {f for f, _ in _key_fields}
+            _extras = [(k, v) for k, v in sorted(_latest.items()) if k not in _standard and v]
+            if _extras:
+                for _k, _v in _extras[:10]:
+                    try:
+                        prompt += f"- {_k}: ${float(_v):,.0f}\n"
+                    except (TypeError, ValueError):
+                        prompt += f"- {_k}: {_v}\n"
+            prompt += (
+                "\nThis data is already loaded — use it directly. "
+                "NEVER give a generic answer when actuals are present. "
+                "NEVER ask which company you're talking about — it's the one above.\n\n"
             )
 
         # ── Uploaded file context — tell the agent what files are available ──
@@ -5772,6 +5775,15 @@ class UnifiedMCPOrchestrator:
         )
         if _guidance:
             _suffix_parts.append(f"## MODE GUIDANCE\n{_guidance}")
+        # ── If company_id is set, follow-ups are about that company — tell the agent ──
+        if self.shared_data.get("company_id"):
+            _suffix_parts.append(
+                "## SESSION CONTEXT\n"
+                "This conversation is about the company and fund already in context. "
+                "Use whatever data was previously fetched — do not re-fetch unless you need "
+                "something specifically not already present."
+            )
+            logger.info("[CONV_LOOP] Appended session context hint (intent=%s)", _classified_intent)
         system_suffix = "\n\n".join(_suffix_parts) if _suffix_parts else None
 
         logger.info(
@@ -18095,6 +18107,19 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
         _intent_lines.append(f"- none: No specific intent match → general tools: [{_general_tools_str}]")
         _intent_list = "\n".join(_intent_lines)
 
+        _company_id = self.shared_data.get("company_id")
+        _fund_id = (
+            (self.shared_data.get("fund_context") or {}).get("fundId")
+            or (self.shared_data.get("fund_context") or {}).get("fund_id")
+        )
+        _ctx_parts = [f"fund_type={_fund_type}", f"grid_mode={_grid_mode}"]
+        if _company_id:
+            _ctx_parts.append(f"company_id={_company_id}")
+        if _fund_id:
+            _ctx_parts.append(f"fund_id={_fund_id}")
+        if _has_uploads:
+            _ctx_parts.append(f"uploaded_files=[{_upload_names}]")
+
         _system = (
             "You are a routing classifier for a CFO/investment agent. "
             "Given a user prompt, do TWO things:\n"
@@ -18104,9 +18129,7 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             "Respond with JSON: {\"intent\": \"intent_name\", \"tools\": [\"tool1\", \"tool2\", ...]}\n"
             "Always return a tools array, even for intent='none'.\n\n"
             "No explanation. Just the JSON object.\n\n"
-            f"Context: fund_type={_fund_type}, grid_mode={_grid_mode}, "
-            f"has_uploads={_has_uploads}"
-            + (f", uploaded_files=[{_upload_names}]" if _upload_names else "")
+            f"Context: {', '.join(_ctx_parts)}"
             + f"\n\nAvailable intents:\n{_intent_list}"
         )
 
@@ -20371,6 +20394,7 @@ ABSOLUTE RULES:
                 "system_prompt_override", "classification",
                 "_conversation_history", "session_corrections",
                 "memo_artifacts", "company_id",
+                "company_fpa_data",  # Cached actuals — persist across turns so follow-ups don't re-fetch
                 "matrix_context",  # Grid data — persist so fingerprint survives across turns
             }
             _current_mode = self.shared_data.get("grid_mode", "portfolio")
