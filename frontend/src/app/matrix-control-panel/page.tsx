@@ -892,7 +892,7 @@ export default function MatrixControlPanel() {
               {(mode === 'portfolio' || mode === 'lp' || mode === 'pnl') && (
                 funds.length > 0 ? (
                   <Select value={fundId || ''} onValueChange={setFundId}>
-                    <SelectTrigger className="w-[180px]">
+                    <SelectTrigger className="h-8 w-[150px] py-0 px-2 text-xs">
                       <SelectValue placeholder="Select fund" />
                     </SelectTrigger>
                     <SelectContent>
@@ -909,7 +909,7 @@ export default function MatrixControlPanel() {
               {/* Company selector for PnL / Workflow mode */}
               {(mode === 'pnl' || mode === 'workflow') && pnlCompanies.length > 0 && (
                 <Select value={pnlCompanyId || ''} onValueChange={setPnlCompanyId}>
-                  <SelectTrigger className="w-[180px]">
+                  <SelectTrigger className="h-8 w-[150px] py-0 px-2 text-xs">
                     <SelectValue placeholder="Select company" />
                   </SelectTrigger>
                   <SelectContent>
