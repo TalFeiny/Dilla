@@ -4465,12 +4465,31 @@ class UnifiedMCPOrchestrator:
             "fund_year": fund_year,
         }
 
+    def _build_active_ids_block(self) -> str:
+        """Return a concise block telling the LLM which fund_id and company_id are in view.
+
+        These are the authoritative IDs for the current session. The LLM must pass them
+        as-is to any tool that accepts fund_id or company_id. Never guess or substitute.
+        """
+        fund_id = self._resolve_fund_id({})
+        company_id = self.shared_data.get("company_id")
+        if not fund_id and not company_id:
+            return ""
+        lines = ["\n\n## ACTIVE SESSION IDs — use these exactly, do not guess or substitute"]
+        if fund_id:
+            lines.append(f"- fund_id: {fund_id}  ← pass to any fund-level tool")
+        if company_id:
+            lines.append(f"- company_id: {company_id}  ← pass to any company P&L / actuals tool")
+        lines.append("These override anything the user types. If the user says 'this company', use company_id above.")
+        return "\n".join(lines)
+
     def _build_system_prompt(self, task_instruction: str) -> str:
         """Build a system prompt with dynamic fund context instead of hardcoded values.
         If shared_data contains 'system_prompt_override', use that instead (CFO agent mode)."""
+        ids_block = self._build_active_ids_block()
         override = self.shared_data.get("system_prompt_override")
         if override:
-            return f"{override}\n\nTask: {task_instruction}"
+            return f"{override}{ids_block}\n\nTask: {task_instruction}"
         fc = self._extract_fund_context()
         fund_line = fc["fund_line"]
         check_min = fc["check_min"]
@@ -4524,6 +4543,7 @@ class UnifiedMCPOrchestrator:
 
             f"{_DATA_ACCURACY_RULES}\n"
             f"{task_instruction}"
+            f"{ids_block}"
         )
 
     # ── Conversational cadence ──────────────────────────────────────
@@ -5245,6 +5265,11 @@ class UnifiedMCPOrchestrator:
             "- Example: 'Burn is 18 months at current rate, but COGS grew 40% QoQ — want me to model that forward?'\n"
             "- If the analysis is multi-step, tell the user what you'd do next and why.\n"
         )
+
+        # ── Active session IDs — always injected last so they take priority ──
+        ids_block = self._build_active_ids_block()
+        if ids_block:
+            prompt += ids_block
 
         return prompt
 
@@ -13188,33 +13213,39 @@ Return JSON with ONLY these fields (use null if unknown):
     # ------------------------------------------------------------------
 
     def _resolve_company_id(self, inputs: dict) -> str | None:
-        """Resolve company_id from inputs → shared_data → fund_context → legal docs.
+        """Resolve company_id from inputs → shared_data → agent_context → legal docs.
 
-        The LLM often passes garbage (e.g. "current", a company name) or nothing.
-        This cascade ensures FPA tools always get the real UUID when the session
-        has one, regardless of what the LLM hallucinates.
+        The LLM often passes garbage (e.g. "current", a company name, or the fund_id)
+        or nothing. This cascade ensures FPA tools always get the real company UUID.
+
+        Fund context is intentionally excluded — fund_id and company_id are separate
+        concepts and must not be conflated.
 
         Legal mode fallback: if no company_id found but legal_document_ids exist,
         look up company_id from the document record in processed_documents.
         """
+        # Determine known fund_id so we can reject it if the LLM hallucinates it as company_id
+        _known_fund_id = self._resolve_fund_id({})
+
+        def _is_valid_company_uuid(uid: str) -> bool:
+            if not uid or len(uid) != 36 or uid.count("-") != 4:
+                return False
+            if _known_fund_id and uid == _known_fund_id:
+                logger.warning(f"[RESOLVE_CID] LLM passed fund_id {uid} as company_id — rejecting")
+                return False
+            return True
+
         cid = inputs.get("company_id") or ""
-        # Quick UUID-ish check: valid UUIDs are 36 chars with hyphens
-        if cid and len(cid) == 36 and cid.count("-") == 4:
+        if _is_valid_company_uuid(cid):
             return cid
         # Fallback: shared_data (set during context unpacking)
         cid = self.shared_data.get("company_id") or ""
-        if cid and len(cid) == 36 and cid.count("-") == 4:
+        if _is_valid_company_uuid(cid):
             return cid
-        # Fallback: fund_context (raw context from frontend)
-        fund_ctx = self.shared_data.get("fund_context", {})
-        for key in ("company_id", "companyId", "active_company_id"):
-            cid = fund_ctx.get(key) or ""
-            if cid and len(cid) == 36 and cid.count("-") == 4:
-                return cid
         # Fallback: agent_context
         agent_ctx = self.shared_data.get("agent_context", {})
         cid = agent_ctx.get("company_id") or ""
-        if cid and len(cid) == 36 and cid.count("-") == 4:
+        if _is_valid_company_uuid(cid):
             return cid
         # Fallback: legal mode — resolve from document records
         doc_ids = self.shared_data.get("legal_document_ids") or []

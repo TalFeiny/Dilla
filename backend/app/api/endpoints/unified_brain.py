@@ -41,6 +41,7 @@ class UnifiedRequest(BaseModel):
     context: Optional[Dict] = Field(None, description="Additional context")
     agent_context: Optional[Dict] = Field(None, description="Frontend agent context for conversation continuity")
     approved_plan: Optional[bool] = Field(None, description="True when user approved an execution plan")
+    stream: Optional[bool] = Field(False, description="Whether to stream the response via NDJSON")
     options: Optional[Dict] = Field(default_factory=dict, description="Additional options")
 
 
@@ -53,6 +54,12 @@ async def process_unified_request(request: UnifiedRequest, raw_request: Request)
     set_provider_affinity(_extract_user_id(raw_request, request.context))
     logger.info(f"[UNIFIED-BRAIN] Received request with output_format: {request.output_format}")
     logger.info(f"[UNIFIED-BRAIN] Prompt: {request.prompt[:100]}")
+
+    # Self-healing: if client requested streaming, delegate to the stream endpoint
+    if request.stream:
+        logger.info("[UNIFIED-BRAIN] stream=True detected on non-stream endpoint — delegating to unified-brain-stream")
+        return await process_unified_stream(request, raw_request)
+
     try:
         # Validate output format - handle string conversion
         output_format_str = request.output_format.lower().replace('-', '_')
@@ -349,6 +356,13 @@ async def process_unified_stream(request: UnifiedRequest, raw_request: Request):
 
     set_provider_affinity(_extract_user_id(raw_request, request.context))
     logger.info(f"[UNIFIED-BRAIN-STREAM] Streaming request for: {request.prompt[:80]}")
+
+    if not request.prompt or not request.prompt.strip():
+        import json as _json2
+        async def _empty_prompt_err():
+            yield _json2.dumps({"type": "error", "error": "Prompt is required and cannot be empty"}) + "\n"
+        from fastapi.responses import StreamingResponse as _SR
+        return _SR(_empty_prompt_err(), media_type="application/x-ndjson")
 
     orchestrator = get_unified_orchestrator()
     readiness_info = getattr(orchestrator, "readiness_status", lambda: {"ready": True})()

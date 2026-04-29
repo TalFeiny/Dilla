@@ -223,6 +223,7 @@ class CFORequest(BaseModel):
     context: Optional[Dict] = Field(None, description="Additional context including company FPA data")
     agent_context: Optional[Dict] = Field(None, description="Conversation continuity context")
     approved_plan: Optional[bool] = Field(None)
+    stream: Optional[bool] = Field(False, description="Whether to stream the response via NDJSON")
     options: Optional[Dict] = Field(default_factory=dict)
 
 
@@ -245,6 +246,12 @@ async def process_cfo_request(request: CFORequest, raw_request: Request):
     """
     set_provider_affinity(_extract_user_id(raw_request, request.context))
     logger.info(f"[CFO-BRAIN] Received request: {request.prompt[:100]}")
+
+    # Self-healing: if client requested streaming, delegate to the stream endpoint
+    if request.stream:
+        logger.info("[CFO-BRAIN] stream=True detected on non-stream endpoint — delegating to cfo-brain-stream")
+        return await process_cfo_stream(request, raw_request)
+
     try:
         # Validate output format
         output_format_str = request.output_format.lower().replace('-', '_')
@@ -357,6 +364,12 @@ async def process_cfo_stream(request: CFORequest, raw_request: Request):
 
     set_provider_affinity(_extract_user_id(raw_request, request.context))
     logger.info(f"[CFO-BRAIN-STREAM] Streaming request: {request.prompt[:80]}")
+
+    if not request.prompt or not request.prompt.strip():
+        import json as _json2
+        async def _empty_prompt_err():
+            yield _json2.dumps({"type": "error", "error": "Prompt is required and cannot be empty", "agent": "cfo"}) + "\n"
+        return StreamingResponse(_empty_prompt_err(), media_type="application/x-ndjson")
 
     orchestrator = get_unified_orchestrator()
     readiness_info = getattr(orchestrator, "readiness_status", lambda: {"ready": True})()
