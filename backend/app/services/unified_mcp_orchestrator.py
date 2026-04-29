@@ -5134,8 +5134,11 @@ class UnifiedMCPOrchestrator:
             "- If you have nothing useful to add, be brief.\n\n"
 
             "## WHEN YOU USE TOOLS\n"
-            "- Use tools when the conversation calls for real work: fetching data, running models, generating documents.\n"
-            "- DON'T use tools for chat, clarifications, follow-up questions, or greetings.\n"
+            "- If a company is shown in CURRENT VIEW CONTEXT, call pull_company_data FIRST — before any text response, "
+            "regardless of whether the user explicitly named the company or asked a 'general' question. "
+            "Every question is implicitly about the company in view.\n"
+            "- NEVER answer from general knowledge when company data is available. Always ground responses in real data.\n"
+            "- NEVER pass fund_id as company_id — they are different IDs. Always use the exact company_id from CURRENT VIEW CONTEXT.\n"
             "- MAX 3 tool calls per turn. If you need more, do them across multiple turns — share results as you go.\n"
             "- Sequence, don't shotgun: fetch data FIRST, then analyze, then present. Not all at once.\n"
             "- When you call a tool, explain what you're doing and why.\n\n"
@@ -5164,6 +5167,26 @@ class UnifiedMCPOrchestrator:
                 "NEVER attempt name-based matching for the currently-viewed entity — you already have the exact ID. "
                 "All tools that accept fund_id or company_id will auto-resolve from session context if omitted, "
                 "but always prefer explicit IDs when available.\n\n"
+            )
+
+        # ── MANDATORY data fetch gate ──
+        # If company_id is set but company data hasn't been loaded into this session yet,
+        # force the model to call pull_company_data BEFORE writing any response.
+        # This applies regardless of how "general" the question seems.
+        _has_company_id = bool(_early_company_id)
+        _has_loaded_data = bool(
+            self.shared_data.get("company_fpa_data")
+            or self.shared_data.get("companies")
+        )
+        if _has_company_id and not _has_loaded_data:
+            prompt += (
+                "## MANDATORY: FETCH COMPANY DATA FIRST\n"
+                f"You are viewing company_id=`{_early_company_id}`. "
+                "Company data has NOT been loaded into this session yet.\n"
+                "YOU MUST call `pull_company_data` as your FIRST action — before writing any text response.\n"
+                "This rule applies to ALL questions, including general ones. "
+                "The user expects answers grounded in their company's actual data, not generic knowledge.\n"
+                "Do NOT output any substantive response until pull_company_data has returned results.\n\n"
             )
 
         # ── Domain module (based on grid mode) ──
