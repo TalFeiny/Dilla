@@ -5739,7 +5739,7 @@ class UnifiedMCPOrchestrator:
         _grid_mode = self.shared_data.get("grid_mode", "portfolio")
 
         # Step 1: Classify the user prompt into a specific intent (Haiku LLM)
-        _classification = await self._classify_query_intent(prompt)
+        _classification = await self._classify_query_intent(prompt, turn_type=turn_type)
         _classified_intent = _classification["intent"] if _classification else None
 
         # Step 2: Resolve raw intent → INTENT_TOOLS key via module-level mapping.
@@ -18068,7 +18068,7 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             "Transfer pricing: overview → comparables → analysis → OECD report generation."),
     ]
 
-    async def _classify_query_intent(self, prompt: str) -> Optional[Dict[str, Any]]:
+    async def _classify_query_intent(self, prompt: str, turn_type: Optional[Any] = None) -> Optional[Dict[str, Any]]:
         """Classify intent AND rank tools in a single Haiku call.
 
         Returns {"intent", "chain", "description", "tool_order": [...]} or None.
@@ -18119,6 +18119,8 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             _ctx_parts.append(f"fund_id={_fund_id}")
         if _has_uploads:
             _ctx_parts.append(f"uploaded_files=[{_upload_names}]")
+        if turn_type is not None:
+            _ctx_parts.append(f"task_type={turn_type.value}")
 
         _system = (
             "You are a routing classifier for a CFO/investment agent. "
@@ -18126,6 +18128,11 @@ Return: {{"periods": ["Q1 2025", ...], "line_items": [{{"name": "Revenue", "valu
             "1. Pick the best matching intent (or 'none')\n"
             "2. Rank the most relevant tools for THIS specific request "
             "(even if intent is 'none', return 5-8 tools from the general set ranked by relevance)\n\n"
+            "TOOL RANKING RULES:\n"
+            "- If company_id is in context: pull_company_data MUST be ranked first.\n"
+            "- If fund_id is in context (and no company_id): pull_fund_companies MUST be ranked first.\n"
+            "- Never rank query_portfolio above pull_company_data when company_id is present.\n"
+            "- If task_type is retrieval or analysis: rank data-fetch tools first.\n\n"
             "Respond with JSON: {\"intent\": \"intent_name\", \"tools\": [\"tool1\", \"tool2\", ...]}\n"
             "Always return a tools array, even for intent='none'.\n\n"
             "No explanation. Just the JSON object.\n\n"
