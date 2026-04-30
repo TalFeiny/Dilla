@@ -45,6 +45,7 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import AgentFeedback from './AgentFeedback';
@@ -424,6 +425,7 @@ export default function AgentChat({
   const approvedPlanStepsRef = useRef<any[]>([]);
   const workingMemoryRef = useRef<Array<{ tool: string; summary: string }>>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const autoBriefedRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const chipInputRef = useRef<ChipInputRef>(null);
@@ -449,6 +451,142 @@ export default function AgentChat({
   useEffect(() => {
     setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, messages } : t));
   }, [messages, activeTabId]);
+
+  // Auto-brief: agent opens the conversation proactively on first load
+  useEffect(() => {
+    // Only run once per session, only when there are no messages, and only in data modes
+    if (autoBriefedRef.current) return;
+    if (!['pnl', 'portfolio', 'lp'].includes(mode || '')) return;
+    if (!fundId) return;
+
+    // Prevent re-running across re-renders within the same browser session
+    const sessionKey = `dilla-auto-briefed-${fundId}-${mode}`;
+    if (sessionStorage.getItem(sessionKey)) return;
+
+    autoBriefedRef.current = true;
+    sessionStorage.setItem(sessionKey, '1');
+
+    const autoBriefPrompts: Record<string, string> = {
+      pnl: "Open the session with a proactive CFO brief. Pull the company's actuals, check burn rate, runway, revenue trajectory, and gross margin. Flag 2-3 specific anomalies or risks you see in the data. Be direct and specific — no generic commentary.",
+      portfolio: "Open the session with a portfolio health brief. Check company health scores, flag anything that needs attention, surface key fund metrics. Give me 2-3 specific things I should know right now.",
+      lp: "Open the session with an LP brief. Summarise fund performance, DPI, TVPI, and any notable portfolio developments. Flag 2-3 things worth highlighting to LPs.",
+    };
+
+    const prompt = autoBriefPrompts[mode || 'portfolio'];
+    const companyId = mode === 'pnl' ? matrixData?.rows?.find((r: any) => r.companyId)?.companyId : undefined;
+
+    const placeholderId = crypto.randomUUID();
+    setMessages([{
+      id: placeholderId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      processing: true,
+    }]);
+    setIsLoading(true);
+
+    const now = new Date();
+    const matrixContext = matrixData && (matrixData.rows?.length > 0 || matrixData.columns?.length > 0)
+      ? buildMatrixContext(matrixData, fundId, mode)
+      : undefined;
+
+    const agentEndpoint = mode === 'pnl' ? '/api/agent/cfo-brain' : '/api/agent/unified-brain';
+
+    fetch(agentEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        output_format: 'reply',
+        sessionId: currentSessionId,
+        context: {
+          messageHistory: [],
+          gridMode: mode || 'portfolio',
+          company_id: companyId,
+          fundId,
+          matrixContext,
+          datetime: {
+            iso: now.toISOString(),
+            date: now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            quarter: `Q${Math.ceil((now.getMonth() + 1) / 3)} ${now.getFullYear()}`,
+          },
+        },
+        agent_context: {
+          recent_analyses: [],
+          fund_id: fundId || null,
+          working_memory: [],
+          current_datetime: now.toISOString(),
+          is_auto_brief: true,
+        },
+        stream: true,
+      }),
+    }).then(async (res) => {
+      if (!res.ok) { setIsLoading(false); setMessages([]); return; }
+
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('ndjson') && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalResult: any = null;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const event = JSON.parse(line);
+              if (event.type === 'progress' && event.stage) setStreamingStage(event.stage);
+              if (event.type === 'complete') finalResult = event;
+            } catch { /* ignore */ }
+          }
+        }
+        if (finalResult) {
+          const norm = finalResult.data ?? finalResult;
+          setMessages([{
+            id: placeholderId,
+            role: 'assistant',
+            content: norm.response || norm.content || '',
+            timestamp: new Date(),
+            processing: false,
+            agentSuggestions: norm.suggestions,
+            todoItems: (norm.todos ?? norm.todo_items ?? []).map((t: any, i: number) => ({
+              id: `todo-${Date.now()}-${i}`,
+              title: t.title || '',
+              description: t.description,
+              priority: t.priority,
+              company: t.company,
+              due: t.due,
+              done: false,
+            })),
+          }]);
+        } else {
+          setMessages([]);
+        }
+      } else {
+        const data = await res.json();
+        const norm = data.data ?? data;
+        setMessages([{
+          id: placeholderId,
+          role: 'assistant',
+          content: norm.response || norm.content || '',
+          timestamp: new Date(),
+          processing: false,
+        }]);
+      }
+    }).catch(() => {
+      setMessages([]);
+    }).finally(() => {
+      setIsLoading(false);
+      setStreamingStage('');
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fundId, mode]);
 
   // Switch tab handler
   const switchTab = (tabId: string) => {
@@ -1752,7 +1890,42 @@ export default function AgentChat({
                       <>
                         <div className="prose prose-xs dark:prose-invert max-w-none break-words overflow-wrap-anywhere text-xs leading-snug">
                           <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
                             components={{
+                              table({ children }: any) {
+                                return (
+                                  <div className="my-2 overflow-x-auto">
+                                    <table className="w-full text-xs border-collapse">{children}</table>
+                                  </div>
+                                );
+                              },
+                              thead({ children }: any) {
+                                return <thead>{children}</thead>;
+                              },
+                              tbody({ children }: any) {
+                                return <tbody>{children}</tbody>;
+                              },
+                              tr({ children, ...props }: any) {
+                                return (
+                                  <tr className="border-b border-gray-100 dark:border-gray-700 even:bg-gray-50 dark:even:bg-gray-800/30">
+                                    {children}
+                                  </tr>
+                                );
+                              },
+                              th({ children }: any) {
+                                return (
+                                  <th className="text-left py-1.5 pr-3 font-semibold text-gray-500 dark:text-gray-400 text-[10px] uppercase tracking-wider border-b-2 border-gray-200 dark:border-gray-600">
+                                    {children}
+                                  </th>
+                                );
+                              },
+                              td({ children }: any) {
+                                return (
+                                  <td className="py-1 pr-3 text-gray-700 dark:text-gray-300 align-top">
+                                    {children}
+                                  </td>
+                                );
+                              },
                               code({ node, className, children, ...props }: any) {
                                 const inline = node?.position === undefined;
                                 const match = /language-(\w+)/.exec(className || '');
