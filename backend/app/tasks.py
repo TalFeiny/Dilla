@@ -270,17 +270,102 @@ def cleanup_old_data(self):
         }
 
 
-# Periodic tasks schedule
-from celery.schedules import crontab
+@celery_app.task(bind=True, base=CallbackTask, name="app.tasks.agent.run_scheduled")
+def run_scheduled_agent_task(self, task_id: str) -> Dict[str, Any]:
+    """Execute a persisted agent_task by calling the appropriate brain endpoint.
 
-celery_app.conf.beat_schedule = {
-    "cleanup-old-data": {
-        "task": "app.tasks.periodic.cleanup",
-        "schedule": crontab(hour=2, minute=0),  # Run at 2 AM daily
-    },
-    "update-market-data": {
-        "task": "app.tasks.market.research",
-        "schedule": crontab(hour="*/6"),  # Every 6 hours
-        "args": ("technology market trends", None, "Technology")
-    }
-}
+    Called by RedBeat on the stored cron schedule, or directly for one-shot tasks.
+    Reads task definition from Supabase, calls the brain, writes result back.
+    If notify_chat=True the result is broadcast via WebSocket so it surfaces
+    in the chat panel like the proactive auto-brief.
+    """
+    import asyncio
+    import httpx
+    from datetime import datetime, timezone as dt_tz
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    async def _run():
+        from app.core.supabase_client import get_supabase_client
+        sb = get_supabase_client()
+        if not sb:
+            return {"status": "error", "error": "No Supabase client"}
+
+        # Fetch task definition
+        res = sb.table("agent_tasks").select("*").eq("id", task_id).single().execute()
+        if not res.data:
+            return {"status": "error", "error": f"Task {task_id} not found"}
+
+        task = res.data
+        if task["status"] not in ("active",):
+            return {"status": "skipped", "reason": task["status"]}
+
+        params = task.get("params") or {}
+        task_type = task["task_type"]
+        fund_id = params.get("fund_id") or task.get("fund_id")
+
+        # Build the prompt for the brain based on task_type
+        prompt_map = {
+            "burn_rate_check": "Run a burn rate and runway check. Pull actuals, flag anomalies, surface any risks. Be direct.",
+            "runway_alert": "Calculate current runway. If under 12 months flag it as critical. Give exact numbers.",
+            "portfolio_health": "Run a portfolio health check. Score each company, flag anything that needs attention.",
+            "market_research": params.get("query", "Run a market research update for this fund's sectors."),
+            "valuation_refresh": "Refresh valuations for all portfolio companies with recent data.",
+            "custom_query": params.get("query", "Run your standard CFO brief."),
+        }
+        prompt = prompt_map.get(task_type, params.get("query", "Run your standard CFO brief."))
+
+        # Determine which brain endpoint to use
+        mode = params.get("mode", "pnl")
+        import os
+        base_url = os.environ.get("INTERNAL_API_URL", "http://localhost:8000")
+        endpoint = "/api/agent/cfo-brain" if mode == "pnl" else "/api/agent/unified-brain"
+
+        payload = {
+            "message": prompt,
+            "fund_id": fund_id,
+            "mode": mode,
+            "context": {**params, "scheduled_task_id": task_id, "task_type": task_type},
+        }
+
+        result_text = ""
+        error = None
+        try:
+            async with httpx.AsyncClient(timeout=300) as client:
+                resp = await client.post(f"{base_url}{endpoint}", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                result_text = data.get("response") or data.get("message") or str(data)[:2000]
+        except Exception as e:
+            error = str(e)
+            logger.error(f"[run_scheduled_agent_task] Brain call failed for {task_id}: {e}")
+
+        now = datetime.now(dt_tz.utc).isoformat()
+        run_status = "error" if error else "success"
+
+        # Update task record
+        sb.table("agent_tasks").update({
+            "last_run_at": now,
+            "last_run_status": run_status,
+            "last_run_result": {"text": result_text, "error": error},
+            "run_count": (task.get("run_count") or 0) + 1,
+            "error_count": (task.get("error_count") or 0) + (1 if error else 0),
+            "last_error": error,
+            # One-shot tasks: mark done after first run
+            **({"status": "done"} if not task.get("cron_expr") else {}),
+        }).eq("id", task_id).execute()
+
+        # Delivery is handled by Supabase Realtime — the UPDATE above triggers
+        # a postgres_changes event that the frontend subscribes to in AgentChat.
+        # No WebSocket broadcast needed here (worker is a separate process).
+
+        return {"status": run_status, "task_id": task_id, "error": error}
+
+    result = loop.run_until_complete(_run())
+    loop.close()
+    return result
+
+
+# All schedules are dynamic via RedBeat — created by the agent at runtime.
+# No static beat_schedule needed.

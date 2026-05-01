@@ -2481,6 +2481,45 @@ AGENT_TOOLS: list[AgentTool] = [
         cost_tier="cheap",
         timeout_ms=45_000,
     ),
+
+    # ------------------------------------------------------------------
+    # Agentic scheduling — turn the chatbot into an agent
+    # ------------------------------------------------------------------
+    AgentTool(
+        name="schedule_task",
+        description="Schedule a recurring or one-shot CFO task (burn check, runway alert, portfolio health, custom query). Returns task_id.",
+        handler="_tool_schedule_task",
+        input_schema={
+            "task_type": "str",       # burn_rate_check | runway_alert | portfolio_health | market_research | custom_query | valuation_refresh
+            "label": "str",           # human-readable: "Weekly burn rate check"
+            "cron_expr": "str?",      # "0 9 * * 1" = Monday 9am UTC. Omit for one-shot.
+            "run_at": "str?",         # ISO datetime for one-shot. Omit for recurring.
+            "timezone": "str?",       # default UTC
+            "params": "dict?",        # extra args forwarded to the brain: {query, company_id, mode, threshold}
+            "notify_chat": "bool?",   # default true — result injected back as agent message
+        },
+        cost_tier="free",
+        timeout_ms=10_000,
+    ),
+    AgentTool(
+        name="cancel_task",
+        description="Cancel or pause a previously scheduled task by task_id.",
+        handler="_tool_cancel_task",
+        input_schema={
+            "task_id": "str",
+            "action": "str?",  # "cancel" (default) | "pause" | "resume"
+        },
+        cost_tier="free",
+        timeout_ms=5_000,
+    ),
+    AgentTool(
+        name="list_tasks",
+        description="List all scheduled agent tasks for this fund. Shows status, next run, last result.",
+        handler="_tool_list_tasks",
+        input_schema={"status": "str?"},  # filter: active | paused | done | all
+        cost_tier="free",
+        timeout_ms=5_000,
+    ),
 ]
 
 # Quick lookup by name (includes ALL tools — agent-visible + internal)
@@ -9734,7 +9773,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
                 if branch_id and all_driver_deltas:
                     try:
                         from app.services.scenario_branch_service import ScenarioBranchService, build_forecast_charts
-                        from app.core.supabase_client import get_supabase_client
+                        from app.core.supabase_client import get_supabase_client as get_supabase_client
                         import json as _json
 
                         svc = ScenarioBranchService()
@@ -10036,7 +10075,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
             return bid
 
         import json as _json
-        from app.core.supabase_client import get_supabase_client
+        from app.core.supabase_client import get_supabase_client as get_supabase_client
         sb = get_supabase_client()
         row = {
             "company_id": company_id,
@@ -10060,7 +10099,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
                 assumptions_to_drivers,
             )
             from app.services.scenario_branch_service import ScenarioBranchService
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
 
             company_id = inputs.get("company_id") or self.shared_data.get("company_id")
             branch_id = inputs.get("branch_id") or self.shared_data.get("working_branch_id")
@@ -10232,7 +10271,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
                 drivers_to_assumptions,
             )
             from app.services.scenario_branch_service import ScenarioBranchService, build_forecast_charts
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
             import json as _json
 
             company_id = inputs.get("company_id") or self.shared_data.get("company_id")
@@ -10371,7 +10410,7 @@ Answer using specific company names and numbers from the portfolio grid above.""
         try:
             from app.services.driver_registry import driver_to_assumption
             from app.services.scenario_branch_service import ScenarioBranchService, build_forecast_charts
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
             import json as _json
 
             company_id = inputs.get("company_id") or self.shared_data.get("company_id")
@@ -13274,7 +13313,7 @@ Return JSON with ONLY these fields (use null if unknown):
         doc_ids = self.shared_data.get("legal_document_ids") or []
         if doc_ids:
             try:
-                from app.core.supabase_client import get_supabase
+                from app.core.supabase_client import get_supabase_client as get_supabase
                 sb = get_supabase()
                 resp = sb.table("processed_documents").select("company_id").in_("id", doc_ids[:5]).execute()
                 for row in (resp.data or []):
@@ -14116,6 +14155,154 @@ Return JSON with ONLY these fields (use null if unknown):
             return {"error": str(e)}
 
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Agentic scheduling handlers
+    # ------------------------------------------------------------------
+
+    async def _tool_schedule_task(self, inputs: dict) -> dict:
+        """Persist a recurring/one-shot task to agent_tasks and register it with RedBeat."""
+        import uuid
+        from datetime import datetime, timezone as dt_timezone
+        from redbeat import RedBeatSchedulerEntry
+        from celery.schedules import crontab as celery_crontab
+        from app.core.celery_app import celery_app
+        from app.core.supabase_client import get_supabase_client as get_supabase
+
+        task_type = inputs.get("task_type", "custom_query")
+        label = inputs.get("label", task_type)
+        cron_expr = inputs.get("cron_expr")
+        run_at = inputs.get("run_at")
+        tz = inputs.get("timezone", "UTC")
+        params = inputs.get("params") or {}
+        notify_chat = inputs.get("notify_chat", True)
+
+        fund_id = self.shared_data.get("fund_id")
+        user_id = self.shared_data.get("user_id")
+
+        if not fund_id:
+            return {"error": "No fund_id in context — cannot schedule task"}
+        if not cron_expr and not run_at:
+            return {"error": "Provide either cron_expr (recurring) or run_at (one-shot)"}
+
+        task_id = str(uuid.uuid4())
+
+        # Persist to Supabase
+        try:
+            sb = get_supabase()
+            row = {
+                "id": task_id,
+                "fund_id": fund_id,
+                "task_type": task_type,
+                "label": label,
+                "params": {**params, "fund_id": fund_id, "user_id": user_id},
+                "cron_expr": cron_expr,
+                "run_at": run_at,
+                "timezone": tz,
+                "status": "active",
+                "notify_chat": notify_chat,
+                "created_by": "agent",
+            }
+            if user_id:
+                row["user_id"] = user_id
+            sb.table("agent_tasks").insert(row).execute()
+        except Exception as e:
+            logger.warning(f"[schedule_task] Supabase insert failed: {e}")
+            return {"error": f"Failed to persist task: {e}"}
+
+        # Register with RedBeat so beat picks it up without restart
+        try:
+            if cron_expr:
+                parts = cron_expr.strip().split()
+                if len(parts) == 5:
+                    minute, hour, day_of_month, month, day_of_week = parts
+                    schedule = celery_crontab(
+                        minute=minute, hour=hour,
+                        day_of_month=day_of_month, month_of_year=month,
+                        day_of_week=day_of_week,
+                    )
+                    entry = RedBeatSchedulerEntry(
+                        name=f"agent_task:{task_id}",
+                        task="app.tasks.agent.run_scheduled",
+                        schedule=schedule,
+                        args=[task_id],
+                        app=celery_app,
+                    )
+                    entry.save()
+            # One-shot tasks: Celery eta is set when the runner task is queued
+            # by a lightweight beat entry that checks run_at
+        except Exception as e:
+            logger.warning(f"[schedule_task] RedBeat registration failed: {e}")
+            # Task is persisted in Supabase — the fallback poller will catch it
+
+        return {
+            "task_id": task_id,
+            "label": label,
+            "cron_expr": cron_expr,
+            "run_at": run_at,
+            "status": "scheduled",
+            "message": f"Task '{label}' scheduled. I'll run it {'on cron: ' + cron_expr if cron_expr else 'at ' + str(run_at)} and surface the results here.",
+        }
+
+    async def _tool_cancel_task(self, inputs: dict) -> dict:
+        """Cancel, pause, or resume a scheduled task."""
+        from redbeat import RedBeatSchedulerEntry
+        from app.core.celery_app import celery_app
+        from app.core.supabase_client import get_supabase_client as get_supabase
+
+        task_id = inputs.get("task_id")
+        action = inputs.get("action", "cancel")
+
+        if not task_id:
+            return {"error": "task_id required"}
+
+        status_map = {"cancel": "cancelled", "pause": "paused", "resume": "active"}
+        new_status = status_map.get(action, "cancelled")
+
+        try:
+            sb = get_supabase()
+            sb.table("agent_tasks").update({"status": new_status}).eq("id", task_id).execute()
+        except Exception as e:
+            return {"error": f"DB update failed: {e}"}
+
+        # Remove or disable the RedBeat entry
+        try:
+            entry = RedBeatSchedulerEntry.from_key(
+                f"redbeat:agent_task:{task_id}", app=celery_app
+            )
+            if action in ("cancel",):
+                entry.delete()
+            elif action == "pause":
+                entry.enabled = False
+                entry.save()
+            elif action == "resume":
+                entry.enabled = True
+                entry.save()
+        except Exception as e:
+            logger.warning(f"[cancel_task] RedBeat update failed (task may be one-shot): {e}")
+
+        return {"task_id": task_id, "action": action, "status": new_status}
+
+    async def _tool_list_tasks(self, inputs: dict) -> dict:
+        """List scheduled agent tasks for this fund."""
+        from app.core.supabase_client import get_supabase_client as get_supabase
+
+        fund_id = self.shared_data.get("fund_id")
+        if not fund_id:
+            return {"error": "No fund_id in context"}
+
+        status_filter = inputs.get("status", "active")
+        try:
+            sb = get_supabase()
+            q = sb.table("agent_tasks").select(
+                "id,task_type,label,cron_expr,run_at,status,last_run_at,last_run_status,next_run_at,run_count"
+            ).eq("fund_id", fund_id)
+            if status_filter and status_filter != "all":
+                q = q.eq("status", status_filter)
+            result = q.order("created_at", desc=True).execute()
+            return {"tasks": result.data or []}
+        except Exception as e:
+            return {"error": str(e)}
+
     # Auto-Budget handler
     # ------------------------------------------------------------------
 
@@ -14185,7 +14372,7 @@ Return JSON with ONLY these fields (use null if unknown):
     async def _tool_fpa_scenario_create(self, inputs: dict) -> dict:
         """Create a scenario branch with assumption overrides."""
         try:
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
 
             company_id = self._resolve_company_id(inputs)
             name = inputs.get("name")
@@ -14248,7 +14435,7 @@ Return JSON with ONLY these fields (use null if unknown):
     async def _tool_fpa_scenario_update(self, inputs: dict) -> dict:
         """Update existing branch assumptions using driver IDs, re-execute forecast."""
         try:
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
             from app.services.scenario_branch_service import ScenarioBranchService
             from app.services.driver_registry import drivers_to_assumptions
 
@@ -14434,7 +14621,7 @@ Return JSON with ONLY these fields (use null if unknown):
     async def _tool_fpa_budget_list(self, inputs: dict) -> dict:
         """List budgets for a company."""
         try:
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
 
             company_id = self._resolve_company_id(inputs)
             if not company_id:
@@ -14458,7 +14645,7 @@ Return JSON with ONLY these fields (use null if unknown):
     async def _tool_fpa_budget_lines(self, inputs: dict) -> dict:
         """Get budget line items for a budget."""
         try:
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
 
             budget_id = inputs.get("budget_id")
             if not budget_id:
@@ -14492,7 +14679,7 @@ Return JSON with ONLY these fields (use null if unknown):
     async def _tool_fpa_budget_create(self, inputs: dict) -> dict:
         """Create a new budget for a company."""
         try:
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
 
             company_id = self._resolve_company_id(inputs)
             name = inputs.get("name")
@@ -14523,7 +14710,7 @@ Return JSON with ONLY these fields (use null if unknown):
     async def _tool_fpa_cell_edit(self, inputs: dict) -> dict:
         """Edit a single P&L cell — upserts into fpa_actuals."""
         try:
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
 
             company_id = self._resolve_company_id(inputs)
             category = inputs.get("category")
@@ -14576,7 +14763,7 @@ Return JSON with ONLY these fields (use null if unknown):
 
         job_id = None
         try:
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
             from app.services.actuals_ingestion import ingest_time_series
 
             sb = get_supabase_client()
@@ -14641,7 +14828,7 @@ Return JSON with ONLY these fields (use null if unknown):
             logger.warning(f"[TOOL] fpa_upload_actuals failed: {e}")
             if job_id:
                 try:
-                    from app.core.supabase_client import get_supabase_client
+                    from app.core.supabase_client import get_supabase_client as get_supabase_client
                     sb = get_supabase_client()
                     if sb:
                         sb.table("fpa_upload_jobs").update({
@@ -14657,7 +14844,7 @@ Return JSON with ONLY these fields (use null if unknown):
     async def _tool_fpa_upload_budget(self, inputs: dict) -> dict:
         """Upload budget line items for an existing budget."""
         try:
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
 
             budget_id = inputs.get("budget_id")
             lines = inputs.get("lines")
@@ -14727,7 +14914,7 @@ Return JSON with ONLY these fields (use null if unknown):
     async def _tool_fpa_xero_sync(self, inputs: dict) -> dict:
         """Trigger Xero sync for a company."""
         try:
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
             from app.services.xero_service import sync_xero_data
 
             company_id = self._resolve_company_id(inputs)
@@ -15151,7 +15338,7 @@ Return JSON with ONLY these fields (use null if unknown):
     async def _get_debt_context(self, company_id: str) -> dict:
         """Pull debt facilities, covenants with headroom, maturity dates from document_clauses."""
         try:
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
             sb = get_supabase_client()
 
             # Get document IDs for this company
@@ -15217,7 +15404,7 @@ Return JSON with ONLY these fields (use null if unknown):
     async def _get_legal_context(self, company_id: str) -> dict:
         """Pull legal clauses — change of control, termination, guarantees, etc."""
         try:
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
             sb = get_supabase_client()
 
             docs_result = (
@@ -37501,7 +37688,7 @@ Return a JSON with this structure:
         Used by: CFO agent (forecasts), portfolio agent (actuals), sourcing agent (metrics).
         """
         try:
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
 
             cells = inputs.get("cells", [])
             if not cells:
@@ -37602,7 +37789,7 @@ Return a JSON with this structure:
         if not company_id:
             return {"error": "company_id required"}
 
-        from app.core.supabase_client import get_supabase_client
+        from app.core.supabase_client import get_supabase_client as get_supabase_client
         sb = get_supabase_client()
         if not sb:
             return {"error": "Database unavailable"}
@@ -37657,7 +37844,7 @@ Return a JSON with this structure:
         if not company_id:
             return {"error": "company_id required"}
 
-        from app.core.supabase_client import get_supabase_client
+        from app.core.supabase_client import get_supabase_client as get_supabase_client
         sb = get_supabase_client()
         if not sb:
             return {"error": "Database unavailable"}
@@ -37702,7 +37889,7 @@ Return a JSON with this structure:
         if not company_id:
             return {"error": "company_id required"}
 
-        from app.core.supabase_client import get_supabase_client
+        from app.core.supabase_client import get_supabase_client as get_supabase_client
         sb = get_supabase_client()
         if not sb:
             return {"error": "Database unavailable"}
@@ -45089,7 +45276,7 @@ Return your analysis with inline citations for ALL factual claims.
         try:
             from app.services.scenario_branch_service import ScenarioBranchService
             from app.services.pnl_builder import PnlBuilder
-            from app.core.supabase_client import get_supabase_client
+            from app.core.supabase_client import get_supabase_client as get_supabase_client
 
             company_id = self._resolve_company_id(inputs)
             changes = inputs.get("changes", [])

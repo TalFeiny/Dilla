@@ -66,6 +66,7 @@ import {
 } from '@/components/ui/sheet';
 import dynamic from 'next/dynamic';
 import { buildGridSnapshot } from '@/lib/portfolio-context-compressor';
+import { getSupabaseBrowser } from '@/lib/supabase/browser';
 import { SkeletonChart } from '@/components/ui/skeleton';
 import type { MatrixData } from '@/components/matrix/UnifiedMatrix';
 import { contextManager } from '@/lib/agent-context-manager';
@@ -451,6 +452,45 @@ export default function AgentChat({
   useEffect(() => {
     setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, messages } : t));
   }, [messages, activeTabId]);
+
+  // Scheduled task results: subscribe to agent_tasks via Supabase Realtime.
+  // When the worker completes a task (last_run_status flips to success/error),
+  // inject the result as an assistant message — same UX as the auto-brief.
+  useEffect(() => {
+    if (!fundId) return;
+
+    const sb = getSupabaseBrowser();
+    const channel = sb
+      .channel(`agent_tasks:${fundId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'agent_tasks',
+          filter: `fund_id=eq.${fundId}`,
+        },
+        (payload: any) => {
+          const task = payload.new;
+          if (!task.notify_chat) return;
+          if (task.last_run_status !== 'success') return;
+          if (!task.last_run_result?.text) return;
+
+          setMessages(prev => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'assistant' as const,
+              content: `**Scheduled: ${task.label}**\n\n${task.last_run_result.text}`,
+              timestamp: new Date(task.last_run_at),
+            },
+          ]);
+        }
+      )
+      .subscribe();
+
+    return () => { sb.removeChannel(channel); };
+  }, [fundId]);
 
   // Auto-brief: agent opens the conversation proactively on first load
   useEffect(() => {
@@ -1967,14 +2007,14 @@ export default function AgentChat({
                               },
                               h1({ node, className, children, ...props }: any) {
                                 return (
-                                  <h1 className="text-sm font-bold mb-1.5 mt-2 text-gray-900 dark:text-gray-100" {...props}>
+                                  <h1 className="text-xs font-bold mb-1 mt-1.5 text-gray-900 dark:text-gray-100" {...props}>
                                     {children}
                                   </h1>
                                 );
                               },
                               h2({ node, className, children, ...props }: any) {
                                 return (
-                                  <h2 className="text-xs font-semibold mb-1 mt-2 text-gray-800 dark:text-gray-200" {...props}>
+                                  <h2 className="text-xs font-semibold mb-0.5 mt-1.5 text-gray-800 dark:text-gray-200" {...props}>
                                     {children}
                                   </h2>
                                 );

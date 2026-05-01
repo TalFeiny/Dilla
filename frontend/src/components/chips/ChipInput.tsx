@@ -299,7 +299,7 @@ export const ChipInput = forwardRef<ChipInputRef, ChipInputProps>(function ChipI
     <div className="relative flex-1 min-w-0">
       {showPlaceholder && placeholder && (
         <div
-          className="absolute inset-0 flex items-center px-3 text-sm text-muted-foreground pointer-events-none select-none"
+          className="absolute inset-0 flex items-center px-3 text-xs text-muted-foreground pointer-events-none select-none"
           aria-hidden
         >
           {placeholder}
