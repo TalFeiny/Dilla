@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Fields that are safe to write from external input
 _WRITABLE_FIELDS = {
     "shareholder_name", "stakeholder_type", "instrument_type", "share_class",
-    "num_shares", "price_per_share", "round_name", "investment_date",
+    "num_shares", "price_per_share", "ownership_pct", "round_name", "investment_date",
     "liquidation_pref", "participating", "participation_cap", "anti_dilution",
     "voting_rights", "board_seat", "pro_rata_rights",
     "vesting_cliff_months", "vesting_total_months", "vested_pct",
@@ -132,6 +132,9 @@ class CapTableLedger:
             # Ownership %
             if total_shares > 0 and not is_debt:
                 own_pct = float((shares / total_shares) * 100)
+            elif not is_debt and r.get("ownership_pct"):
+                # No share counts — use stored ownership_pct (e.g. CSV had % column only)
+                own_pct = float(r["ownership_pct"])
             else:
                 own_pct = 0.0
 

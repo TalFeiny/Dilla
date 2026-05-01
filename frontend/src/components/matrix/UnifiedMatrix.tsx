@@ -4669,7 +4669,9 @@ export function UnifiedMatrix({
         });
 
         toast.success(`Cap table imported: ${rowsParsed} entries`);
-        await loadPnlData({ force: true });
+        // Parent owns cap table data fetching (via pnlRefreshTrigger → fetchPnlView).
+        // Calling loadPnlData here would fetch P&L actuals instead and overwrite the grid.
+        onRefresh?.();
         setIsPnlUploading(false);
         return;
       }

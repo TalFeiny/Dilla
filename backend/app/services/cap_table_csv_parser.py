@@ -38,7 +38,8 @@ _COLUMN_PATTERNS: List[Tuple[re.Pattern, str]] = [
     # --- Specific patterns BEFORE greedy ones to avoid mis-matches ---
 
     # Ownership % (before shareholder_name — "owner" would grab "Ownership %")
-    (re.compile(r"own(?:ership)?\s*(?:pct|%|percent)|%\s*own|fully\s*diluted\s*%", re.I), "ownership_pct"),
+    # "ownership" bare word is valid (no % suffix required when full word is used)
+    (re.compile(r"ownership(?:\s*(?:pct|%|percent))?|own\s*(?:pct|%|percent)|%\s*own|fully\s*diluted\s*%", re.I), "ownership_pct"),
     # Shareholder / holder (removed "owner" — conflicts with "Ownership %")
     (re.compile(r"share\s*holder|holder|investor|name|stakeholder|party|lender|creditor", re.I), "shareholder_name"),
     # Stakeholder type
